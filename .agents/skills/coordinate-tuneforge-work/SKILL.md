@@ -137,11 +137,11 @@ proof of live transport, external-device, or release behavior.
 Use one initial correctness review for implementation, one evidence review for
 research, or one release-safety review for release preparation. Evidence review
 must check methodology, reproducibility, unsupported generalization, licensing,
-and evidence-to-conclusion fit. Release-safety review must check the asset
-contract, provenance, checkpoint authority, manual-only operations, and fail-closed
-gates. Add contract and Product Design review only when applicable. Route reviews
-to Sol High normally, Sol XHigh only for declared high risk, and Sol Max only for
-a focused unresolved critical dispute. Send actionable findings to the original
+and evidence-to-conclusion fit. Release-safety review must check the exact platform
+payload/checksum/signature matrix, provenance, checkpoint authority, manual-only
+operations, and fail-closed gates. Add contract and Product Design review only when
+applicable. Route reviews to Sol High normally, Sol XHigh only for declared high risk,
+and Sol Max only for a focused unresolved critical dispute. Send actionable findings to the original
 worker for one remediation pass, then perform one focused re-review. Stop on
 unresolved critical findings.
 

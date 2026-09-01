@@ -38,26 +38,54 @@ After the tag checkpoint stop and fresh explicit tag-signing approval, automatio
 annotated `v<version>` tag and must verify its signature, annotation, target, and release commit.
 Require separate draft-release authority before creating a draft GitHub Release for that tag. Build
 each intended artifact from a clean checkout of the tag without a `TUNEFORGE_GIT_REF` override.
-TuneForge's current release contract requires exactly seven uploaded assets:
+From v1.4.0 onward, TuneForge's release contract requires exactly seven payloads:
 
-- Apple Silicon `TuneForge_<version>_aarch64.dmg` and its detached `.asc` signature;
-- publishable ARM64 `TuneForge_<version>_android_aarch64_publishable.apk` and its detached `.asc`
-  signature;
-- `SHA256SUMS`, containing only the DMG and APK, and its detached `.asc` signature;
-- armored public `release-key.asc` matching the signing fingerprint.
+- Apple Silicon `TuneForge_<version>_aarch64.dmg`;
+- publishable ARM64 `TuneForge_<version>_android_aarch64_publishable.apk`;
+- CPU `Tuneforge_<version>_x86_64.flatpak`;
+- `Tuneforge_<version>_Torch_Nvidia_Core_x86_64.flatpak`;
+- `Tuneforge_<version>_Torch_Nvidia_Runtime_x86_64.flatpak`;
+- `Tuneforge_<version>_Torch_LegacyNvidia_Core_x86_64.flatpak`;
+- `Tuneforge_<version>_Torch_LegacyNvidia_Runtime_x86_64.flatpak`.
 
-Both the DMG and publishable APK are mandatory. Manual steps run
-`pnpm package:android:release` with the externally managed release key, create all detached
+Every payload has a detached `.asc` signature. A newly generated release `SHA256SUMS` covers
+exactly those seven payloads sorted by basename; it also has a detached `SHA256SUMS.asc` signature.
+Armored `release-key.asc` matching the signing fingerprint completes the exact 17 uploaded assets.
+Never reuse the ignored `packaging/flatpak/generated/SHA256SUMS` as the release manifest.
+
+Use this seven-payload verification matrix before upload and again after a fresh download:
+every checksum entry must match the payload digest, and every detached `.asc` must verify against
+the approved `release-key.asc` fingerprint.
+
+| Exact payload filename | Provenance | Size | Checksum and signature | License evidence | Architecture / branch | Package or ref identity |
+| --- | --- | --- | --- | --- | --- | --- |
+| `TuneForge_<version>_aarch64.dmg` | Frozen tagged SHA | Recorded, nonzero | Sorted manifest entry + matching `.asc` | Release inventory + notices | `aarch64` / n/a | `TuneForge`, embedded version and git ref |
+| `TuneForge_<version>_android_aarch64_publishable.apk` | Frozen tagged SHA | Recorded, nonzero | Sorted manifest entry + matching `.asc` | Release inventory + notices | `arm64-v8a` / n/a | `com.tuneforge.desktop`, version, release signer |
+| `Tuneforge_<version>_x86_64.flatpak` | Frozen tagged SHA and OSTree commit | Recorded, below 2 GiB | Sorted manifest entry + matching `.asc` | CPU profile inventory + notices | `x86_64` / `stable` | `app/com.tuneforge.desktop/x86_64/stable` |
+| `Tuneforge_<version>_Torch_Nvidia_Core_x86_64.flatpak` | Frozen tagged SHA and OSTree commit | Recorded, below 2 GiB | Sorted manifest entry + matching `.asc` | NVIDIA Core inventory + notices | `x86_64` / `stable` | `runtime/com.tuneforge.desktop.Torch.Stack.Nvidia.Core/x86_64/stable` |
+| `Tuneforge_<version>_Torch_Nvidia_Runtime_x86_64.flatpak` | Frozen tagged SHA and OSTree commit | Recorded, below 2 GiB | Sorted manifest entry + matching `.asc` | NVIDIA Runtime inventory + notices | `x86_64` / `stable` | `runtime/com.tuneforge.desktop.Torch.Stack.Nvidia.Runtime/x86_64/stable` |
+| `Tuneforge_<version>_Torch_LegacyNvidia_Core_x86_64.flatpak` | Frozen tagged SHA and OSTree commit | Recorded, below 2 GiB | Sorted manifest entry + matching `.asc` | LegacyNvidia Core inventory + notices | `x86_64` / `stable` | `runtime/com.tuneforge.desktop.Torch.Stack.LegacyNvidia.Core/x86_64/stable` |
+| `Tuneforge_<version>_Torch_LegacyNvidia_Runtime_x86_64.flatpak` | Frozen tagged SHA and OSTree commit | Recorded, below 2 GiB | Sorted manifest entry + matching `.asc` | LegacyNvidia Runtime inventory + notices | `x86_64` / `stable` | `runtime/com.tuneforge.desktop.Torch.Stack.LegacyNvidia.Runtime/x86_64/stable` |
+
+Public release notes must say that Flatpak support is x86_64 only, the CPU app installs first, and
+an accelerator installs only as a complete matching Core/Runtime pair. FFmpeg remains host-provided
+and must be available through the Flatpak runtime/extension paths; Flatpak never searches host
+`PATH` directly.
+
+All seven payloads are mandatory. Manual steps build the five Flatpaks on Linux, run
+`pnpm package:android:release` with the externally managed release key, create the eight detached
 signatures, export `release-key.asc`, and publish the verified draft. Automation may build the
-unsigned/not-notarized macOS DMG and verify public artifacts. It must never run the Android release
-build or artifact-signing commands. Pushing the verified tag and draft-asset upload each need separate explicit
-authority; final publication remains manual-only. Never move or delete a published tag; roll forward
-with a new version. Operational artifact, installation, checksum, signature, and upload instructions
-belong in the GitHub Release notes.
+unsigned/not-notarized macOS DMG and verify supplied public artifacts. It must never run the Android
+release build, Linux package build, packaged-app launch, or artifact-signing commands. The user owns
+launches and app data. Pushing the verified tag and uploading the 17 draft assets each need separate
+explicit authority; final publication remains manual-only. Never move or delete a published tag;
+roll forward with a new version. Operational artifact, installation, checksum, signature, and
+upload instructions belong in the GitHub Release notes.
 
-Run `pnpm package:mac` only on supported macOS release hosts. Flatpak packaging remains available
-for local or future distribution work on supported Linux hosts, but v1.1.0 neither builds nor uploads
-a Flatpak.
+Run `pnpm package:mac` only on supported macOS release hosts. Build the five Flatpaks from a clean
+x86_64 tagged checkout with no `TUNEFORGE_GIT_REF`, `--model-bundle`, or profile selectors by using
+`pnpm package:linux:flatpak`. The Linux handoff must include sanitized OS and tool versions, command,
+tag, commit SHA, refs, sizes, hashes, state, checksum, and CPU smoke evidence.
 
 Use the artifact-specific checklist for the manual launch smoke.
 
@@ -79,6 +107,18 @@ For the Android APK, install it on an isolated emulator or device and confirm:
 - the UI loads and core navigation is usable;
 - Settings/About release identity is visible.
 
+For the Flatpak runtime gate, create an isolated environment, install only
+`Tuneforge_<version>_x86_64.flatpak`, and confirm no accelerator refs are installed. Then confirm:
+
+- the packaged CPU app launches without a dev server;
+- the bundled FastAPI backend starts and remains bound to `127.0.0.1`;
+- the UI loads, core navigation is usable, and `v<version>` release identity is visible;
+- CPU fallback remains available.
+
+Accelerator-device detection and inference are optional, non-blocking evidence and remain
+unverified unless explicitly tested. All five Flatpak payloads still fail closed on malformed
+identity/ref, hash, signature, size, license, or provenance evidence.
+
 Record release gate evidence with:
 
 - OS and version;
@@ -89,11 +129,18 @@ Record release gate evidence with:
 - launch-smoke checklist source, such as this manual checklist or a named release
   checklist;
 - per-check proof for the applicable platform checklist: macOS packaged launch, bundled FastAPI
-  startup and loopback bind, UI/navigation, and release identity; or Android packaged launch on the
+  startup and loopback bind, UI/navigation, and release identity; Android packaged launch on the
   isolated emulator/device, embedded mobile backend initialization, UI/navigation, and release
-  identity;
+  identity; or isolated CPU-only Flatpak install, absence of accelerator refs, packaged launch,
+  bundled backend loopback bind, UI/navigation, release identity, and CPU fallback;
 - pass/fail result for each package build and launch-smoke check;
 - sanitized notes or log excerpt.
+
+Before upload, stage exactly the seven payloads and a newly generated sorted `SHA256SUMS`, then stop
+for manual creation of eight detached signatures and `release-key.asc`. In an isolated temporary
+GPG home, verify the key fingerprint, exact 17-file set, and every applicable matrix field. After
+separately authorized upload, download all 17 assets into a fresh directory and repeat the complete
+matrix and asset-set verification against the frozen release commit before publication.
 
 Do not collapse launch-smoke evidence to a generic pass. Evidence must avoid user
 paths, audio contents, secrets, and raw private logs. This gate documents package-build

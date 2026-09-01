@@ -15,10 +15,13 @@ PR and the later tagged-release operations as separate authority scopes.
   lock entries, current version fixtures, and this skill when needed.
 - Regenerate lockfiles with their owning tools. Do not hand-edit generated
   dependency or contract outputs.
-- Require green release-version, license-inventory, lint, typecheck, test,
-  backend, Tauri, and deterministic release-media gates before tagging. Report
-  only checks actually run and preserve generated release media as uncommitted
-  local output.
+- Before tagging, require green release-version, lint, typecheck, test, backend,
+  Tauri, deterministic release-media, and merged-CI gates plus clean current
+  `main`, dated changelog, governed versions, and tag absence. Report only checks
+  actually run and preserve generated release media as uncommitted local output.
+- Build every final payload exactly once from the verified tag. Run generated
+  package and license-evidence gates only after those tagged builds create their
+  inputs, and require them green before signing, upload, or publication.
 
 From v1.4.0 onward, TuneForge releases require exactly seven payloads:
 
@@ -85,7 +88,9 @@ for the actions after that stop. Merge authority is always separate.
    checkout, require a clean worktree, and prove `HEAD == origin/main`.
 2. Freeze the release commit SHA. Verify version sources, dated changelog, tag
    absence, the seven-payload/17-asset contract, and release readiness from
-   that exact commit.
+   that exact commit. Generated package and license inventories are tagged-build
+   outputs, not pre-tag inputs; do not build packages or require those inventories
+   at this checkpoint.
 3. Stop. Show the exact signed annotated-tag command and await fresh explicit
    approval.
 4. After approval, create the signed annotated tag, then verify its signature,
@@ -115,8 +120,10 @@ for the actions after that stop. Merge authority is always separate.
 
 ## Checkpoint 3: Before Android Release APK
 
-1. Require a clean checkout with `HEAD == v<version>^{commit}` and no
-   `TUNEFORGE_GIT_REF` override.
+1. Require each final DMG, five Flatpaks, and APK to be built exactly once from
+   a clean verified-tag checkout with `HEAD == v<version>^{commit}` and no
+   `TUNEFORGE_GIT_REF` override. Perform each build only at its
+   platform-specific or manual step below.
 2. Build and stage the unsigned Apple Silicon DMG. Verify filename, embedded
    package version, and git ref `v<version>-0-g<release-sha8>`.
 3. Record manual launch-smoke evidence for the packaged DMG: OS, command,
@@ -127,28 +134,34 @@ for the actions after that stop. Merge authority is always separate.
    command is `pnpm package:linux:flatpak`; it must return the five exact
    Flatpak payloads named above plus sanitized OS, tool versions, command, tag,
    commit SHA, refs, sizes, hashes, state, checksum, and CPU smoke evidence.
-5. The Flatpak runtime gate installs the CPU app bundle alone in an isolated
+5. After that tagged build creates the ignored profile inventories, run
+   `node scripts/release-license-inventory.mjs --check`. Require exact generated
+   CPU, NVIDIA Core/Runtime, and LegacyNvidia Core/Runtime inventories to pass
+   before progressing to signing or upload.
+6. The Flatpak runtime gate installs the CPU app bundle alone in an isolated
    environment with no accelerator refs, launches without a dev server, and
    verifies the loopback backend, UI/navigation, and visible `v<version>`
    identity. Accelerator-device detection and inference evidence is optional
    and non-blocking; mark it unverified unless tested. Preserve CPU fallback.
-6. Keep all five Flatpak payloads gated so missing or malformed identity/ref,
+7. Keep all five Flatpak payloads gated so missing or malformed identity/ref,
    hash, signature, size, license, or provenance evidence fails verification
    closed. Stop before Android signing/build work only after the DMG, Linux
    handoff, and CPU smoke evidence pass. Show the five documented release
    environment variables, `pnpm package:android:release`, unset commands, and
    temporary-key cleanup reminder. Do not execute them.
-7. After the manual Android release build supplies the APK, verify version, ARM64 ABI,
+8. After the manual Android release build supplies the APK, verify version, ARM64 ABI,
    non-debuggable/release state, exactly one signer, certificate continuity
    with the prior release, clean-tag provenance, and isolated emulator/device
    smoke evidence.
 
 ## Checkpoint 4: Before Signing and Upload
 
-1. Stage the seven verified payloads. Generate a new release `SHA256SUMS` over
-   exactly those seven payloads, sorted by basename. Confirm these are exactly
-   the eight pre-signing files and the expected-asset manifest names all 17
-   final assets. Never copy the ignored Flatpak packaging checksum file.
+1. Require the green tagged-build strict license-inventory result and matrix
+   license evidence, then stage the seven verified payloads. Generate a new
+   release `SHA256SUMS` over exactly those seven payloads, sorted by basename.
+   Confirm these are exactly the eight pre-signing files and the expected-asset
+   manifest names all 17 final assets. Never copy the ignored Flatpak packaging
+   checksum file.
 2. Stop with exact expected filenames and explicit-fingerprint GPG commands.
    The manual step creates eight detached signatures—one for each payload and
    one for `SHA256SUMS`—then exports `release-key.asc`.
@@ -170,6 +183,10 @@ for the actions after that stop. Merge authority is always separate.
 - Preserve the draft and staging directory while investigating. Replace an
   invalid draft asset only with explicit upload authority, then repeat the
   complete fresh-download verification. Never repair a published tag in place.
+- A tagged-build license failure blocks artifacts, signing, upload, and
+  publication; it does not retroactively invalidate tag creation. If correction
+  requires code changes, roll forward to a new version and tag—never move or
+  delete a pushed tag.
 - A manual step publishes the verified draft. After publication, require separate
   GitHub-write authority before posting release evidence, closing the release
   tracker, or closing the milestone.

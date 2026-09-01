@@ -27,17 +27,18 @@ Before tagging, verify the release changelog against changes since the previous 
 `[Unreleased]` entries into the dated release section, leave `[Unreleased]` empty, freeze the release
 comparison at `previous-tag...new-tag`, and reset `[Unreleased]` to `new-tag...main`.
 
-Run these checks from the clean final release commit:
+Before tagging, run the version check from the clean final release commit; the normal source gates
+(lint, typecheck, tests, backend, Tauri, deterministic media, and merged CI) must also be green:
 
 ```sh
-node scripts/check-release-version.mjs
-node scripts/release-license-inventory.mjs --check
+pnpm release:check-version
 ```
 
 After the tag checkpoint stop and fresh explicit tag-signing approval, automation may create the signed
 annotated `v<version>` tag and must verify its signature, annotation, target, and release commit.
 Require separate draft-release authority before creating a draft GitHub Release for that tag. Build
-each intended artifact from a clean checkout of the tag without a `TUNEFORGE_GIT_REF` override.
+the DMG, five Flatpaks, and APK exactly once from clean checkouts of the verified tag without a
+`TUNEFORGE_GIT_REF` override. Generated package and license inventories are not pre-tag inputs.
 From v1.4.0 onward, TuneForge's release contract requires exactly seven payloads:
 
 - Apple Silicon `TuneForge_<version>_aarch64.dmg`;
@@ -85,7 +86,12 @@ upload instructions belong in the GitHub Release notes.
 Run `pnpm package:mac` only on supported macOS release hosts. Build the five Flatpaks from a clean
 x86_64 tagged checkout with no `TUNEFORGE_GIT_REF`, `--model-bundle`, or profile selectors by using
 `pnpm package:linux:flatpak`. The Linux handoff must include sanitized OS and tool versions, command,
-tag, commit SHA, refs, sizes, hashes, state, checksum, and CPU smoke evidence.
+tag, commit SHA, refs, sizes, hashes, state, checksum, and CPU smoke evidence. That tagged build
+creates the ignored profile inventories; only then run
+`node scripts/release-license-inventory.mjs --check` and require exact CPU, NVIDIA Core/Runtime, and
+LegacyNvidia Core/Runtime inventory evidence. Failure blocks signing, upload, and publication; it
+does not retroactively block tag creation. If correction needs code changes, roll forward to a new
+version and tag rather than moving or deleting the pushed tag.
 
 Use the artifact-specific checklist for the manual launch smoke.
 

@@ -23,6 +23,11 @@ Release preparation adds four narrower stop boundaries. Read
 release-preparation work. Authority for one checkpoint never carries into the
 next checkpoint or authorizes final publication.
 
+Run generated artifact or evidence gates only after the checkpoint that creates
+the tagged artifacts they inspect. Never require build-generated evidence
+before the tag and build identity exist. Those gates still fail closed before
+signing, upload, or publication.
+
 Collaboration mode selection and transitions are user-owned. Never invoke
 `/plan` or `/goal`, change modes, or create or expand a Goal. A Goal is
 optional and does not broaden execution or publication authority.

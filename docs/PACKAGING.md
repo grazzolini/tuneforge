@@ -161,6 +161,11 @@ Build the app bundle and DMG with:
 pnpm package:mac
 ```
 
+macOS packaging requires uv-managed Python matching the repository's backend packaging
+configuration. Bundle preparation rejects non-relocatable system or Homebrew layouts, then starts
+the staged interpreter with the launcher's `PYTHONHOME`, `PYTHONPATH`, and library path to prove all
+Python runtime paths remain bundle-local.
+
 Plain macOS packages include ONNX Advanced Chords, beat-this Advanced Beat Analysis, and LV
 Chordia dependencies by default. Package flags independently opt out or opt into explicit model
 bundling:

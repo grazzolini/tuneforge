@@ -1,7 +1,10 @@
 import {
   cpSync,
   existsSync,
+  lstatSync,
   readFileSync,
+  readlinkSync,
+  realpathSync,
   mkdirSync,
   readdirSync,
   rmSync,
@@ -51,6 +54,30 @@ export const LV_CHORDIA_CHECKPOINT_NAMES = [
 function requirePath(targetPath, description) {
   if (!existsSync(targetPath)) {
     throw new Error(`${description} not found at ${targetPath}`);
+  }
+}
+
+function isWithinRoot(root, candidate) {
+  const relative = path.relative(root, candidate);
+  return relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+}
+
+export function assertBundledPythonLayout(root) {
+  requirePath(root, "Bundled Python runtime");
+  const resolvedRoot = realpathSync(root);
+  const interpreter = path.join(root, "bin", "python3.14");
+  requirePath(interpreter, "Bundled Python interpreter");
+  if (lstatSync(interpreter).isSymbolicLink() && path.isAbsolute(readlinkSync(interpreter))) {
+    throw new Error(`Bundled Python interpreter symlink must be relative: ${interpreter}`);
+  }
+  if (!isWithinRoot(resolvedRoot, realpathSync(interpreter))) {
+    throw new Error(`Bundled Python interpreter resolves outside its runtime root: ${interpreter}`);
+  }
+
+  const encodings = path.join(root, "lib", "python3.14", "encodings");
+  requirePath(encodings, "Bundled Python standard library encodings");
+  if (!isWithinRoot(resolvedRoot, realpathSync(encodings))) {
+    throw new Error(`Bundled Python standard library resolves outside its runtime root: ${encodings}`);
   }
 }
 
@@ -233,22 +260,42 @@ function stageLvChordiaAssets(options) {
     copyInto(sourceLvChordiaRoot, stagedLvChordiaRoot);
   }
   assertLvChordiaBundleLayout(stagedBackendRoot, options.lvChordia);
-  if (!options.lvChordia) {
-    return;
-  }
+}
+
+function verifyStagedPython(options) {
   const stagedPython = path.join(stagedPythonRoot, "bin", "python3.14");
+  const libraryPaths = [
+    path.join(stagedPythonRoot, "lib"),
+    ...(process.env.LD_LIBRARY_PATH?.split(path.delimiter) ?? []),
+  ];
   run(
     stagedPython,
     [
       "-c",
-      "from app.engines.lv_chordia import lv_chordia_dependency_status; " +
-        "available, reason = lv_chordia_dependency_status(); assert available, reason",
+      [
+        "import encodings, os, sys",
+        "from pathlib import Path",
+        "root = Path(os.environ['PYTHONHOME']).resolve()",
+        "def require_inside(value, label):",
+        "    resolved = Path(value).resolve()",
+        "    assert resolved.is_relative_to(root), f'{label} escapes bundled Python root: {resolved}'",
+        "require_inside(sys.prefix, 'sys.prefix')",
+        "require_inside(sys.base_prefix, 'sys.base_prefix')",
+        "require_inside(sys.executable, 'sys.executable')",
+        "require_inside(encodings.__file__, 'encodings')",
+        ...(options.lvChordia ? [
+          "from app.engines.lv_chordia import lv_chordia_dependency_status",
+          "available, reason = lv_chordia_dependency_status()",
+          "assert available, reason",
+        ] : []),
+      ].join("\n"),
     ],
     {
       cwd: stagedBackendSourceRoot,
       env: {
-        DYLD_LIBRARY_PATH: path.join(stagedPythonRoot, "lib"),
-        PYTHONPATH: `${stagedBackendSourceRoot}${path.delimiter}${stagedSitePackagesRoot}`,
+        LD_LIBRARY_PATH: [...new Set(libraryPaths)].join(path.delimiter),
+        PYTHONHOME: stagedPythonRoot,
+        PYTHONPATH: `${stagedSitePackagesRoot}${path.delimiter}${stagedBackendSourceRoot}`,
       },
     },
   );
@@ -267,6 +314,7 @@ async function main() {
   const pythonHomeBin = parsePythonHome(venvConfigPath);
   const pythonInstallRoot = path.resolve(pythonHomeBin, "..");
   requirePath(pythonInstallRoot, "Bundled Python runtime source");
+  assertBundledPythonLayout(pythonInstallRoot);
 
   rmSync(resourcesRoot, { recursive: true, force: true });
   mkdirSync(resourcesRoot, { recursive: true });
@@ -280,8 +328,10 @@ async function main() {
   mkdirSync(path.join(stagedBackendRoot, "licenses"), { recursive: true });
   copyInto(cremaLicensePath, path.join(stagedBackendRoot, "licenses", path.basename(cremaLicensePath)));
   copyInto(pythonInstallRoot, stagedPythonRoot, { dereference: true });
+  assertBundledPythonLayout(stagedPythonRoot);
   copyInto(sitePackagesRoot, stagedSitePackagesRoot, { filter: shouldIncludeBundledSitePackage });
   stageLvChordiaAssets(packageOptions);
+  verifyStagedPython(packageOptions);
   prepareModelBundle(packageOptions);
   assertCremaOnnxBundleLayout(
     stagedBackendRoot,

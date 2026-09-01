@@ -4358,6 +4358,53 @@ describe("Desktop app activity", () => {
     expect(exportButton).toBeEnabled();
   });
 
+  it("shows truthful pending state and blocks duplicate native exports", async () => {
+    const user = userEvent.setup();
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: {},
+    });
+    const mockInvoke = getMockInvoke();
+    const defaultInvoke = mockInvoke.getMockImplementation();
+    if (!defaultInvoke) {
+      throw new Error("Mock invoke implementation was not installed.");
+    }
+    let resolveExport: ((saved: boolean) => void) | undefined;
+    const pendingExport = new Promise<boolean>((resolve) => {
+      resolveExport = resolve;
+    });
+    mockInvoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "write_sync_evidence_file") {
+        return pendingExport;
+      }
+      return defaultInvoke(command, args);
+    });
+    setEvidenceSyncResult("native_export_pending");
+
+    try {
+      await openSyncTab(user);
+      const exportButton = screen.getByRole("button", { name: "Export Evidence" });
+      fireEvent.click(exportButton);
+      fireEvent.click(exportButton);
+
+      await waitFor(() => expect(
+        mockInvoke.mock.calls.filter(([command]) => command === "write_sync_evidence_file"),
+      ).toHaveLength(1));
+      const pendingExportButton = screen.getByRole("button", { name: "Exporting…" });
+      expect(pendingExportButton).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Copy Evidence" })).toBeDisabled();
+      expect(screen.getByRole("status")).toHaveTextContent("Exporting sync evidence…");
+      expect(mockClipboardWriteText).not.toHaveBeenCalled();
+
+      await act(async () => resolveExport?.(true));
+      expect(await screen.findByText("Sync evidence exported and copied.")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Export Evidence" })).toBeEnabled();
+      expect(screen.queryByText("Exporting sync evidence…")).not.toBeInTheDocument();
+    } finally {
+      mockInvoke.mockImplementation(defaultInvoke);
+    }
+  });
+
   it("exports evidence through the Tauri save command when available", async () => {
     const user = userEvent.setup();
     const browserWriteText = vi.fn().mockResolvedValue(undefined);
@@ -4479,6 +4526,8 @@ describe("Desktop app activity", () => {
       expect(mockClipboardWriteText).not.toHaveBeenCalled();
       expect(screen.queryByText(/Sync evidence exported/)).not.toBeInTheDocument();
       expect(screen.queryByText(/Could not export sync evidence/)).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Copy Evidence" })).toBeEnabled();
+      expect(screen.getByRole("button", { name: "Export Evidence" })).toBeEnabled();
     } finally {
       mockInvoke.mockImplementation(defaultInvoke);
     }
@@ -4495,9 +4544,14 @@ describe("Desktop app activity", () => {
     if (!defaultInvoke) {
       throw new Error("Mock invoke implementation was not installed.");
     }
+    let writeAttempts = 0;
     mockInvoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
       if (command === "write_sync_evidence_file") {
-        throw new Error("Could not write sync evidence file: /Users/test/private/sync.json");
+        writeAttempts += 1;
+        if (writeAttempts === 1) {
+          throw new Error("Could not write sync evidence file: /Users/test/private/sync.json");
+        }
+        return true;
       }
       return defaultInvoke(command, args);
     });
@@ -4529,6 +4583,11 @@ describe("Desktop app activity", () => {
       expect(screen.queryByText(/\/Users\/test\/private/)).not.toBeInTheDocument();
       expect(screen.queryByText(/Sync evidence exported/)).not.toBeInTheDocument();
       expect(mockClipboardWriteText).not.toHaveBeenCalled();
+
+      await user.click(screen.getByRole("button", { name: "Export Evidence" }));
+      expect(await screen.findByText("Sync evidence exported and copied.")).toBeInTheDocument();
+      expect(writeAttempts).toBe(2);
+      expect(mockClipboardWriteText).toHaveBeenCalledOnce();
     } finally {
       mockInvoke.mockImplementation(defaultInvoke);
     }

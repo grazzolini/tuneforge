@@ -119,6 +119,16 @@ export function packageOptionsEnvironment(options) {
   };
 }
 
+// The frontend only reads the beat-this selector. Keeping the backend and
+// extension selectors out of this environment prevents unrelated profile
+// choices from invalidating the frontend Flatpak module.
+export function frontendPackageOptionsEnvironment(options) {
+  const { beatThis } = validatePackageOptions(options);
+  return {
+    TUNEFORGE_PACKAGE_OPTIONS: JSON.stringify({ beatThis }),
+  };
+}
+
 export function packageOptionsToGeneratorArgs(options) {
   const validated = validatePackageOptions(options);
   const args = [];

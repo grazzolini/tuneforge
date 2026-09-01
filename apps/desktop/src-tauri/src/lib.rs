@@ -179,7 +179,7 @@ const TORCH_EXTENSION_POLICY_JSON: &str = r#"{
       "torchaudio_version": "2.11.0+cu126",
       "triton_version": "3.7.1",
       "cuda_family": "12.6",
-      "pair_id": "112a80543c933ef4903aca2c0afcca91f21012c9e4ee1164222b08f118eba4f2"
+      "pair_id": "5896e6c2ba980be746fb7bb711d8e2e49f23713c58e0c6d3bec76ca048f60743"
     }
   }
 }"#;
@@ -691,13 +691,13 @@ mod tests {
                 "LegacyNvidia",
                 "core",
                 "com.tuneforge.desktop.Torch.Stack.LegacyNvidia.Core",
-                "112a80543c933ef4903aca2c0afcca91f21012c9e4ee1164222b08f118eba4f2",
+                "5896e6c2ba980be746fb7bb711d8e2e49f23713c58e0c6d3bec76ca048f60743",
             ),
             (
                 "LegacyNvidia",
                 "runtime",
                 "com.tuneforge.desktop.Torch.Stack.LegacyNvidia.Runtime",
-                "112a80543c933ef4903aca2c0afcca91f21012c9e4ee1164222b08f118eba4f2",
+                "5896e6c2ba980be746fb7bb711d8e2e49f23713c58e0c6d3bec76ca048f60743",
             ),
         ] {
             let marker = expected_torch_extension_profile(profile, role);

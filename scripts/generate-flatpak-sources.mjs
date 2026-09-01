@@ -7,12 +7,18 @@ import { fileURLToPath } from "node:url";
 import { parsePnpmLock } from "../packaging/flatpak/seed-pnpm-store.mjs";
 import { buildModelBundlePlan } from "./model-bundle-metadata.mjs";
 import { parsePackageOptions } from "./package-options.mjs";
+import { generateFlatpakSourceSnapshots } from "./flatpak-source-snapshots.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const scriptDir = path.dirname(__filename);
 const workspaceRoot = path.resolve(scriptDir, "..");
 const flatpakRoot = path.join(workspaceRoot, "packaging", "flatpak");
 const generatedRoot = path.join(flatpakRoot, "generated");
+export const flatpakTorchLocksRoot = path.join(flatpakRoot, "locks");
+export const flatpakTorchLockPaths = Object.freeze({
+  cpu: path.join(flatpakTorchLocksRoot, "pylock.cpu-torch.toml"),
+  "legacy-nvidia": path.join(flatpakTorchLocksRoot, "pylock.legacy-nvidia-torch.toml"),
+});
 const obsoleteTorchStem = ["modern", "torch"].join("-");
 const obsoleteTorchExtensionOutputs = [
   `${obsoleteTorchStem}-profile.json`,
@@ -34,7 +40,6 @@ const torchProfileOutputs = {
       `python-nvidia-torch-${role}-size-report.json`,
     ])],
   "legacy-nvidia": ["legacy-torch-core-profile.json", "legacy-torch-runtime-profile.json",
-    "python-legacy-torch.in", "pylock.legacy-torch.toml",
     ...["core", "runtime"].flatMap((role) => [
       `python-legacy-torch-${role}-requirements.txt`,
       `python-legacy-torch-${role}-sources.json`,
@@ -378,7 +383,7 @@ function parsePythonArtifactsFromInlineTables(contents) {
   ).map((match) => parsePythonArtifact(match[0]));
 }
 
-function parsePylock(contents) {
+export function parsePylock(contents) {
   const packages = new Map();
   for (const match of contents.matchAll(/\[\[packages\]\]\n([\s\S]*?)(?=\n\[\[packages\]\]|\s*$)/g)) {
     const block = match[1];
@@ -432,7 +437,7 @@ export function wheelScore(fileName) {
   return -1;
 }
 
-function selectPythonArtifact(pkg) {
+export function selectPythonArtifact(pkg) {
   const wheel = pkg.wheels
     .map((candidate) => ({ ...candidate, score: wheelScore(candidate.fileName) }))
     .filter((candidate) => candidate.score >= 0)
@@ -503,7 +508,7 @@ export function resolvePythonRuntimePackages(packages, { extras = [] } = {}) {
   return Array.from(resolved.values()).sort((left, right) => packageIdentity(left).localeCompare(packageIdentity(right)));
 }
 
-function resolveNamedPythonPackages(packages, names) {
+export function resolveNamedPythonPackages(packages, names) {
   const resolved = new Map();
   const processedExtrasByPackage = new Map();
   const queue = names.map((name) => ({ name }));
@@ -531,73 +536,12 @@ function resolveNamedPythonPackages(packages, names) {
   return Array.from(resolved.values()).sort((left, right) => packageIdentity(left).localeCompare(packageIdentity(right)));
 }
 
-function run(command, args, options = {}) {
-  const result = spawnSync(command, args, {
-    cwd: workspaceRoot,
-    stdio: "inherit",
-    env: {
-      ...process.env,
-      UV_CACHE_DIR: process.env.UV_CACHE_DIR ?? path.join(flatpakRoot, ".uv-cache"),
-      ...options.env,
-    },
-  });
-
-  if (result.error?.code === "ENOENT") {
-    throw new Error(`Required command not found: ${command}`);
-  }
-  if (result.status !== 0) {
-    throw new Error(`${command} exited with status ${result.status}`);
-  }
-}
-
 function resolveLegacyTorchPackages() {
-  const requirementsPath = path.join(generatedRoot, "python-legacy-torch.in");
-  const pylockPath = path.join(generatedRoot, "pylock.legacy-torch.toml");
-  writeGeneratedFile("python-legacy-torch.in", "torch==2.13.0\ntorchaudio==2.11.0\n");
-  run("uv", [
-    "--quiet",
-    "pip",
-    "compile",
-    requirementsPath,
-    "--python-version",
-    "3.14",
-    "--python-platform",
-    "x86_64-manylinux_2_28",
-    "--torch-backend",
-    "cu126",
-    "--format",
-    "pylock.toml",
-    "--output-file",
-    pylockPath,
-    "--no-header",
-    "--no-annotate",
-  ]);
-  return parsePylock(readRequiredFile(pylockPath));
+  return parsePylock(readRequiredFile(flatpakTorchLockPaths["legacy-nvidia"]));
 }
 
 function resolveCpuTorchPackages() {
-  const requirementsPath = path.join(generatedRoot, "python-cpu-torch.in");
-  const pylockPath = path.join(generatedRoot, "pylock.cpu-torch.toml");
-  writeGeneratedFile("python-cpu-torch.in", "torch==2.13.0\ntorchaudio==2.11.0\n");
-  run("uv", [
-    "--quiet",
-    "pip",
-    "compile",
-    requirementsPath,
-    "--python-version",
-    "3.14",
-    "--python-platform",
-    "x86_64-manylinux_2_28",
-    "--torch-backend",
-    "cpu",
-    "--format",
-    "pylock.toml",
-    "--output-file",
-    pylockPath,
-    "--no-header",
-    "--no-annotate",
-  ]);
-  return parsePylock(readRequiredFile(pylockPath));
+  return parsePylock(readRequiredFile(flatpakTorchLockPaths.cpu));
 }
 
 function isLegacyTorchPackage(packageName) {
@@ -650,7 +594,7 @@ export const TORCH_EXTENSION_PROFILES = Object.freeze({
     torchaudio_version: "2.11.0+cu126",
     triton_version: "3.7.1",
     cuda_family: "12.6",
-    pair_id: "112a80543c933ef4903aca2c0afcca91f21012c9e4ee1164222b08f118eba4f2",
+    pair_id: "5896e6c2ba980be746fb7bb711d8e2e49f23713c58e0c6d3bec76ca048f60743",
   }),
 });
 
@@ -708,6 +652,32 @@ export function torchExtensionPairId(profileName, packages) {
   return createHash("sha256")
     .update(JSON.stringify({ contract: "profile-pair-v1", profile: profileName, packages: rows }))
     .digest("hex");
+}
+
+export function assertReviewedTorchExtensionPair(profileName, packages) {
+  const expected = TORCH_EXTENSION_PROFILES[profileName]?.pair_id;
+  if (!expected) throw new Error(`Unknown Torch extension profile: ${profileName}`);
+  const actual = torchExtensionPairId(profileName, packages);
+  if (actual !== expected) {
+    throw new Error(`${profileName} locked wheel manifest changed; update its reviewed pair ID and launcher marker`);
+  }
+  return actual;
+}
+
+export function validateFlatpakTorchLock(profile, contents) {
+  if (!["cpu", "legacy-nvidia"].includes(profile)) throw new Error(`Unknown Flatpak Torch lock profile: ${profile}`);
+  const packages = parsePylock(contents);
+  const rows = packageRows(packages);
+  const roots = profile === "cpu"
+    ? ["torch@2.13.0+cpu", "torchaudio@2.11.0+cpu"]
+    : ["torch@2.13.0+cu126", "torchaudio@2.11.0+cu126"];
+  if (roots.some((identity) => !packages.has(identity))) {
+    throw new Error(`Refreshed ${profile} lock is missing reviewed Torch roots.`);
+  }
+  if (profile === "cpu") assertDefaultCpuTorchClosure(rows);
+  else assertTorchExtensionProfile(packages, "LegacyNvidia");
+  for (const pkg of rows) selectPythonArtifact(pkg);
+  return { packages, pairId: profile === "legacy-nvidia" ? torchExtensionPairId("LegacyNvidia", packages) : null };
 }
 
 export function assertTorchExtensionProfile(packages, profileName, expectedAcceleratorNames) {
@@ -806,6 +776,10 @@ export function selectedTorchExtensionProfileSpecs(selectedProfiles, {
 
 function generatePythonSources() {
   const lockedPackages = parseUvLock(readRequiredFile(uvLockPath));
+  const nvidiaPackages = resolveNamedPythonPackages(lockedPackages, ["torch", "torchaudio"]);
+  const nvidiaAcceleratorNames = acceleratorPackageNames(lockedPackages);
+  assertTorchExtensionProfile(nvidiaPackages, "Nvidia", nvidiaAcceleratorNames);
+  assertReviewedTorchExtensionPair("Nvidia", nvidiaPackages);
   let runtimePackages = resolvePythonRuntimePackages(lockedPackages, { extras: selectedPythonExtras });
   runtimePackages = mergeLegacyTorchPackageSets(
     runtimePackages,
@@ -814,8 +788,8 @@ function generatePythonSources() {
   assertDefaultCpuTorchClosure(runtimePackages);
   const extensionSpecs = selectedTorchExtensionProfileSpecs(packageOptions.flatpakProfiles, {
     resolveNvidia: () => ({
-      packages: resolveNamedPythonPackages(lockedPackages, ["torch", "torchaudio"]),
-      expectedAcceleratorNames: acceleratorPackageNames(lockedPackages),
+      packages: nvidiaPackages,
+      expectedAcceleratorNames: nvidiaAcceleratorNames,
     }),
     resolveLegacy: () => ({ packages: resolveLegacyTorchPackages() }),
   });
@@ -823,10 +797,7 @@ function generatePythonSources() {
   for (const { profileName, stem, packages, expectedAcceleratorNames } of extensionSpecs) {
     assertTorchExtensionProfile(packages, profileName, expectedAcceleratorNames);
     const partition = partitionTorchExtensionPackages(packages);
-    const pairId = torchExtensionPairId(profileName, packages);
-    if (pairId !== TORCH_EXTENSION_PROFILES[profileName].pair_id) {
-      throw new Error(`${profileName} locked wheel manifest changed; update its reviewed pair ID and launcher marker`);
-    }
+    const pairId = assertReviewedTorchExtensionPair(profileName, packages);
     for (const role of ["core", "runtime"]) {
       writePythonPackageSet(`python-${stem}-torch-${role}`, partition[role]);
       writeGeneratedJson(
@@ -875,6 +846,14 @@ function generateModelBundleSources() {
   return plan.sources.length;
 }
 
+function resolveSourceDateEpoch() {
+  if (/^[1-9][0-9]*$/.test(process.env.SOURCE_DATE_EPOCH ?? "")) return process.env.SOURCE_DATE_EPOCH;
+  const result = spawnSync("git", ["log", "-1", "--format=%ct", "HEAD"], {
+    cwd: workspaceRoot, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"],
+  });
+  return result.status === 0 && /^[1-9][0-9]*$/.test(result.stdout.trim()) ? result.stdout.trim() : "1";
+}
+
 export function cremaOnlyModelBundlePlan(plan) {
   const fileNames = new Set(plan.manifest.crema_onnx_files.map((entry) => entry.file_name));
   return {
@@ -898,9 +877,14 @@ function main() {
   const nodeCount = generateNodeSources();
   const pythonCount = generatePythonSources();
   const modelBundleCount = generateModelBundleSources();
+  const snapshots = generateFlatpakSourceSnapshots({
+    root: workspaceRoot,
+    generatedRoot,
+    sourceDateEpoch: resolveSourceDateEpoch(),
+  });
 
   process.stdout.write(
-    `Generated Flatpak sources: ${cargoCount} Cargo crates, ${nodeCount} pnpm tarballs, ${pythonCount} Python packages, ${modelBundleCount} model bundle files.\n`,
+    `Generated Flatpak sources: ${cargoCount} Cargo crates, ${nodeCount} pnpm tarballs, ${pythonCount} Python packages, ${modelBundleCount} model bundle files, ${snapshots.length} source snapshots.\n`,
   );
 }
 

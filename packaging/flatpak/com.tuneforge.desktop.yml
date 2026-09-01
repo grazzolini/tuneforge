@@ -117,41 +117,10 @@ modules:
         HUSKY: "0"
         TUNEFORGE_VERSION_FILE: /run/build/tuneforge-frontend/frontend-version.json
     sources:
-      - type: file
-        path: ../../package.json
-      - type: file
-        path: ../../pnpm-lock.yaml
-      - type: file
-        path: ../../pnpm-workspace.yaml
-      - type: file
-        path: ../../scripts/build-info.mjs
-        dest: scripts
-      - type: file
-        path: seed-pnpm-store.mjs
-      - type: file
-        path: ../../apps/desktop/package.json
-        dest: apps/desktop
-      - type: file
-        path: ../../apps/desktop/index.html
-        dest: apps/desktop
-      - type: file
-        path: ../../apps/desktop/tsconfig.json
-        dest: apps/desktop
-      - type: file
-        path: ../../apps/desktop/tsconfig.node.json
-        dest: apps/desktop
-      - type: file
-        path: ../../apps/desktop/vite.config.ts
-        dest: apps/desktop
-      - type: dir
-        path: ../../apps/desktop/src
-        dest: apps/desktop/src
-      - type: file
-        path: ../../packages/shared-types/package.json
-        dest: packages/shared-types
-      - type: dir
-        path: ../../packages/shared-types/src
-        dest: packages/shared-types/src
+      - type: archive
+        path: generated/frontend-snapshot.tar
+        archive-type: tar
+        strip-components: 0
       - type: file
         path: generated/frontend-version.json
         dest-filename: frontend-version.json
@@ -186,30 +155,10 @@ modules:
         SCCACHE_DIR: /run/tuneforge-cache/@@FLATPAK_CACHE_NAMESPACE@@/sccache
         TUNEFORGE_GIT_REF: '@@TUNEFORGE_FRONTEND_GIT_REF@@'
     sources:
-      - type: file
-        path: ../../apps/desktop/src-tauri/Cargo.lock
-        dest: apps/desktop/src-tauri
-      - type: file
-        path: ../../apps/desktop/src-tauri/Cargo.toml
-        dest: apps/desktop/src-tauri
-      - type: file
-        path: ../../apps/desktop/src-tauri/build.rs
-        dest: apps/desktop/src-tauri
-      - type: file
-        path: ../../apps/desktop/src-tauri/tauri.conf.json
-        dest: apps/desktop/src-tauri
-      - type: dir
-        path: ../../apps/desktop/src-tauri/capabilities
-        dest: apps/desktop/src-tauri/capabilities
-      - type: dir
-        path: ../../apps/desktop/src-tauri/icons
-        dest: apps/desktop/src-tauri/icons
-      - type: dir
-        path: ../../apps/desktop/src-tauri/resources
-        dest: apps/desktop/src-tauri/resources
-      - type: dir
-        path: ../../apps/desktop/src-tauri/src
-        dest: apps/desktop/src-tauri/src
+      - type: archive
+        path: generated/desktop-snapshot.tar
+        archive-type: tar
+        strip-components: 0
       - generated/cargo-sources.json
     build-commands:
       - install -dm755 apps/desktop/dist
@@ -400,53 +349,10 @@ modules:
         LD_LIBRARY_PATH: /app/lib/tuneforge/backend/python/lib
         PYTHONPATH: /app/lib/tuneforge/backend/site-packages
     sources:
-      - type: file
-        path: ../../README.md
-      - type: file
-        path: ../../LICENSE
-      - type: file
-        path: ../../THIRD_PARTY_NOTICES.md
-      - type: file
-        path: ../../LICENSES/crema-0.2.0-BSD-2-Clause.txt
-        dest: LICENSES
-      - type: file
-        path: ../../docs/PACKAGING.md
-        dest: docs
-      - type: dir
-        path: ../../apps/backend/app
-        dest: apps/backend/app
-      - type: dir
-        path: ../../apps/backend/alembic
-        dest: apps/backend/alembic
-      - type: file
-        path: ../../apps/backend/alembic.ini
-        dest: apps/backend
-      - type: file
-        path: ../../apps/backend/pyproject.toml
-        dest: apps/backend
-      - type: file
-        path: ../../packaging/demucs/models.json
-        dest: apps/backend
-        dest-filename: demucs-models.json
-      - type: file
-        path: ffmpeg-wrapper.sh
-        dest-filename: ffmpeg
-      - type: file
-        path: ffprobe-wrapper.sh
-        dest-filename: ffprobe
-      - type: file
-        path: com.tuneforge.desktop.desktop
-      - type: file
-        path: com.tuneforge.desktop.metainfo.xml
-      - type: file
-        path: ../../apps/desktop/src-tauri/icons/32x32.png
-        dest: icons
-      - type: file
-        path: ../../apps/desktop/src-tauri/icons/128x128.png
-        dest: icons
-      - type: file
-        path: ../../apps/desktop/src-tauri/icons/512x512.png
-        dest: icons
+      - type: archive
+        path: generated/backend-snapshot.tar
+        archive-type: tar
+        strip-components: 0
       - type: file
         path: generated/version.json
     build-commands:

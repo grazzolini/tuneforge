@@ -35,6 +35,8 @@ use tauri::Emitter;
 use super::{
     diagnostics::{self, DiagnosticCheckpoint, DiagnosticSafeCode},
     mixer::{AudioLaneRequest, AudioLaneRole, EffectiveAudioLane},
+    session::{RuntimeReport, RuntimeReportKind, SessionCommand, SessionOwner},
+    timeline::{self, Timeline},
     AudioCapabilities,
 };
 
@@ -45,7 +47,8 @@ use super::{
         resample_interleaved,
     },
     source_scope::PlaybackSourceScope,
-    AUDIO_EVENT_ENDED, AUDIO_EVENT_ERROR, AUDIO_EVENT_POSITION, AUDIO_EVENT_STATE,
+    AUDIO_EVENT_CUE, AUDIO_EVENT_ENDED, AUDIO_EVENT_ERROR, AUDIO_EVENT_POSITION, AUDIO_EVENT_STATE,
+    AUDIO_EVENT_TERMINAL,
 };
 
 const DEFAULT_PLAYBACK_RATE: f64 = 1.0;
@@ -68,6 +71,7 @@ const PREBUFFER_TIMEOUT: Duration = Duration::from_millis(1500);
 const PREBUFFER_POLL_INTERVAL: Duration = Duration::from_millis(5);
 const SUSTAINED_UNDERRUN_ERROR_SECONDS: f64 = 0.5;
 const AUDIBLE_GAIN_FLOOR: f32 = 0.0001;
+const RELEASE_TIMEOUT: Duration = Duration::from_millis(500);
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -76,6 +80,9 @@ pub struct AudioSessionRequest {
     pub duration_seconds: Option<f64>,
     pub playback_rate: Option<f64>,
     pub lanes: Vec<AudioLaneRequest>,
+    #[serde(default, flatten)]
+    pub control: SessionCommand,
+    pub owner: Option<SessionOwner>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -85,6 +92,9 @@ pub struct AudioSession {
     pub native_playback_supported: bool,
     pub fallback_reason: Option<String>,
     pub lane_count: usize,
+    pub generation: Option<u64>,
+    pub timeline_revision: Option<u64>,
+    pub native_time_us: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -92,12 +102,17 @@ pub struct AudioSession {
 pub struct AudioPlayRequest {
     pub start_time_seconds: Option<f64>,
     pub scheduled_start_time_seconds: Option<f64>,
+    #[serde(default, flatten)]
+    pub control: SessionCommand,
+    pub start_at_native_us: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AudioSeekRequest {
     pub time_seconds: f64,
+    #[serde(default, flatten)]
+    pub control: SessionCommand,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -155,6 +170,16 @@ impl NativeAudioErrorCode {
             Self::DecoderWorkerFailure => "Native playback decoder failed.",
         }
     }
+
+    fn safe_code(self) -> &'static str {
+        match self {
+            Self::DeviceChanged => "device_changed",
+            Self::DeviceNotAvailable => "device_not_available",
+            Self::StreamInvalidated => "stream_invalidated",
+            Self::OutputStreamFailure => "output_stream_failure",
+            Self::DecoderWorkerFailure => "decoder_worker_failure",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -169,6 +194,10 @@ pub struct AudioSnapshot {
     pub fallback_reason: Option<String>,
     pub lanes: Vec<EffectiveAudioLane>,
     pub buffer_health: Vec<AudioBufferHealth>,
+    pub lease_id: Option<String>,
+    pub generation: Option<u64>,
+    pub timeline_revision: Option<u64>,
+    pub native_time_us: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -328,6 +357,13 @@ impl NativePlaybackFallbackCause {
             }
         }
     }
+
+    fn safe_code(self) -> &'static str {
+        match self {
+            Self::PrebufferTimeout => "prebuffer_timeout",
+            Self::SustainedUnderrun => "sustained_underrun",
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -375,6 +411,12 @@ struct PlaybackShared {
     fallback_cause: Option<NativePlaybackFallbackCause>,
     diagnostics_generation: u64,
     diagnostics_gain_first_change_recorded: bool,
+    timeline: Arc<Mutex<Timeline>>,
+    generation: u64,
+    #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+    report_sender: mpsc::SyncSender<RuntimeReport>,
+    pending_cues: VecDeque<timeline::CueEvent>,
+    terminal_reported: bool,
 }
 
 impl PlaybackShared {
@@ -399,6 +441,10 @@ impl PlaybackShared {
             fallback_reason,
             lanes: self.snapshot_lanes.clone(),
             buffer_health: runtime_buffer_health(&self.snapshot_lanes, &self.lanes),
+            lease_id: None,
+            generation: Some(self.generation),
+            timeline_revision: self.timeline.lock().ok().map(|state| state.revision()),
+            native_time_us: Some(timeline::native_time_us()),
         }
     }
 
@@ -520,6 +566,10 @@ pub struct TransportState {
     lanes: Vec<EffectiveAudioLane>,
     click: ClickState,
     diagnostics_generation: u64,
+    timeline: Option<Arc<Mutex<Timeline>>>,
+    generation: u64,
+    #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+    report_sender: Option<mpsc::SyncSender<RuntimeReport>>,
     #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
     app: Option<AppHandle>,
     #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
@@ -541,6 +591,10 @@ impl Default for TransportState {
             lanes: Vec::new(),
             click: ClickState::default(),
             diagnostics_generation: 0,
+            timeline: None,
+            generation: 0,
+            #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+            report_sender: None,
             #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
             app: None,
             #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
@@ -550,8 +604,63 @@ impl Default for TransportState {
 }
 
 impl TransportState {
+    pub fn bind_session(
+        &mut self,
+        generation: u64,
+        timeline: Arc<Mutex<Timeline>>,
+        #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+        report_sender: mpsc::SyncSender<RuntimeReport>,
+    ) {
+        self.generation = generation;
+        self.timeline = Some(timeline);
+        #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+        {
+            self.report_sender = Some(report_sender);
+        }
+    }
+
     pub fn lane_count(&self) -> usize {
         self.raw_lanes.len().min(6)
+    }
+
+    pub fn begin_explicit_attempt(&mut self, capabilities: AudioCapabilities) {
+        #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+        if self.runtime.as_ref().is_some_and(|runtime| {
+            runtime.shared.lock().ok().is_some_and(|shared| {
+                shared.terminal_error.is_some() || shared.fallback_cause.is_some()
+            })
+        }) {
+            self.stop_runtime();
+        }
+        self.native_playback_supported = capabilities.native_playback_supported;
+        self.fallback_reason = capabilities.fallback_reason.map(str::to_string);
+    }
+
+    pub fn release_for_transfer(&mut self) -> Result<(), &'static str> {
+        self.status = TransportStatus::Stopped;
+        self.started_at = None;
+        if let Some(timeline) = &self.timeline {
+            if let Ok(mut timeline) = timeline.lock() {
+                timeline.stop();
+            }
+        }
+        #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+        if let Some(runtime) = &self.runtime {
+            for sender in &runtime.worker_control_senders {
+                let _ = sender.send(WorkerControl::Stop);
+            }
+            let _ = runtime.audio_stop_sender.send(RuntimeControl::Stop);
+            let _ = runtime.reporter_stop_sender.send(RuntimeControl::Stop);
+            let deadline = Instant::now() + RELEASE_TIMEOUT;
+            while !runtime_threads_finished(runtime) {
+                if Instant::now() >= deadline {
+                    return Err("release_timeout");
+                }
+                thread::sleep(Duration::from_millis(1));
+            }
+        }
+        self.stop_runtime();
+        Ok(())
     }
 
     pub fn set_diagnostics_generation(&mut self, generation: u64) {
@@ -632,6 +741,12 @@ impl TransportState {
             native_playback_supported: self.native_playback_supported,
             fallback_reason: self.fallback_reason.clone(),
             lane_count: self.lanes.len(),
+            generation: (self.generation != 0).then_some(self.generation),
+            timeline_revision: self
+                .timeline
+                .as_ref()
+                .and_then(|timeline| timeline.lock().ok().map(|state| state.revision())),
+            native_time_us: Some(timeline::native_time_us()),
         }
     }
 
@@ -918,6 +1033,13 @@ impl TransportState {
             fallback_reason: self.fallback_reason.clone(),
             lanes: self.lanes.clone(),
             buffer_health: empty_buffer_health(&self.lanes),
+            lease_id: None,
+            generation: (self.generation != 0).then_some(self.generation),
+            timeline_revision: self
+                .timeline
+                .as_ref()
+                .and_then(|timeline| timeline.lock().ok().map(|state| state.revision())),
+            native_time_us: Some(timeline::native_time_us()),
         }
     }
 
@@ -975,6 +1097,13 @@ impl TransportState {
             &self.lanes,
             &self.click,
             self.diagnostics_generation,
+            self.timeline
+                .clone()
+                .ok_or_else(|| "Native timeline is unavailable.".to_string())?,
+            self.generation,
+            self.report_sender
+                .clone()
+                .ok_or_else(|| "Native session reporter is unavailable.".to_string())?,
         ) {
             Ok(runtime) => {
                 self.runtime = Some(runtime);
@@ -1011,6 +1140,19 @@ impl TransportState {
             }
         }
     }
+}
+
+#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+fn runtime_threads_finished(runtime: &PlaybackRuntime) -> bool {
+    runtime
+        .audio_thread
+        .as_ref()
+        .is_none_or(JoinHandle::is_finished)
+        && runtime
+            .reporter_thread
+            .as_ref()
+            .is_none_or(JoinHandle::is_finished)
+        && runtime.worker_threads.iter().all(JoinHandle::is_finished)
 }
 
 #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
@@ -1077,7 +1219,7 @@ fn normalize_playback_rate(value: Option<f64>) -> f64 {
     if !rate.is_finite() || rate <= 0.0 {
         return DEFAULT_PLAYBACK_RATE;
     }
-    rate
+    timeline::normalize_rate(rate)
 }
 
 fn clamp_position(value: f64, duration_seconds: f64) -> f64 {
@@ -1392,6 +1534,19 @@ fn playback_lanes_drained(lanes: &[PlaybackLane]) -> bool {
         })
 }
 
+fn advance_timeline(shared: &mut PlaybackShared, frames: usize) -> (usize, bool) {
+    if shared.status != TransportStatus::Playing || shared.buffering {
+        return (frames, false);
+    }
+    let Ok(mut timeline) = shared.timeline.lock() else {
+        return (frames, false);
+    };
+    let advance = timeline.advance(frames, timeline::native_time_us());
+    shared.position_seconds = timeline.position();
+    shared.pending_cues.extend(advance.cues);
+    (advance.start_offset, advance.ended)
+}
+
 #[cfg(test)]
 fn render_shared_output(shared: &mut PlaybackShared, output: &mut [f32]) {
     if shared.channels == 0 {
@@ -1407,21 +1562,18 @@ fn render_shared_output(shared: &mut PlaybackShared, output: &mut [f32]) {
         );
         update_underrun_state(shared, audible_underrun, frame_count);
     }
+    let (start_offset, ended) = advance_timeline(shared, output.len() / shared.channels);
     for (frame_index, frame) in output.chunks_mut(shared.channels).enumerate() {
-        if shared.status != TransportStatus::Playing || shared.buffering {
+        if shared.status != TransportStatus::Playing
+            || shared.buffering
+            || frame_index < start_offset
+        {
             frame.fill(0.0);
             continue;
         }
 
         for (channel, sample) in frame.iter_mut().enumerate() {
             *sample = mix_shared_frame(shared, channel, frame_index * shared.channels + channel);
-        }
-
-        shared.position_seconds += shared.playback_rate / shared.sample_rate as f64;
-        if shared.duration_seconds > 0.0 && shared.position_seconds >= shared.duration_seconds {
-            shared.position_seconds = 0.0;
-            shared.status = TransportStatus::Stopped;
-            shared.ended_pending = true;
         }
     }
     if shared.diagnostics_generation != 0
@@ -1431,10 +1583,17 @@ fn render_shared_output(shared: &mut PlaybackShared, output: &mut [f32]) {
     {
         diagnostics::record_callback_nonzero(shared.diagnostics_generation);
     }
+    if ended {
+        shared.status = TransportStatus::Stopped;
+        shared.ended_pending = true;
+    }
     if shared.status == TransportStatus::Playing && playback_lanes_drained(&shared.lanes) {
         shared.position_seconds = 0.0;
         shared.status = TransportStatus::Stopped;
         shared.ended_pending = true;
+        if let Ok(mut timeline) = shared.timeline.lock() {
+            timeline.stop();
+        }
     }
 }
 
@@ -1462,8 +1621,12 @@ where
 
     let track_nonzero = shared.diagnostics_generation != 0;
     let mut any_nonzero = false;
+    let (start_offset, ended) = advance_timeline(shared, output.len() / shared.channels);
     for (frame_index, frame) in output.chunks_mut(shared.channels).enumerate() {
-        if shared.status != TransportStatus::Playing || shared.buffering {
+        if shared.status != TransportStatus::Playing
+            || shared.buffering
+            || frame_index < start_offset
+        {
             for sample in frame {
                 *sample = silent;
             }
@@ -1477,21 +1640,21 @@ where
             }
             *sample = T::from_sample(mixed);
         }
-
-        shared.position_seconds += shared.playback_rate / shared.sample_rate as f64;
-        if shared.duration_seconds > 0.0 && shared.position_seconds >= shared.duration_seconds {
-            shared.position_seconds = 0.0;
-            shared.status = TransportStatus::Stopped;
-            shared.ended_pending = true;
-        }
     }
     if track_nonzero && any_nonzero {
         diagnostics::record_callback_nonzero(shared.diagnostics_generation);
+    }
+    if ended {
+        shared.status = TransportStatus::Stopped;
+        shared.ended_pending = true;
     }
     if shared.status == TransportStatus::Playing && playback_lanes_drained(&shared.lanes) {
         shared.position_seconds = 0.0;
         shared.status = TransportStatus::Stopped;
         shared.ended_pending = true;
+        if let Ok(mut timeline) = shared.timeline.lock() {
+            timeline.stop();
+        }
     }
 }
 
@@ -1505,6 +1668,9 @@ fn start_native_runtime(
     effective_lanes: &[EffectiveAudioLane],
     click: &ClickState,
     diagnostics_generation: u64,
+    timeline: Arc<Mutex<Timeline>>,
+    generation: u64,
+    report_sender: mpsc::SyncSender<RuntimeReport>,
 ) -> Result<PlaybackRuntime, String> {
     let host = cpal::default_host();
     let device = host
@@ -1517,6 +1683,9 @@ fn start_native_runtime(
     let stream_config: cpal::StreamConfig = supported_config.into();
     let sample_rate = stream_config.sample_rate;
     let channels = usize::from(stream_config.channels).max(1);
+    if let Ok(mut state) = timeline.lock() {
+        state.configure_sample_rate(sample_rate);
+    }
     let (worker_error_sender, worker_error_receiver) = mpsc::channel();
     let LoadedPlaybackLanes {
         lanes,
@@ -1554,6 +1723,11 @@ fn start_native_runtime(
         fallback_cause: None,
         diagnostics_generation,
         diagnostics_gain_first_change_recorded: false,
+        timeline,
+        generation,
+        report_sender,
+        pending_cues: VecDeque::new(),
+        terminal_reported: false,
     }));
 
     drop(device);
@@ -1750,7 +1924,7 @@ where
 
 #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
 fn emit_runtime_events(app: &AppHandle, shared: &Arc<Mutex<PlaybackShared>>) -> bool {
-    let (snapshot, ended, error, requires_error_handling) = {
+    let (snapshot, ended, error, terminal, cues, reporter) = {
         let mut shared = match shared.lock() {
             Ok(shared) => shared,
             Err(_) => return false,
@@ -1767,11 +1941,27 @@ fn emit_runtime_events(app: &AppHandle, shared: &Arc<Mutex<PlaybackShared>>) -> 
         }
         let requires_error_handling =
             shared.terminal_error.is_some() || shared.fallback_cause.is_some();
+        let terminal = (!shared.terminal_reported)
+            .then(|| {
+                shared
+                    .terminal_error
+                    .map(NativeAudioErrorCode::safe_code)
+                    .or_else(|| {
+                        shared
+                            .fallback_cause
+                            .map(NativePlaybackFallbackCause::safe_code)
+                    })
+            })
+            .flatten();
+        shared.terminal_reported |= terminal.is_some();
+        let cues = shared.pending_cues.drain(..).collect::<Vec<_>>();
         (
             snapshot,
             should_emit_ended(ended_pending, requires_error_handling),
             error,
-            requires_error_handling,
+            terminal,
+            cues,
+            (shared.generation, shared.report_sender.clone()),
         )
     };
 
@@ -1794,6 +1984,13 @@ fn emit_runtime_events(app: &AppHandle, shared: &Arc<Mutex<PlaybackShared>>) -> 
     );
     if ended {
         let _ = app.emit(AUDIO_EVENT_ENDED, snapshot.clone());
+        let _ = reporter.1.try_send(RuntimeReport {
+            generation: reporter.0,
+            kind: RuntimeReportKind::Ended,
+        });
+    }
+    for cue in cues {
+        let _ = app.emit(AUDIO_EVENT_CUE, cue);
     }
     if let Some(code) = error {
         let _ = app.emit(
@@ -1804,7 +2001,21 @@ fn emit_runtime_events(app: &AppHandle, shared: &Arc<Mutex<PlaybackShared>>) -> 
             },
         );
     }
-    ended || requires_error_handling
+    if let Some(code) = terminal {
+        let _ = reporter.1.try_send(RuntimeReport {
+            generation: reporter.0,
+            kind: RuntimeReportKind::Terminal(code),
+        });
+        let _ = app.emit(
+            AUDIO_EVENT_TERMINAL,
+            super::session::TerminalEvent {
+                generation: reporter.0,
+                code,
+                native_time_us: timeline::native_time_us(),
+            },
+        );
+    }
+    ended || terminal.is_some()
 }
 
 #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
@@ -2766,6 +2977,13 @@ mod tests {
         channels: usize,
         target_gain: f32,
     ) -> PlaybackShared {
+        let (report_sender, _) = mpsc::sync_channel(1);
+        let mut timeline = Timeline::default();
+        timeline.reset(1, 10.0, 1.0);
+        timeline.configure_sample_rate(sample_rate);
+        timeline
+            .arm(1, None, None, timeline::native_time_us())
+            .unwrap();
         PlaybackShared {
             session_id: Some("session".to_string()),
             status: TransportStatus::Playing,
@@ -2795,6 +3013,11 @@ mod tests {
             fallback_cause: None,
             diagnostics_generation: 0,
             diagnostics_gain_first_change_recorded: false,
+            timeline: Arc::new(Mutex::new(timeline)),
+            generation: 1,
+            report_sender,
+            pending_cues: VecDeque::new(),
+            terminal_reported: false,
         }
     }
 
@@ -3039,12 +3262,17 @@ mod tests {
                 duration_seconds: Some(30.0),
                 playback_rate: Some(1.0),
                 lanes: Vec::new(),
+                control: SessionCommand::default(),
+                owner: None,
             },
             Vec::new(),
             capabilities(),
         );
 
-        let snapshot = state.seek(AudioSeekRequest { time_seconds: 45.0 });
+        let snapshot = state.seek(AudioSeekRequest {
+            time_seconds: 45.0,
+            control: SessionCommand::default(),
+        });
 
         assert_eq!(snapshot.position_seconds, 30.0);
     }
@@ -3060,6 +3288,8 @@ mod tests {
                 duration_seconds: Some(30.0),
                 playback_rate: Some(1.0),
                 lanes: Vec::new(),
+                control: SessionCommand::default(),
+                owner: None,
             },
             Vec::new(),
             unsupported_capabilities(reason),
@@ -3069,6 +3299,8 @@ mod tests {
             .play(AudioPlayRequest {
                 start_time_seconds: Some(5.0),
                 scheduled_start_time_seconds: None,
+                control: SessionCommand::default(),
+                start_at_native_us: None,
             })
             .expect_err("reject unavailable runtime");
 
@@ -3111,6 +3343,8 @@ mod tests {
             .play(AudioPlayRequest {
                 start_time_seconds: Some(4.0),
                 scheduled_start_time_seconds: None,
+                control: SessionCommand::default(),
+                start_at_native_us: None,
             })
             .expect_err("reject terminal runtime error");
         let snapshot = state.snapshot();
@@ -3262,6 +3496,8 @@ mod tests {
                 duration_seconds: Some(30.0),
                 playback_rate: Some(1.0),
                 lanes: Vec::new(),
+                control: SessionCommand::default(),
+                owner: None,
             },
             Vec::new(),
             capabilities(),
@@ -3269,6 +3505,7 @@ mod tests {
 
         let snapshot = state.seek(AudioSeekRequest {
             time_seconds: -10.0,
+            control: SessionCommand::default(),
         });
 
         assert_eq!(snapshot.position_seconds, 0.0);
@@ -3284,6 +3521,8 @@ mod tests {
                 duration_seconds: Some(30.0),
                 playback_rate: Some(1.0),
                 lanes: Vec::new(),
+                control: SessionCommand::default(),
+                owner: None,
             },
             Vec::new(),
             capabilities(),
@@ -3307,6 +3546,8 @@ mod tests {
                 duration_seconds: Some(30.0),
                 playback_rate: Some(1.0),
                 lanes: Vec::new(),
+                control: SessionCommand::default(),
+                owner: None,
             },
             Vec::new(),
             capabilities(),
@@ -3377,6 +3618,8 @@ mod tests {
                 duration_seconds: Some(30.0),
                 playback_rate: Some(0.75),
                 lanes: Vec::new(),
+                control: SessionCommand::default(),
+                owner: None,
             },
             Vec::new(),
             capabilities(),
@@ -3396,6 +3639,8 @@ mod tests {
                 duration_seconds: Some(30.0),
                 playback_rate: Some(1.0),
                 lanes: Vec::new(),
+                control: SessionCommand::default(),
+                owner: None,
             },
             Vec::new(),
             capabilities(),
@@ -3418,6 +3663,8 @@ mod tests {
                 duration_seconds: Some(30.0),
                 playback_rate: Some(1.0),
                 lanes: Vec::new(),
+                control: SessionCommand::default(),
+                owner: None,
             },
             Vec::new(),
             capabilities(),
@@ -3427,6 +3674,8 @@ mod tests {
             .play(AudioPlayRequest {
                 start_time_seconds: Some(6.25),
                 scheduled_start_time_seconds: Some(2.0),
+                control: SessionCommand::default(),
+                start_at_native_us: None,
             })
             .expect("play");
 
@@ -3490,6 +3739,7 @@ mod tests {
         push_ring_samples(&ring, &vec![0.5; 1_000]);
         let mut shared = shared_with_lane(ring, 1_000, 1, 1.0);
         shared.playback_rate = 2.0;
+        shared.timeline.lock().unwrap().set_rate(1, 2.0).unwrap();
         let mut output = vec![0.0; 10];
 
         render_shared_output(&mut shared, &mut output);
@@ -3504,6 +3754,7 @@ mod tests {
         push_ring_samples(&ring, &vec![0.5; 2_000]);
         let mut shared = shared_with_lane(ring, 2_000, 1, 1.0);
         shared.playback_rate = 1.25;
+        shared.timeline.lock().unwrap().set_rate(1, 1.25).unwrap();
         let mut output = vec![0.0; 40];
 
         render_shared_output(&mut shared, &mut output);
@@ -3522,6 +3773,8 @@ mod tests {
                 duration_seconds: Some(30.0),
                 playback_rate: Some(1.0),
                 lanes: Vec::new(),
+                control: SessionCommand::default(),
+                owner: None,
             },
             Vec::new(),
             capabilities(),
@@ -3557,6 +3810,8 @@ mod tests {
                 duration_seconds: Some(30.0),
                 playback_rate: Some(1.0),
                 lanes: Vec::new(),
+                control: SessionCommand::default(),
+                owner: None,
             },
             Vec::new(),
             capabilities(),
@@ -3593,6 +3848,8 @@ mod tests {
                 duration_seconds: Some(loop_end),
                 playback_rate: Some(1.0),
                 lanes: Vec::new(),
+                control: SessionCommand::default(),
+                owner: None,
             },
             Vec::new(),
             capabilities(),
@@ -3603,6 +3860,13 @@ mod tests {
         let mut shared = shared_with_lane(ring, 1_000, 1, 1.0);
         shared.duration_seconds = loop_end;
         shared.position_seconds = 1.245;
+        {
+            let mut timeline = shared.timeline.lock().unwrap();
+            timeline.reset(1, loop_end, 1.0);
+            timeline
+                .arm(1, Some(1.245), None, timeline::native_time_us())
+                .unwrap();
+        }
         let mut output = vec![0.0; 6];
 
         render_shared_output(&mut shared, &mut output);
@@ -3615,6 +3879,8 @@ mod tests {
             .play(AudioPlayRequest {
                 start_time_seconds: Some(loop_start),
                 scheduled_start_time_seconds: None,
+                control: SessionCommand::default(),
+                start_at_native_us: None,
             })
             .expect("restart loop");
         assert_eq!(snapshot.state, "playing");
@@ -3626,6 +3892,12 @@ mod tests {
         shared.position_seconds = state.position_seconds;
         shared.ended_pending = false;
         shared.status = state.status;
+        shared
+            .timeline
+            .lock()
+            .unwrap()
+            .arm(2, Some(loop_start), None, timeline::native_time_us())
+            .unwrap();
 
         let mut wrapped_output = vec![0.0; 20];
         render_shared_output(&mut shared, &mut wrapped_output);

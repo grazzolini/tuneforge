@@ -77,8 +77,15 @@ pub fn mobile_sync_transport_reconciliation_plan_value(
 pub fn mobile_sync_transport_reconciliation_apply_value(
     app: AppHandle,
     body: Value,
+    compact_staged_references: Vec<crate::sync_transport::CompactStagedReference>,
 ) -> Result<Value, String> {
     let payload = serde_json::from_value::<SyncReconciliationApplyRequest>(body)
         .map_err(|error| error.to_string())?;
-    sync_transport_value(mobile_apply_sync_reconciliation(app, payload)?)
+    sync_transport_value(
+        super::reconciliation::mobile_apply_sync_reconciliation_with_compact_references(
+            app,
+            payload,
+            compact_staged_references,
+        )?,
+    )
 }

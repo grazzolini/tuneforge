@@ -405,6 +405,14 @@ pub struct SyncTransportManifestError {
     pub message: String,
 }
 
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) struct CompactStagedReference {
+    pub(crate) content_sha256: String,
+    pub(crate) size_bytes: i64,
+    pub(crate) project_id: String,
+    pub(crate) artifact_id: String,
+}
+
 mod sync_core {
     use super::SyncTransportManifestError;
     use base64::{
@@ -1583,8 +1591,8 @@ mod sync_core {
 
 mod desktop {
     use super::{
-        sync_core::*, SyncTransportActiveProgress, SyncTransportDiagnostics,
-        SyncTransportLifecycleEvent, SyncTransportLifecycleEventRequest,
+        sync_core::*, CompactStagedReference, SyncTransportActiveProgress,
+        SyncTransportDiagnostics, SyncTransportLifecycleEvent, SyncTransportLifecycleEventRequest,
         SyncTransportManifestError, SyncTransportNearbyPeer, SyncTransportPairingOffer,
         SyncTransportPairingOfferRequest, SyncTransportProjectResult,
         SyncTransportStartListenerRequest, SyncTransportStatus, SyncTransportSyncNowRequest,
@@ -1606,6 +1614,8 @@ mod desktop {
     use serde_json::{json, Value};
     use sha2::{Digest, Sha256};
     use snow::{params::NoiseParams, Builder};
+    #[cfg(any(test, target_os = "android"))]
+    use std::collections::BTreeSet;
     #[cfg(not(target_os = "android"))]
     use std::io::{BufRead, BufReader};
     use std::{
@@ -6912,10 +6922,18 @@ mod desktop {
     #[derive(Clone, Debug)]
     struct StagedRemoteProject {
         manifest: Arc<Value>,
+        #[cfg(not(target_os = "android"))]
         cleanup_context_manifests: Vec<Arc<Value>>,
+        #[cfg(any(test, target_os = "android"))]
+        compact_cleanup_context: CompactStagedCleanupContext,
         available_content_sha256: Vec<String>,
         transfer_failure: Option<String>,
     }
+
+    #[cfg(any(test, target_os = "android"))]
+    type CompactStagedReferenceSet = Arc<[CompactStagedReference]>;
+    #[cfg(any(test, target_os = "android"))]
+    type CompactStagedCleanupContext = Result<Vec<CompactStagedReferenceSet>, String>;
 
     enum RemoteApplyTask {
         Project(StagedRemoteProject),
@@ -7730,6 +7748,9 @@ mod desktop {
         let mut seen_manifests = HashSet::new();
         let mut seen_metadata_project_ids = HashSet::new();
         let mut seen_content_sha256 = HashSet::new();
+        #[cfg(target_os = "android")]
+        let compact_staged_references =
+            compact_staged_references_for_apply(tasks).map_err(BackendError::local)?;
 
         for queued in tasks {
             match &queued.task {
@@ -7746,6 +7767,7 @@ mod desktop {
                         &mut seen_metadata_project_ids,
                         &project.manifest,
                     );
+                    #[cfg(not(target_os = "android"))]
                     for context_manifest in &project.cleanup_context_manifests {
                         push_apply_manifest_for_batch(
                             &mut manifests,
@@ -7774,20 +7796,39 @@ mod desktop {
             }
         }
 
-        let remote_metadata = remote_metadata_for_projects(remote_metadata, &metadata_project_ids);
-        let body = reconciliation_apply_body_with_project_ids(
-            peer_device_id,
-            &remote_metadata,
-            &manifests,
-            &available_content_sha256,
-            &project_ids,
-            transport_id,
-        );
+        #[cfg(target_os = "android")]
+        let (body, compact_staged_references) = {
+            let remote_metadata =
+                remote_metadata_for_projects_owned(remote_metadata, &metadata_project_ids);
+            let body = reconciliation_apply_body_owned(
+                peer_device_id,
+                remote_metadata,
+                manifests,
+                available_content_sha256,
+                project_ids.clone(),
+                transport_id,
+            );
+            (body, compact_staged_references)
+        };
+        #[cfg(not(target_os = "android"))]
+        let (body, compact_staged_references) = {
+            let remote_metadata =
+                remote_metadata_for_projects(remote_metadata, &metadata_project_ids);
+            let body = reconciliation_apply_body_with_project_ids(
+                peer_device_id,
+                &remote_metadata,
+                &manifests,
+                &available_content_sha256,
+                &project_ids,
+                transport_id,
+            );
+            (body, Vec::new())
+        };
         let timer = SyncPhaseTimer::start("reconciliation_apply");
         let response = {
             let _progress =
                 progress.start_phase("reconciliation_apply", "Applying remote reconciliation.");
-            client.post_json_value("/api/v1/sync/reconciliation/apply", &body)
+            client.post_reconciliation_apply_value(body, compact_staged_references)
         };
         timings.push(timer.finish());
         response.map(|response| map_project_apply_response(&project_ids, &response))
@@ -7840,6 +7881,8 @@ mod desktop {
 
     struct IrohScheduledRemoteProject {
         manifest: Arc<Value>,
+        #[cfg(any(test, target_os = "android"))]
+        compact_staged_references: Result<CompactStagedReferenceSet, String>,
         transfers: Vec<SyncTransportTransferResult>,
         pending_artifacts: HashMap<String, RemoteArtifact>,
         transfer_failure: Option<String>,
@@ -7849,8 +7892,14 @@ mod desktop {
 
     impl IrohScheduledRemoteProject {
         fn new(manifest: Arc<Value>) -> Self {
+            #[cfg(any(test, target_os = "android"))]
+            let compact_staged_references =
+                compact_staged_references_from_context_manifests([manifest.as_ref()])
+                    .map(Arc::from);
             Self {
                 manifest,
+                #[cfg(any(test, target_os = "android"))]
+                compact_staged_references,
                 transfers: Vec::new(),
                 pending_artifacts: HashMap::new(),
                 transfer_failure: None,
@@ -7918,7 +7967,9 @@ mod desktop {
 
         fn take_ready_project(
             &mut self,
-            cleanup_context_manifests: Vec<Arc<Value>>,
+            #[cfg(not(target_os = "android"))] cleanup_context_manifests: Vec<Arc<Value>>,
+            #[cfg(any(test, target_os = "android"))]
+            compact_cleanup_context: CompactStagedCleanupContext,
         ) -> Option<StagedRemoteProject> {
             if !self.is_ready() {
                 return None;
@@ -7926,7 +7977,10 @@ mod desktop {
             self.enqueued = true;
             Some(StagedRemoteProject {
                 manifest: Arc::clone(&self.manifest),
+                #[cfg(not(target_os = "android"))]
                 cleanup_context_manifests,
+                #[cfg(any(test, target_os = "android"))]
+                compact_cleanup_context,
                 available_content_sha256: available_content_sha256(&self.transfers),
                 transfer_failure: self.transfer_failure.clone(),
             })
@@ -8042,24 +8096,47 @@ mod desktop {
                 .collect::<Vec<_>>();
             let mut staged = Vec::new();
             for index in ready_indices {
+                #[cfg(not(target_os = "android"))]
                 let cleanup_context_manifests = self.cleanup_context_manifests_for(index);
-                if let Some(project) = self
-                    .projects
-                    .get_mut(index)
-                    .and_then(|project| project.take_ready_project(cleanup_context_manifests))
-                {
+                #[cfg(any(test, target_os = "android"))]
+                let compact_cleanup_context = self.compact_cleanup_context_for(index);
+                if let Some(project) = self.projects.get_mut(index).and_then(|project| {
+                    project.take_ready_project(
+                        #[cfg(not(target_os = "android"))]
+                        cleanup_context_manifests,
+                        #[cfg(any(test, target_os = "android"))]
+                        compact_cleanup_context,
+                    )
+                }) {
                     staged.push(project);
                 }
             }
             staged
         }
 
+        #[cfg(not(target_os = "android"))]
         fn cleanup_context_manifests_for(&self, ready_index: usize) -> Vec<Arc<Value>> {
             self.projects
                 .iter()
                 .enumerate()
                 .filter(|(index, project)| *index != ready_index && !project.enqueued)
                 .map(|(_, project)| Arc::clone(&project.manifest))
+                .collect()
+        }
+
+        #[cfg(any(test, target_os = "android"))]
+        fn compact_cleanup_context_for(&self, ready_index: usize) -> CompactStagedCleanupContext {
+            self.projects
+                .iter()
+                .enumerate()
+                .filter(|(index, project)| *index != ready_index && !project.enqueued)
+                .map(|(_, project)| {
+                    project
+                        .compact_staged_references
+                        .as_ref()
+                        .map(Arc::clone)
+                        .map_err(Clone::clone)
+                })
                 .collect()
         }
 
@@ -8334,7 +8411,10 @@ mod desktop {
 
         StagedRemoteProject {
             manifest: Arc::new(manifest.clone()),
+            #[cfg(not(target_os = "android"))]
             cleanup_context_manifests: Vec::new(),
+            #[cfg(any(test, target_os = "android"))]
+            compact_cleanup_context: Ok(Vec::new()),
             available_content_sha256: available_content_sha256(&project_transfers),
             transfer_failure,
         }
@@ -8388,6 +8468,112 @@ mod desktop {
             }
         }
         manifests
+    }
+
+    #[cfg(any(test, target_os = "android"))]
+    fn compact_staged_references_from_context_manifests<'a>(
+        manifests: impl IntoIterator<Item = &'a Value>,
+    ) -> Result<Vec<CompactStagedReference>, String> {
+        let mut references = Vec::new();
+        for manifest in manifests {
+            let artifacts = manifest
+                .get("artifacts")
+                .and_then(Value::as_array)
+                .ok_or_else(|| {
+                    "Cleanup context manifest artifacts must be an array.".to_string()
+                })?;
+            for artifact in artifacts {
+                let required_id = |field: &str| -> Result<String, String> {
+                    let value = artifact
+                        .get(field)
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| format!("Cleanup context artifact {field} is missing."))?;
+                    if value.trim().is_empty() || value != value.trim() {
+                        return Err(format!(
+                            "Cleanup context artifact {field} must be canonical."
+                        ));
+                    }
+                    Ok(value.to_string())
+                };
+                let content_sha256 = artifact
+                    .get("content_sha256")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        "Cleanup context artifact content_sha256 is missing.".to_string()
+                    })?;
+                let size_bytes = artifact
+                    .get("size_bytes")
+                    .and_then(Value::as_i64)
+                    .ok_or_else(|| {
+                        "Cleanup context artifact size_bytes must be a non-negative integer."
+                            .to_string()
+                    })?;
+                references.push(CompactStagedReference {
+                    content_sha256: normalize_compact_sha256(content_sha256)?,
+                    size_bytes,
+                    project_id: required_id("project_id")?,
+                    artifact_id: required_id("artifact_id")?,
+                });
+            }
+        }
+        normalize_compact_staged_references(references)
+    }
+
+    #[cfg(any(test, target_os = "android"))]
+    fn normalize_compact_sha256(value: &str) -> Result<String, String> {
+        let normalized = value.trim().to_ascii_lowercase();
+        if normalized.len() != 64
+            || normalized
+                .as_bytes()
+                .iter()
+                .any(|byte| !byte.is_ascii_hexdigit())
+        {
+            return Err(
+                "Cleanup context artifact content_sha256 must be a full SHA-256 hex digest."
+                    .to_string(),
+            );
+        }
+        Ok(normalized)
+    }
+
+    #[cfg(any(test, target_os = "android"))]
+    fn normalize_compact_staged_references(
+        mut references: Vec<CompactStagedReference>,
+    ) -> Result<Vec<CompactStagedReference>, String> {
+        let mut sizes_by_hash = HashMap::new();
+        for reference in &references {
+            if reference.size_bytes < 0 {
+                return Err("Cleanup context artifact size_bytes must be non-negative.".to_string());
+            }
+            if sizes_by_hash
+                .insert(reference.content_sha256.as_str(), reference.size_bytes)
+                .is_some_and(|size_bytes| size_bytes != reference.size_bytes)
+            {
+                return Err(
+                    "Cleanup context artifacts disagree on size_bytes for one content SHA-256."
+                        .to_string(),
+                );
+            }
+        }
+        references.sort();
+        references.dedup();
+        Ok(references)
+    }
+
+    #[cfg(any(test, target_os = "android"))]
+    fn compact_staged_references_for_apply(
+        tasks: &[QueuedRemoteApplyTask],
+    ) -> Result<Vec<CompactStagedReference>, String> {
+        let mut references = BTreeSet::new();
+        for project in tasks.iter().filter_map(|queued| match &queued.task {
+            RemoteApplyTask::Project(project) => Some(project),
+            RemoteApplyTask::Tombstone(_) => None,
+        }) {
+            for reference_set in project.compact_cleanup_context.as_ref()? {
+                references.extend(reference_set.iter());
+            }
+        }
+        normalize_compact_staged_references(references.into_iter().cloned().collect())
     }
 
     fn reconciliation_plan_body(
@@ -8455,6 +8641,7 @@ mod desktop {
         )
     }
 
+    #[cfg(any(test, not(target_os = "android")))]
     fn reconciliation_apply_body_with_project_ids(
         peer_device_id: &str,
         remote_metadata: &Value,
@@ -8475,6 +8662,54 @@ mod desktop {
             "use_content_addressed_staging": true,
             "include_timing_evidence": true,
         })
+    }
+
+    #[cfg(any(test, target_os = "android"))]
+    fn reconciliation_apply_body_owned(
+        peer_device_id: &str,
+        remote_metadata: Value,
+        manifests: Vec<Value>,
+        available_content_sha256: Vec<String>,
+        project_ids: Vec<String>,
+        transport_id: &str,
+    ) -> Value {
+        let mut inventory_metadata = serde_json::Map::with_capacity(1);
+        inventory_metadata.insert(
+            "transport".to_string(),
+            Value::String(transport_id.to_string()),
+        );
+        let mut inventory = serde_json::Map::with_capacity(3);
+        inventory.insert(
+            "device_id".to_string(),
+            Value::String(peer_device_id.to_string()),
+        );
+        inventory.insert(
+            "available_content_sha256".to_string(),
+            Value::Array(
+                available_content_sha256
+                    .into_iter()
+                    .map(Value::String)
+                    .collect(),
+            ),
+        );
+        inventory.insert("metadata".to_string(), Value::Object(inventory_metadata));
+        let mut body = serde_json::Map::with_capacity(6);
+        body.insert("remote_library".to_string(), remote_metadata);
+        body.insert("project_manifests".to_string(), Value::Array(manifests));
+        body.insert(
+            "peer_inventory".to_string(),
+            Value::Array(vec![Value::Object(inventory)]),
+        );
+        body.insert(
+            "project_ids".to_string(),
+            Value::Array(project_ids.into_iter().map(Value::String).collect()),
+        );
+        body.insert(
+            "use_content_addressed_staging".to_string(),
+            Value::Bool(true),
+        );
+        body.insert("include_timing_evidence".to_string(), Value::Bool(true));
+        Value::Object(body)
     }
 
     #[cfg(test)]
@@ -8504,6 +8739,27 @@ mod desktop {
             "delete_tombstones".to_string(),
             filtered_project_array_for_projects(remote_metadata, "delete_tombstones", &project_ids),
         );
+        Value::Object(metadata)
+    }
+
+    #[cfg(any(test, target_os = "android"))]
+    fn remote_metadata_for_projects_owned(
+        remote_metadata: &Value,
+        project_ids: &[String],
+    ) -> Value {
+        let project_ids: HashSet<&str> = project_ids.iter().map(String::as_str).collect();
+        let mut metadata = serde_json::Map::with_capacity(4);
+        for key in [
+            "projects",
+            "artifacts",
+            "entity_revisions",
+            "delete_tombstones",
+        ] {
+            metadata.insert(
+                key.to_string(),
+                filtered_project_array_for_projects(remote_metadata, key, &project_ids),
+            );
+        }
         Value::Object(metadata)
     }
 
@@ -12455,12 +12711,6 @@ mod desktop {
                             body.clone(),
                         )
                     }
-                    "/api/v1/sync/reconciliation/apply" => {
-                        crate::mobile_backend::mobile_sync_transport_reconciliation_apply_value(
-                            self.app.clone(),
-                            body.clone(),
-                        )
-                    }
                     _ => Err(format!(
                         "Android mobile backend does not implement POST {path}."
                     )),
@@ -12470,6 +12720,28 @@ mod desktop {
 
             #[cfg(not(target_os = "android"))]
             self.request_json_value("POST", path, Some(body))
+        }
+
+        fn post_reconciliation_apply_value(
+            &self,
+            body: Value,
+            compact_staged_references: Vec<CompactStagedReference>,
+        ) -> Result<Value, BackendError> {
+            #[cfg(target_os = "android")]
+            {
+                return crate::mobile_backend::mobile_sync_transport_reconciliation_apply_value(
+                    self.app.clone(),
+                    body,
+                    compact_staged_references,
+                )
+                .map_err(BackendError::local);
+            }
+
+            #[cfg(not(target_os = "android"))]
+            {
+                let _ = compact_staged_references;
+                self.request_json_value("POST", "/api/v1/sync/reconciliation/apply", Some(&body))
+            }
         }
 
         fn post_manifest_batch_json_value(&self, body: &Value) -> Result<Value, BackendError> {
@@ -15905,6 +16177,7 @@ mod desktop {
                     "artifacts": []
                 })),
                 cleanup_context_manifests: Vec::new(),
+                compact_cleanup_context: Ok(Vec::new()),
                 available_content_sha256: Vec::new(),
                 transfer_failure: None,
             }
@@ -19561,7 +19834,13 @@ mod desktop {
                 json!({ "project": { "project_id": "proj_one" }, "artifacts": [] }),
                 json!({ "project": { "project_id": "proj_two" }, "artifacts": [] }),
             ];
-            let remote_metadata = json!({ "projects": [] });
+            let remote_metadata = json!({
+                "projects": [],
+                "artifacts": [],
+                "entity_revisions": [],
+                "delete_tombstones": [],
+                "schema_version": 1,
+            });
             let available = vec!["hash_a".to_string(), "hash_b".to_string()];
 
             let body = reconciliation_apply_body(
@@ -19573,37 +19852,121 @@ mod desktop {
             );
 
             assert_eq!(
-                body.get("project_manifests")
-                    .and_then(Value::as_array)
-                    .map(Vec::len),
-                Some(2)
+                body,
+                json!({
+                    "remote_library": remote_metadata,
+                    "project_manifests": manifests,
+                    "peer_inventory": [{
+                        "device_id": "dev_peer",
+                        "available_content_sha256": ["hash_a", "hash_b"],
+                        "metadata": { "transport": TCP_TRANSPORT_ID },
+                    }],
+                    "project_ids": ["proj_one", "proj_two"],
+                    "use_content_addressed_staging": true,
+                    "include_timing_evidence": true,
+                })
             );
+        }
+
+        #[test]
+        fn mobile_apply_body_keeps_primary_manifest_and_compacts_many_cleanup_contexts() {
+            let shared_hash = "a".repeat(64);
+            let primary_manifest = json!({
+                "project": { "project_id": "proj_primary" },
+                "artifacts": [{
+                    "artifact_id": "art_primary_flac",
+                    "project_id": "proj_primary",
+                    "format": "flac",
+                    "content_sha256": "b".repeat(64),
+                    "size_bytes": 42,
+                }],
+                "entity_revisions": [{
+                    "project_id": "proj_primary",
+                    "payload": { "synthetic_notes": "x".repeat(32 * 1024) },
+                }],
+            });
+            let contexts = (0..128)
+                .map(|index| {
+                    json!({
+                        "project": { "project_id": format!("proj_pending_{index:03}") },
+                        "artifacts": [{
+                            "artifact_id": format!("art_pending_flac_{index:03}"),
+                            "project_id": format!("proj_pending_{index:03}"),
+                            "format": "flac",
+                            "content_sha256": shared_hash,
+                            "size_bytes": 1_024,
+                        }],
+                        "entity_revisions": [{
+                            "payload": { "synthetic_notes": "y".repeat(32 * 1024) },
+                        }],
+                    })
+                })
+                .collect::<Vec<_>>();
+
+            let references = compact_staged_references_from_context_manifests(contexts.iter())
+                .expect("compact cleanup context");
+            let remote_metadata = remote_metadata_for_projects_owned(
+                &json!({
+                    "projects": [{ "project_id": "proj_primary" }],
+                    "artifacts": [{ "project_id": "proj_primary", "artifact_id": "art_primary_flac" }],
+                    "entity_revisions": [{
+                        "project_id": "proj_primary",
+                        "payload": { "synthetic_notes": "z".repeat(32 * 1024) },
+                    }],
+                    "delete_tombstones": [],
+                    "oversized_ignored": "q".repeat(32 * 1024),
+                }),
+                &["proj_primary".to_string()],
+            );
+            let body = reconciliation_apply_body_owned(
+                "dev_peer",
+                remote_metadata,
+                vec![primary_manifest],
+                vec![shared_hash.clone()],
+                vec!["proj_primary".to_string()],
+                IROH_TRANSPORT_ID,
+            );
+
+            assert_eq!(references.len(), 128);
+            assert_eq!(references[0].content_sha256, shared_hash);
+            assert_eq!(references[0].project_id, "proj_pending_000");
+            assert_eq!(references[127].project_id, "proj_pending_127");
+            assert_eq!(body["project_manifests"].as_array().unwrap().len(), 1);
             assert_eq!(
-                body.get("peer_inventory")
-                    .and_then(Value::as_array)
-                    .map(Vec::len),
-                Some(1)
+                body["project_manifests"][0]["project"]["project_id"],
+                "proj_primary"
             );
-            assert_eq!(
-                body.get("peer_inventory")
-                    .and_then(Value::as_array)
-                    .and_then(|entries| entries.first())
-                    .and_then(|entry| entry.get("device_id"))
-                    .and_then(Value::as_str),
-                Some("dev_peer")
-            );
-            assert_eq!(
-                body.get("peer_inventory")
-                    .and_then(Value::as_array)
-                    .and_then(|entries| entries.first())
-                    .and_then(|entry| entry.get("available_content_sha256")),
-                Some(&json!(["hash_a", "hash_b"]))
-            );
-            assert_eq!(
-                body.get("project_ids"),
-                Some(&json!(["proj_one", "proj_two"]))
-            );
-            assert_eq!(body.get("include_timing_evidence"), Some(&json!(true)));
+            assert!(body["remote_library"].get("oversized_ignored").is_none());
+            assert_eq!(body["remote_library"].as_object().unwrap().len(), 4);
+        }
+
+        #[test]
+        fn compact_cleanup_context_fails_closed_and_orders_exact_references() {
+            let hash = "c".repeat(64);
+            let manifest = json!({
+                "artifacts": [
+                    { "artifact_id": "art_b", "project_id": "proj_b", "content_sha256": hash, "size_bytes": 9 },
+                    { "artifact_id": "art_a", "project_id": "proj_a", "content_sha256": hash, "size_bytes": 9 },
+                    { "artifact_id": "art_a", "project_id": "proj_a", "content_sha256": hash, "size_bytes": 9 },
+                ]
+            });
+            let references = compact_staged_references_from_context_manifests([&manifest])
+                .expect("normalize references");
+            assert_eq!(references.len(), 2);
+            assert_eq!(references[0].project_id, "proj_a");
+            assert_eq!(references[1].project_id, "proj_b");
+
+            for invalid in [
+                json!({ "artifacts": [{ "artifact_id": "", "project_id": "proj", "content_sha256": hash, "size_bytes": 9 }] }),
+                json!({ "artifacts": [{ "artifact_id": "art", "project_id": "proj", "content_sha256": "bad", "size_bytes": 9 }] }),
+                json!({ "artifacts": [{ "artifact_id": "art", "project_id": "proj", "content_sha256": hash, "size_bytes": -1 }] }),
+                json!({ "artifacts": [
+                    { "artifact_id": "art_a", "project_id": "proj_a", "content_sha256": hash, "size_bytes": 9 },
+                    { "artifact_id": "art_b", "project_id": "proj_b", "content_sha256": hash, "size_bytes": 10 },
+                ] }),
+            ] {
+                assert!(compact_staged_references_from_context_manifests([&invalid]).is_err());
+            }
         }
 
         #[test]
@@ -20303,6 +20666,84 @@ mod desktop {
                     .collect::<Vec<_>>(),
                 vec!["art_two", "art_one"]
             );
+        }
+
+        #[test]
+        fn iroh_scheduler_shares_compact_context_for_simultaneously_ready_projects() {
+            const PROJECT_COUNT: usize = 32;
+            let shared_hash = "d".repeat(64);
+            let mut scheduler = IrohGlobalProjectScheduler::default();
+            let mut received_artifacts = Vec::new();
+
+            for index in 0..PROJECT_COUNT {
+                let project_id = format!("proj_{index:02}");
+                let project_index = scheduler.push_project(json!({
+                    "project": { "project_id": project_id },
+                    "artifacts": [{
+                        "artifact_id": "art_shared_flac",
+                        "project_id": project_id,
+                        "format": "flac",
+                        "content_sha256": shared_hash,
+                        "size_bytes": 4_096,
+                    }],
+                }));
+                scheduler
+                    .add_pending_artifact(
+                        project_index,
+                        RemoteArtifact {
+                            artifact_id: "art_shared_flac".to_string(),
+                            project_id,
+                            content_sha256: shared_hash.clone(),
+                            size_bytes: 4_096,
+                        },
+                    )
+                    .expect("subscribe shared artifact");
+                scheduler.mark_project_discovered(project_index);
+            }
+
+            assert!(scheduler.drain_ready_projects().is_empty());
+            scheduler.record_artifact_transfer(
+                Ok(test_transfer_result(
+                    "art_shared_flac",
+                    &shared_hash,
+                    4_096,
+                    "received",
+                )),
+                &mut received_artifacts,
+            );
+            let ready = scheduler.drain_ready_projects();
+
+            assert_eq!(ready.len(), PROJECT_COUNT);
+            let mut unique_backings = HashSet::new();
+            for (ready_index, staged) in ready.iter().enumerate() {
+                let context = staged
+                    .compact_cleanup_context
+                    .as_ref()
+                    .expect("cached compact context");
+                assert_eq!(context.len(), PROJECT_COUNT - ready_index - 1);
+                for (offset, reference_set) in context.iter().enumerate() {
+                    let cached = scheduler.projects[ready_index + offset + 1]
+                        .compact_staged_references
+                        .as_ref()
+                        .expect("cached project references");
+                    assert!(Arc::ptr_eq(reference_set, cached));
+                    unique_backings.insert(reference_set.as_ptr() as usize);
+                }
+            }
+            assert_eq!(unique_backings.len(), PROJECT_COUNT - 1);
+
+            let tasks = ready
+                .into_iter()
+                .map(|project| QueuedRemoteApplyTask {
+                    project_id: manifest_project_id(&project.manifest),
+                    task: RemoteApplyTask::Project(project),
+                })
+                .collect::<Vec<_>>();
+            let references = compact_staged_references_for_apply(&tasks)
+                .expect("flatten shared compact contexts");
+            assert_eq!(references.len(), PROJECT_COUNT - 1);
+            assert_eq!(references[0].project_id, "proj_01");
+            assert_eq!(references[PROJECT_COUNT - 2].project_id, "proj_31");
         }
 
         #[test]

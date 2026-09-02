@@ -220,6 +220,81 @@ pub(super) fn register_manifest_staged_references(
     Ok(())
 }
 
+pub(super) fn validate_compact_staged_references(
+    mut references: Vec<crate::sync_transport::CompactStagedReference>,
+) -> Result<Vec<crate::sync_transport::CompactStagedReference>, String> {
+    let mut sizes_by_hash = BTreeMap::new();
+    for reference in &mut references {
+        if reference.project_id.trim().is_empty()
+            || reference.project_id != reference.project_id.trim()
+        {
+            return Err("Compact staged reference project_id must be canonical.".to_string());
+        }
+        if reference.artifact_id.trim().is_empty()
+            || reference.artifact_id != reference.artifact_id.trim()
+        {
+            return Err("Compact staged reference artifact_id must be canonical.".to_string());
+        }
+        reference.content_sha256 = normalize_sha256(&reference.content_sha256, "content_sha256")?;
+        if reference.size_bytes < 0 {
+            return Err("Compact staged reference size_bytes must be non-negative.".to_string());
+        }
+        if sizes_by_hash
+            .insert(reference.content_sha256.clone(), reference.size_bytes)
+            .is_some_and(|size_bytes| size_bytes != reference.size_bytes)
+        {
+            return Err(
+                "Compact staged references disagree on size_bytes for one content SHA-256."
+                    .to_string(),
+            );
+        }
+    }
+    references.sort();
+    references.dedup();
+    Ok(references)
+}
+
+pub(super) fn register_validated_compact_staged_references(
+    connection: &Connection,
+    root: &Path,
+    references: &[crate::sync_transport::CompactStagedReference],
+) -> Result<(), String> {
+    let _guard = staging_mutation_guard();
+    for reference in references {
+        let raw = connection
+            .query_row(
+                "SELECT metadata_json FROM sync_staged_artifacts WHERE content_sha256 = ?1",
+                params![&reference.content_sha256],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?;
+        let Some(raw) = raw else {
+            continue;
+        };
+        let _ = get_staged_artifact(
+            connection,
+            root,
+            &reference.content_sha256,
+            Some(reference.size_bytes),
+        )?;
+        let metadata = merge_staging_metadata(
+            Some(&raw),
+            json!({
+                "project_id": reference.project_id,
+                "artifact_id": reference.artifact_id,
+            }),
+        )?;
+        connection
+            .execute(
+                "UPDATE sync_staged_artifacts SET metadata_json = ?1, updated_at = ?2 WHERE content_sha256 = ?3",
+                params![metadata.to_string(), now_iso(), &reference.content_sha256],
+            )
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
 pub(super) fn reconcile_staged_artifacts_after_commit(connection: &Connection, root: &Path) {
     let _guard = staging_mutation_guard();
     let _ = reconcile_staged_artifacts(connection, root);
@@ -612,6 +687,44 @@ mod tests {
         source_hash_to_project_id(&byte.to_string().repeat(64)).unwrap()
     }
 
+    #[test]
+    fn compact_staged_references_normalize_sort_deduplicate_and_reject_conflicts() {
+        let hash = "A".repeat(64);
+        let reference = |project_id: &str, artifact_id: &str, size_bytes| {
+            crate::sync_transport::CompactStagedReference {
+                content_sha256: hash.clone(),
+                size_bytes,
+                project_id: project_id.to_string(),
+                artifact_id: artifact_id.to_string(),
+            }
+        };
+        let references = validate_compact_staged_references(vec![
+            reference("project-b", "artifact-b", 12),
+            reference("project-a", "artifact-a", 12),
+            reference("project-a", "artifact-a", 12),
+        ])
+        .unwrap();
+
+        assert_eq!(references.len(), 2);
+        assert_eq!(references[0].content_sha256, "a".repeat(64));
+        assert_eq!(references[0].project_id, "project-a");
+        assert_eq!(references[1].project_id, "project-b");
+        assert!(validate_compact_staged_references(vec![
+            reference("project-a", "artifact-a", 12),
+            reference("project-b", "artifact-b", 13),
+        ])
+        .is_err());
+        assert!(validate_compact_staged_references(vec![
+            crate::sync_transport::CompactStagedReference {
+                content_sha256: "invalid".to_string(),
+                size_bytes: 12,
+                project_id: "project-a".to_string(),
+                artifact_id: "artifact-a".to_string(),
+            },
+        ])
+        .is_err());
+    }
+
     fn stage(
         connection: &Connection,
         root: &Path,
@@ -698,15 +811,24 @@ mod tests {
             "artifact-b",
         )
         .unwrap();
-        register_staged_reference(
-            &connection,
-            &temp.data,
-            &shared_hash,
-            &project_b,
-            "artifact-b",
-            None,
-        )
+        let compact_references = validate_compact_staged_references(vec![
+            crate::sync_transport::CompactStagedReference {
+                content_sha256: shared_hash.clone(),
+                size_bytes: shared.len() as i64,
+                project_id: project_b.clone(),
+                artifact_id: "artifact-b".to_string(),
+            },
+            crate::sync_transport::CompactStagedReference {
+                content_sha256: shared_hash.clone(),
+                size_bytes: shared.len() as i64,
+                project_id: project_b.clone(),
+                artifact_id: "artifact-b".to_string(),
+            },
+        ])
         .unwrap();
+        assert_eq!(compact_references.len(), 1);
+        register_validated_compact_staged_references(&connection, &temp.data, &compact_references)
+            .unwrap();
         assert!(public.metadata.get(STAGING_REFERENCES_KEY).is_none());
         let raw: String = connection
             .query_row(

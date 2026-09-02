@@ -5,6 +5,10 @@ download, installation, verification, signature, and publication instructions.
 
 ## [Unreleased]
 
+### Fixed
+
+- Reduced Android sync reconciliation memory use for libraries with many pending projects.
+
 ## [1.4.0] - 2026-09-01
 
 ### Changed

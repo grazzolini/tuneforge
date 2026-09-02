@@ -1061,8 +1061,27 @@ pub fn mobile_apply_sync_reconciliation(
     app: AppHandle,
     payload: SyncReconciliationApplyRequest,
 ) -> Result<SyncReconciliationApplyResponse, String> {
+    mobile_apply_sync_reconciliation_with_compact_references(app, payload, Vec::new())
+}
+
+pub(super) fn mobile_apply_sync_reconciliation_with_compact_references(
+    app: AppHandle,
+    payload: SyncReconciliationApplyRequest,
+    compact_staged_references: Vec<crate::sync_transport::CompactStagedReference>,
+) -> Result<SyncReconciliationApplyResponse, String> {
     let connection = db(&app)?;
     let root = app_data_root(&app)?;
+    apply_sync_reconciliation_parts(&connection, &root, payload, compact_staged_references)
+}
+
+fn apply_sync_reconciliation_parts(
+    connection: &Connection,
+    root: &Path,
+    payload: SyncReconciliationApplyRequest,
+    compact_staged_references: Vec<crate::sync_transport::CompactStagedReference>,
+) -> Result<SyncReconciliationApplyResponse, String> {
+    let compact_staged_references =
+        staging_cleanup::validate_compact_staged_references(compact_staged_references)?;
     let scoped_project_ids = scoped_apply_project_ids(&payload);
     let scoped_payload = SyncReconciliationApplyRequest {
         remote_library: scoped_remote_library_for_project_ids(
@@ -1080,28 +1099,33 @@ pub fn mobile_apply_sync_reconciliation(
         include_timing_evidence: payload.include_timing_evidence,
     };
     let plan = plan_sync_reconciliation_parts(
-        &connection,
-        &root,
+        connection,
+        root,
         &scoped_payload.remote_library,
         &scoped_payload.project_manifests,
         &scoped_payload.peer_inventory,
     )?;
     staging_cleanup::register_manifest_staged_references(
-        &connection,
-        &root,
+        connection,
+        root,
         &payload.project_manifests,
+    )?;
+    staging_cleanup::register_validated_compact_staged_references(
+        connection,
+        root,
+        &compact_staged_references,
     )?;
     let started = Instant::now();
     let mut results = Vec::new();
     for action in plan.actions.iter().cloned() {
         results.push(apply_reconciliation_action(
-            &connection,
-            &root,
+            connection,
+            root,
             action,
             &scoped_payload,
         ));
     }
-    reconcile_staged_artifacts_after_commit(&connection, &root);
+    reconcile_staged_artifacts_after_commit(connection, root);
     let summary = summarize_apply_results(plan.actions.len(), &results);
     let timing_evidence = if payload.include_timing_evidence {
         vec![SyncReconciliationTimingEvidenceSchema {
@@ -1292,6 +1316,63 @@ mod tests {
             )
             .unwrap();
         identity.sync_group_id
+    }
+
+    #[test]
+    fn invalid_compact_context_fails_before_staged_writes_or_cleanup() {
+        let root = synthetic_root("invalid-compact-context");
+        let connection = Connection::open_in_memory().unwrap();
+        migrate_mobile_db(&connection).unwrap();
+        let (staged_hash, staged_size) = staged_wav(&connection, &root, "shared-flac", 0.0);
+        let metadata_before: String = connection
+            .query_row(
+                "SELECT metadata_json FROM sync_staged_artifacts WHERE content_sha256 = ?1",
+                params![&staged_hash],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let payload = SyncReconciliationApplyRequest {
+            remote_library: SyncReconciliationRemoteLibrarySchema {
+                projects: Vec::new(),
+                artifacts: Vec::new(),
+                entity_revisions: Vec::new(),
+                delete_tombstones: Vec::new(),
+            },
+            project_manifests: Vec::new(),
+            peer_inventory: Vec::new(),
+            staging_root: None,
+            use_content_addressed_staging: true,
+            project_ids: Vec::new(),
+            include_timing_evidence: false,
+        };
+
+        let result = apply_sync_reconciliation_parts(
+            &connection,
+            &root,
+            payload,
+            vec![crate::sync_transport::CompactStagedReference {
+                content_sha256: "malformed".to_string(),
+                size_bytes: staged_size,
+                project_id: "project-pending".to_string(),
+                artifact_id: "artifact-pending-flac".to_string(),
+            }],
+        );
+        let error = match result {
+            Ok(_) => panic!("malformed cleanup context must fail"),
+            Err(error) => error,
+        };
+
+        assert!(error.contains("full SHA-256"));
+        let metadata_after: String = connection
+            .query_row(
+                "SELECT metadata_json FROM sync_staged_artifacts WHERE content_sha256 = ?1",
+                params![&staged_hash],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(metadata_after, metadata_before);
+        assert!(get_staged_artifact(&connection, &root, &staged_hash, Some(staged_size)).is_ok());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

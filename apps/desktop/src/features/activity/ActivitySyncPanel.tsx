@@ -2131,7 +2131,7 @@ export function ActivitySyncPanel() {
   const [syncNowPolling, setSyncNowPolling] = useState(false);
   const [evidenceMessage, setEvidenceMessage] = useState<string | null>(null);
   const [evidenceError, setEvidenceError] = useState<string | null>(null);
-	const [evidenceActionPending, setEvidenceActionPending] = useState(false);
+	const [evidenceActionPending, setEvidenceActionPending] = useState<"copy" | "export" | null>(null);
 	useSyncExternalStore(
 	  subscribePowerInhibition,
 	  getPowerInhibitionVersion,
@@ -2725,7 +2725,7 @@ export function ActivitySyncPanel() {
       return;
     }
     evidenceActionPendingRef.current = true;
-    setEvidenceActionPending(true);
+    setEvidenceActionPending("copy");
     setEvidenceError(null);
     setEvidenceMessage(null);
     const evidence = buildCurrentSyncEvidenceFile();
@@ -2744,7 +2744,7 @@ export function ActivitySyncPanel() {
       setEvidenceError("Could not copy sync evidence. Try again.");
     } finally {
       evidenceActionPendingRef.current = false;
-      setEvidenceActionPending(false);
+      setEvidenceActionPending(null);
     }
   }
 
@@ -2753,7 +2753,7 @@ export function ActivitySyncPanel() {
       return;
     }
     evidenceActionPendingRef.current = true;
-    setEvidenceActionPending(true);
+    setEvidenceActionPending("export");
     setEvidenceError(null);
     setEvidenceMessage(null);
     const evidence = buildCurrentSyncEvidenceFile();
@@ -2791,7 +2791,7 @@ export function ActivitySyncPanel() {
       setEvidenceError("Could not export sync evidence. Choose another location and try again.");
     } finally {
       evidenceActionPendingRef.current = false;
-      setEvidenceActionPending(false);
+      setEvidenceActionPending(null);
     }
   }
 
@@ -2890,7 +2890,7 @@ export function ActivitySyncPanel() {
               ) : null}
               <button
                 className="button button--ghost button--small"
-                disabled={!visibleSyncResult || evidenceActionPending}
+                disabled={!visibleSyncResult || evidenceActionPending !== null}
                 onClick={handleCopySyncEvidence}
                 type="button"
               >
@@ -2898,11 +2898,11 @@ export function ActivitySyncPanel() {
               </button>
               <button
                 className="button button--ghost button--small"
-                disabled={!visibleSyncResult || evidenceActionPending}
+                disabled={!visibleSyncResult || evidenceActionPending !== null}
                 onClick={handleExportSyncEvidence}
                 type="button"
               >
-                Export Evidence
+                {evidenceActionPending === "export" ? "Exporting…" : "Export Evidence"}
               </button>
             </div>
           </div>
@@ -2983,6 +2983,11 @@ export function ActivitySyncPanel() {
           {lastSyncMessage ? (
             <p className="activity-sync-alert" role="status">
               {lastSyncMessage}
+            </p>
+          ) : null}
+          {evidenceActionPending === "export" ? (
+            <p className="activity-sync-alert" role="status">
+              Exporting sync evidence…
             </p>
           ) : null}
           {evidenceMessage ? (

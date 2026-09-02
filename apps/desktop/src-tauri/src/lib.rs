@@ -78,19 +78,31 @@ fn write_settings_snapshot_file(
 }
 
 #[tauri::command]
-fn write_sync_evidence_file(
+async fn write_sync_evidence_file(
     app: AppHandle,
     default_file_name: String,
     contents: String,
 ) -> Result<bool, String> {
-    file_dialog_scope::write_user_selected_json_file(
-        &app,
-        "Export Sync Evidence",
-        default_file_name,
-        "tuneforge-sync-evidence.json",
-        contents,
-        "sync evidence",
-    )
+    dispatch_sync_evidence_write(move || {
+        file_dialog_scope::write_user_selected_json_file(
+            &app,
+            "Export Sync Evidence",
+            default_file_name,
+            "tuneforge-sync-evidence.json",
+            contents,
+            "sync evidence",
+        )
+    })
+    .await
+}
+
+async fn dispatch_sync_evidence_write<F>(write: F) -> Result<bool, String>
+where
+    F: FnOnce() -> Result<bool, String> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(write)
+        .await
+        .map_err(|_| "Sync evidence export worker stopped unexpectedly.".to_string())?
 }
 
 #[cfg(not(target_os = "android"))]
@@ -637,6 +649,42 @@ pub fn run() {
 #[cfg(all(test, not(target_os = "android")))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sync_evidence_write_dispatches_off_caller_thread_and_maps_results_safely() {
+        let caller_thread = std::thread::current().id();
+        let observed_thread = std::sync::Arc::new(Mutex::new(None));
+        let observed_thread_for_write = observed_thread.clone();
+
+        let exported = tauri::async_runtime::block_on(dispatch_sync_evidence_write(move || {
+            *observed_thread_for_write.lock().expect("observed thread") =
+                Some(std::thread::current().id());
+            Ok(true)
+        }))
+        .expect("export dispatch");
+        assert!(exported);
+        assert_ne!(
+            observed_thread.lock().expect("observed thread").as_ref(),
+            Some(&caller_thread)
+        );
+
+        let cancelled = tauri::async_runtime::block_on(dispatch_sync_evidence_write(|| Ok(false)))
+            .expect("cancel dispatch");
+        assert!(!cancelled);
+
+        let write_error = tauri::async_runtime::block_on(dispatch_sync_evidence_write(|| {
+            Err("bounded write error".to_string())
+        }));
+        assert_eq!(write_error, Err("bounded write error".to_string()));
+
+        let join_error = tauri::async_runtime::block_on(dispatch_sync_evidence_write(
+            || -> Result<bool, String> { panic!("private worker panic details") },
+        ));
+        assert_eq!(
+            join_error,
+            Err("Sync evidence export worker stopped unexpectedly.".to_string())
+        );
+    }
 
     #[test]
     fn append_unique_paths_preserves_order_without_duplicates() {

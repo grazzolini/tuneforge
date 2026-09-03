@@ -40,7 +40,7 @@ export function schedulePrecountClaveClick({
     disconnectAudioNode(gainNode);
   };
 
-  oscillator.type = "square";
+  oscillator.type = "triangle";
   oscillator.frequency.setValueAtTime(PRECOUNT_FREQUENCY_HZ, safeStartTimeSeconds);
   gainNode.gain.setValueAtTime(0.0001, safeStartTimeSeconds);
   gainNode.gain.exponentialRampToValueAtTime(PRECOUNT_GAIN, peakTimeSeconds);

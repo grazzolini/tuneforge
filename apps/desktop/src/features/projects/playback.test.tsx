@@ -475,6 +475,10 @@ describe("PlaybackProvider", () => {
         id: 1,
         payload: {
           sessionId: "proj_123:native:art_source",
+          leaseId: "project-playback",
+          generation: 1,
+          timelineRevision: 1,
+          nativeTimeUs: 1,
           state: "stopped",
           positionSeconds: 0,
           durationSeconds: 182,

@@ -5,9 +5,16 @@ download, installation, verification, signature, and publication instructions.
 
 ## [Unreleased]
 
+### Added
+
+- Moved project count-ins and playback-following metronome cues onto the native audio timeline,
+  with timing-grid-aware spacing and the same short triangle click on native and Web Audio paths.
+
 ### Fixed
 
 - Reduced Android sync reconciliation memory use for libraries with many pending projects.
+- Preserved project playback position across native output changes, rejected stale transport
+  completions, and made clearing a loop cancel queued wraps immediately.
 
 ## [1.4.0] - 2026-09-01
 

@@ -36,11 +36,21 @@ export type NativeAudioSessionSnapshot = {
   terminalDiagnostic: string | null;
 };
 
-export type NativeAudioCue = { cueIndex: number; positionSeconds: number };
+export type NativeAudioCueKind = "marker" | "precount_beat" | "precount_completion" | "metronome";
+export type NativeAudioCue = {
+  cueIndex: number;
+  positionSeconds: number;
+  kind?: "marker" | "metronome";
+  accent?: boolean;
+  gain?: number;
+};
 export type NativeAudioCueEvent = {
   generation: number;
   revision: number;
   cueIndex: number;
+  kind: NativeAudioCueKind;
+  accent: boolean;
+  gain: number;
   scheduledNativeTimeUs: number;
   actualNativeTimeUs: number;
   insertionSequence: number;
@@ -191,7 +201,11 @@ export type NativeAudioPlayRequest = NativeAudioSessionControl & {
   startTimeSeconds?: number | null;
   scheduledStartTimeSeconds?: number | null;
   startAtNativeUs?: number | null;
+  precount?: { intervalsSeconds: number[] } | null;
+  metronomeCues?: Array<NativeAudioCue & { kind: "metronome" }> | null;
 };
+
+export const nativePlayCueProvider = { current: null as ((positionSeconds: number) => Array<NativeAudioCue & { kind: "metronome" }>) | null };
 
 export type NativeAudioSeekRequest = NativeAudioSessionControl & {
   timeSeconds: number;
@@ -382,8 +396,11 @@ export function seekNativeAudio(payload: NativeAudioSeekRequest) {
   return invoke<NativeAudioSnapshot>("audio_seek", { payload });
 }
 
-export function setNativeAudioLanes(payload: NativeAudioLaneUpdate) {
-  return invoke<NativeAudioSnapshot>("audio_set_lanes", { payload });
+export function setNativeAudioLanes(
+  payload: NativeAudioLaneUpdate,
+  control?: NativeAudioSessionControl,
+) {
+  return invoke<NativeAudioSnapshot>("audio_set_lanes", control ? { payload, control } : { payload });
 }
 
 export function setNativeAudioClick(payload: NativeAudioClickRequest) {
@@ -404,10 +421,13 @@ export function scheduleNativeAudioCues(
   return invoke<NativeAudioSessionSnapshot>("audio_schedule_cues", { payload });
 }
 
-export function cancelNativeAudioCues(payload?: NativeAudioSessionControl) {
+export function cancelNativeAudioCues(
+  payload?: NativeAudioSessionControl,
+  kind?: "marker" | "metronome",
+) {
   return invoke<NativeAudioSessionSnapshot>(
     "audio_cancel_cues",
-    payload ? { payload } : undefined,
+    payload || kind ? { payload, kind } : undefined,
   );
 }
 

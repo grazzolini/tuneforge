@@ -8,6 +8,7 @@ import {
   getByAriaKeyLabel,
   getMockAudioContexts,
   getMockFetch,
+  getMockInvoke,
   markAudioReady,
   mockCreatePreview,
   mockCreateStems,
@@ -18,6 +19,7 @@ import {
   setDeferredPreviewCompletion,
   setMockAudioContextInitialState,
   setMockAudioSourceStartError,
+  setMockNativeAudioState,
   setProjects,
 } from "./test/appTestHarness";
 import {
@@ -46,6 +48,28 @@ function readStoredProjectPlaybackState() {
 
 function triggerBufferSourceEnded(source: { onended: AudioBufferSourceNode["onended"] }) {
   source.onended?.call(source as unknown as AudioBufferSourceNode, new Event("ended"));
+}
+
+function enableNativePlayback() {
+  Object.defineProperty(window, "__TAURI_INTERNALS__", {
+    configurable: true,
+    value: { invoke: getMockInvoke() },
+  });
+  setMockNativeAudioState({
+    capabilities: {
+      nativePlaybackSupported: true,
+      fallbackRequired: false,
+      fallbackReason: null,
+      backend: "desktop-cpal",
+    },
+  });
+  return () => {
+    delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+  };
+}
+
+function invokeCalls(command: string) {
+  return getMockInvoke().mock.calls.filter(([name]) => name === command);
 }
 
 describe("Desktop app project playback stems", () => {
@@ -973,6 +997,147 @@ describe("Desktop app project playback stems", () => {
     await waitFor(() => expect(vocalAudio.currentTime).toBeCloseTo(stemStartOffset, 1));
     await waitFor(() => expect(drumsAudio.currentTime).toBeCloseTo(stemStartOffset, 1));
     expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument();
+  });
+
+  it("serializes native mode handoffs without redundant lane updates", async () => {
+    const restoreTauriRuntime = enableNativePlayback();
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await generateStems(user);
+    await openPlaybackWorkspace(user);
+    await user.click(screen.getByRole("button", { name: "Play playback" }));
+    await waitFor(() => expect(invokeCalls("audio_play")).toHaveLength(1));
+    setPlaybackPosition("32.481");
+    await waitFor(() => expect(invokeCalls("audio_seek")).toHaveLength(1));
+
+    const prepareCount = invokeCalls("audio_prepare_session").length;
+    const stopCount = invokeCalls("audio_stop").length;
+    const laneCount = invokeCalls("audio_set_lanes").length;
+    const stemList = screen.getByRole("group", { name: "Playback stem list" });
+    await user.click(within(stemList).getAllByRole("button", { name: /Vocals/i })[0] as HTMLElement);
+    expect(await screen.findByRole("heading", { name: "Vocals" })).toBeInTheDocument();
+
+    await waitFor(() => expect(invokeCalls("audio_stop")).toHaveLength(stopCount + 1));
+    await waitFor(() => expect(invokeCalls("audio_prepare_session")).toHaveLength(prepareCount + 1));
+    await waitFor(() => expect(invokeCalls("audio_play")).toHaveLength(2));
+    const stemPlayPayload = (invokeCalls("audio_play")[1]?.[1] as {
+      payload?: { startTimeSeconds?: number | null };
+    } | undefined)?.payload;
+    expect(stemPlayPayload?.startTimeSeconds).toBeCloseTo(32.481, 3);
+    expect(invokeCalls("audio_set_lanes")).toHaveLength(laneCount);
+    expect(document.querySelector("audio[src]")).toBeNull();
+
+    const reversePrepareCount = invokeCalls("audio_prepare_session").length;
+    const reverseStopCount = invokeCalls("audio_stop").length;
+    await user.click(screen.getByRole("button", { name: "Full Mix" }));
+    await waitFor(() => expect(invokeCalls("audio_stop")).toHaveLength(reverseStopCount + 1));
+    await waitFor(() =>
+      expect(invokeCalls("audio_prepare_session")).toHaveLength(reversePrepareCount + 1),
+    );
+    await waitFor(() => expect(invokeCalls("audio_play")).toHaveLength(3));
+    expect(invokeCalls("audio_set_lanes")).toHaveLength(laneCount);
+    restoreTauriRuntime();
+  });
+
+  it("keeps a paused native handoff paused after its deferred Play completes", async () => {
+    const restoreTauriRuntime = enableNativePlayback();
+    const invoke = getMockInvoke();
+    const originalInvoke = invoke.getMockImplementation();
+    if (!originalInvoke) {
+      throw new Error("Mock invoke implementation was not installed.");
+    }
+    let releaseHandoffPlay!: () => void;
+    const handoffPlayGate = new Promise<void>((resolve) => {
+      releaseHandoffPlay = resolve;
+    });
+    const user = userEvent.setup();
+
+    try {
+      renderApp(["/projects/proj_123"]);
+      expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+      await generateStems(user);
+      await openPlaybackWorkspace(user);
+      await user.click(screen.getByRole("button", { name: "Play playback" }));
+      await waitFor(() => expect(invokeCalls("audio_play")).toHaveLength(1));
+
+      invoke.mockImplementation(async (command, args) => {
+        if (command === "audio_play") {
+          await handoffPlayGate;
+        }
+        return originalInvoke(command, args);
+      });
+      const stemList = screen.getByRole("group", { name: "Playback stem list" });
+      await user.click(
+        within(stemList).getAllByRole("button", { name: /Vocals/i })[0] as HTMLElement,
+      );
+      await waitFor(() => expect(invokeCalls("audio_play")).toHaveLength(2));
+      expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument();
+
+      await user.click(screen.getByRole("button", { name: "Pause playback" }));
+      await waitFor(() => expect(invokeCalls("audio_stop")).toHaveLength(2));
+      expect(screen.getByRole("button", { name: "Play playback" })).toBeInTheDocument();
+
+      releaseHandoffPlay();
+      await waitFor(() => expect(invokeCalls("audio_stop")).toHaveLength(3));
+      expect(screen.getByRole("button", { name: "Play playback" })).toBeInTheDocument();
+      expect(document.querySelector("audio[src]")).toBeNull();
+    } finally {
+      releaseHandoffPlay();
+      invoke.mockImplementation(originalInvoke);
+      restoreTauriRuntime();
+    }
+  });
+
+  it("cancels a native handoff paused while its previous Stop is deferred", async () => {
+    const restoreTauriRuntime = enableNativePlayback();
+    const invoke = getMockInvoke();
+    const originalInvoke = invoke.getMockImplementation();
+    if (!originalInvoke) {
+      throw new Error("Mock invoke implementation was not installed.");
+    }
+    let releaseHandoffStop!: () => void;
+    const handoffStopGate = new Promise<void>((resolve) => {
+      releaseHandoffStop = resolve;
+    });
+    const user = userEvent.setup();
+
+    try {
+      renderApp(["/projects/proj_123"]);
+      expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+      await generateStems(user);
+      await openPlaybackWorkspace(user);
+      await user.click(screen.getByRole("button", { name: "Play playback" }));
+      await waitFor(() => expect(invokeCalls("audio_play")).toHaveLength(1));
+
+      invoke.mockImplementation(async (command, args) => {
+        if (command === "audio_stop") {
+          await handoffStopGate;
+        }
+        return originalInvoke(command, args);
+      });
+      const stemList = screen.getByRole("group", { name: "Playback stem list" });
+      await user.click(
+        within(stemList).getAllByRole("button", { name: /Vocals/i })[0] as HTMLElement,
+      );
+      await waitFor(() => expect(invokeCalls("audio_stop")).toHaveLength(1));
+      expect(invokeCalls("audio_prepare_session")).toHaveLength(1);
+
+      await user.click(screen.getByRole("button", { name: "Pause playback" }));
+      expect(screen.getByRole("button", { name: "Play playback" })).toBeInTheDocument();
+      releaseHandoffStop();
+
+      await waitFor(() => expect(invokeCalls("audio_prepare_session")).toHaveLength(2));
+      await waitFor(() => expect(invokeCalls("audio_stop")).toHaveLength(2));
+      expect(invokeCalls("audio_play")).toHaveLength(1);
+      expect(screen.getByRole("button", { name: "Play playback" })).toBeInTheDocument();
+      expect(document.querySelector("audio[src]")).toBeNull();
+    } finally {
+      releaseHandoffStop();
+      invoke.mockImplementation(originalInvoke);
+      restoreTauriRuntime();
+    }
   });
 
   it("rewinds stem playback after buffered audio reaches the end", async () => {

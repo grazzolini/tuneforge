@@ -317,13 +317,35 @@ pub fn audio_play(
     );
     engine.transport.set_diagnostics_generation(generation);
     let position = payload.start_time_seconds;
-    let start_at = payload.start_at_native_us;
+    let metronome_cues = payload.metronome_cues.clone();
+    let precount = payload
+        .precount
+        .as_ref()
+        .map(|value| value.intervals_seconds.clone());
+    if precount.as_ref().is_some_and(|intervals| {
+        intervals.is_empty()
+            || intervals.len() > 8
+            || intervals
+                .iter()
+                .any(|value| !value.is_finite() || *value <= 0.0)
+    }) || (precount.is_some() && payload.start_at_native_us.is_some())
+    {
+        return Err("invalid_precount_schedule".to_string());
+    }
+    let requested_start = payload.start_at_native_us;
     let expected = payload
         .control
         .timeline_revision
         .unwrap_or_else(|| engine.session.snapshot().timeline_revision);
-    if start_at.is_some_and(|deadline| deadline <= timeline::native_time_us()) {
+    if requested_start.is_some_and(|deadline| deadline <= timeline::native_time_us()) {
         return Err("start_deadline_missed".to_string());
+    }
+    if metronome_cues.as_ref().is_some_and(|cues| {
+        cues.iter()
+            .any(|cue| cue.kind != timeline::CueKind::Metronome)
+            || timeline::validate_cues(cues).is_err()
+    }) {
+        return Err("invalid_cue_schedule".to_string());
     }
     if let Err(error) = engine.transport.play(payload) {
         if let Some(event) = engine
@@ -335,14 +357,33 @@ pub fn audio_play(
         return Err(error);
     }
     let timeline = engine.session.timeline();
-    let armed = timeline
-        .lock()
-        .map_err(|_| "timeline_unavailable".to_string())?
-        .arm(expected, position, start_at, timeline::native_time_us());
-    if let Err(code) = armed {
+    let now = timeline::native_time_us();
+    let first_precount = precount.as_ref().map(|_| now.saturating_add(35_000));
+    let source_start = precount
+        .as_ref()
+        .zip(first_precount)
+        .map(|(intervals, first)| {
+            intervals.iter().fold(first, |time, interval| {
+                time.saturating_add((interval * 1_000_000.0) as u64)
+            })
+        })
+        .or(requested_start);
+    let mut timeline = timeline.lock().map_err(|_| "timeline_unavailable")?;
+    if let Err(code) = timeline.arm(expected, position, source_start, now) {
+        drop(timeline);
         engine.transport.pause();
         return Err(code.to_string());
     }
+    let revision = timeline.revision();
+    if let Some(cues) = metronome_cues {
+        timeline.replace_metronome(revision, cues)?;
+    }
+    if let (Some(intervals), Some(first)) = (precount.as_ref(), first_precount) {
+        timeline
+            .schedule_precount(revision, intervals, first)
+            .map_err(str::to_string)?;
+    }
+    drop(timeline);
     engine.emit_session(&app);
     Ok(engine.output_snapshot())
 }
@@ -627,7 +668,14 @@ pub fn audio_schedule_cues(
     payload: session::CueCommand,
 ) -> Result<session::SessionSnapshot, String> {
     let mut engine = state.engine()?;
-    engine.authorize(session::SessionOwner::Cue, &payload.session, false)?;
+    let owner = engine
+        .session
+        .snapshot()
+        .owner
+        .unwrap_or(session::SessionOwner::Cue);
+    if !engine.authorize(owner, &payload.session, false)? {
+        return Ok(engine.session.snapshot());
+    }
     let revision = payload
         .session
         .timeline_revision
@@ -648,10 +696,18 @@ pub fn audio_cancel_cues(
     app: AppHandle,
     state: State<'_, NativeAudioState>,
     payload: Option<session::SessionCommand>,
+    kind: Option<timeline::CueKind>,
 ) -> Result<session::SessionSnapshot, String> {
     let mut engine = state.engine()?;
     let payload = payload.unwrap_or_default();
-    engine.authorize(session::SessionOwner::Cue, &payload, false)?;
+    let owner = engine
+        .session
+        .snapshot()
+        .owner
+        .unwrap_or(session::SessionOwner::Cue);
+    if !engine.authorize(owner, &payload, false)? {
+        return Ok(engine.session.snapshot());
+    }
     let revision = payload
         .timeline_revision
         .unwrap_or_else(|| engine.session.snapshot().timeline_revision);
@@ -660,7 +716,7 @@ pub fn audio_cancel_cues(
         .timeline()
         .lock()
         .map_err(|_| "timeline_unavailable")?
-        .cancel(revision)
+        .cancel(revision, kind)
         .map_err(str::to_string)?;
     engine.emit_session(&app);
     Ok(engine.session.snapshot())
@@ -669,6 +725,86 @@ pub fn audio_cancel_cues(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn duplicate_cue_operations_do_not_mutate_the_timeline() {
+        let mut coordinator = session::SessionCoordinator::new(true, true);
+        let prepare = session::SessionCommand {
+            lease_id: Some("project-playback".into()),
+            operation_id: Some("prepare".into()),
+            ..Default::default()
+        };
+        let session::Acquire::Release { token, lease, .. } =
+            coordinator.begin_acquire(session::SessionOwner::Playback, &prepare)
+        else {
+            panic!()
+        };
+        coordinator
+            .finish_acquire(
+                token,
+                session::SessionOwner::Playback,
+                lease,
+                &prepare,
+                10.0,
+                1.0,
+            )
+            .unwrap();
+        let command = |operation: &str| session::SessionCommand {
+            lease_id: Some("project-playback".into()),
+            generation: Some(1),
+            timeline_revision: Some(1),
+            operation_id: Some(operation.into()),
+        };
+        let cue = timeline::CueRequest {
+            cue_index: 1,
+            position_seconds: 0.001,
+            kind: timeline::CueKind::Metronome,
+            accent: false,
+            gain: 1.0,
+        };
+        assert!(coordinator
+            .authorize(session::SessionOwner::Playback, &command("schedule"), false)
+            .unwrap());
+        coordinator
+            .timeline()
+            .lock()
+            .unwrap()
+            .schedule(1, vec![cue.clone()])
+            .unwrap();
+        assert!(!coordinator
+            .authorize(session::SessionOwner::Playback, &command("schedule"), false)
+            .unwrap());
+        assert!(coordinator
+            .authorize(session::SessionOwner::Playback, &command("cancel"), false)
+            .unwrap());
+        coordinator
+            .timeline()
+            .lock()
+            .unwrap()
+            .cancel(1, None)
+            .unwrap();
+        assert!(coordinator
+            .authorize(
+                session::SessionOwner::Playback,
+                &command("reschedule"),
+                false
+            )
+            .unwrap());
+        coordinator
+            .timeline()
+            .lock()
+            .unwrap()
+            .schedule(1, vec![cue])
+            .unwrap();
+        assert!(!coordinator
+            .authorize(session::SessionOwner::Playback, &command("cancel"), false)
+            .unwrap());
+        let timeline = coordinator.timeline();
+        let mut timeline = timeline.lock().unwrap();
+        timeline.configure_sample_rate(1_000);
+        timeline.arm(1, None, None, 0).unwrap();
+        assert_eq!(timeline.advance(2, 0).cues.len(), 1);
+    }
 
     #[test]
     fn runtime_terminal_report_bridges_before_one_explicit_retry() {

@@ -4,16 +4,45 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   advanceMockAnimationFrames,
   findAudioByArtifactId,
+  emitMockNativeAudioCue,
+  emitMockSystemMediaPlaybackControl,
   getMockAudioContexts,
+  getMockInvoke,
   markAudioReady,
   resetAppTestHarness,
   renderApp,
+  setMockNativeAudioState,
   setProjectAnalysis,
   setProjects,
 } from "./test/appTestHarness";
 
 function getMetronomeAudioContext() {
   return getMockAudioContexts().find((context) => context.createdOscillators.length > 0);
+}
+
+function createDeferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((nextResolve) => { resolve = nextResolve; });
+  return { promise, resolve };
+}
+
+function latestNativeSessionId() {
+  const prepareCall = [...getMockInvoke().mock.calls]
+    .reverse()
+    .find(([command]) => command === "audio_prepare_session");
+  const payload = (prepareCall?.[1] as { payload?: { sessionId?: string } } | undefined)?.payload;
+  if (!payload?.sessionId) {
+    throw new Error("Native audio session was not prepared.");
+  }
+  return payload.sessionId;
+}
+
+function readPlaybackE2ETelemetry() {
+  const telemetry = window.__TUNEFORGE_PLAYBACK_E2E__?.read();
+  if (!telemetry) {
+    throw new Error("Playback E2E telemetry bridge was not exposed.");
+  }
+  return telemetry;
 }
 
 const timingAnalysis = {
@@ -232,6 +261,230 @@ describe("Desktop app tools metronome", () => {
         ) ?? [];
       expect(frequencies).toContain(1760);
     });
+  });
+
+  it("schedules normal-Tauri follow cues with the project control tuple", async () => {
+    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    setMockNativeAudioState({ capabilities: {
+      nativePlaybackSupported: true, fallbackRequired: false,
+      fallbackReason: null, backend: "desktop-cpal",
+    } });
+    setProjectAnalysis("proj_123", timingAnalysis);
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: "Playback" }));
+    await user.click(screen.getByRole("button", { name: "Play playback" }));
+    await waitFor(() => expect(getMockInvoke().mock.calls.some(([name]) => name === "audio_play")).toBe(true));
+    await user.click(screen.getByRole("link", { name: "Tools" }));
+    await user.click(await screen.findByRole("tab", { name: "Metronome" }));
+    await user.click(screen.getByLabelText("Follow project playback"));
+    await waitFor(() => {
+      expect(getMockInvoke().mock.calls.some(([name]) => name === "audio_get_session_snapshot")).toBe(true);
+      const call = getMockInvoke().mock.calls.find(([name]) => name === "audio_schedule_cues");
+      const payload = (call?.[1] as { payload?: { cues?: unknown[] } })?.payload;
+      expect(payload).toMatchObject({
+        leaseId: "project-playback", generation: 1, timelineRevision: 1,
+      });
+      expect(payload?.cues?.[0]).toMatchObject({
+        kind: "metronome", positionSeconds: 0, accent: true, gain: 0.8,
+      });
+    });
+    expect(getMockAudioContexts()).toHaveLength(0);
+    act(() => emitMockNativeAudioCue({
+      generation: 1, revision: 1, cueIndex: 0, kind: "metronome",
+      accent: true, gain: 0.8, scheduledNativeTimeUs: 10,
+      actualNativeTimeUs: 10, insertionSequence: 1,
+    }));
+    const initialPlayCount = getMockInvoke().mock.calls.filter(([name]) => name === "audio_play").length;
+    act(() => emitMockSystemMediaPlaybackControl({ action: "pause" }));
+    await waitFor(() => expect(getMockInvoke().mock.calls.some(([name]) => name === "audio_pause")).toBe(true));
+    act(() => emitMockSystemMediaPlaybackControl({ action: "play" }));
+    await waitFor(() => expect(getMockInvoke().mock.calls.filter(([name]) => name === "audio_play")).toHaveLength(initialPlayCount + 1));
+    expect(getMockInvoke().mock.calls.filter(([name]) => name === "audio_schedule_cues")).toHaveLength(1);
+    const resumeCalls = getMockInvoke().mock.calls.filter(([name]) => name === "audio_play");
+    const resumePayload = (resumeCalls[resumeCalls.length - 1]?.[1] as {
+      payload?: { startTimeSeconds?: number | null; metronomeCues?: Array<{ positionSeconds: number }> };
+    })?.payload;
+    expect(resumePayload?.startTimeSeconds).toBe(0);
+    expect(resumePayload?.metronomeCues?.[0]?.positionSeconds).toBe(0);
+
+    let scheduleCount = 1;
+    await user.clear(screen.getByLabelText("Tempo BPM"));
+    await user.type(screen.getByLabelText("Tempo BPM"), "90{Enter}");
+    await waitFor(() => expect(getMockInvoke().mock.calls.filter(([name]) => name === "audio_schedule_cues").length).toBeGreaterThan(scheduleCount));
+    scheduleCount = getMockInvoke().mock.calls.filter(([name]) => name === "audio_schedule_cues").length;
+    fireEvent.change(screen.getByLabelText("Beats per bar"), { target: { value: "3" } });
+    await waitFor(() => expect(getMockInvoke().mock.calls.filter(([name]) => name === "audio_schedule_cues").length).toBeGreaterThan(scheduleCount));
+    scheduleCount = getMockInvoke().mock.calls.filter(([name]) => name === "audio_schedule_cues").length;
+    await user.click(screen.getByLabelText("Accent first beat"));
+    await waitFor(() => expect(getMockInvoke().mock.calls.filter(([name]) => name === "audio_schedule_cues").length).toBeGreaterThan(scheduleCount));
+    scheduleCount = getMockInvoke().mock.calls.filter(([name]) => name === "audio_schedule_cues").length;
+    fireEvent.change(screen.getByLabelText("Metronome volume"), { target: { value: "0.42" } });
+    await waitFor(() => expect(getMockInvoke().mock.calls.filter(([name]) => name === "audio_schedule_cues").length).toBeGreaterThan(scheduleCount));
+    const replacement = [...getMockInvoke().mock.calls].reverse().find(([name]) => name === "audio_schedule_cues");
+    expect((replacement?.[1] as { payload?: { cues?: Array<{ accent: boolean; gain: number }> } })
+      ?.payload?.cues?.[0]).toMatchObject({ accent: false, gain: 0.42 });
+
+    await user.click(screen.getByLabelText("Follow project playback"));
+    await waitFor(() => expect(getMockInvoke().mock.calls.some(([name, args]) =>
+      name === "audio_cancel_cues" && (args as { kind?: string })?.kind === "metronome",
+    )).toBe(true));
+    const [schedule, cancel] = ["audio_schedule_cues", "audio_cancel_cues"].map((name) =>
+      (getMockInvoke().mock.calls.find(([command]) => command === name)?.[1] as {
+        payload?: { operationId?: string };
+      })?.payload?.operationId,
+    );
+    expect(cancel).not.toBe(schedule);
+    act(() => emitMockSystemMediaPlaybackControl({ action: "pause" }));
+    await waitFor(() => expect(getMockInvoke().mock.calls.filter(([name]) => name === "audio_pause")).toHaveLength(2));
+    act(() => emitMockSystemMediaPlaybackControl({ action: "play" }));
+    await waitFor(() => expect(getMockInvoke().mock.calls.filter(([name]) => name === "audio_play")).toHaveLength(initialPlayCount + 2));
+    const disabledCalls = getMockInvoke().mock.calls.filter(([name]) => name === "audio_play");
+    expect((disabledCalls[disabledCalls.length - 1]?.[1] as {
+      payload?: { metronomeCues?: unknown };
+    })?.payload?.metronomeCues).toBeUndefined();
+    delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+  });
+
+  it("replaces followed cues from the authoritative completed native seek position", async () => {
+    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    setMockNativeAudioState({ capabilities: {
+      nativePlaybackSupported: true, fallbackRequired: false,
+      fallbackReason: null, backend: "desktop-cpal",
+    } });
+    setProjectAnalysis("proj_123", timingAnalysis);
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+    await screen.findByRole("heading", { name: "Demo Song" });
+    await user.click(screen.getByRole("tab", { name: "Playback" }));
+    await user.click(screen.getByRole("button", { name: "Play playback" }));
+    await user.click(screen.getByRole("link", { name: "Tools" }));
+    await user.click(await screen.findByRole("tab", { name: "Metronome" }));
+    await user.click(screen.getByLabelText("Follow project playback"));
+    await waitFor(() => expect(getMockInvoke().mock.calls.some(([name]) => name === "audio_schedule_cues")).toBe(true));
+    await user.click(screen.getByRole("link", { name: "Open Demo Song project" }));
+    await user.click(screen.getByRole("tab", { name: "Playback" }));
+
+    const invoke = getMockInvoke();
+    const originalInvoke = invoke.getMockImplementation();
+    const preparedSessionId = latestNativeSessionId();
+    let authoritativePosition = 0.48;
+    invoke.mockImplementation(async (command, args) => command === "audio_seek" ? {
+      sessionId: preparedSessionId, state: "playing", positionSeconds: authoritativePosition,
+      durationSeconds: 182, playbackRate: 1, nativePlaybackSupported: true,
+      fallbackReason: null, lanes: [], bufferHealth: [], leaseId: "project-playback",
+      generation: 1, timelineRevision: 2, nativeTimeUs: 10,
+    } : originalInvoke!(command, args));
+    const beforeSeek = invoke.mock.calls.filter(([name]) => name === "audio_schedule_cues").length;
+    fireEvent.change(screen.getByLabelText("Playback position"), { target: { value: "0.2" } });
+    await waitFor(() => expect(invoke.mock.calls.filter(([name]) => name === "audio_schedule_cues")).toHaveLength(beforeSeek + 1));
+    const replacement = [...invoke.mock.calls].reverse().find(([name]) => name === "audio_schedule_cues");
+    const replacementPayload = (replacement?.[1] as {
+      payload?: { timelineRevision?: number; cues?: Array<{ positionSeconds: number }> };
+    })?.payload;
+    expect(replacementPayload?.timelineRevision).toBe(2);
+    expect(replacementPayload?.cues?.[0]?.positionSeconds).toBe(0.48);
+    authoritativePosition = 2;
+    const beforeEmptySeek = invoke.mock.calls.filter(([name]) => name === "audio_cancel_cues").length;
+    fireEvent.change(screen.getByLabelText("Playback position"), { target: { value: "0.3" } });
+    await waitFor(() => expect(invoke.mock.calls.filter(([name]) => name === "audio_cancel_cues")).toHaveLength(beforeEmptySeek + 1));
+    const cancel = [...invoke.mock.calls].reverse().find(([name]) => name === "audio_cancel_cues");
+    expect(cancel?.[1]).toMatchObject({ kind: "metronome", payload: { timelineRevision: 2 } });
+    delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+  });
+
+  it("ignores a native seek snapshot from a mismatched session", async () => {
+    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    setMockNativeAudioState({ capabilities: {
+      nativePlaybackSupported: true, fallbackRequired: false,
+      fallbackReason: null, backend: "desktop-cpal",
+    } });
+    setProjectAnalysis("proj_123", timingAnalysis);
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+    await screen.findByRole("heading", { name: "Demo Song" });
+    await user.click(screen.getByRole("tab", { name: "Playback" }));
+    await user.click(screen.getByRole("button", { name: "Play playback" }));
+    await user.click(screen.getByRole("link", { name: "Tools" }));
+    await user.click(await screen.findByRole("tab", { name: "Metronome" }));
+    await user.click(screen.getByLabelText("Follow project playback"));
+    await waitFor(() => expect(getMockInvoke().mock.calls.some(([name]) => name === "audio_schedule_cues")).toBe(true));
+    await user.click(screen.getByRole("link", { name: "Open Demo Song project" }));
+    await user.click(screen.getByRole("tab", { name: "Playback" }));
+
+    const invoke = getMockInvoke();
+    const originalInvoke = invoke.getMockImplementation();
+    invoke.mockImplementation(async (command, args) => command === "audio_seek" ? {
+      sessionId: "mismatched-session", state: "playing", positionSeconds: 48,
+      durationSeconds: 182, playbackRate: 1, nativePlaybackSupported: true,
+      fallbackReason: null, lanes: [], bufferHealth: [], leaseId: "project-playback",
+      generation: 1, timelineRevision: 2, nativeTimeUs: 10,
+    } : originalInvoke!(command, args));
+    const scheduleCount = invoke.mock.calls.filter(([name]) => name === "audio_schedule_cues").length;
+    const cancelCount = invoke.mock.calls.filter(([name]) => name === "audio_cancel_cues").length;
+    fireEvent.change(screen.getByLabelText("Playback position"), { target: { value: "0.2" } });
+    await waitFor(() => expect(invoke.mock.calls.filter(([name]) => name === "audio_seek")).toHaveLength(1));
+    await act(async () => Promise.resolve());
+
+    expect(invoke.mock.calls.filter(([name]) => name === "audio_schedule_cues")).toHaveLength(scheduleCount);
+    expect(invoke.mock.calls.filter(([name]) => name === "audio_cancel_cues")).toHaveLength(cancelCount);
+    expect(readPlaybackE2ETelemetry().positionSeconds).not.toBe(48);
+    delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+  });
+
+  it("ignores stale follow scheduling and cleanup snapshots across reactivation", async () => {
+    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    setMockNativeAudioState({ capabilities: {
+      nativePlaybackSupported: true, fallbackRequired: false,
+      fallbackReason: null, backend: "desktop-cpal",
+    } });
+    setProjectAnalysis("proj_123", timingAnalysis);
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+    await screen.findByRole("heading", { name: "Demo Song" });
+    await user.click(screen.getByRole("tab", { name: "Playback" }));
+    await user.click(screen.getByRole("button", { name: "Play playback" }));
+    await user.click(screen.getByRole("link", { name: "Tools" }));
+    await user.click(await screen.findByRole("tab", { name: "Metronome" }));
+
+    const snapshot = {
+      status: "output" as const, owner: "playback" as const, leaseId: "project-playback",
+      generation: 1, timelineRevision: 1, nativeTimeUs: 1, positionSeconds: 0,
+      playbackRate: 1, availabilityReason: null, terminalDiagnostic: null,
+    };
+    const staleSchedule = createDeferred<typeof snapshot>();
+    const staleCleanup = createDeferred<typeof snapshot>();
+    const currentSchedule = createDeferred<typeof snapshot>();
+    const snapshotPromises = [staleSchedule.promise, staleCleanup.promise, currentSchedule.promise];
+    let snapshotCallCount = 0;
+    const invoke = getMockInvoke();
+    const originalInvoke = invoke.getMockImplementation();
+    invoke.mockImplementation(async (command, args) => {
+      if (command === "audio_get_session_snapshot" && snapshotCallCount < snapshotPromises.length) {
+        return snapshotPromises[snapshotCallCount++];
+      }
+      return originalInvoke!(command, args);
+    });
+
+    await user.click(screen.getByLabelText("Follow project playback"));
+    await waitFor(() => expect(snapshotCallCount).toBe(1));
+    await user.click(screen.getByLabelText("Follow project playback"));
+    await waitFor(() => expect(snapshotCallCount).toBe(2));
+    await act(async () => { staleSchedule.resolve(snapshot); });
+    expect(invoke.mock.calls.filter(([name]) => name === "audio_schedule_cues")).toHaveLength(0);
+
+    await user.click(screen.getByLabelText("Follow project playback"));
+    await waitFor(() => expect(snapshotCallCount).toBe(3));
+    await act(async () => { currentSchedule.resolve(snapshot); });
+    await waitFor(() => expect(invoke.mock.calls.filter(([name]) => name === "audio_schedule_cues")).toHaveLength(1));
+    await act(async () => { staleCleanup.resolve(snapshot); });
+    expect(invoke.mock.calls.filter(([name]) => name === "audio_cancel_cues")).toHaveLength(0);
+
+    invoke.mockImplementation(originalInvoke!);
+    await user.click(screen.getByLabelText("Follow project playback"));
+    await waitFor(() => expect(invoke.mock.calls.filter(([name]) => name === "audio_cancel_cues")).toHaveLength(1));
+    delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
   });
 
   it("keeps synced metronome armed when opening the playback project page", async () => {

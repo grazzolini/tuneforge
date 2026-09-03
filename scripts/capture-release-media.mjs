@@ -13,6 +13,12 @@ const desktopRequire = createRequire(new URL("../apps/desktop/package.json", imp
 const repoRoot = fileURLToPath(new URL("../", import.meta.url));
 const defaultOutputDir = resolve(repoRoot, "apps/site/public/media/generated");
 const fixtureTimestamp = "2026-04-18T13:16:00.000Z";
+const releaseMediaNativeAudioMetadata = Object.freeze({
+  leaseId: "project-playback",
+  generation: 1,
+  timelineRevision: 1,
+  nativeTimeUs: 1,
+});
 const childTailLines = 40;
 const releaseMediaCaptureCatalog = [
   {
@@ -546,11 +552,12 @@ async function installPageStabilizers(
   const mobileFixture = entry?.runtime === "mobile"
     ? mobilePlaybackFixture(mobileFixtureOptions)
     : null;
-  await page.addInitScript(({ animatePlayback, mobileFixture, theme }) => {
+  await page.addInitScript(({ animatePlayback, mobileFixture, nativeAudioMetadata, theme }) => {
     const fixedNow = Date.parse("2026-04-18T13:16:00.000Z");
     let callbackId = 1;
     const callbacks = new Map();
     const eventListeners = new Map();
+    const powerInhibitionReasons = new Set();
     let tunerFrameTimer = null;
     let playbackPositionTimer = null;
     let playbackSnapshot = {
@@ -561,6 +568,7 @@ async function installPageStabilizers(
       playbackRate: 1,
       nativePlaybackSupported: true,
       fallbackReason: null,
+      ...nativeAudioMetadata,
       lanes: [],
       bufferHealth: [],
     };
@@ -678,6 +686,7 @@ async function installPageStabilizers(
       playbackSnapshot = {
         ...playbackSnapshot,
         ...overrides,
+        ...nativeAudioMetadata,
       };
       playbackSnapshot.bufferHealth = bufferHealthForLanes(playbackSnapshot.lanes);
       return { ...playbackSnapshot };
@@ -858,6 +867,9 @@ async function installPageStabilizers(
           nativePlaybackSupported: true,
           fallbackReason: null,
           laneCount: lanes.length,
+          generation: playbackSnapshot.generation,
+          timelineRevision: playbackSnapshot.timelineRevision,
+          nativeTimeUs: playbackSnapshot.nativeTimeUs,
         };
       }
       if (command === "audio_play") {
@@ -955,6 +967,23 @@ async function installPageStabilizers(
           error: "System input volume unavailable during release media capture.",
         };
       }
+      if (command === "power_inhibition_set_activity") {
+        const reason = args?.reason;
+        if (typeof reason === "string") {
+          if (args?.active) powerInhibitionReasons.add(reason);
+          else powerInhibitionReasons.delete(reason);
+        }
+        const active = powerInhibitionReasons.size > 0;
+        return {
+          phase: active ? "active" : "inactive",
+          backend: active ? "macos-iopm" : null,
+          activeReasons: [...powerInhibitionReasons],
+          screenProtected: active,
+          backgroundProtected: active,
+          errorCode: null,
+          errorMessage: null,
+        };
+      }
       if (command === "sync_transport_status" || command === "sync_transport_start_listener") {
         return releaseMediaSyncStatus();
       }
@@ -1037,7 +1066,12 @@ async function installPageStabilizers(
         }
       },
     };
-  }, { animatePlayback: motionPolicy.animatePlayback, mobileFixture, theme: options.theme });
+  }, {
+    animatePlayback: motionPolicy.animatePlayback,
+    mobileFixture,
+    nativeAudioMetadata: releaseMediaNativeAudioMetadata,
+    theme: options.theme,
+  });
 }
 
 function captureMotionPolicy(captureKind) {
@@ -2384,5 +2418,6 @@ export {
   overflowToScrollDelta,
   parseOptions,
   releaseMediaCaptureCatalog,
+  releaseMediaNativeAudioMetadata,
   validateReleaseMediaCatalog,
 };

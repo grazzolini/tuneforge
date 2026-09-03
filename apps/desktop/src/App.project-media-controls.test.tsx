@@ -5,6 +5,7 @@ import { readPlaybackLiveDiagnostics } from "./lib/playbackDiagnostics";
 import { readBrowserWakeLockStatus } from "./lib/powerInhibition";
 import {
   deferNextMockSystemMediaControlListen,
+  emitMockNativeAudioTerminal,
   emitMockNativePlaybackError,
   emitMockNativePlaybackPosition,
   emitMockSystemMediaPlaybackControl,
@@ -367,6 +368,7 @@ describe("Desktop app project media controls", () => {
   });
 
   it("waits for lazy transport before exposing native fallback media sources", async () => {
+    vi.stubEnv("VITE_TUNEFORGE_FORCE_WEB_AUDIO", "1");
     const transport = deferWebMediaTransport();
     const restoreTauriRuntime = mockTauriRuntime();
     const user = userEvent.setup();
@@ -535,6 +537,7 @@ describe("Desktop app project media controls", () => {
         state: "playing",
       });
     });
+    vi.stubEnv("VITE_TUNEFORGE_FORCE_WEB_AUDIO", "1");
     act(() => {
       emitMockNativePlaybackError({
         sessionId,
@@ -565,6 +568,7 @@ describe("Desktop app project media controls", () => {
   });
 
   it("activates Web Audio system controls only after native play falls back before start", async () => {
+    vi.stubEnv("VITE_TUNEFORGE_FORCE_WEB_AUDIO", "1");
     const restoreTauriRuntime = mockTauriRuntime();
     const user = userEvent.setup();
     setMockNativeAudioState({
@@ -657,6 +661,7 @@ describe("Desktop app project media controls", () => {
     await waitFor(() => expect(screen.getByLabelText("Playback position")).toHaveValue("42"));
 
     const releaseCount = nativePowerProtectionCallCount(false);
+    vi.stubEnv("VITE_TUNEFORGE_FORCE_WEB_AUDIO", "1");
     act(() => {
       emitMockNativePlaybackError({
         sessionId,
@@ -729,7 +734,7 @@ describe("Desktop app project media controls", () => {
     restoreTauriRuntime();
   });
 
-  it("retries native playback once after a failed paused session", async () => {
+  it("prepares once on the first explicit Play after a terminal event", async () => {
     const restoreTauriRuntime = mockTauriRuntime();
     const user = userEvent.setup();
     setMockNativeAudioState({
@@ -748,16 +753,16 @@ describe("Desktop app project media controls", () => {
     await waitForNativeControls();
     const nativePlayCount = invokeCalls("audio_play").length;
     const prepareCount = invokeCalls("audio_prepare_session").length;
-    const sessionId = latestNativeSessionId();
 
     await user.click(screen.getByRole("button", { name: "Pause playback" }));
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Play playback" })).toBeInTheDocument(),
     );
     act(() => {
-      emitMockNativePlaybackError({
-        sessionId,
-        code: "stream_invalidated",
+      emitMockNativeAudioTerminal({
+        generation: 1,
+        code: "output_stream_failure",
+        nativeTimeUs: 10,
       });
     });
 
@@ -766,9 +771,6 @@ describe("Desktop app project media controls", () => {
       currentPath: "none",
       nativeSessionLaneCount: null,
     });
-    expect(window.localStorage.getItem("tuneforge.playback-native-error")).toBe(
-      "Native playback stream was interrupted.",
-    );
     expect(invokeCalls("audio_play")).toHaveLength(nativePlayCount);
 
     await user.click(screen.getByRole("button", { name: "Play playback" }));
@@ -782,7 +784,7 @@ describe("Desktop app project media controls", () => {
     restoreTauriRuntime();
   });
 
-  it("prepares a fresh native session after a playback command fails", async () => {
+  it("retries a failed native play only after another explicit Play", async () => {
     const restoreTauriRuntime = mockTauriRuntime();
     const user = userEvent.setup();
     const mockInvoke = getMockInvoke();
@@ -813,16 +815,16 @@ describe("Desktop app project media controls", () => {
       await openPlaybackWorkspace(user);
 
       await user.click(screen.getByRole("button", { name: "Play playback" }));
-      const sourceAudio = await waitFor(() => findAudioByArtifactId("art_source"));
-      markAudioReady(sourceAudio);
-      await waitForWebOwnerControls();
+      await waitFor(() =>
+        expect(readPlaybackLiveDiagnostics()).toMatchObject({
+          currentState: "error",
+          currentPath: "none",
+        }),
+      );
+      expect(document.querySelector("audio[src]")).toBeNull();
       const prepareCount = invokeCalls("audio_prepare_session").length;
       const nativePlayCount = invokeCalls("audio_play").length;
 
-      await user.click(screen.getByRole("button", { name: "Pause playback" }));
-      await waitFor(() =>
-        expect(screen.getByRole("button", { name: "Play playback" })).toBeInTheDocument(),
-      );
       await user.click(screen.getByRole("button", { name: "Play playback" }));
       await waitForNativeControls();
 
@@ -997,6 +999,7 @@ describe("Desktop app project media controls", () => {
       expect(hasNativePowerProtection(true)).toBe(false);
 
       const sessionId = latestNativeSessionId();
+      vi.stubEnv("VITE_TUNEFORGE_FORCE_WEB_AUDIO", "1");
       act(() => {
         emitMockNativePlaybackError({
           sessionId,
@@ -1015,7 +1018,7 @@ describe("Desktop app project media controls", () => {
       await Promise.resolve();
       expect(readPlaybackLiveDiagnostics()).toMatchObject({
         currentState: "playing",
-        currentPath: "web-fallback",
+        currentPath: "web-forced",
       });
     } finally {
       nativePlayBlock.release?.();

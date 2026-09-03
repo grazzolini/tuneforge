@@ -297,6 +297,7 @@ export function useProjectViewModel() {
     seekTo,
     stopPlayback,
     togglePlayback,
+    updateActiveLoopRange,
   } = usePlayback();
   const {
     defaultPlaybackDisplayMode,
@@ -1451,6 +1452,7 @@ export function useProjectViewModel() {
         loopAlignmentMode,
         analysisTimingGrid,
       );
+      updateActiveLoopRange?.(nextLoopRange);
       setLoopRange(nextLoopRange);
       setPendingLoopStartSeconds(null);
       setLoopStatusMessage("Loop set");
@@ -1459,6 +1461,7 @@ export function useProjectViewModel() {
     }
 
     if (loopRange) {
+      updateActiveLoopRange?.(null);
       setLoopRange(null);
       setLoopStatusMessage("Loop cleared");
       return;

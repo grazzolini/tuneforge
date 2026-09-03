@@ -292,17 +292,40 @@ describe("native audio adapter", () => {
       leaseId: "practice",
       generation: 7,
       timelineRevision: 3,
-      cues: [{ cueIndex: 2, positionSeconds: 1.5 }],
+      operationId: "metro-1",
+      cues: [{ cueIndex: 2, positionSeconds: 1.5, kind: "metronome", accent: true, gain: 0.4 }],
     });
-    await cancelNativeAudioCues({ leaseId: "practice", timelineRevision: 3 });
+    await cancelNativeAudioCues({ leaseId: "practice", timelineRevision: 3 }, "metronome");
 
     expect(mockInvoke.mock.calls).toEqual([
       ["audio_get_session_snapshot"],
       ["audio_schedule_cues", { payload: {
-        leaseId: "practice", generation: 7, timelineRevision: 3,
-        cues: [{ cueIndex: 2, positionSeconds: 1.5 }],
+        leaseId: "practice", generation: 7, timelineRevision: 3, operationId: "metro-1",
+        cues: [{ cueIndex: 2, positionSeconds: 1.5, kind: "metronome", accent: true, gain: 0.4 }],
       } }],
-      ["audio_cancel_cues", { payload: { leaseId: "practice", timelineRevision: 3 } }],
+      ["audio_cancel_cues", {
+        payload: { leaseId: "practice", timelineRevision: 3 }, kind: "metronome",
+      }],
+    ]);
+  });
+
+  it("threads control metadata through precount play and lane updates", async () => {
+    mockInvoke.mockResolvedValue(snapshot);
+    const control = {
+      leaseId: "project-playback", generation: 4, timelineRevision: 2, operationId: "play-1",
+    };
+    const metronomeCues = [
+      { cueIndex: 0, positionSeconds: 0, kind: "metronome" as const, accent: true, gain: 0.8 },
+    ];
+    await playNativeAudio({
+      ...control, startTimeSeconds: 0, precount: { intervalsSeconds: [0.5, 0.5] }, metronomeCues,
+    });
+    await setNativeAudioLanes({ lanes: [] }, control);
+    expect(mockInvoke.mock.calls).toEqual([
+      ["audio_play", { payload: {
+        ...control, startTimeSeconds: 0, precount: { intervalsSeconds: [0.5, 0.5] }, metronomeCues,
+      } }],
+      ["audio_set_lanes", { payload: { lanes: [] }, control }],
     ]);
   });
 
@@ -422,7 +445,8 @@ describe("native audio adapter", () => {
   it("decodes safe camelCase session, cue, and terminal events", async () => {
     const payloads = {
       "audio://session": { status: "output", owner: "cue", generation: 2 },
-      "audio://cue": { cueIndex: 4, scheduledNativeTimeUs: 100, actualNativeTimeUs: 101 },
+      "audio://cue": { cueIndex: 4, kind: "precount_completion", accent: false, gain: 1,
+        scheduledNativeTimeUs: 100, actualNativeTimeUs: 101 },
       "audio://terminal": { generation: 2, code: "output_stream_failure", nativeTimeUs: 102 },
     };
     mockListen.mockImplementation(async (eventName, callback) => {

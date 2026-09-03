@@ -12,8 +12,19 @@ import {
   overflowToScrollDelta,
   parseOptions,
   releaseMediaCaptureCatalog,
+  releaseMediaNativeAudioMetadata,
   validateReleaseMediaCatalog,
 } from "./capture-release-media.mjs";
+
+test("native playback fixture exposes stable safe session metadata", () => {
+  assert.deepEqual(releaseMediaNativeAudioMetadata, {
+    leaseId: "project-playback",
+    generation: 1,
+    timelineRevision: 1,
+    nativeTimeUs: 1,
+  });
+  assert.equal(Object.isFrozen(releaseMediaNativeAudioMetadata), true);
+});
 
 test("settings fixture exposes the available default advanced chord backend", () => {
   const backends = chordBackends();

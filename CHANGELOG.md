@@ -9,6 +9,8 @@ download, installation, verification, signature, and publication instructions.
 
 - Moved project count-ins and playback-following metronome cues onto the native audio timeline,
   with timing-grid-aware spacing and the same short triangle click on native and Web Audio paths.
+- Moved project count-ins and metronome timing onto one native output runtime, including standalone
+  free-run and playback-following modes, while keeping tuner capture independently concurrent.
 
 ### Fixed
 

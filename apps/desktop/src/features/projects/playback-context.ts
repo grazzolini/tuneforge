@@ -46,10 +46,10 @@ export type PlaybackContextValue = {
   primeWebAudioForGesture: () => Promise<void>;
   getPlaybackSnapshot: () => PlaybackSnapshot;
   registerProjectSession: (session: ProjectPlaybackSession) => void;
-  updateActiveLoopRange?: (range: PlaybackLoopRange | null) => void;
   updateFollowedMetronomeCues?: (
     cues: NativeAudioCue[],
   ) => Promise<NativeAudioSessionSnapshot | null>;
+  updateActiveLoopRange?: (range: PlaybackLoopRange | null) => void;
   togglePlayback: () => Promise<void>;
   playPlayback: () => Promise<void>;
   pausePlayback: () => void;

@@ -3,7 +3,6 @@ import { useSearchParams } from "react-router-dom";
 import {
   getNativeAudioCapabilities,
   getNativeAudioInputPermissionStatus,
-  getNativeAudioInputState,
   isAndroidRuntime,
   isWebAudioBackendForced,
   listenNativeAudioInputFrames,
@@ -14,6 +13,7 @@ import {
   type NativeAudioCapabilities,
   type NativeAudioInputFrame,
   type NativeAudioInputState,
+  type NativeAudioSessionControl,
 } from "../../lib/nativeAudio";
 import { useStableCallback } from "../../lib/useStableCallback";
 import {
@@ -156,6 +156,8 @@ function ChromaticTunerPage() {
   const mediaSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const nativeCaptureActiveRef = useRef(false);
   const nativeCaptureGenerationRef = useRef<number | null>(null);
+  const nativeCaptureControlRef = useRef<NativeAudioSessionControl | null>(null);
+  const nativeCaptureOperationRef = useRef(0);
   const nativeInputUnlistenRef = useRef<(() => void) | null>(null);
   const nativeStateUnlistenRef = useRef<(() => void) | null>(null);
   const referenceHzRef = useRef(defaultTunerReferenceHz);
@@ -228,7 +230,13 @@ function ChromaticTunerPage() {
     nativeCaptureGenerationRef.current = null;
     if (nativeCaptureActiveRef.current) {
       nativeCaptureActiveRef.current = false;
-      void stopNativeAudioInput().catch(() => undefined);
+      const control = nativeCaptureControlRef.current;
+      nativeCaptureControlRef.current = null;
+      void stopNativeAudioInput({
+        leaseId: control?.leaseId ?? "tuner-capture",
+        generation: control?.generation,
+        operationId: `tuner-capture-${++nativeCaptureOperationRef.current}`,
+      }).catch(() => undefined);
     }
 
     try {
@@ -384,22 +392,16 @@ function ChromaticTunerPage() {
         throw new Error(captureSafeErrorMessage(permission.error));
       }
     }
-    let inputState = await startNativeAudioInput({ deviceId });
+    const inputState = await startNativeAudioInput({
+      deviceId,
+      leaseId: "tuner-capture",
+      operationId: `tuner-capture-${++nativeCaptureOperationRef.current}`,
+    });
     nativeCaptureGenerationRef.current = inputState.captureGeneration;
-    while (
-      requestIdRef.current === requestId &&
-      !inputState.active &&
-      !inputState.error &&
-      (inputState.permissionState === "prompt" || inputState.permissionState === "prompting")
-    ) {
-      await waitForPermissionPoll();
-      inputState = await getNativeAudioInputState();
-      nativeCaptureGenerationRef.current = inputState.captureGeneration;
-      if (inputState.permissionState === "granted" && !inputState.active) {
-        inputState = await startNativeAudioInput({ deviceId });
-        nativeCaptureGenerationRef.current = inputState.captureGeneration;
-      }
-    }
+    nativeCaptureControlRef.current = {
+      leaseId: inputState.leaseId ?? "tuner-capture",
+      generation: inputState.generation,
+    };
     nativeCaptureActiveRef.current = inputState.active;
     if (requestIdRef.current !== requestId) {
       releaseCapture();
@@ -497,8 +499,18 @@ function ChromaticTunerPage() {
     const nativeCapabilities = await resolveNativeAudioCapabilities();
     const androidNativeRequired =
       isAndroidRuntime() || nativeCapabilities?.platform === "android";
+    const tauriNativeRequired = isTauriRuntime() && !webAudioForced;
+    const nativeRequired = tauriNativeRequired || androidNativeRequired;
 
-    if (!webAudioForced && nativeCapabilities?.micCaptureSupported) {
+    if (nativeRequired && !nativeCapabilities?.micCaptureSupported) {
+      const message = "Native microphone capture is unavailable. Check microphone access and retry.";
+      rememberTunerNativeCaptureError(message);
+      setStatus("error");
+      setErrorMessage(message);
+      return;
+    }
+
+    if (nativeRequired && nativeCapabilities?.micCaptureSupported) {
       try {
         await startNativeTuner(
           selectedDeviceId,
@@ -508,14 +520,15 @@ function ChromaticTunerPage() {
         );
         return;
       } catch (error) {
-        rememberTunerNativeCaptureError(captureErrorMessage(error));
+        const message = nativeCaptureErrorMessage(error);
+        rememberTunerNativeCaptureError(message);
         if (requestIdRef.current !== requestId) {
           return;
         }
         releaseCapture();
-        if (androidNativeRequired) {
+        if (tauriNativeRequired || androidNativeRequired) {
           setStatus("error");
-          setErrorMessage(captureErrorMessage(error));
+          setErrorMessage(message);
           return;
         }
       }
@@ -639,6 +652,7 @@ function ChromaticTunerPage() {
 
         <TunerPreferenceControls
           className="tuner-preferences--with-mode"
+          clearDevicesWhenSystemDefaultOnly={isTauriRuntime() || androidRuntime}
           inputDeviceId={defaultTunerInputDeviceId}
           nativeCaptureDisabled={webAudioForced}
           onInputDeviceChange={handleInputDeviceChange}
@@ -956,6 +970,24 @@ function captureErrorMessage(error: unknown) {
     }
   }
   return error instanceof Error ? error.message : "Could not start microphone capture.";
+}
+
+function nativeCaptureErrorMessage(error: unknown) {
+  const message = captureErrorMessage(error);
+  if (message.includes("Android Settings")) {
+    return message;
+  }
+  if (/permission|privacy/i.test(message)) {
+    return "Microphone access is blocked. Allow access in system settings, then choose Retry.";
+  }
+  if (/device|unavailable/i.test(message)) {
+    return "The selected microphone is unavailable. Choose another microphone, then retry.";
+  }
+  return "Native microphone capture could not start. Check the microphone and choose Retry.";
+}
+
+function isTauriRuntime() {
+  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
 
 function captureStateErrorMessage(inputState: NativeAudioInputState) {

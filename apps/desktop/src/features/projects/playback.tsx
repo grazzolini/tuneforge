@@ -815,6 +815,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
         }
         if (
           !nativeOutputMutationOwnerIsCurrent(tag) ||
+          snapshot.resource !== "output" ||
           snapshot.leaseId !== "project-playback" ||
           snapshot.generation !== tag.generation ||
           snapshot.timelineRevision <
@@ -4009,6 +4010,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
         const activeSession = sessionRef.current;
         if (
           !activeSession ||
+          terminal.resource !== "output" ||
           terminal.generation !== nativePlaybackRef.current.generation ||
           nativeSessionSignature(activeSession) !== nativePlaybackRef.current.sessionSignature
         ) return;

@@ -557,6 +557,7 @@ pub fn run() {
             native_audio::audio_seek,
             native_audio::audio_set_lanes,
             native_audio::audio_set_click,
+            native_audio::audio_set_standalone_metronome,
             native_audio::audio_get_snapshot,
             native_audio::audio_get_session_snapshot,
             native_audio::audio_schedule_cues,

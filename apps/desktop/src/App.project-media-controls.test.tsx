@@ -760,6 +760,8 @@ describe("Desktop app project media controls", () => {
     );
     act(() => {
       emitMockNativeAudioTerminal({
+        resource: "output",
+        source: "output_runtime",
         generation: 1,
         code: "output_stream_failure",
         nativeTimeUs: 10,

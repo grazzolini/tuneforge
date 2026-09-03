@@ -37,7 +37,8 @@ struct NativeAudioEngine {
     mixer: mixer::MixerState,
     transport: transport::TransportState,
     capture: capture::CaptureState,
-    session: session::SessionCoordinator,
+    output_session: session::SessionCoordinator,
+    capture_session: session::SessionCoordinator,
     report_sender: mpsc::SyncSender<session::RuntimeReport>,
     report_receiver: mpsc::Receiver<session::RuntimeReport>,
 }
@@ -53,8 +54,16 @@ impl NativeAudioState {
                 mixer: mixer::MixerState::default(),
                 transport: transport::TransportState::default(),
                 capture: capture::CaptureState::default(),
-                session: session::SessionCoordinator::new(
+                output_session: session::SessionCoordinator::new_for_resource(
+                    session::AudioResource::Output,
+                    session::AudioSource::ProjectPlayback,
                     capabilities.native_playback_supported,
+                    false,
+                ),
+                capture_session: session::SessionCoordinator::new_for_resource(
+                    session::AudioResource::Capture,
+                    session::AudioSource::TunerCapture,
+                    false,
                     capabilities.mic_capture_supported,
                 ),
                 report_sender,
@@ -78,53 +87,91 @@ impl NativeAudioEngine {
     fn drain_reports(&mut self) {
         while let Ok(report) = self.report_receiver.try_recv() {
             match report.kind {
-                session::RuntimeReportKind::Ended => self.session.runtime_ended(report.generation),
+                session::RuntimeReportKind::Ended => self
+                    .session_mut(report.resource)
+                    .runtime_ended(report.generation),
                 session::RuntimeReportKind::Terminal(code) => {
-                    self.session.mark_terminal(report.generation, code);
+                    self.session_mut(report.resource)
+                        .mark_terminal(report.generation, code);
                 }
             }
         }
     }
 
+    fn session(&self, resource: session::AudioResource) -> &session::SessionCoordinator {
+        match resource {
+            session::AudioResource::Output => &self.output_session,
+            session::AudioResource::Capture => &self.capture_session,
+        }
+    }
+
+    fn session_mut(
+        &mut self,
+        resource: session::AudioResource,
+    ) -> &mut session::SessionCoordinator {
+        match resource {
+            session::AudioResource::Output => &mut self.output_session,
+            session::AudioResource::Capture => &mut self.capture_session,
+        }
+    }
+
     fn acquire(
         &mut self,
-        app: &AppHandle,
+        app: Option<&AppHandle>,
         owner: session::SessionOwner,
         command: &session::SessionCommand,
         duration: f64,
         rate: f64,
     ) -> Result<Option<u64>, String> {
         self.drain_reports();
-        if self.session.snapshot().terminal_diagnostic == Some("release_timeout") {
+        let resource = if owner.is_output() {
+            session::AudioResource::Output
+        } else {
+            session::AudioResource::Capture
+        };
+        if self.session(resource).snapshot().terminal_diagnostic == Some("release_timeout") {
             return Err("release_timeout".to_string());
         }
         let session::Acquire::Release {
             token,
             previous,
             lease,
-        } = self.session.begin_acquire(owner, command)
+        } = self.session_mut(resource).begin_acquire(owner, command)
         else {
             return Ok(None);
         };
-        let released = match previous {
-            Some(previous) if previous.is_output() => self.transport.release_for_transfer(),
-            Some(session::SessionOwner::Capture) => self.capture.release_for_transfer(),
-            None | Some(_) => Ok(()),
+        let preserve_auxiliary_output = resource == session::AudioResource::Output
+            && owner == session::SessionOwner::Playback
+            && previous != Some(session::SessionOwner::Playback)
+            && self.transport.has_auxiliary_runtime();
+        let released = match resource {
+            session::AudioResource::Output
+                if !preserve_auxiliary_output
+                    && (previous.is_some() || self.transport.has_runtime()) =>
+            {
+                self.transport.release_for_transfer()
+            }
+            session::AudioResource::Capture if previous.is_some() => {
+                self.capture.release_for_transfer()
+            }
+            _ => Ok(()),
         };
         if released.is_err() {
-            if let Some(event) = self.session.fail_release(token) {
-                let _ = app.emit(AUDIO_EVENT_TERMINAL, event);
+            if let Some(event) = self.session_mut(resource).fail_release(token) {
+                if let Some(app) = app {
+                    let _ = app.emit(AUDIO_EVENT_TERMINAL, event);
+                }
             }
             return Err("release_timeout".to_string());
         }
         let generation = self
-            .session
+            .session_mut(resource)
             .finish_acquire(token, owner, lease, command, duration, rate)
             .map_err(str::to_string)?;
         if owner.is_output() {
             self.transport.bind_session(
                 generation,
-                self.session.timeline(),
+                self.output_session.timeline(),
                 self.report_sender.clone(),
             );
         } else {
@@ -134,8 +181,8 @@ impl NativeAudioEngine {
         Ok(Some(generation))
     }
 
-    fn emit_session(&self, app: &AppHandle) {
-        let snapshot = self.session.snapshot();
+    fn emit_session(&self, app: &AppHandle, resource: session::AudioResource) {
+        let snapshot = self.session(resource).snapshot();
         let _ = app.emit(AUDIO_EVENT_SESSION, snapshot);
     }
 
@@ -146,14 +193,19 @@ impl NativeAudioEngine {
         explicit: bool,
     ) -> Result<bool, String> {
         self.drain_reports();
-        self.session
+        let resource = if owner.is_output() {
+            session::AudioResource::Output
+        } else {
+            session::AudioResource::Capture
+        };
+        self.session_mut(resource)
             .authorize(owner, command, explicit)
             .map_err(str::to_string)
     }
 
     fn output_snapshot(&self) -> transport::AudioSnapshot {
         let mut output = self.transport.snapshot();
-        let session = self.session.snapshot();
+        let session = self.output_session.snapshot();
         output.lease_id = session.lease_id;
         output.generation = Some(session.generation);
         output.timeline_revision = Some(session.timeline_revision);
@@ -164,7 +216,7 @@ impl NativeAudioEngine {
     }
 
     fn input_snapshot(&self, mut input: capture::AudioInputState) -> capture::AudioInputState {
-        let session = self.session.snapshot();
+        let session = self.capture_session.snapshot();
         input.lease_id = session.lease_id;
         input.generation = Some(session.generation);
         input.native_time_us = Some(session.native_time_us);
@@ -244,7 +296,7 @@ pub async fn audio_prepare_session(
             return Err("session_owner_mismatch".to_string());
         }
         let acquired = engine.acquire(
-            &app,
+            Some(&app),
             owner,
             &payload.control,
             payload.duration_seconds.unwrap_or(0.0),
@@ -273,7 +325,7 @@ pub async fn audio_prepare_session(
             effective_lanes,
             state.capabilities(),
         );
-        engine.emit_session(&app);
+        engine.emit_session(&app, session::AudioResource::Output);
         Ok(prepared)
     })
     .await
@@ -292,20 +344,20 @@ pub fn audio_play(
 
     let mut engine = state.engine()?;
     engine.drain_reports();
-    let previous_generation = engine.session.snapshot().generation;
+    let previous_generation = engine.output_session.snapshot().generation;
     if !engine
-        .session
+        .output_session
         .authorize(session::SessionOwner::Playback, &payload.control, true)
         .map_err(str::to_string)?
     {
         return Ok(engine.output_snapshot());
     }
-    let session_generation = engine.session.snapshot().generation;
+    let session_generation = engine.output_session.snapshot().generation;
     if session_generation != previous_generation {
         engine
             .transport
             .begin_explicit_attempt(state.capabilities());
-        let timeline = engine.session.timeline();
+        let timeline = engine.output_session.timeline();
         let reporter = engine.report_sender.clone();
         engine
             .transport
@@ -336,7 +388,7 @@ pub fn audio_play(
     let expected = payload
         .control
         .timeline_revision
-        .unwrap_or_else(|| engine.session.snapshot().timeline_revision);
+        .unwrap_or_else(|| engine.output_session.snapshot().timeline_revision);
     if requested_start.is_some_and(|deadline| deadline <= timeline::native_time_us()) {
         return Err("start_deadline_missed".to_string());
     }
@@ -349,14 +401,14 @@ pub fn audio_play(
     }
     if let Err(error) = engine.transport.play(payload) {
         if let Some(event) = engine
-            .session
+            .output_session
             .mark_terminal(session_generation, "runtime_start_failure")
         {
             let _ = app.emit(AUDIO_EVENT_TERMINAL, event);
         }
         return Err(error);
     }
-    let timeline = engine.session.timeline();
+    let timeline = engine.output_session.timeline();
     let now = timeline::native_time_us();
     let first_precount = precount.as_ref().map(|_| now.saturating_add(35_000));
     let source_start = precount
@@ -384,7 +436,7 @@ pub fn audio_play(
             .map_err(str::to_string)?;
     }
     drop(timeline);
-    engine.emit_session(&app);
+    engine.emit_session(&app, session::AudioResource::Output);
     Ok(engine.output_snapshot())
 }
 
@@ -402,12 +454,12 @@ pub fn audio_pause(
     )?;
     engine.transport.pause();
     engine
-        .session
+        .output_session
         .timeline()
         .lock()
         .map_err(|_| "timeline_unavailable")?
         .pause();
-    engine.emit_session(&app);
+    engine.emit_session(&app, session::AudioResource::Output);
     Ok(engine.output_snapshot())
 }
 
@@ -425,12 +477,12 @@ pub fn audio_stop(
     )?;
     engine.transport.stop();
     engine
-        .session
+        .output_session
         .timeline()
         .lock()
         .map_err(|_| "timeline_unavailable")?
         .stop();
-    engine.emit_session(&app);
+    engine.emit_session(&app, session::AudioResource::Output);
     Ok(engine.output_snapshot())
 }
 
@@ -445,9 +497,9 @@ pub fn audio_seek(
     let expected = payload
         .control
         .timeline_revision
-        .unwrap_or_else(|| engine.session.snapshot().timeline_revision);
+        .unwrap_or_else(|| engine.output_session.snapshot().timeline_revision);
     engine
-        .session
+        .output_session
         .timeline()
         .lock()
         .map_err(|_| "timeline_unavailable")?
@@ -459,7 +511,7 @@ pub fn audio_seek(
     );
     engine.transport.set_diagnostics_generation(generation);
     engine.transport.seek(payload);
-    engine.emit_session(&app);
+    engine.emit_session(&app, session::AudioResource::Output);
     Ok(engine.output_snapshot())
 }
 
@@ -493,9 +545,9 @@ pub fn audio_set_lanes(
     let generation = diagnostics::begin_operation(operation_kind, raw_lanes.len());
     engine.transport.set_diagnostics_generation(generation);
     if let Some(rate) = playback_rate {
-        let revision = engine.session.snapshot().timeline_revision;
+        let revision = engine.output_session.snapshot().timeline_revision;
         engine
-            .session
+            .output_session
             .timeline()
             .lock()
             .map_err(|_| "timeline_unavailable")?
@@ -505,7 +557,7 @@ pub fn audio_set_lanes(
     engine
         .transport
         .set_lanes(raw_lanes, effective_lanes, playback_rate);
-    engine.emit_session(&app);
+    engine.emit_session(&app, session::AudioResource::Output);
     Ok(engine.output_snapshot())
 }
 
@@ -526,6 +578,25 @@ pub fn audio_set_click(
 }
 
 #[tauri::command]
+pub fn audio_set_standalone_metronome(
+    app: AppHandle,
+    state: State<'_, NativeAudioState>,
+    payload: transport::StandaloneMetronomeRequest,
+) -> Result<transport::StandaloneMetronomeState, String> {
+    if !state.capabilities.native_playback_supported {
+        return Err("Native audio output is unavailable.".to_string());
+    }
+    let mut engine = state.engine()?;
+    engine.drain_reports();
+    let timeline = engine.output_session.timeline();
+    let reporter = engine.report_sender.clone();
+    engine.transport.bind_auxiliary_runtime(timeline, reporter);
+    engine
+        .transport
+        .set_standalone_metronome(app, payload, state.capabilities())
+}
+
+#[tauri::command]
 pub fn audio_get_snapshot(
     state: State<'_, NativeAudioState>,
 ) -> Result<transport::AudioSnapshot, String> {
@@ -540,7 +611,7 @@ pub fn audio_get_session_snapshot(
 ) -> Result<session::SessionSnapshot, String> {
     let mut engine = state.engine()?;
     engine.drain_reports();
-    Ok(engine.session.snapshot())
+    Ok(engine.output_session.snapshot())
 }
 
 #[tauri::command]
@@ -604,7 +675,7 @@ pub fn audio_start_input(
 
     let mut engine = state.engine()?;
     let acquired = engine.acquire(
-        &app,
+        Some(&app),
         session::SessionOwner::Capture,
         &payload.control,
         0.0,
@@ -616,12 +687,12 @@ pub fn audio_start_input(
     }
     let input = engine.capture.start(app.clone(), payload)?;
     if let Some(code) = input.error.as_ref().map(|error| error.code) {
-        let generation = engine.session.snapshot().generation;
-        if let Some(event) = engine.session.mark_terminal(generation, code) {
+        let generation = engine.capture_session.snapshot().generation;
+        if let Some(event) = engine.capture_session.mark_terminal(generation, code) {
             let _ = app.emit(AUDIO_EVENT_TERMINAL, event);
         }
     }
-    engine.emit_session(&app);
+    engine.emit_session(&app, session::AudioResource::Capture);
     Ok(engine.input_snapshot(input))
 }
 
@@ -632,13 +703,17 @@ pub fn audio_stop_input(
     payload: Option<session::SessionCommand>,
 ) -> Result<capture::AudioInputState, String> {
     let mut engine = state.engine()?;
-    engine.authorize(
-        session::SessionOwner::Capture,
-        &payload.unwrap_or_default(),
-        false,
-    )?;
-    let input = engine.capture.stop();
-    engine.emit_session(&app);
+    let command = payload.unwrap_or_default();
+    let released = engine
+        .capture_session
+        .release_capture(&command)
+        .map_err(str::to_string)?;
+    let input = if released {
+        engine.capture.stop()
+    } else {
+        engine.capture.state()
+    };
+    engine.emit_session(&app, session::AudioResource::Capture);
     Ok(engine.input_snapshot(input))
 }
 
@@ -669,26 +744,26 @@ pub fn audio_schedule_cues(
 ) -> Result<session::SessionSnapshot, String> {
     let mut engine = state.engine()?;
     let owner = engine
-        .session
+        .output_session
         .snapshot()
         .owner
         .unwrap_or(session::SessionOwner::Cue);
     if !engine.authorize(owner, &payload.session, false)? {
-        return Ok(engine.session.snapshot());
+        return Ok(engine.output_session.snapshot());
     }
     let revision = payload
         .session
         .timeline_revision
-        .unwrap_or_else(|| engine.session.snapshot().timeline_revision);
+        .unwrap_or_else(|| engine.output_session.snapshot().timeline_revision);
     engine
-        .session
+        .output_session
         .timeline()
         .lock()
         .map_err(|_| "timeline_unavailable")?
         .schedule(revision, payload.cues)
         .map_err(str::to_string)?;
-    engine.emit_session(&app);
-    Ok(engine.session.snapshot())
+    engine.emit_session(&app, session::AudioResource::Output);
+    Ok(engine.output_session.snapshot())
 }
 
 #[tauri::command]
@@ -701,25 +776,25 @@ pub fn audio_cancel_cues(
     let mut engine = state.engine()?;
     let payload = payload.unwrap_or_default();
     let owner = engine
-        .session
+        .output_session
         .snapshot()
         .owner
         .unwrap_or(session::SessionOwner::Cue);
     if !engine.authorize(owner, &payload, false)? {
-        return Ok(engine.session.snapshot());
+        return Ok(engine.output_session.snapshot());
     }
     let revision = payload
         .timeline_revision
-        .unwrap_or_else(|| engine.session.snapshot().timeline_revision);
+        .unwrap_or_else(|| engine.output_session.snapshot().timeline_revision);
     engine
-        .session
+        .output_session
         .timeline()
         .lock()
         .map_err(|_| "timeline_unavailable")?
         .cancel(revision, kind)
         .map_err(str::to_string)?;
-    engine.emit_session(&app);
-    Ok(engine.session.snapshot())
+    engine.emit_session(&app, session::AudioResource::Output);
+    Ok(engine.output_session.snapshot())
 }
 
 #[cfg(test)]
@@ -814,19 +889,30 @@ mod tests {
             mixer: mixer::MixerState::default(),
             transport: transport::TransportState::default(),
             capture: capture::CaptureState::default(),
-            session: session::SessionCoordinator::new(true, true),
+            output_session: session::SessionCoordinator::new_for_resource(
+                session::AudioResource::Output,
+                session::AudioSource::ProjectPlayback,
+                true,
+                false,
+            ),
+            capture_session: session::SessionCoordinator::new_for_resource(
+                session::AudioResource::Capture,
+                session::AudioSource::TunerCapture,
+                false,
+                true,
+            ),
             report_sender: report_sender.clone(),
             report_receiver,
         };
         let command = session::SessionCommand::default();
         let session::Acquire::Release { token, lease, .. } = engine
-            .session
+            .output_session
             .begin_acquire(session::SessionOwner::Playback, &command)
         else {
             panic!()
         };
         let generation = engine
-            .session
+            .output_session
             .finish_acquire(
                 token,
                 session::SessionOwner::Playback,
@@ -838,6 +924,7 @@ mod tests {
             .unwrap();
         report_sender
             .send(session::RuntimeReport {
+                resource: session::AudioResource::Output,
                 generation,
                 kind: session::RuntimeReportKind::Terminal("output_stream_failure"),
             })
@@ -845,14 +932,248 @@ mod tests {
 
         engine.drain_reports();
         assert_eq!(
-            engine.session.snapshot().terminal_diagnostic,
+            engine.output_session.snapshot().terminal_diagnostic,
             Some("output_stream_failure")
         );
         assert!(engine
-            .session
+            .output_session
             .authorize(session::SessionOwner::Playback, &command, true)
             .unwrap());
-        assert!(engine.session.snapshot().generation > generation);
+        assert!(engine.output_session.snapshot().generation > generation);
         assert!(capabilities.emits_events.contains(&AUDIO_EVENT_TERMINAL));
+    }
+
+    #[test]
+    fn output_and_capture_leases_are_concurrent_and_terminally_isolated() {
+        let mut output = session::SessionCoordinator::new_for_resource(
+            session::AudioResource::Output,
+            session::AudioSource::ProjectPlayback,
+            true,
+            false,
+        );
+        let mut capture = session::SessionCoordinator::new_for_resource(
+            session::AudioResource::Capture,
+            session::AudioSource::TunerCapture,
+            false,
+            true,
+        );
+        let output_command = session::SessionCommand {
+            lease_id: Some("project-playback".into()),
+            operation_id: Some("prepare".into()),
+            ..Default::default()
+        };
+        let capture_command = session::SessionCommand {
+            lease_id: Some("tuner-capture".into()),
+            operation_id: Some("start".into()),
+            ..Default::default()
+        };
+        let session::Acquire::Release { token, lease, .. } =
+            output.begin_acquire(session::SessionOwner::Playback, &output_command)
+        else {
+            panic!()
+        };
+        let output_generation = output
+            .finish_acquire(
+                token,
+                session::SessionOwner::Playback,
+                lease,
+                &output_command,
+                10.0,
+                1.0,
+            )
+            .unwrap();
+        let session::Acquire::Release { token, lease, .. } =
+            capture.begin_acquire(session::SessionOwner::Capture, &capture_command)
+        else {
+            panic!()
+        };
+        let capture_generation = capture
+            .finish_acquire(
+                token,
+                session::SessionOwner::Capture,
+                lease,
+                &capture_command,
+                0.0,
+                1.0,
+            )
+            .unwrap();
+
+        assert_eq!(output.snapshot().status, session::SessionStatus::Output);
+        assert_eq!(capture.snapshot().status, session::SessionStatus::Capture);
+        assert!(capture
+            .mark_terminal(capture_generation, "stream-interruption")
+            .is_some());
+        assert_eq!(output.snapshot().generation, output_generation);
+        assert_eq!(output.snapshot().status, session::SessionStatus::Output);
+        assert_eq!(output.snapshot().terminal_diagnostic, None);
+    }
+
+    #[test]
+    fn capture_stop_acknowledgement_does_not_release_output_session() {
+        let (report_sender, report_receiver) = mpsc::sync_channel(1);
+        let mut engine = NativeAudioEngine {
+            mixer: mixer::MixerState::default(),
+            transport: transport::TransportState::default(),
+            capture: capture::CaptureState::default(),
+            output_session: session::SessionCoordinator::new_for_resource(
+                session::AudioResource::Output,
+                session::AudioSource::ProjectPlayback,
+                true,
+                false,
+            ),
+            capture_session: session::SessionCoordinator::new_for_resource(
+                session::AudioResource::Capture,
+                session::AudioSource::TunerCapture,
+                false,
+                true,
+            ),
+            report_sender,
+            report_receiver,
+        };
+        let activate = |lease: &str, operation: &str| session::SessionCommand {
+            lease_id: Some(lease.into()),
+            operation_id: Some(operation.into()),
+            ..Default::default()
+        };
+        let output_command = activate("project-playback", "prepare");
+        let session::Acquire::Release { token, lease, .. } = engine
+            .output_session
+            .begin_acquire(session::SessionOwner::Playback, &output_command)
+        else {
+            panic!()
+        };
+        let output_generation = engine
+            .output_session
+            .finish_acquire(
+                token,
+                session::SessionOwner::Playback,
+                lease,
+                &output_command,
+                10.0,
+                1.0,
+            )
+            .unwrap();
+        let capture_command = activate("tuner-capture", "start");
+        let session::Acquire::Release { token, lease, .. } = engine
+            .capture_session
+            .begin_acquire(session::SessionOwner::Capture, &capture_command)
+        else {
+            panic!()
+        };
+        let capture_generation = engine
+            .capture_session
+            .finish_acquire(
+                token,
+                session::SessionOwner::Capture,
+                lease,
+                &capture_command,
+                0.0,
+                1.0,
+            )
+            .unwrap();
+        let stop = session::SessionCommand {
+            lease_id: Some("tuner-capture".into()),
+            operation_id: Some("stop".into()),
+            generation: Some(capture_generation),
+            timeline_revision: None,
+        };
+
+        assert!(engine.capture_session.release_capture(&stop).unwrap());
+        let stopped_input = engine.capture.stop();
+        let acknowledgement = engine.input_snapshot(stopped_input);
+        assert!(!acknowledgement.active);
+        assert_eq!(acknowledgement.lease_id, None);
+        assert_eq!(acknowledgement.generation, Some(capture_generation));
+        assert_eq!(
+            engine.capture_session.snapshot().status,
+            session::SessionStatus::Released
+        );
+        assert_eq!(
+            engine.output_session.snapshot().status,
+            session::SessionStatus::Output
+        );
+        assert_eq!(
+            engine.output_session.snapshot().generation,
+            output_generation
+        );
+    }
+
+    #[test]
+    #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+    fn playback_acquire_and_prepare_preserve_standalone_auxiliary_runtime() {
+        let capabilities = AudioCapabilities::detect();
+        let (report_sender, report_receiver) = mpsc::sync_channel(8);
+        let mut engine = NativeAudioEngine {
+            mixer: mixer::MixerState::default(),
+            transport: transport::TransportState::default(),
+            capture: capture::CaptureState::default(),
+            output_session: session::SessionCoordinator::new_for_resource(
+                session::AudioResource::Output,
+                session::AudioSource::ProjectPlayback,
+                true,
+                false,
+            ),
+            capture_session: session::SessionCoordinator::new_for_resource(
+                session::AudioResource::Capture,
+                session::AudioSource::TunerCapture,
+                false,
+                true,
+            ),
+            report_sender,
+            report_receiver,
+        };
+        engine
+            .transport
+            .set_standalone_metronome_for_test(
+                transport::StandaloneMetronomeRequest {
+                    enabled: true,
+                    bpm: 120.0,
+                    beats_per_bar: 4,
+                    accent_first_beat: true,
+                    gain: 0.8,
+                    follow_playback: true,
+                    control: session::SessionCommand {
+                        lease_id: Some("standalone-metronome".into()),
+                        operation_id: Some("start".into()),
+                        ..Default::default()
+                    },
+                },
+                capabilities.clone(),
+            )
+            .unwrap();
+        engine.transport.install_test_auxiliary_runtime();
+
+        let prepare_control = session::SessionCommand {
+            lease_id: Some("project-playback".into()),
+            operation_id: Some("prepare".into()),
+            ..Default::default()
+        };
+        let acquired = engine
+            .acquire(
+                None,
+                session::SessionOwner::Playback,
+                &prepare_control,
+                10.0,
+                1.0,
+            )
+            .unwrap();
+        assert!(acquired.is_some());
+        assert!(engine.transport.has_auxiliary_runtime());
+
+        let prepared = engine.transport.prepare(
+            None,
+            transport::AudioSessionRequest {
+                session_id: "project-session".into(),
+                duration_seconds: Some(10.0),
+                playback_rate: Some(1.0),
+                lanes: Vec::new(),
+                control: prepare_control,
+                owner: Some(session::SessionOwner::Playback),
+            },
+            Vec::new(),
+            capabilities,
+        );
+        assert_eq!(prepared.id, "project-session");
+        assert!(engine.transport.has_auxiliary_runtime());
     }
 }

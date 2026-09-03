@@ -20,6 +20,7 @@ import {
 type TunerPreferenceControlsProps = {
   children?: ReactNode;
   className?: string;
+  clearDevicesWhenSystemDefaultOnly?: boolean;
   inputDeviceId: string | null;
   nativeCaptureDisabled?: boolean;
   onInputDeviceChange: (value: string | null) => void;
@@ -36,6 +37,7 @@ type TunerPreferenceControlsProps = {
 export function TunerPreferenceControls({
   children,
   className,
+  clearDevicesWhenSystemDefaultOnly = false,
   inputDeviceId,
   nativeCaptureDisabled = false,
   onInputDeviceChange,
@@ -86,11 +88,15 @@ export function TunerPreferenceControls({
 
   useEffect(() => {
     if (systemDefaultOnly) {
-      setDevices([]);
+      setDevices((currentDevices) =>
+        clearDevicesWhenSystemDefaultOnly
+          ? []
+          : currentDevices.filter((device) => !device.deviceId.startsWith("cpal:")),
+      );
       setDeviceError(null);
       refreshRequestIdRef.current += 1;
     }
-  }, [systemDefaultOnly]);
+  }, [clearDevicesWhenSystemDefaultOnly, systemDefaultOnly]);
 
   const refreshDevices = useCallback(({ queueIfBusy = false } = {}) => {
     if (systemDefaultOnly) {

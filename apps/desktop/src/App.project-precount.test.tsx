@@ -1003,7 +1003,8 @@ describe("Desktop app project playback pre-count", () => {
     await user.click(screen.getByRole("button", { name: "Play playback" }));
     await waitFor(() => expect(readPlaybackE2ETelemetry().countIn.active).toBe(true));
     act(() => emitMockNativeAudioTerminal({
-      generation: 1, code: "output_stream_failure", nativeTimeUs: 3_000_000,
+      resource: "output", source: "output_runtime", generation: 1,
+      code: "output_stream_failure", nativeTimeUs: 3_000_000,
     }));
     expect(readPlaybackE2ETelemetry().countIn).toMatchObject({ active: false, lastCancelled: {
       reason: "unavailable", cancelledAtContextTimeSeconds: 3,

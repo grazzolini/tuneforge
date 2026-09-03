@@ -24,6 +24,8 @@ export type NativeAudioSessionControl = {
 };
 
 export type NativeAudioSessionSnapshot = {
+  resource: "output" | "capture";
+  source: "project_playback" | "tuner_capture";
   status: "released" | "output" | "capture" | "releasing" | "terminal";
   owner: "playback" | "cue" | "capture" | null;
   leaseId: string | null;
@@ -45,6 +47,8 @@ export type NativeAudioCue = {
   gain?: number;
 };
 export type NativeAudioCueEvent = {
+  resource: "output";
+  source: "project_playback" | "standalone_metronome";
   generation: number;
   revision: number;
   cueIndex: number;
@@ -56,6 +60,8 @@ export type NativeAudioCueEvent = {
   insertionSequence: number;
 };
 export type NativeAudioTerminalEvent = {
+  resource: "output" | "capture";
+  source: "output_runtime" | "capture_runtime" | "project_playback" | "tuner_capture";
   generation: number;
   code: string;
   nativeTimeUs: number;
@@ -256,6 +262,28 @@ export type NativeAudioClickRequest = {
   followTransport?: boolean | null;
 };
 
+export type NativeStandaloneMetronomeRequest = NativeAudioSessionControl & {
+  enabled: boolean;
+  bpm: number;
+  beatsPerBar: number;
+  accentFirstBeat: boolean;
+  gain: number;
+  followPlayback: boolean;
+};
+
+export type NativeStandaloneMetronomeState = {
+  enabled: boolean;
+  bpm: number;
+  beatsPerBar: number;
+  accentFirstBeat: boolean;
+  gain: number;
+  followPlayback: boolean;
+  leaseId: string | null;
+  generation: number;
+  revision: number;
+  nativeTimeUs: number;
+};
+
 export type NativeAudioPositionEvent = {
   sessionId: string | null;
   positionSeconds: number;
@@ -405,6 +433,10 @@ export function setNativeAudioLanes(
 
 export function setNativeAudioClick(payload: NativeAudioClickRequest) {
   return invoke<NativeAudioSnapshot>("audio_set_click", { payload });
+}
+
+export function setNativeStandaloneMetronome(payload: NativeStandaloneMetronomeRequest) {
+  return invoke<NativeStandaloneMetronomeState>("audio_set_standalone_metronome", { payload });
 }
 
 export function getNativeAudioSnapshot() {

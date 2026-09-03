@@ -1,4 +1,5 @@
 import { createContext, useContext } from "react";
+import type { NativeAudioCue, NativeAudioSessionSnapshot } from "../../lib/nativeAudio";
 import type { AnalysisTimingGrid } from "../../lib/timingGrid";
 import type { ChordDictionaryFollowProjectContext } from "./chordDictionaryFollowContext";
 import type { PlaybackLoopRange, StemControlState } from "./projectPlaybackState";
@@ -45,6 +46,9 @@ export type PlaybackContextValue = {
   primeWebAudioForGesture: () => Promise<void>;
   getPlaybackSnapshot: () => PlaybackSnapshot;
   registerProjectSession: (session: ProjectPlaybackSession) => void;
+  updateFollowedMetronomeCues?: (
+    cues: NativeAudioCue[],
+  ) => Promise<NativeAudioSessionSnapshot | null>;
   updateActiveLoopRange?: (range: PlaybackLoopRange | null) => void;
   togglePlayback: () => Promise<void>;
   playPlayback: () => Promise<void>;

@@ -85,7 +85,7 @@ pub struct AudioSessionRequest {
     pub duration_seconds: Option<f64>,
     pub playback_rate: Option<f64>,
     pub lanes: Vec<AudioLaneRequest>,
-    #[serde(default, flatten)]
+    #[serde(flatten)]
     pub control: SessionCommand,
     pub owner: Option<SessionOwner>,
 }
@@ -94,12 +94,13 @@ pub struct AudioSessionRequest {
 #[serde(rename_all = "camelCase")]
 pub struct AudioSession {
     pub id: String,
+    pub lease_id: String,
     pub native_playback_supported: bool,
-    pub fallback_reason: Option<String>,
+    pub availability_reason: Option<String>,
     pub lane_count: usize,
-    pub generation: Option<u64>,
-    pub timeline_revision: Option<u64>,
-    pub native_time_us: Option<u64>,
+    pub generation: u64,
+    pub timeline_revision: u64,
+    pub native_time_us: u64,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -107,7 +108,7 @@ pub struct AudioSession {
 pub struct AudioPlayRequest {
     pub start_time_seconds: Option<f64>,
     pub scheduled_start_time_seconds: Option<f64>,
-    #[serde(default, flatten)]
+    #[serde(flatten)]
     pub control: SessionCommand,
     pub start_at_native_us: Option<u64>,
     pub precount: Option<AudioPrecountRequest>,
@@ -124,19 +125,8 @@ pub struct AudioPrecountRequest {
 #[serde(rename_all = "camelCase")]
 pub struct AudioSeekRequest {
     pub time_seconds: f64,
-    #[serde(default, flatten)]
+    #[serde(flatten)]
     pub control: SessionCommand,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AudioClickRequest {
-    pub enabled: bool,
-    pub bpm: Option<f64>,
-    pub beats_per_bar: Option<u32>,
-    pub accent_first_beat: Option<bool>,
-    pub gain: Option<f32>,
-    pub follow_transport: Option<bool>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -148,7 +138,7 @@ pub struct StandaloneMetronomeRequest {
     pub accent_first_beat: bool,
     pub gain: f32,
     pub follow_playback: bool,
-    #[serde(default, flatten)]
+    #[serde(flatten)]
     pub control: SessionCommand,
 }
 
@@ -174,6 +164,9 @@ pub struct AudioPositionEvent {
     pub position_seconds: f64,
     pub duration_seconds: f64,
     pub state: &'static str,
+    pub generation: u64,
+    pub timeline_revision: u64,
+    pub native_time_us: u64,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -182,6 +175,9 @@ pub struct AudioStateEvent {
     pub session_id: Option<String>,
     pub state: &'static str,
     pub position_seconds: f64,
+    pub generation: u64,
+    pub timeline_revision: u64,
+    pub native_time_us: u64,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -189,6 +185,10 @@ pub struct AudioStateEvent {
 pub struct AudioErrorEvent {
     pub session_id: Option<String>,
     pub code: NativeAudioErrorCode,
+    pub generation: u64,
+    pub timeline_revision: u64,
+    pub native_time_us: u64,
+    pub position_seconds: f64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -202,7 +202,7 @@ pub enum NativeAudioErrorCode {
 }
 
 impl NativeAudioErrorCode {
-    fn fallback_message(self) -> &'static str {
+    fn terminal_message(self) -> &'static str {
         match self {
             Self::DeviceChanged => "Native audio device changed.",
             Self::DeviceNotAvailable => "Native playback device is unavailable.",
@@ -232,13 +232,13 @@ pub struct AudioSnapshot {
     pub duration_seconds: f64,
     pub playback_rate: f64,
     pub native_playback_supported: bool,
-    pub fallback_reason: Option<String>,
+    pub availability_reason: Option<String>,
     pub lanes: Vec<EffectiveAudioLane>,
     pub buffer_health: Vec<AudioBufferHealth>,
     pub lease_id: Option<String>,
-    pub generation: Option<u64>,
-    pub timeline_revision: Option<u64>,
-    pub native_time_us: Option<u64>,
+    pub generation: u64,
+    pub timeline_revision: u64,
+    pub native_time_us: u64,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -384,18 +384,16 @@ struct WorkerError {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum NativePlaybackFallbackCause {
+enum NativePlaybackTerminalCause {
     PrebufferTimeout,
     SustainedUnderrun,
 }
 
-impl NativePlaybackFallbackCause {
+impl NativePlaybackTerminalCause {
     fn message(self) -> &'static str {
         match self {
             Self::PrebufferTimeout => "Native playback prebuffer timed out.",
-            Self::SustainedUnderrun => {
-                "Native playback underrun persisted; falling back to Web Audio."
-            }
+            Self::SustainedUnderrun => "Native playback stopped after sustained underruns.",
         }
     }
 
@@ -455,7 +453,7 @@ struct PlaybackShared {
     duration_seconds: f64,
     playback_rate: f64,
     native_playback_supported: bool,
-    fallback_reason: Option<String>,
+    availability_reason: Option<String>,
     sample_rate: u32,
     channels: usize,
     lanes: Vec<PlaybackLane>,
@@ -467,7 +465,7 @@ struct PlaybackShared {
     buffering: bool,
     sustained_underrun_frames: usize,
     underrun_error_pending: bool,
-    fallback_cause: Option<NativePlaybackFallbackCause>,
+    terminal_cause: Option<NativePlaybackTerminalCause>,
     diagnostics_generation: u64,
     diagnostics_gain_first_change_recorded: bool,
     timeline: Arc<Mutex<Timeline>>,
@@ -488,15 +486,15 @@ struct CueVoice {
 
 impl PlaybackShared {
     fn snapshot(&self) -> AudioSnapshot {
-        let fallback_reason = self
+        let availability_reason = self
             .terminal_error
-            .map(|code| code.fallback_message().to_string())
-            .or_else(|| self.fallback_reason.clone())
-            .or_else(|| self.fallback_cause.map(|cause| cause.message().to_string()));
+            .map(|code| code.terminal_message().to_string())
+            .or_else(|| self.availability_reason.clone())
+            .or_else(|| self.terminal_cause.map(|cause| cause.message().to_string()));
 
         let native_playback_supported = self.native_playback_supported
             && self.terminal_error.is_none()
-            && self.fallback_cause.is_none();
+            && self.terminal_cause.is_none();
 
         AudioSnapshot {
             session_id: self.session_id.clone(),
@@ -505,13 +503,13 @@ impl PlaybackShared {
             duration_seconds: self.duration_seconds,
             playback_rate: self.playback_rate,
             native_playback_supported,
-            fallback_reason,
+            availability_reason: availability_reason,
             lanes: self.snapshot_lanes.clone(),
             buffer_health: runtime_buffer_health(&self.snapshot_lanes, &self.lanes),
             lease_id: None,
-            generation: Some(self.generation),
-            timeline_revision: self.timeline.lock().ok().map(|state| state.revision()),
-            native_time_us: Some(timeline::native_time_us()),
+            generation: self.generation,
+            timeline_revision: self.timeline.lock().map_or(0, |state| state.revision()),
+            native_time_us: timeline::native_time_us(),
         }
     }
 
@@ -541,7 +539,7 @@ impl PlaybackShared {
             }
         }
 
-        !has_audible_lane || self.fallback_cause.is_none()
+        !has_audible_lane || self.terminal_cause.is_none()
     }
 }
 
@@ -584,7 +582,7 @@ fn diagnostic_code_for_output_stream_error(code: NativeAudioErrorCode) -> Diagno
 #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
 fn mark_device_changed(shared: &mut PlaybackShared) {
     if shared.terminal_error.is_some()
-        || shared.fallback_cause.is_some()
+        || shared.terminal_cause.is_some()
         || shared.error_pending.is_some()
     {
         return;
@@ -629,7 +627,7 @@ pub struct TransportState {
     duration_seconds: f64,
     playback_rate: f64,
     native_playback_supported: bool,
-    fallback_reason: Option<String>,
+    availability_reason: Option<String>,
     raw_lanes: Vec<AudioLaneRequest>,
     lanes: Vec<EffectiveAudioLane>,
     click: ClickState,
@@ -659,7 +657,7 @@ impl Default for TransportState {
             duration_seconds: 0.0,
             playback_rate: DEFAULT_PLAYBACK_RATE,
             native_playback_supported: false,
-            fallback_reason: None,
+            availability_reason: None,
             raw_lanes: Vec::new(),
             lanes: Vec::new(),
             click: ClickState::default(),
@@ -745,7 +743,7 @@ impl TransportState {
             duration_seconds: 0.0,
             playback_rate: self.playback_rate,
             native_playback_supported: true,
-            fallback_reason: None,
+            availability_reason: None,
             sample_rate: 1_000,
             channels: 1,
             lanes: Vec::new(),
@@ -757,7 +755,7 @@ impl TransportState {
             buffering: false,
             sustained_underrun_frames: 0,
             underrun_error_pending: false,
-            fallback_cause: None,
+            terminal_cause: None,
             diagnostics_generation: 0,
             diagnostics_gain_first_change_recorded: false,
             timeline,
@@ -785,13 +783,13 @@ impl TransportState {
         #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
         if self.runtime.as_ref().is_some_and(|runtime| {
             runtime.shared.lock().ok().is_some_and(|shared| {
-                shared.terminal_error.is_some() || shared.fallback_cause.is_some()
+                shared.terminal_error.is_some() || shared.terminal_cause.is_some()
             })
         }) {
             self.stop_runtime();
         }
         self.native_playback_supported = capabilities.native_playback_supported;
-        self.fallback_reason = capabilities.fallback_reason.map(str::to_string);
+        self.availability_reason = capabilities.availability_reason.map(str::to_string);
     }
 
     pub fn release_for_transfer(&mut self) -> Result<(), &'static str> {
@@ -859,6 +857,11 @@ impl TransportState {
         lanes: Vec<EffectiveAudioLane>,
         capabilities: AudioCapabilities,
     ) -> AudioSession {
+        let lease_id = request
+            .control
+            .lease_id
+            .clone()
+            .expect("session acquisition is validated before prepare");
         let duration_seconds = request.duration_seconds.unwrap_or(0.0).max(0.0);
         let playback_rate = normalize_playback_rate(request.playback_rate);
         #[cfg(all(
@@ -878,8 +881,8 @@ impl TransportState {
             .then(|| "Native playback is unsupported on this platform.".to_string());
         let native_playback_supported =
             capabilities.native_playback_supported && runtime_unavailable_reason.is_none();
-        let fallback_reason =
-            runtime_unavailable_reason.or_else(|| capabilities.fallback_reason.map(str::to_string));
+        let availability_reason = runtime_unavailable_reason
+            .or_else(|| capabilities.availability_reason.map(str::to_string));
         #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
         let preserve_standalone_runtime = self.click.enabled && self.runtime.is_some();
         #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
@@ -898,7 +901,7 @@ impl TransportState {
         self.raw_lanes = request.lanes.clone();
         self.lanes = lanes.clone();
         self.native_playback_supported = native_playback_supported;
-        self.fallback_reason = fallback_reason;
+        self.availability_reason = availability_reason;
         #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
         {
             self.app = app;
@@ -924,15 +927,17 @@ impl TransportState {
 
         AudioSession {
             id: request.session_id,
+            lease_id,
             native_playback_supported: self.native_playback_supported,
-            fallback_reason: self.fallback_reason.clone(),
+            availability_reason: self.availability_reason.clone(),
             lane_count: self.lanes.len(),
-            generation: (self.generation != 0).then_some(self.generation),
+            generation: self.generation,
             timeline_revision: self
                 .timeline
                 .as_ref()
-                .and_then(|timeline| timeline.lock().ok().map(|state| state.revision())),
-            native_time_us: Some(timeline::native_time_us()),
+                .and_then(|timeline| timeline.lock().ok().map(|state| state.revision()))
+                .unwrap_or(0),
+            native_time_us: timeline::native_time_us(),
         }
     }
 
@@ -989,31 +994,10 @@ impl TransportState {
                             shared.sustained_underrun_frames = 0;
                         }
                     }
-                    Err(cause) => mark_runtime_fallback(runtime, cause),
+                    Err(cause) => mark_runtime_terminal(runtime, cause),
                 }
             }
         }
-    }
-
-    pub fn set_click(&mut self, request: AudioClickRequest) -> AudioSnapshot {
-        self.click = ClickState {
-            enabled: request.enabled,
-            bpm: request.bpm.unwrap_or(120.0).clamp(30.0, 300.0),
-            beats_per_bar: request.beats_per_bar.unwrap_or(4).clamp(1, 12),
-            accent_first_beat: request.accent_first_beat.unwrap_or(true),
-            gain: request.gain.unwrap_or(0.75).clamp(0.0, 1.0),
-            follow_transport: request.follow_transport.unwrap_or(true),
-            ..self.click.clone()
-        };
-
-        #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
-        if let Some(runtime) = &self.runtime {
-            if let Ok(mut shared) = runtime.shared.lock() {
-                shared.click = self.click.clone();
-            }
-        }
-
-        self.snapshot()
     }
 
     pub fn bind_auxiliary_runtime(
@@ -1055,12 +1039,36 @@ impl TransportState {
         request: StandaloneMetronomeRequest,
         capabilities: AudioCapabilities,
     ) -> Result<StandaloneMetronomeState, String> {
+        let acquisition = request.control.generation.is_none();
+        if !acquisition {
+            request
+                .control
+                .validate_mutation(AudioResource::Output)
+                .map_err(str::to_string)?;
+        } else {
+            request
+                .control
+                .validate_acquisition()
+                .map_err(str::to_string)?;
+        }
+        #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+        if acquisition && request.enabled && self.runtime_requires_replacement(false) {
+            self.stop_runtime();
+            self.click.enabled = false;
+            self.status = TransportStatus::Stopped;
+            self.started_at = None;
+            self.standalone_metronome.lease_id = None;
+            self.standalone_metronome.operations.clear();
+        }
+        if acquisition && self.standalone_metronome.lease_id.is_some() {
+            return Err("session_already_active".to_string());
+        }
         let previous_click = self.click.clone();
         let previous_control = self.standalone_metronome.clone();
         let previous_session_id = self.session_id.clone();
         let previous_generation = self.generation;
         let previous_native_playback_supported = self.native_playback_supported;
-        let previous_fallback_reason = self.fallback_reason.clone();
+        let previous_availability_reason = self.availability_reason.clone();
         let previous_status = self.status;
         let previous_position_seconds = self.position_seconds;
         let previous_started_at = self.started_at;
@@ -1073,7 +1081,7 @@ impl TransportState {
                 self.app = Some(app);
             }
             self.native_playback_supported = capabilities.native_playback_supported;
-            self.fallback_reason = capabilities.fallback_reason.map(str::to_string);
+            self.availability_reason = capabilities.availability_reason.map(str::to_string);
             if let Some(runtime) = &self.runtime {
                 if let Ok(mut shared) = runtime.shared.lock() {
                     shared.click = self.click.clone();
@@ -1098,7 +1106,7 @@ impl TransportState {
             self.session_id = previous_session_id;
             self.generation = previous_generation;
             self.native_playback_supported = previous_native_playback_supported;
-            self.fallback_reason = previous_fallback_reason;
+            self.availability_reason = previous_availability_reason;
             self.status = previous_status;
             self.position_seconds = previous_position_seconds;
             self.started_at = previous_started_at;
@@ -1125,7 +1133,7 @@ impl TransportState {
             .control
             .lease_id
             .clone()
-            .unwrap_or_else(|| "standalone-metronome".to_string());
+            .expect("metronome controls are validated before mutation");
         let operation_key = request
             .control
             .operation_id
@@ -1207,7 +1215,7 @@ impl TransportState {
         }
         if !self.native_playback_supported {
             return Err(self
-                .fallback_reason
+                .availability_reason
                 .clone()
                 .unwrap_or_else(|| "Native audio playback is unavailable.".to_string()));
         }
@@ -1223,10 +1231,10 @@ impl TransportState {
             let shared = runtime.shared.lock().ok()?;
             let reason = shared
                 .terminal_error
-                .map(|code| code.fallback_message().to_string())
+                .map(|code| code.terminal_message().to_string())
                 .or_else(|| {
                     shared
-                        .fallback_cause
+                        .terminal_cause
                         .map(|cause| cause.message().to_string())
                 })?;
             Some((shared.position_seconds, reason))
@@ -1237,7 +1245,7 @@ impl TransportState {
             self.status = TransportStatus::Paused;
             self.started_at = None;
             self.native_playback_supported = false;
-            self.fallback_reason = Some(reason.clone());
+            self.availability_reason = Some(reason.clone());
             self.stop_runtime();
             return Err(reason);
         }
@@ -1259,9 +1267,9 @@ impl TransportState {
                 self.status = TransportStatus::Paused;
                 self.started_at = None;
                 self.native_playback_supported = false;
-                self.fallback_reason = Some(cause.message().to_string());
+                self.availability_reason = Some(cause.message().to_string());
                 self.stop_runtime();
-                return Ok(self.snapshot());
+                return Err(cause.message().to_string());
             }
             self.status = TransportStatus::Playing;
             self.started_at = Some(Instant::now());
@@ -1275,7 +1283,7 @@ impl TransportState {
             shared.buffering = false;
             shared.sustained_underrun_frames = 0;
             shared.underrun_error_pending = false;
-            shared.fallback_cause = None;
+            shared.terminal_cause = None;
             return Ok(shared.snapshot());
         }
 
@@ -1296,15 +1304,15 @@ impl TransportState {
                 self.position_seconds = shared.position_seconds;
                 if let Some(reason) = shared
                     .terminal_error
-                    .map(|code| code.fallback_message().to_string())
+                    .map(|code| code.terminal_message().to_string())
                     .or_else(|| {
                         shared
-                            .fallback_cause
+                            .terminal_cause
                             .map(|cause| cause.message().to_string())
                     })
                 {
                     self.native_playback_supported = false;
-                    self.fallback_reason = Some(reason);
+                    self.availability_reason = Some(reason);
                 } else if self.click.enabled {
                     shared.status = TransportStatus::Paused;
                     shared.position_seconds = self.position_seconds;
@@ -1330,10 +1338,10 @@ impl TransportState {
             let shared = runtime.shared.lock().ok()?;
             let reason = shared
                 .terminal_error
-                .map(|code| code.fallback_message().to_string())
+                .map(|code| code.terminal_message().to_string())
                 .or_else(|| {
                     shared
-                        .fallback_cause
+                        .terminal_cause
                         .map(|cause| cause.message().to_string())
                 })?;
             Some((shared.position_seconds, reason))
@@ -1344,7 +1352,7 @@ impl TransportState {
             self.status = TransportStatus::Paused;
             self.started_at = None;
             self.native_playback_supported = false;
-            self.fallback_reason = Some(reason);
+            self.availability_reason = Some(reason);
             self.stop_runtime();
             return self.snapshot();
         }
@@ -1402,7 +1410,7 @@ impl TransportState {
                             shared.underrun_error_pending = false;
                         }
                     }
-                    Err(cause) => mark_runtime_fallback(runtime, cause),
+                    Err(cause) => mark_runtime_terminal(runtime, cause),
                 }
             }
             if let Ok(mut shared) = runtime.shared.lock() {
@@ -1429,16 +1437,17 @@ impl TransportState {
             duration_seconds: self.duration_seconds,
             playback_rate: self.playback_rate,
             native_playback_supported: self.native_playback_supported,
-            fallback_reason: self.fallback_reason.clone(),
+            availability_reason: self.availability_reason.clone(),
             lanes: self.lanes.clone(),
             buffer_health: empty_buffer_health(&self.lanes),
             lease_id: None,
-            generation: (self.generation != 0).then_some(self.generation),
+            generation: self.generation,
             timeline_revision: self
                 .timeline
                 .as_ref()
-                .and_then(|timeline| timeline.lock().ok().map(|state| state.revision())),
-            native_time_us: Some(timeline::native_time_us()),
+                .and_then(|timeline| timeline.lock().ok().map(|state| state.revision()))
+                .unwrap_or(0),
+            native_time_us: timeline::native_time_us(),
         }
     }
 
@@ -1464,24 +1473,12 @@ impl TransportState {
         if std::mem::take(&mut self.fail_next_runtime_start) {
             return Err("injected_runtime_start_failure".to_string());
         }
-        let runtime_finished = self.runtime.as_ref().is_some_and(|runtime| {
-            runtime
-                .audio_thread
-                .as_ref()
-                .is_some_and(JoinHandle::is_finished)
-                || runtime
-                    .reporter_thread
-                    .as_ref()
-                    .is_some_and(JoinHandle::is_finished)
-                || (require_project_runtime
-                    && runtime.worker_threads.iter().any(JoinHandle::is_finished))
-        });
         let runtime_kind_mismatch = require_project_runtime
             && self
                 .runtime
                 .as_ref()
                 .is_some_and(|runtime| runtime.auxiliary_only);
-        if runtime_finished || runtime_kind_mismatch {
+        if runtime_kind_mismatch {
             self.stop_runtime();
         }
         if self.runtime.is_some() {
@@ -1540,10 +1537,30 @@ impl TransportState {
                     DiagnosticSafeCode::RuntimeStartFailure,
                 );
                 self.native_playback_supported = false;
-                self.fallback_reason = Some(error.clone());
+                self.availability_reason = Some(error.clone());
                 Err(error)
             }
         }
+    }
+
+    #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+    fn runtime_requires_replacement(&self, require_project_runtime: bool) -> bool {
+        self.runtime.as_ref().is_some_and(|runtime| {
+            let terminal = runtime.shared.lock().ok().is_some_and(|shared| {
+                shared.terminal_error.is_some() || shared.terminal_cause.is_some()
+            });
+            terminal
+                || runtime
+                    .audio_thread
+                    .as_ref()
+                    .is_some_and(JoinHandle::is_finished)
+                || runtime
+                    .reporter_thread
+                    .as_ref()
+                    .is_some_and(JoinHandle::is_finished)
+                || (require_project_runtime
+                    && runtime.worker_threads.iter().any(JoinHandle::is_finished))
+        })
     }
 
     fn stop_runtime(&mut self) {
@@ -1603,7 +1620,7 @@ fn seek_runtime_workers(
 #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
 fn wait_for_runtime_prebuffer(
     runtime: &PlaybackRuntime,
-) -> Result<(), NativePlaybackFallbackCause> {
+) -> Result<(), NativePlaybackTerminalCause> {
     let started_at = Instant::now();
     loop {
         let (ready, generation) = runtime
@@ -1617,18 +1634,18 @@ fn wait_for_runtime_prebuffer(
         }
         if started_at.elapsed() >= PREBUFFER_TIMEOUT {
             diagnostics::record_safe_code(generation, DiagnosticSafeCode::PrebufferTimeout);
-            return Err(NativePlaybackFallbackCause::PrebufferTimeout);
+            return Err(NativePlaybackTerminalCause::PrebufferTimeout);
         }
         thread::sleep(PREBUFFER_POLL_INTERVAL);
     }
 }
 
 #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
-fn mark_runtime_fallback(runtime: &PlaybackRuntime, cause: NativePlaybackFallbackCause) {
+fn mark_runtime_terminal(runtime: &PlaybackRuntime, cause: NativePlaybackTerminalCause) {
     if let Ok(mut shared) = runtime.shared.lock() {
         shared.status = TransportStatus::Paused;
         shared.buffering = false;
-        shared.fallback_cause = Some(cause);
+        shared.terminal_cause = Some(cause);
         shared.underrun_error_pending = true;
     }
 }
@@ -1951,10 +1968,10 @@ fn update_underrun_state(shared: &mut PlaybackShared, audible_underrun: bool, fr
         .saturating_add(frame_count.max(1));
     let threshold_frames =
         (shared.sample_rate as f64 * SUSTAINED_UNDERRUN_ERROR_SECONDS).ceil() as usize;
-    if shared.fallback_cause.is_none() && shared.sustained_underrun_frames >= threshold_frames {
+    if shared.terminal_cause.is_none() && shared.sustained_underrun_frames >= threshold_frames {
         shared.status = TransportStatus::Paused;
         shared.buffering = false;
-        shared.fallback_cause = Some(NativePlaybackFallbackCause::SustainedUnderrun);
+        shared.terminal_cause = Some(NativePlaybackTerminalCause::SustainedUnderrun);
         shared.underrun_error_pending = true;
         diagnostics::record_callback_safe_code(
             shared.diagnostics_generation,
@@ -2266,7 +2283,7 @@ fn start_native_runtime(
         duration_seconds,
         playback_rate,
         native_playback_supported: true,
-        fallback_reason: None,
+        availability_reason: None,
         sample_rate,
         channels,
         lanes,
@@ -2278,7 +2295,7 @@ fn start_native_runtime(
         buffering: false,
         sustained_underrun_frames: 0,
         underrun_error_pending: false,
-        fallback_cause: None,
+        terminal_cause: None,
         diagnostics_generation,
         diagnostics_gain_first_change_recorded: false,
         timeline,
@@ -2500,7 +2517,7 @@ fn emit_runtime_events(app: &AppHandle, shared: &Arc<Mutex<PlaybackShared>>) -> 
             }
         }
         let requires_error_handling =
-            shared.terminal_error.is_some() || shared.fallback_cause.is_some();
+            shared.terminal_error.is_some() || shared.terminal_cause.is_some();
         let terminal = (!shared.terminal_reported)
             .then(|| {
                 shared
@@ -2508,8 +2525,8 @@ fn emit_runtime_events(app: &AppHandle, shared: &Arc<Mutex<PlaybackShared>>) -> 
                     .map(NativeAudioErrorCode::safe_code)
                     .or_else(|| {
                         shared
-                            .fallback_cause
-                            .map(NativePlaybackFallbackCause::safe_code)
+                            .terminal_cause
+                            .map(NativePlaybackTerminalCause::safe_code)
                     })
             })
             .flatten();
@@ -2533,6 +2550,9 @@ fn emit_runtime_events(app: &AppHandle, shared: &Arc<Mutex<PlaybackShared>>) -> 
             position_seconds: snapshot.position_seconds,
             duration_seconds: snapshot.duration_seconds,
             state: snapshot.state,
+            generation: snapshot.generation,
+            timeline_revision: snapshot.timeline_revision,
+            native_time_us: snapshot.native_time_us,
         },
     );
     let _ = app.emit(
@@ -2541,6 +2561,9 @@ fn emit_runtime_events(app: &AppHandle, shared: &Arc<Mutex<PlaybackShared>>) -> 
             session_id: snapshot.session_id.clone(),
             state: snapshot.state,
             position_seconds: snapshot.position_seconds,
+            generation: snapshot.generation,
+            timeline_revision: snapshot.timeline_revision,
+            native_time_us: snapshot.native_time_us,
         },
     );
     if ended {
@@ -2560,6 +2583,10 @@ fn emit_runtime_events(app: &AppHandle, shared: &Arc<Mutex<PlaybackShared>>) -> 
             AudioErrorEvent {
                 session_id: snapshot.session_id,
                 code,
+                generation: snapshot.generation,
+                timeline_revision: snapshot.timeline_revision,
+                native_time_us: snapshot.native_time_us,
+                position_seconds: snapshot.position_seconds,
             },
         );
     }
@@ -2575,6 +2602,9 @@ fn emit_runtime_events(app: &AppHandle, shared: &Arc<Mutex<PlaybackShared>>) -> 
                 resource: AudioResource::Output,
                 source: AudioSource::OutputRuntime,
                 generation: reporter.0,
+                timeline_revision: snapshot.timeline_revision,
+                capture_generation: None,
+                position_seconds: snapshot.position_seconds,
                 code,
                 native_time_us: timeline::native_time_us(),
             },
@@ -3501,8 +3531,7 @@ mod tests {
             mic_monitoring_supported: false,
             system_input_volume_supported: false,
             emits_events: Vec::new(),
-            fallback_required: false,
-            fallback_reason: None,
+            availability_reason: None,
         }
     }
 
@@ -3515,8 +3544,15 @@ mod tests {
             mic_monitoring_supported: false,
             system_input_volume_supported: false,
             emits_events: Vec::new(),
-            fallback_required: true,
-            fallback_reason: Some(reason),
+            availability_reason: Some(reason),
+        }
+    }
+
+    fn acquisition_control() -> SessionCommand {
+        SessionCommand {
+            lease_id: Some("project-playback".to_string()),
+            operation_id: Some("prepare-test".to_string()),
+            ..Default::default()
         }
     }
 
@@ -3561,7 +3597,7 @@ mod tests {
             duration_seconds: 10.0,
             playback_rate: 1.0,
             native_playback_supported: true,
-            fallback_reason: None,
+            availability_reason: None,
             sample_rate,
             channels,
             lanes: vec![stream_lane("lane", ring, target_gain)],
@@ -3580,7 +3616,7 @@ mod tests {
             buffering: false,
             sustained_underrun_frames: 0,
             underrun_error_pending: false,
-            fallback_cause: None,
+            terminal_cause: None,
             diagnostics_generation: 0,
             diagnostics_gain_first_change_recorded: false,
             timeline: Arc::new(Mutex::new(timeline)),
@@ -3779,13 +3815,17 @@ mod tests {
         let event = AudioErrorEvent {
             session_id: Some("session-123".to_string()),
             code: NativeAudioErrorCode::StreamInvalidated,
+            generation: 4,
+            timeline_revision: 7,
+            native_time_us: 99,
+            position_seconds: 1.25,
         };
 
         let serialized = serde_json::to_string(&event).expect("serialize event");
 
         assert_eq!(
             serialized,
-            r#"{"sessionId":"session-123","code":"stream_invalidated"}"#
+            r#"{"sessionId":"session-123","code":"stream_invalidated","generation":4,"timelineRevision":7,"nativeTimeUs":99,"positionSeconds":1.25}"#
         );
         assert!(!serialized.contains("message"));
         assert!(!serialized.contains("/private/audio.wav"));
@@ -3814,7 +3854,7 @@ mod tests {
 
         let mut shared =
             shared_with_lane(Arc::new(Mutex::new(RingBuffer::new(1_000))), 1_000, 1, 1.0);
-        shared.fallback_cause = Some(NativePlaybackFallbackCause::SustainedUnderrun);
+        shared.terminal_cause = Some(NativePlaybackTerminalCause::SustainedUnderrun);
         shared.underrun_error_pending = true;
 
         mark_device_changed(&mut shared);
@@ -3850,7 +3890,7 @@ mod tests {
         );
 
         let requires_error_handling =
-            shared.terminal_error.is_some() || shared.fallback_cause.is_some();
+            shared.terminal_error.is_some() || shared.terminal_cause.is_some();
 
         assert!(!should_emit_ended(
             shared.ended_pending,
@@ -3901,7 +3941,7 @@ mod tests {
                 duration_seconds: Some(30.0),
                 playback_rate: Some(1.0),
                 lanes: Vec::new(),
-                control: SessionCommand::default(),
+                control: acquisition_control(),
                 owner: None,
             },
             Vec::new(),
@@ -3927,7 +3967,7 @@ mod tests {
                 duration_seconds: Some(30.0),
                 playback_rate: Some(1.0),
                 lanes: Vec::new(),
-                control: SessionCommand::default(),
+                control: acquisition_control(),
                 owner: None,
             },
             Vec::new(),
@@ -3996,7 +4036,7 @@ mod tests {
         assert_eq!(error, "Native playback output failed.");
         assert!(!snapshot.native_playback_supported);
         assert_eq!(
-            snapshot.fallback_reason.as_deref(),
+            snapshot.availability_reason.as_deref(),
             Some("Native playback output failed.")
         );
         assert_eq!(snapshot.state, "paused");
@@ -4027,12 +4067,12 @@ mod tests {
 
     #[test]
     #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
-    fn stop_releases_failed_runtime_and_preserves_fallback_handoff_state() {
+    fn stop_releases_failed_runtime_and_preserves_terminal_handoff_state() {
         let mut shared =
             shared_with_lane(Arc::new(Mutex::new(RingBuffer::new(1_000))), 1_000, 1, 1.0);
         shared.position_seconds = 4.25;
         shared.status = TransportStatus::Paused;
-        shared.fallback_cause = Some(NativePlaybackFallbackCause::SustainedUnderrun);
+        shared.terminal_cause = Some(NativePlaybackTerminalCause::SustainedUnderrun);
         let (audio_stop_sender, _audio_stop_receiver) = mpsc::channel();
         let (reporter_stop_sender, _reporter_stop_receiver) = mpsc::channel();
         let mut state = TransportState::default();
@@ -4057,8 +4097,8 @@ mod tests {
         assert_seconds_close(snapshot.position_seconds, 4.25);
         assert!(!snapshot.native_playback_supported);
         assert_eq!(
-            snapshot.fallback_reason.as_deref(),
-            Some("Native playback underrun persisted; falling back to Web Audio.")
+            snapshot.availability_reason.as_deref(),
+            Some("Native playback stopped after sustained underruns.")
         );
     }
 
@@ -4141,7 +4181,7 @@ mod tests {
                 duration_seconds: Some(30.0),
                 playback_rate: Some(1.0),
                 lanes: Vec::new(),
-                control: SessionCommand::default(),
+                control: acquisition_control(),
                 owner: None,
             },
             Vec::new(),
@@ -4166,7 +4206,7 @@ mod tests {
                 duration_seconds: Some(30.0),
                 playback_rate: Some(1.0),
                 lanes: Vec::new(),
-                control: SessionCommand::default(),
+                control: acquisition_control(),
                 owner: None,
             },
             Vec::new(),
@@ -4191,7 +4231,7 @@ mod tests {
                 duration_seconds: Some(30.0),
                 playback_rate: Some(1.0),
                 lanes: Vec::new(),
-                control: SessionCommand::default(),
+                control: acquisition_control(),
                 owner: None,
             },
             Vec::new(),
@@ -4263,7 +4303,7 @@ mod tests {
                 duration_seconds: Some(30.0),
                 playback_rate: Some(0.75),
                 lanes: Vec::new(),
-                control: SessionCommand::default(),
+                control: acquisition_control(),
                 owner: None,
             },
             Vec::new(),
@@ -4271,7 +4311,7 @@ mod tests {
         );
 
         assert!(session.native_playback_supported);
-        assert_eq!(session.fallback_reason.as_deref(), None);
+        assert_eq!(session.availability_reason.as_deref(), None);
     }
 
     #[test]
@@ -4284,7 +4324,7 @@ mod tests {
                 duration_seconds: Some(30.0),
                 playback_rate: Some(1.0),
                 lanes: Vec::new(),
-                control: SessionCommand::default(),
+                control: acquisition_control(),
                 owner: None,
             },
             Vec::new(),
@@ -4308,7 +4348,7 @@ mod tests {
                 duration_seconds: Some(30.0),
                 playback_rate: Some(1.0),
                 lanes: Vec::new(),
-                control: SessionCommand::default(),
+                control: acquisition_control(),
                 owner: None,
             },
             Vec::new(),
@@ -4378,7 +4418,7 @@ mod tests {
         assert_eq!(shared.status, TransportStatus::Stopped);
         assert!(shared.ended_pending);
         assert_seconds_close(shared.position_seconds, 0.0);
-        assert!(shared.fallback_cause.is_none());
+        assert!(shared.terminal_cause.is_none());
     }
 
     #[test]
@@ -4421,7 +4461,7 @@ mod tests {
                 duration_seconds: Some(30.0),
                 playback_rate: Some(1.0),
                 lanes: Vec::new(),
-                control: SessionCommand::default(),
+                control: acquisition_control(),
                 owner: None,
             },
             Vec::new(),
@@ -4458,7 +4498,7 @@ mod tests {
                 duration_seconds: Some(30.0),
                 playback_rate: Some(1.0),
                 lanes: Vec::new(),
-                control: SessionCommand::default(),
+                control: acquisition_control(),
                 owner: None,
             },
             Vec::new(),
@@ -4496,7 +4536,7 @@ mod tests {
                 duration_seconds: Some(loop_end),
                 playback_rate: Some(1.0),
                 lanes: Vec::new(),
-                control: SessionCommand::default(),
+                control: acquisition_control(),
                 owner: None,
             },
             Vec::new(),
@@ -4698,7 +4738,7 @@ mod tests {
     }
 
     #[test]
-    fn sustained_underrun_marks_native_fallback_without_advancing() {
+    fn sustained_underrun_marks_native_terminal_without_advancing() {
         let ring = Arc::new(Mutex::new(RingBuffer::new(1_000)));
         let mut shared = shared_with_lane(ring, 10, 1, 1.0);
         let mut output = vec![0.0; 5];
@@ -4708,13 +4748,13 @@ mod tests {
 
         assert_eq!(shared.status, TransportStatus::Paused);
         assert_eq!(
-            shared.fallback_cause,
-            Some(NativePlaybackFallbackCause::SustainedUnderrun)
+            shared.terminal_cause,
+            Some(NativePlaybackTerminalCause::SustainedUnderrun)
         );
         assert!(!snapshot.native_playback_supported);
         assert_eq!(
-            snapshot.fallback_reason.as_deref(),
-            Some("Native playback underrun persisted; falling back to Web Audio.")
+            snapshot.availability_reason.as_deref(),
+            Some("Native playback stopped after sustained underruns.")
         );
         assert_eq!(shared.position_seconds, 0.0);
     }
@@ -4763,12 +4803,7 @@ mod tests {
             .apply_standalone_metronome(&standalone_request(true, "start", None, None))
             .unwrap();
         let duplicate = transport
-            .apply_standalone_metronome(&standalone_request(
-                true,
-                "start",
-                Some(started.generation),
-                Some(started.revision),
-            ))
+            .apply_standalone_metronome(&standalone_request(true, "start", None, None))
             .unwrap();
         assert_eq!(duplicate.revision, started.revision);
         let updated = transport
@@ -4822,6 +4857,28 @@ mod tests {
     }
 
     #[test]
+    fn standalone_metronome_rejects_missing_or_partial_control() {
+        let mut transport = TransportState::default();
+        let mut missing = standalone_request(true, "start", None, None);
+        missing.control.lease_id = None;
+        assert_eq!(
+            transport
+                .set_standalone_metronome_inner(None, missing, capabilities())
+                .unwrap_err(),
+            "missing_session_control"
+        );
+
+        let partial = standalone_request(true, "update", Some(1), None);
+        assert_eq!(
+            transport
+                .set_standalone_metronome_inner(None, partial, capabilities())
+                .unwrap_err(),
+            "missing_session_control"
+        );
+        assert!(!transport.click.enabled);
+    }
+
+    #[test]
     #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
     fn standalone_enable_rolls_back_control_when_runtime_start_fails() {
         let mut transport = TransportState::default();
@@ -4846,6 +4903,129 @@ mod tests {
         assert!(retried.enabled);
         assert_eq!(retried.generation, 1);
         assert_eq!(retried.revision, 1);
+    }
+
+    #[test]
+    #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+    fn standalone_rejects_acquisition_while_active() {
+        let mut transport = TransportState::default();
+        let started = transport
+            .set_standalone_metronome_inner(
+                None,
+                standalone_request(true, "start", None, None),
+                capabilities(),
+            )
+            .unwrap();
+
+        assert_eq!(
+            transport
+                .set_standalone_metronome_inner(
+                    None,
+                    standalone_request(true, "stale-start", None, None),
+                    capabilities(),
+                )
+                .unwrap_err(),
+            "session_already_active"
+        );
+        assert_eq!(
+            transport.standalone_metronome.generation,
+            started.generation
+        );
+        assert_eq!(transport.standalone_metronome.revision, started.revision);
+    }
+
+    #[test]
+    #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+    fn standalone_terminal_retry_reaps_runtime_and_advances_generation() {
+        let mut transport = TransportState::default();
+        let started = transport
+            .set_standalone_metronome_inner(
+                None,
+                standalone_request(true, "start", None, None),
+                capabilities(),
+            )
+            .unwrap();
+        transport.install_test_auxiliary_runtime();
+        let failed_runtime = transport.runtime.as_ref().unwrap().shared.clone();
+        failed_runtime.lock().unwrap().terminal_error =
+            Some(NativeAudioErrorCode::OutputStreamFailure);
+
+        let retried = transport
+            .set_standalone_metronome_inner(
+                None,
+                standalone_request(true, "retry", None, None),
+                capabilities(),
+            )
+            .unwrap();
+
+        assert!(retried.enabled);
+        assert!(retried.generation > started.generation);
+        assert!(transport.runtime.is_none());
+        transport.install_test_auxiliary_runtime();
+        let fresh_runtime = transport.runtime.as_ref().unwrap();
+        assert!(!Arc::ptr_eq(&failed_runtime, &fresh_runtime.shared));
+        let shared = fresh_runtime.shared.lock().unwrap();
+        assert_eq!(shared.generation, retried.generation);
+        assert!(shared.terminal_error.is_none());
+        assert!(shared.native_playback_supported);
+    }
+
+    #[test]
+    #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+    fn standalone_stop_rejects_delayed_acquisition_without_restarting_audio() {
+        let mut transport = TransportState::default();
+        let started = transport
+            .set_standalone_metronome_inner(
+                None,
+                standalone_request(true, "start", None, None),
+                capabilities(),
+            )
+            .unwrap();
+        let stopped = transport
+            .set_standalone_metronome_inner(
+                None,
+                standalone_request(
+                    false,
+                    "stop",
+                    Some(started.generation),
+                    Some(started.revision),
+                ),
+                capabilities(),
+            )
+            .unwrap();
+        assert!(!stopped.enabled);
+
+        assert_eq!(
+            transport
+                .set_standalone_metronome_inner(
+                    None,
+                    standalone_request(true, "delayed-start", None, None),
+                    capabilities(),
+                )
+                .unwrap_err(),
+            "session_already_active"
+        );
+        assert!(!transport.click.enabled);
+        assert!(transport.runtime.is_none());
+        assert_eq!(
+            transport.standalone_metronome.generation,
+            stopped.generation
+        );
+
+        let restarted = transport
+            .set_standalone_metronome_inner(
+                None,
+                standalone_request(
+                    true,
+                    "restart",
+                    Some(stopped.generation),
+                    Some(stopped.revision),
+                ),
+                capabilities(),
+            )
+            .expect("correlated explicit restart remains valid");
+        assert!(restarted.enabled);
+        assert!(restarted.generation > stopped.generation);
     }
 
     #[test]
@@ -4954,7 +5134,7 @@ mod tests {
                 duration_seconds: Some(10.0),
                 playback_rate: Some(1.0),
                 lanes: Vec::new(),
-                control: SessionCommand::default(),
+                control: acquisition_control(),
                 owner: None,
             },
             Vec::new(),

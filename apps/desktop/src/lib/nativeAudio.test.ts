@@ -38,6 +38,7 @@ import {
   listenNativeAudioInputState,
   listenNativeAudioErrors,
   listenNativeAudioPositions,
+  listenNativeAudioState,
   listenNativeAudioSessions,
   listenNativeAudioTerminal,
   pauseNativeAudio,
@@ -48,7 +49,6 @@ import {
   resetNativeAudioDiagnostics,
   scheduleNativeAudioCues,
   seekNativeAudio,
-  setNativeAudioClick,
   setNativeAudioLanes,
   setNativeAudioMonitor,
   setNativeStandaloneMetronome,
@@ -65,8 +65,7 @@ const capabilities: NativeAudioCapabilities = {
   micMonitoringSupported: false,
   systemInputVolumeSupported: true,
   emitsEvents: ["audio://state", "audio://input-frame", "audio://devices-changed"],
-  fallbackRequired: true,
-  fallbackReason: "Native audio playback is not wired yet; use existing WebView playback.",
+  availabilityReason: "native_audio_unavailable",
 };
 
 const devices: NativeAudioDevices = {
@@ -82,9 +81,13 @@ const snapshot: NativeAudioSnapshot = {
   durationSeconds: 180,
   playbackRate: 1,
   nativePlaybackSupported: false,
-  fallbackReason: "Native audio playback is not wired yet; use existing WebView playback.",
+  availabilityReason: "native_audio_unavailable",
   lanes: [],
   bufferHealth: [],
+  leaseId: "project-playback",
+  generation: 4,
+  timelineRevision: 2,
+  nativeTimeUs: 100,
 };
 
 const inputState: NativeAudioInputState = {
@@ -98,6 +101,9 @@ const inputState: NativeAudioInputState = {
   capturePath: "desktop-cpal",
   permissionState: "unavailable",
   error: null,
+  leaseId: "tuner-capture",
+  generation: 3,
+  nativeTimeUs: 100,
 };
 
 describe("native audio adapter", () => {
@@ -206,6 +212,8 @@ describe("native audio adapter", () => {
 
   it("sends camelCase session and transport payloads", async () => {
     const sessionRequest = {
+      leaseId: "project-playback",
+      operationId: "prepare-1",
       sessionId: "session-1",
       durationSeconds: 180,
       playbackRate: 1,
@@ -222,54 +230,48 @@ describe("native audio adapter", () => {
       ],
     };
     const laneUpdate = { lanes: sessionRequest.lanes };
+    const control = {
+      leaseId: "project-playback",
+      operationId: "mutate-1",
+      generation: 4,
+      timelineRevision: 2,
+    };
     mockInvoke.mockResolvedValue(snapshot);
 
     await prepareNativeAudioSession(sessionRequest);
-    await playNativeAudio({ startTimeSeconds: 4, scheduledStartTimeSeconds: 10 });
-    await seekNativeAudio({ timeSeconds: 24 });
-    await setNativeAudioLanes(laneUpdate);
-    await setNativeAudioClick({
-      enabled: true,
-      bpm: 120,
-      beatsPerBar: 4,
-      accentFirstBeat: true,
-      gain: 0.75,
-      followTransport: true,
-    });
+    await playNativeAudio({ ...control, startTimeSeconds: 4, scheduledStartTimeSeconds: 10 });
+    await seekNativeAudio({ ...control, operationId: "seek-1", timeSeconds: 24 });
+    await setNativeAudioLanes(laneUpdate, { ...control, operationId: "lanes-1" });
 
     expect(mockInvoke).toHaveBeenNthCalledWith(1, "audio_prepare_session", {
       payload: sessionRequest,
     });
     expect(mockInvoke).toHaveBeenNthCalledWith(2, "audio_play", {
-      payload: { startTimeSeconds: 4, scheduledStartTimeSeconds: 10 },
+      payload: { ...control, startTimeSeconds: 4, scheduledStartTimeSeconds: 10 },
     });
     expect(mockInvoke).toHaveBeenNthCalledWith(3, "audio_seek", {
-      payload: { timeSeconds: 24 },
+      payload: { ...control, operationId: "seek-1", timeSeconds: 24 },
     });
     expect(mockInvoke).toHaveBeenNthCalledWith(4, "audio_set_lanes", {
       payload: laneUpdate,
-    });
-    expect(mockInvoke).toHaveBeenNthCalledWith(5, "audio_set_click", {
-      payload: {
-        enabled: true,
-        bpm: 120,
-        beatsPerBar: 4,
-        accentFirstBeat: true,
-        gain: 0.75,
-        followTransport: true,
-      },
+      control: { ...control, operationId: "lanes-1" },
     });
   });
 
-  it("wraps snapshot and stop-state commands without payloads", async () => {
+  it("wraps snapshot and stop-state commands with ownership metadata", async () => {
     mockInvoke.mockResolvedValue(snapshot);
+    const control = {
+      leaseId: "project-playback", operationId: "pause-1", generation: 4, timelineRevision: 2,
+    };
 
-    await pauseNativeAudio();
-    await stopNativeAudio();
+    await pauseNativeAudio(control);
+    await stopNativeAudio({ ...control, operationId: "stop-1" });
     await getNativeAudioSnapshot();
 
-    expect(mockInvoke).toHaveBeenNthCalledWith(1, "audio_pause");
-    expect(mockInvoke).toHaveBeenNthCalledWith(2, "audio_stop");
+    expect(mockInvoke).toHaveBeenNthCalledWith(1, "audio_pause", { payload: control });
+    expect(mockInvoke).toHaveBeenNthCalledWith(2, "audio_stop", {
+      payload: { ...control, operationId: "stop-1" },
+    });
     expect(mockInvoke).toHaveBeenNthCalledWith(3, "audio_get_snapshot");
   });
 
@@ -296,7 +298,9 @@ describe("native audio adapter", () => {
       operationId: "metro-1",
       cues: [{ cueIndex: 2, positionSeconds: 1.5, kind: "metronome", accent: true, gain: 0.4 }],
     });
-    await cancelNativeAudioCues({ leaseId: "practice", timelineRevision: 3 }, "metronome");
+    await cancelNativeAudioCues({
+      leaseId: "practice", generation: 7, timelineRevision: 3, operationId: "cancel-1",
+    }, "metronome");
 
     expect(mockInvoke.mock.calls).toEqual([
       ["audio_get_session_snapshot"],
@@ -305,7 +309,9 @@ describe("native audio adapter", () => {
         cues: [{ cueIndex: 2, positionSeconds: 1.5, kind: "metronome", accent: true, gain: 0.4 }],
       } }],
       ["audio_cancel_cues", {
-        payload: { leaseId: "practice", timelineRevision: 3 }, kind: "metronome",
+        payload: {
+          leaseId: "practice", generation: 7, timelineRevision: 3, operationId: "cancel-1",
+        }, kind: "metronome",
       }],
     ]);
   });
@@ -379,21 +385,34 @@ describe("native audio adapter", () => {
 
     await getNativeAudioInputState();
     await startNativeAudioInput({
+      leaseId: "tuner-capture",
+      operationId: "start-1",
       deviceId: "built-in",
       monitorEnabled: true,
       monitorGain: 0.5,
     });
-    await setNativeAudioMonitor({ enabled: false, gain: 0 });
-    await stopNativeAudioInput();
+    await setNativeAudioMonitor({
+      enabled: false, gain: 0, leaseId: "tuner-capture", operationId: "monitor-1", generation: 3,
+    });
+    await stopNativeAudioInput({
+      leaseId: "tuner-capture", operationId: "stop-1", generation: 3,
+    });
 
     expect(mockInvoke).toHaveBeenNthCalledWith(1, "audio_get_input_state");
     expect(mockInvoke).toHaveBeenNthCalledWith(2, "audio_start_input", {
-      payload: { deviceId: "built-in", monitorEnabled: true, monitorGain: 0.5 },
+      payload: {
+        deviceId: "built-in", monitorEnabled: true, monitorGain: 0.5,
+        leaseId: "tuner-capture", operationId: "start-1",
+      },
     });
     expect(mockInvoke).toHaveBeenNthCalledWith(3, "audio_set_monitor", {
-      payload: { enabled: false, gain: 0 },
+      payload: {
+        enabled: false, gain: 0, leaseId: "tuner-capture", operationId: "monitor-1", generation: 3,
+      },
     });
-    expect(mockInvoke).toHaveBeenNthCalledWith(4, "audio_stop_input");
+    expect(mockInvoke).toHaveBeenNthCalledWith(4, "audio_stop_input", {
+      payload: { leaseId: "tuner-capture", operationId: "stop-1", generation: 3 },
+    });
   });
 
   it("keeps permission status and request separate from capture start", async () => {
@@ -470,9 +489,16 @@ describe("native audio adapter", () => {
     expect(unlisten).toHaveBeenCalled();
   });
 
-  it("wraps code-only native error events", async () => {
+  it("decodes correlated native error events", async () => {
     const unlisten = vi.fn();
-    const error = { sessionId: "session-1", code: "stream_invalidated" as const };
+    const error = {
+      sessionId: "session-1",
+      code: "stream_invalidated" as const,
+      generation: 4,
+      timelineRevision: 9,
+      nativeTimeUs: 101,
+      positionSeconds: 12.5,
+    };
     mockListen.mockImplementation(async (_eventName, callback) => {
       callback({ event: "audio://error", id: 1, payload: error });
       return unlisten;
@@ -485,6 +511,27 @@ describe("native audio adapter", () => {
     expect(handler).toHaveBeenCalledWith(error);
     stopListening();
     expect(unlisten).toHaveBeenCalled();
+  });
+
+  it("decodes correlated native state events", async () => {
+    const state = {
+      sessionId: "session-1",
+      state: "paused" as const,
+      positionSeconds: 12.5,
+      generation: 4,
+      timelineRevision: 9,
+      nativeTimeUs: 102,
+    };
+    mockListen.mockImplementation(async (_eventName, callback) => {
+      callback({ event: "audio://state", id: 1, payload: state });
+      return vi.fn();
+    });
+    const handler = vi.fn();
+
+    await listenNativeAudioState(handler);
+
+    expect(mockListen).toHaveBeenCalledWith("audio://state", expect.any(Function));
+    expect(handler).toHaveBeenCalledWith(state);
   });
 
   it("decodes safe camelCase session, cue, and terminal events", async () => {

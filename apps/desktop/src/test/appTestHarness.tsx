@@ -144,6 +144,9 @@ const {
     positionSeconds: number;
     durationSeconds: number;
     state: "stopped" | "playing" | "paused";
+    generation?: number;
+    timelineRevision?: number;
+    nativeTimeUs?: number;
   };
   type NativeAudioErrorPayload = {
     sessionId: string | null;
@@ -153,6 +156,10 @@ const {
       | "stream_invalidated"
       | "output_stream_failure"
       | "decoder_worker_failure";
+    generation?: number;
+    timelineRevision?: number;
+    nativeTimeUs?: number;
+    positionSeconds?: number;
   };
   type NativeAudioRuntimeEvent = {
     event: "audio://position" | "audio://ended" | "audio://error" | "audio://input-state" |
@@ -231,8 +238,9 @@ const {
       capturePath: "none" | "desktop-cpal" | "android-aaudio";
       permissionState: string;
       error: { code: string; message: string; guidance: string | null } | null;
-      leaseId?: string | null;
-      generation?: number | null;
+      leaseId: string | null;
+      generation: number | null;
+      nativeTimeUs: number;
     };
     nativeAudioInputPermission: {
       state: string;
@@ -240,8 +248,8 @@ const {
     };
     nativeAudioSnapshot: Record<string, unknown>;
     nativeAudioStartError: string | null;
-    nativeAudioPlayFallbackReason: string | null;
-    nativeAudioStopFallbackReason: string | null;
+    nativeAudioPlayError: string | null;
+    nativeAudioStopError: string | null;
     powerInhibitionStatus: {
       phase: string;
       backend: string | null;
@@ -887,8 +895,7 @@ const {
         micMonitoringSupported: false,
         systemInputVolumeSupported: true,
         emitsEvents: ["audio://input-frame", "audio://devices-changed"],
-        fallbackRequired: true,
-        fallbackReason: "Native audio playback is not wired yet; use existing WebView playback.",
+        availabilityReason: "native_audio_unavailable",
       },
       nativeAudioInputDevices: {
         supported: true,
@@ -906,6 +913,9 @@ const {
         capturePath: "none",
         permissionState: "unavailable",
         error: null,
+        leaseId: null,
+        generation: 0,
+        nativeTimeUs: 1,
       },
       nativeAudioInputPermission: { state: "unavailable", error: null },
       nativeAudioSnapshot: {
@@ -915,7 +925,7 @@ const {
         durationSeconds: 0,
         playbackRate: 1,
         nativePlaybackSupported: false,
-        fallbackReason: "Native audio playback is not wired yet; use existing WebView playback.",
+        availabilityReason: "native_audio_unavailable",
         lanes: [],
         bufferHealth: [],
         leaseId: "project-playback",
@@ -924,8 +934,8 @@ const {
         nativeTimeUs: 1,
       },
       nativeAudioStartError: null,
-      nativeAudioPlayFallbackReason: null,
-      nativeAudioStopFallbackReason: null,
+      nativeAudioPlayError: null,
+      nativeAudioStopError: null,
       powerInhibitionStatus: {
         phase: "inactive",
         backend: null,
@@ -983,8 +993,8 @@ const {
     inputPermission?: Partial<typeof state.nativeAudioInputPermission>;
     snapshot?: Record<string, unknown>;
     startError?: string | null;
-    playFallbackReason?: string | null;
-    stopFallbackReason?: string | null;
+    playError?: string | null;
+    stopError?: string | null;
   }) {
     state.nativeAudioCapabilities = {
       ...state.nativeAudioCapabilities,
@@ -1012,11 +1022,11 @@ const {
     if ("startError" in nextState) {
       state.nativeAudioStartError = nextState.startError ?? null;
     }
-    if ("playFallbackReason" in nextState) {
-      state.nativeAudioPlayFallbackReason = nextState.playFallbackReason ?? null;
+    if ("playError" in nextState) {
+      state.nativeAudioPlayError = nextState.playError ?? null;
     }
-    if ("stopFallbackReason" in nextState) {
-      state.nativeAudioStopFallbackReason = nextState.stopFallbackReason ?? null;
+    if ("stopError" in nextState) {
+      state.nativeAudioStopError = nextState.stopError ?? null;
     }
   }
 
@@ -1051,6 +1061,58 @@ const {
       };
     });
   }
+  function nativeControlText(
+    payload: Record<string, unknown>,
+    field: "leaseId" | "operationId",
+  ) {
+    const value = payload[field];
+    if (typeof value !== "string" || value.trim().length === 0) {
+      throw new Error(`Invalid native audio control: ${field} is required.`);
+    }
+    return value;
+  }
+  function validateNativeAcquisitionControl(value: unknown) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      throw new Error("Invalid native audio acquisition control.");
+    }
+    const payload = value as Record<string, unknown>;
+    nativeControlText(payload, "leaseId");
+    nativeControlText(payload, "operationId");
+    if ("generation" in payload || "timelineRevision" in payload) {
+      throw new Error("Invalid native audio acquisition control metadata.");
+    }
+    return payload;
+  }
+  function validateNativeOutputControl(value: unknown) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      throw new Error("Invalid native audio output control.");
+    }
+    const payload = value as Record<string, unknown>;
+    nativeControlText(payload, "leaseId");
+    nativeControlText(payload, "operationId");
+    if (!Number.isInteger(payload.generation) || Number(payload.generation) <= 0) {
+      throw new Error("Invalid native audio output generation.");
+    }
+    if (!Number.isInteger(payload.timelineRevision) || Number(payload.timelineRevision) <= 0) {
+      throw new Error("Invalid native audio timeline revision.");
+    }
+    return payload;
+  }
+  function validateNativeCaptureControl(value: unknown) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      throw new Error("Invalid native audio capture control.");
+    }
+    const payload = value as Record<string, unknown>;
+    nativeControlText(payload, "leaseId");
+    nativeControlText(payload, "operationId");
+    if (!Number.isInteger(payload.generation) || Number(payload.generation) <= 0) {
+      throw new Error("Invalid native audio capture generation.");
+    }
+    if ("timelineRevision" in payload) {
+      throw new Error("Invalid native audio capture control metadata.");
+    }
+    return payload;
+  }
   function emitMockNativeAudioInputFrame(frame: NativeAudioInputFrame) {
     nativeInputFrameListeners.forEach((listener, id) => {
       listener({
@@ -1064,7 +1126,12 @@ const {
     emitMockNativeRuntimeEvent("audio://input-state", state.nativeAudioInputState);
   }
   function emitMockNativeAudioPosition(position: NativeAudioPositionPayload) {
-    emitMockNativeRuntimeEvent("audio://position", position);
+    emitMockNativeRuntimeEvent("audio://position", {
+      generation: state.nativeAudioSnapshot.generation,
+      timelineRevision: state.nativeAudioSnapshot.timelineRevision,
+      nativeTimeUs: state.nativeAudioSnapshot.nativeTimeUs,
+      ...position,
+    });
   }
   function emitMockNativeAudioCue(payload: Record<string, unknown>) {
     emitMockNativeRuntimeEvent("audio://cue", payload);
@@ -1073,10 +1140,22 @@ const {
     emitMockNativeRuntimeEvent("audio://session", payload);
   }
   function emitMockNativeAudioTerminal(payload: Record<string, unknown>) {
-    emitMockNativeRuntimeEvent("audio://terminal", payload);
+    emitMockNativeRuntimeEvent("audio://terminal", {
+      resource: "output",
+      timelineRevision: state.nativeAudioSnapshot.timelineRevision,
+      captureGeneration: null,
+      positionSeconds: state.nativeAudioSnapshot.positionSeconds,
+      ...payload,
+    });
   }
   function emitMockNativeAudioError(error: NativeAudioErrorPayload) {
-    emitMockNativeRuntimeEvent("audio://error", error);
+    emitMockNativeRuntimeEvent("audio://error", {
+      generation: state.nativeAudioSnapshot.generation,
+      timelineRevision: state.nativeAudioSnapshot.timelineRevision,
+      nativeTimeUs: state.nativeAudioSnapshot.nativeTimeUs,
+      positionSeconds: state.nativeAudioSnapshot.positionSeconds,
+      ...error,
+    });
   }
   function emitMockSystemMediaControl(payload: SystemMediaControlPayload) {
     systemMediaControlListeners.forEach((listener, id) => {
@@ -1285,7 +1364,9 @@ const {
     }
 
     if (command === "audio_prepare_session") {
-      const payload = (args?.payload ?? {}) as {
+      const payload = validateNativeAcquisitionControl(args?.payload) as {
+        leaseId: string;
+        operationId: string;
         sessionId?: string;
         durationSeconds?: number | null;
         playbackRate?: number | null;
@@ -1299,10 +1380,10 @@ const {
         }>;
       };
       const nativePlaybackSupported = state.nativeAudioCapabilities.nativePlaybackSupported === true;
-      const fallbackReason =
+      const availabilityReason =
         nativePlaybackSupported
           ? null
-          : String(state.nativeAudioCapabilities.fallbackReason ?? "Native audio playback is unavailable.");
+          : String(state.nativeAudioCapabilities.availabilityReason ?? "native_audio_unavailable");
       const lanes = effectiveNativeAudioLanes(payload.lanes ?? []);
       state.nativeAudioSnapshot = {
         ...state.nativeAudioSnapshot,
@@ -1312,8 +1393,9 @@ const {
         durationSeconds: payload.durationSeconds ?? 0,
         playbackRate: payload.playbackRate ?? 1,
         nativePlaybackSupported,
-        fallbackReason,
+        availabilityReason,
         lanes,
+        leaseId: payload.leaseId,
         bufferHealth: (payload.lanes ?? []).map((lane) => ({
           laneId: lane.id,
           artifactId: lane.artifactId ?? null,
@@ -1327,8 +1409,9 @@ const {
       };
       return {
         id: payload.sessionId ?? "session",
+        leaseId: payload.leaseId,
         nativePlaybackSupported,
-        fallbackReason,
+        availabilityReason,
         laneCount: lanes.length,
         generation: state.nativeAudioSnapshot.generation,
         timelineRevision: state.nativeAudioSnapshot.timelineRevision,
@@ -1337,16 +1420,11 @@ const {
     }
 
     if (command === "audio_play") {
-      const payload = (args?.payload ?? {}) as { startTimeSeconds?: number | null };
-      if (state.nativeAudioPlayFallbackReason) {
-        state.nativeAudioSnapshot = {
-          ...state.nativeAudioSnapshot,
-          state: "paused",
-          nativePlaybackSupported: false,
-          fallbackReason: state.nativeAudioPlayFallbackReason,
-          positionSeconds: payload.startTimeSeconds ?? Number(state.nativeAudioSnapshot.positionSeconds ?? 0),
-        };
-        return clone(state.nativeAudioSnapshot);
+      const payload = validateNativeOutputControl(args?.payload) as {
+        startTimeSeconds?: number | null;
+      };
+      if (state.nativeAudioPlayError) {
+        throw new Error(state.nativeAudioPlayError);
       }
       state.nativeAudioSnapshot = {
         ...state.nativeAudioSnapshot,
@@ -1357,6 +1435,7 @@ const {
     }
 
     if (command === "audio_pause") {
+      validateNativeOutputControl(args?.payload);
       state.nativeAudioSnapshot = {
         ...state.nativeAudioSnapshot,
         state: "paused",
@@ -1365,22 +1444,20 @@ const {
     }
 
     if (command === "audio_stop") {
+      validateNativeOutputControl(args?.payload);
       state.nativeAudioSnapshot = {
         ...state.nativeAudioSnapshot,
         state: "stopped",
         positionSeconds: 0,
-        ...(state.nativeAudioStopFallbackReason
-          ? {
-              nativePlaybackSupported: false,
-              fallbackReason: state.nativeAudioStopFallbackReason,
-            }
-          : {}),
       };
+      if (state.nativeAudioStopError) {
+        throw new Error(state.nativeAudioStopError);
+      }
       return clone(state.nativeAudioSnapshot);
     }
 
     if (command === "audio_seek") {
-      const payload = (args?.payload ?? {}) as { timeSeconds?: number };
+      const payload = validateNativeOutputControl(args?.payload) as { timeSeconds?: number };
       state.nativeAudioSnapshot = {
         ...state.nativeAudioSnapshot,
         positionSeconds: payload.timeSeconds ?? 0,
@@ -1389,6 +1466,7 @@ const {
     }
 
     if (command === "audio_set_lanes") {
+      validateNativeOutputControl(args?.control);
       const payload = (args?.payload ?? {}) as {
         playbackRate?: number | null;
         lanes?: Array<{
@@ -1419,12 +1497,29 @@ const {
       return clone(state.nativeAudioSnapshot);
     }
 
-    if (command === "audio_set_click" || command === "audio_get_snapshot") {
+    if (command === "audio_get_snapshot") {
       return clone(state.nativeAudioSnapshot);
     }
 
     if (command === "audio_set_standalone_metronome") {
-      const payload = (args?.payload ?? {}) as Record<string, unknown>;
+      const rawPayload = args?.payload;
+      const payload = (
+        rawPayload && typeof rawPayload === "object" && "generation" in rawPayload
+          ? validateNativeOutputControl(rawPayload)
+          : validateNativeAcquisitionControl(rawPayload)
+      );
+      const generation = "generation" in payload
+        ? Number(payload.generation)
+        : Number(state.nativeAudioSnapshot.generation) + 1;
+      const revision = "timelineRevision" in payload
+        ? Number(payload.timelineRevision) + 1
+        : Number(state.nativeAudioSnapshot.timelineRevision) + 1;
+      state.nativeAudioSnapshot = {
+        ...state.nativeAudioSnapshot,
+        leaseId: payload.leaseId,
+        generation,
+        timelineRevision: revision,
+      };
       return {
         enabled: payload.enabled === true,
         bpm: Number(payload.bpm ?? 120),
@@ -1432,13 +1527,16 @@ const {
         accentFirstBeat: payload.accentFirstBeat !== false,
         gain: Number(payload.gain ?? 0.8),
         followPlayback: payload.followPlayback !== false,
-        leaseId: String(payload.leaseId ?? "standalone-metronome"),
-        generation: Number(payload.generation ?? 1),
-        revision: Number(payload.timelineRevision ?? 0) + 1,
+        leaseId: String(payload.leaseId),
+        generation,
+        revision,
         nativeTimeUs: 1,
       };
     }
 
+    if (command === "audio_schedule_cues" || command === "audio_cancel_cues") {
+      validateNativeOutputControl(args?.payload);
+    }
     if (command === "audio_get_session_snapshot" || command === "audio_schedule_cues" || command === "audio_cancel_cues") {
       return {
         resource: "output",
@@ -1449,19 +1547,28 @@ const {
         generation: state.nativeAudioSnapshot.generation,
         timelineRevision: state.nativeAudioSnapshot.timelineRevision,
         nativeTimeUs: state.nativeAudioSnapshot.nativeTimeUs,
+        positionSeconds: state.nativeAudioSnapshot.positionSeconds,
+        playbackRate: state.nativeAudioSnapshot.playbackRate,
+        availabilityReason: state.nativeAudioSnapshot.availabilityReason,
+        terminalDiagnostic: null,
       };
     }
 
     if (command === "audio_start_input") {
+      const control = validateNativeAcquisitionControl(args?.payload);
       if (state.nativeAudioStartError) {
         throw new Error(state.nativeAudioStartError);
       }
-      const payload = (args?.payload ?? {}) as {
+      const payload = control as {
         deviceId?: string | null;
         monitorEnabled?: boolean | null;
         monitorGain?: number | null;
         leaseId?: string | null;
       };
+      const previousGeneration = state.nativeAudioInputState.generation;
+      if (typeof previousGeneration !== "number") {
+        throw new Error("Invalid mock native capture generation state.");
+      }
       state.nativeAudioInputState = {
         active: true,
         deviceId: payload.deviceId ?? null,
@@ -1475,13 +1582,15 @@ const {
         permissionState:
           state.nativeAudioCapabilities.platform === "android" ? "granted" : "unavailable",
         error: null,
-        leaseId: String(payload.leaseId ?? "tuner-capture"),
-        generation: Number(state.nativeAudioInputState.generation ?? 0) + 1,
+        leaseId: String(payload.leaseId),
+        generation: previousGeneration + 1,
+        nativeTimeUs: 1,
       };
       return clone(state.nativeAudioInputState);
     }
 
     if (command === "audio_stop_input") {
+      validateNativeCaptureControl(args?.payload);
       state.nativeAudioInputState = {
         ...state.nativeAudioInputState,
         active: false,
@@ -1490,6 +1599,16 @@ const {
         captureGeneration: state.nativeAudioInputState.captureGeneration + 1,
         capturePath: "none",
         error: null,
+      };
+      return clone(state.nativeAudioInputState);
+    }
+
+    if (command === "audio_set_monitor") {
+      const payload = validateNativeCaptureControl(args?.payload);
+      state.nativeAudioInputState = {
+        ...state.nativeAudioInputState,
+        monitorEnabled: payload.monitorEnabled === true,
+        monitorGain: Number(payload.monitorGain ?? 0),
       };
       return clone(state.nativeAudioInputState);
     }

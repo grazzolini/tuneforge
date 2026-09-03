@@ -41,6 +41,8 @@ struct NativeAudioEngine {
     capture_session: session::SessionCoordinator,
     report_sender: mpsc::SyncSender<session::RuntimeReport>,
     report_receiver: mpsc::Receiver<session::RuntimeReport>,
+    #[cfg(test)]
+    last_terminal_event: Option<session::TerminalEvent>,
 }
 
 impl NativeAudioState {
@@ -68,6 +70,8 @@ impl NativeAudioState {
                 ),
                 report_sender,
                 report_receiver,
+                #[cfg(test)]
+                last_terminal_event: None,
             })),
         }
     }
@@ -124,6 +128,7 @@ impl NativeAudioEngine {
         rate: f64,
     ) -> Result<Option<u64>, String> {
         self.drain_reports();
+        command.validate_acquisition().map_err(str::to_string)?;
         let resource = if owner.is_output() {
             session::AudioResource::Output
         } else {
@@ -157,7 +162,16 @@ impl NativeAudioEngine {
             _ => Ok(()),
         };
         if released.is_err() {
-            if let Some(event) = self.session_mut(resource).fail_release(token) {
+            let capture_generation = (resource == session::AudioResource::Capture)
+                .then(|| self.capture.state().capture_generation);
+            if let Some(event) = self
+                .session_mut(resource)
+                .fail_release_with_capture_generation(token, capture_generation)
+            {
+                #[cfg(test)]
+                {
+                    self.last_terminal_event = Some(event.clone());
+                }
                 if let Some(app) = app {
                     let _ = app.emit(AUDIO_EVENT_TERMINAL, event);
                 }
@@ -207,12 +221,28 @@ impl NativeAudioEngine {
         let mut output = self.transport.snapshot();
         let session = self.output_session.snapshot();
         output.lease_id = session.lease_id;
-        output.generation = Some(session.generation);
-        output.timeline_revision = Some(session.timeline_revision);
-        output.native_time_us = Some(session.native_time_us);
+        output.generation = session.generation;
+        output.timeline_revision = session.timeline_revision;
+        output.native_time_us = session.native_time_us;
         output.position_seconds = session.position_seconds;
         output.playback_rate = session.playback_rate;
         output
+    }
+
+    fn require_healthy_output(
+        &mut self,
+        snapshot: transport::AudioSnapshot,
+    ) -> Result<transport::AudioSnapshot, String> {
+        if snapshot.native_playback_supported {
+            return Ok(self.output_snapshot());
+        }
+        let reason = snapshot
+            .availability_reason
+            .unwrap_or_else(|| "Native audio output failed.".to_string());
+        let generation = self.output_session.snapshot().generation;
+        self.output_session
+            .mark_terminal(generation, "output_stream_failure");
+        Err(reason)
     }
 
     fn input_snapshot(&self, mut input: capture::AudioInputState) -> capture::AudioInputState {
@@ -240,8 +270,7 @@ pub struct AudioCapabilities {
     mic_monitoring_supported: bool,
     system_input_volume_supported: bool,
     emits_events: Vec<&'static str>,
-    fallback_required: bool,
-    fallback_reason: Option<&'static str>,
+    availability_reason: Option<&'static str>,
 }
 
 impl AudioCapabilities {
@@ -267,8 +296,7 @@ impl AudioCapabilities {
                 AUDIO_EVENT_CUE,
                 AUDIO_EVENT_TERMINAL,
             ],
-            fallback_required: !platform.native_playback_supported,
-            fallback_reason: platform.fallback_reason,
+            availability_reason: platform.availability_reason,
         }
     }
 }
@@ -284,6 +312,9 @@ pub async fn audio_prepare_session(
     state: State<'_, NativeAudioState>,
     payload: transport::AudioSessionRequest,
 ) -> Result<transport::AudioSession, String> {
+    if !state.capabilities.native_playback_supported {
+        return Err("native_audio_unavailable".to_string());
+    }
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let diagnostic_generation = diagnostics::begin_operation(
@@ -291,6 +322,10 @@ pub async fn audio_prepare_session(
             payload.lanes.len(),
         );
         let mut engine = state.engine()?;
+        payload
+            .control
+            .validate_acquisition()
+            .map_err(str::to_string)?;
         let owner = payload.owner.unwrap_or(session::SessionOwner::Playback);
         if !owner.is_output() {
             return Err("session_owner_mismatch".to_string());
@@ -306,8 +341,11 @@ pub async fn audio_prepare_session(
             let snapshot = engine.output_snapshot();
             return Ok(transport::AudioSession {
                 id: payload.session_id,
+                lease_id: snapshot.lease_id.ok_or_else(|| {
+                    "Native session ownership metadata is unavailable.".to_string()
+                })?,
                 native_playback_supported: snapshot.native_playback_supported,
-                fallback_reason: snapshot.fallback_reason,
+                availability_reason: snapshot.availability_reason,
                 lane_count: snapshot.lanes.len(),
                 generation: snapshot.generation,
                 timeline_revision: snapshot.timeline_revision,
@@ -385,10 +423,7 @@ pub fn audio_play(
         return Err("invalid_precount_schedule".to_string());
     }
     let requested_start = payload.start_at_native_us;
-    let expected = payload
-        .control
-        .timeline_revision
-        .unwrap_or_else(|| engine.output_session.snapshot().timeline_revision);
+    let expected = engine.output_session.snapshot().timeline_revision;
     if requested_start.is_some_and(|deadline| deadline <= timeline::native_time_us()) {
         return Err("start_deadline_missed".to_string());
     }
@@ -444,15 +479,16 @@ pub fn audio_play(
 pub fn audio_pause(
     app: AppHandle,
     state: State<'_, NativeAudioState>,
-    payload: Option<session::SessionCommand>,
+    payload: session::SessionCommand,
 ) -> Result<transport::AudioSnapshot, String> {
     let mut engine = state.engine()?;
-    engine.authorize(
-        session::SessionOwner::Playback,
-        &payload.unwrap_or_default(),
-        false,
-    )?;
-    engine.transport.pause();
+    if !engine.authorize(session::SessionOwner::Playback, &payload, false)? {
+        return Ok(engine.output_snapshot());
+    }
+    let snapshot = engine.transport.pause();
+    if !snapshot.native_playback_supported {
+        return engine.require_healthy_output(snapshot);
+    }
     engine
         .output_session
         .timeline()
@@ -460,22 +496,23 @@ pub fn audio_pause(
         .map_err(|_| "timeline_unavailable")?
         .pause();
     engine.emit_session(&app, session::AudioResource::Output);
-    Ok(engine.output_snapshot())
+    engine.require_healthy_output(snapshot)
 }
 
 #[tauri::command]
 pub fn audio_stop(
     app: AppHandle,
     state: State<'_, NativeAudioState>,
-    payload: Option<session::SessionCommand>,
+    payload: session::SessionCommand,
 ) -> Result<transport::AudioSnapshot, String> {
     let mut engine = state.engine()?;
-    engine.authorize(
-        session::SessionOwner::Playback,
-        &payload.unwrap_or_default(),
-        false,
-    )?;
-    engine.transport.stop();
+    if !engine.authorize(session::SessionOwner::Playback, &payload, false)? {
+        return Ok(engine.output_snapshot());
+    }
+    let snapshot = engine.transport.stop();
+    if !snapshot.native_playback_supported {
+        return engine.require_healthy_output(snapshot);
+    }
     engine
         .output_session
         .timeline()
@@ -483,7 +520,7 @@ pub fn audio_stop(
         .map_err(|_| "timeline_unavailable")?
         .stop();
     engine.emit_session(&app, session::AudioResource::Output);
-    Ok(engine.output_snapshot())
+    engine.require_healthy_output(snapshot)
 }
 
 #[tauri::command]
@@ -493,7 +530,9 @@ pub fn audio_seek(
     payload: transport::AudioSeekRequest,
 ) -> Result<transport::AudioSnapshot, String> {
     let mut engine = state.engine()?;
-    engine.authorize(session::SessionOwner::Playback, &payload.control, false)?;
+    if !engine.authorize(session::SessionOwner::Playback, &payload.control, false)? {
+        return Ok(engine.output_snapshot());
+    }
     let expected = payload
         .control
         .timeline_revision
@@ -510,9 +549,9 @@ pub fn audio_seek(
         engine.transport.lane_count(),
     );
     engine.transport.set_diagnostics_generation(generation);
-    engine.transport.seek(payload);
+    let snapshot = engine.transport.seek(payload);
     engine.emit_session(&app, session::AudioResource::Output);
-    Ok(engine.output_snapshot())
+    engine.require_healthy_output(snapshot)
 }
 
 #[tauri::command]
@@ -520,14 +559,12 @@ pub fn audio_set_lanes(
     app: AppHandle,
     state: State<'_, NativeAudioState>,
     payload: mixer::AudioLaneUpdate,
-    control: Option<session::SessionCommand>,
+    control: session::SessionCommand,
 ) -> Result<transport::AudioSnapshot, String> {
     let mut engine = state.engine()?;
-    engine.authorize(
-        session::SessionOwner::Playback,
-        &control.unwrap_or_default(),
-        false,
-    )?;
+    if !engine.authorize(session::SessionOwner::Playback, &control, false)? {
+        return Ok(engine.output_snapshot());
+    }
     let raw_lanes = payload.lanes;
     let playback_rate = payload.playback_rate;
     engine.mixer.set_lanes(raw_lanes.clone());
@@ -557,24 +594,9 @@ pub fn audio_set_lanes(
     engine
         .transport
         .set_lanes(raw_lanes, effective_lanes, playback_rate);
+    let snapshot = engine.transport.snapshot();
     engine.emit_session(&app, session::AudioResource::Output);
-    Ok(engine.output_snapshot())
-}
-
-#[tauri::command]
-pub fn audio_set_click(
-    state: State<'_, NativeAudioState>,
-    payload: transport::AudioClickRequest,
-    control: Option<session::SessionCommand>,
-) -> Result<transport::AudioSnapshot, String> {
-    let mut engine = state.engine()?;
-    engine.authorize(
-        session::SessionOwner::Playback,
-        &control.unwrap_or_default(),
-        false,
-    )?;
-    engine.transport.set_click(payload);
-    Ok(engine.output_snapshot())
+    engine.require_healthy_output(snapshot)
 }
 
 #[tauri::command]
@@ -688,9 +710,13 @@ pub fn audio_start_input(
     let input = engine.capture.start(app.clone(), payload)?;
     if let Some(code) = input.error.as_ref().map(|error| error.code) {
         let generation = engine.capture_session.snapshot().generation;
-        if let Some(event) = engine.capture_session.mark_terminal(generation, code) {
+        if let Some(event) = engine
+            .capture_session
+            .mark_terminal_with_capture_generation(generation, Some(input.capture_generation), code)
+        {
             let _ = app.emit(AUDIO_EVENT_TERMINAL, event);
         }
+        return Err(code.to_string());
     }
     engine.emit_session(&app, session::AudioResource::Capture);
     Ok(engine.input_snapshot(input))
@@ -700,13 +726,12 @@ pub fn audio_start_input(
 pub fn audio_stop_input(
     app: AppHandle,
     state: State<'_, NativeAudioState>,
-    payload: Option<session::SessionCommand>,
+    payload: session::SessionCommand,
 ) -> Result<capture::AudioInputState, String> {
     let mut engine = state.engine()?;
-    let command = payload.unwrap_or_default();
     let released = engine
         .capture_session
-        .release_capture(&command)
+        .release_capture(&payload)
         .map_err(str::to_string)?;
     let input = if released {
         engine.capture.stop()
@@ -727,11 +752,10 @@ pub fn audio_set_monitor(
     }
 
     let mut engine = state.engine()?;
-    engine.authorize(
-        session::SessionOwner::Capture,
-        &session::SessionCommand::default(),
-        false,
-    )?;
+    if !engine.authorize(session::SessionOwner::Capture, &payload.control, false)? {
+        let input = engine.capture.state();
+        return Ok(engine.input_snapshot(input));
+    }
     let input = engine.capture.set_monitor(payload);
     Ok(engine.input_snapshot(input))
 }
@@ -770,11 +794,10 @@ pub fn audio_schedule_cues(
 pub fn audio_cancel_cues(
     app: AppHandle,
     state: State<'_, NativeAudioState>,
-    payload: Option<session::SessionCommand>,
+    payload: session::SessionCommand,
     kind: Option<timeline::CueKind>,
 ) -> Result<session::SessionSnapshot, String> {
     let mut engine = state.engine()?;
-    let payload = payload.unwrap_or_default();
     let owner = engine
         .output_session
         .snapshot()
@@ -903,8 +926,13 @@ mod tests {
             ),
             report_sender: report_sender.clone(),
             report_receiver,
+            last_terminal_event: None,
         };
-        let command = session::SessionCommand::default();
+        let command = session::SessionCommand {
+            lease_id: Some("project-playback".into()),
+            operation_id: Some("prepare".into()),
+            ..Default::default()
+        };
         let session::Acquire::Release { token, lease, .. } = engine
             .output_session
             .begin_acquire(session::SessionOwner::Playback, &command)
@@ -935,11 +963,31 @@ mod tests {
             engine.output_session.snapshot().terminal_diagnostic,
             Some("output_stream_failure")
         );
+        let retry = session::SessionCommand {
+            generation: Some(generation),
+            timeline_revision: Some(engine.output_session.snapshot().timeline_revision),
+            operation_id: Some("play-retry".into()),
+            ..command
+        };
         assert!(engine
             .output_session
-            .authorize(session::SessionOwner::Playback, &command, true)
+            .authorize(session::SessionOwner::Playback, &retry, true)
             .unwrap());
-        assert!(engine.output_session.snapshot().generation > generation);
+        let restarted = engine.output_session.snapshot();
+        assert!(restarted.generation > generation);
+        assert_ne!(
+            restarted.timeline_revision,
+            retry.timeline_revision.unwrap()
+        );
+        let timeline = engine.output_session.timeline();
+        let mut timeline = timeline.lock().unwrap();
+        assert_eq!(
+            timeline.arm(retry.timeline_revision.unwrap(), None, None, 0),
+            Err("stale_timeline_revision")
+        );
+        timeline
+            .arm(restarted.timeline_revision, None, None, 0)
+            .expect("explicit retry arms with the restarted revision");
         assert!(capabilities.emits_events.contains(&AUDIO_EVENT_TERMINAL));
     }
 
@@ -1029,6 +1077,7 @@ mod tests {
             ),
             report_sender,
             report_receiver,
+            last_terminal_event: None,
         };
         let activate = |lease: &str, operation: &str| session::SessionCommand {
             lease_id: Some(lease.into()),
@@ -1099,6 +1148,66 @@ mod tests {
     }
 
     #[test]
+    fn capture_release_timeout_reports_the_runtime_capture_generation() {
+        let (report_sender, report_receiver) = mpsc::sync_channel(1);
+        let mut engine = NativeAudioEngine {
+            mixer: mixer::MixerState::default(),
+            transport: transport::TransportState::default(),
+            capture: capture::CaptureState::default(),
+            output_session: session::SessionCoordinator::new_for_resource(
+                session::AudioResource::Output,
+                session::AudioSource::ProjectPlayback,
+                true,
+                false,
+            ),
+            capture_session: session::SessionCoordinator::new_for_resource(
+                session::AudioResource::Capture,
+                session::AudioSource::TunerCapture,
+                false,
+                true,
+            ),
+            report_sender,
+            report_receiver,
+            last_terminal_event: None,
+        };
+        let initial = session::SessionCommand {
+            lease_id: Some("tuner-capture".into()),
+            operation_id: Some("start".into()),
+            ..Default::default()
+        };
+        let session_generation = engine
+            .acquire(None, session::SessionOwner::Capture, &initial, 0.0, 1.0)
+            .unwrap()
+            .expect("capture acquisition creates a generation");
+        for _ in 0..7 {
+            engine.capture.stop();
+        }
+        let capture_generation = engine.capture.state().capture_generation;
+        assert_ne!(capture_generation, session_generation);
+        engine.capture.fail_next_release_for_test();
+
+        let replacement = session::SessionCommand {
+            lease_id: Some("tuner-capture-retry".into()),
+            operation_id: Some("retry".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            engine
+                .acquire(None, session::SessionOwner::Capture, &replacement, 0.0, 1.0,)
+                .unwrap_err(),
+            "release_timeout"
+        );
+        let terminal = engine
+            .last_terminal_event
+            .as_ref()
+            .expect("release timeout emits one terminal event");
+        assert_eq!(terminal.resource, session::AudioResource::Capture);
+        assert_eq!(terminal.generation, session_generation);
+        assert_eq!(terminal.capture_generation, Some(capture_generation));
+        assert_eq!(terminal.code, "release_timeout");
+    }
+
+    #[test]
     #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
     fn playback_acquire_and_prepare_preserve_standalone_auxiliary_runtime() {
         let capabilities = AudioCapabilities::detect();
@@ -1121,6 +1230,7 @@ mod tests {
             ),
             report_sender,
             report_receiver,
+            last_terminal_event: None,
         };
         engine
             .transport
@@ -1174,6 +1284,7 @@ mod tests {
             capabilities,
         );
         assert_eq!(prepared.id, "project-session");
+        assert_eq!(prepared.lease_id, "project-playback");
         assert!(engine.transport.has_auxiliary_runtime());
     }
 }

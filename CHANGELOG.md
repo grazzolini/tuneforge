@@ -12,6 +12,11 @@ download, installation, verification, signature, and publication instructions.
 - Moved project count-ins and metronome timing onto one native output runtime, including standalone
   free-run and playback-following modes, while keeping tuner capture independently concurrent.
 
+### Changed
+
+- Made native audio required in normal Tauri sessions while preserving browser and explicitly
+  forced Web Audio modes.
+
 ### Fixed
 
 - Reduced Android sync reconciliation memory use for libraries with many pending projects.

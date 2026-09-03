@@ -75,6 +75,9 @@ pub struct TerminalEvent {
     pub resource: AudioResource,
     pub source: AudioSource,
     pub generation: u64,
+    pub timeline_revision: u64,
+    pub capture_generation: Option<u64>,
+    pub position_seconds: f64,
     pub code: &'static str,
     pub native_time_us: u64,
 }
@@ -185,14 +188,10 @@ impl SessionCoordinator {
     }
 
     pub fn begin_acquire(&mut self, owner: SessionOwner, command: &SessionCommand) -> Acquire {
-        let lease = command.lease_id.clone().unwrap_or_else(|| {
-            if owner.is_output() {
-                "legacy-output"
-            } else {
-                "legacy-capture"
-            }
-            .to_string()
-        });
+        let lease = command
+            .lease_id
+            .clone()
+            .expect("acquisition commands are validated before coordination");
         if command.operation_id.as_ref().is_some_and(|operation| {
             self.lease.as_deref() == Some(&lease)
                 && self.owner == Some(owner)
@@ -246,11 +245,24 @@ impl SessionCoordinator {
         Ok(self.generation)
     }
 
+    #[cfg(test)]
     pub fn fail_release(&mut self, token: u64) -> Option<TerminalEvent> {
+        self.fail_release_with_capture_generation(token, None)
+    }
+
+    pub fn fail_release_with_capture_generation(
+        &mut self,
+        token: u64,
+        capture_generation: Option<u64>,
+    ) -> Option<TerminalEvent> {
         if token != self.release_token || self.status != SessionStatus::Releasing {
             return None;
         }
-        self.mark_terminal(self.generation, "release_timeout")
+        self.mark_terminal_with_capture_generation(
+            self.generation,
+            capture_generation,
+            "release_timeout",
+        )
     }
 
     pub fn authorize(
@@ -259,9 +271,7 @@ impl SessionCoordinator {
         command: &SessionCommand,
         explicit_attempt: bool,
     ) -> Result<bool, &'static str> {
-        if self.status == SessionStatus::Released && command.lease_id.is_none() {
-            return Ok(true);
-        }
+        command.validate_mutation(self.resource)?;
         if command
             .lease_id
             .as_deref()
@@ -283,6 +293,16 @@ impl SessionCoordinator {
         }) {
             return Ok(false);
         }
+        if let Some(revision) = command.timeline_revision {
+            let current = self
+                .timeline
+                .lock()
+                .map_err(|_| "timeline_unavailable")?
+                .revision();
+            if revision != current {
+                return Err("stale_timeline_revision");
+            }
+        }
         if self.status == SessionStatus::Terminal && explicit_attempt {
             self.generation = self.generation.wrapping_add(1).max(1);
             self.status = if owner.is_output() {
@@ -302,16 +322,6 @@ impl SessionCoordinator {
         ) {
             return Err("session_not_active");
         }
-        if let Some(revision) = command.timeline_revision {
-            let current = self
-                .timeline
-                .lock()
-                .map_err(|_| "timeline_unavailable")?
-                .revision();
-            if revision != current {
-                return Err("stale_timeline_revision");
-            }
-        }
         self.record(command);
         Ok(true)
     }
@@ -320,13 +330,8 @@ impl SessionCoordinator {
         if self.resource != AudioResource::Capture {
             return Err("session_owner_mismatch");
         }
+        command.validate_mutation(AudioResource::Capture)?;
         if self.status == SessionStatus::Released {
-            if command.lease_id.is_none()
-                && command.generation.is_none()
-                && command.operation_id.is_none()
-            {
-                return Ok(false);
-            }
             if command.operation_id.as_ref().is_some_and(|operation| {
                 self.released_operation.as_ref().is_some_and(
                     |(lease, generation, released_operation)| {
@@ -363,10 +368,7 @@ impl SessionCoordinator {
         {
             return Err("session_not_active");
         }
-        let released_lease = self
-            .lease
-            .take()
-            .unwrap_or_else(|| "legacy-capture".to_string());
+        let released_lease = self.lease.take().ok_or("session_not_active")?;
         self.status = SessionStatus::Released;
         self.owner = None;
         self.terminal = None;
@@ -383,19 +385,40 @@ impl SessionCoordinator {
     }
 
     pub fn mark_terminal(&mut self, generation: u64, code: &'static str) -> Option<TerminalEvent> {
+        self.mark_terminal_with_capture_generation(generation, None, code)
+    }
+
+    pub fn mark_terminal_with_capture_generation(
+        &mut self,
+        generation: u64,
+        capture_generation: Option<u64>,
+        code: &'static str,
+    ) -> Option<TerminalEvent> {
         if generation != self.generation || self.terminal_emitted {
             return None;
         }
         self.status = SessionStatus::Terminal;
         self.terminal = Some(code);
         self.terminal_emitted = true;
-        if let Ok(mut timeline) = self.timeline.lock() {
-            timeline.stop();
-        }
+        let (timeline_revision, position_seconds) = self
+            .timeline
+            .lock()
+            .map(|mut timeline| {
+                let revision = timeline.revision();
+                let position = timeline.position();
+                timeline.stop();
+                (revision, position)
+            })
+            .unwrap_or((0, 0.0));
         Some(TerminalEvent {
             resource: self.resource,
             source: self.source,
             generation,
+            timeline_revision,
+            capture_generation: (self.resource == AudioResource::Capture)
+                .then_some(capture_generation)
+                .flatten(),
+            position_seconds,
             code,
             native_time_us: timeline::native_time_us(),
         })
@@ -414,6 +437,48 @@ impl SessionCoordinator {
         if let Some(operation) = &command.operation_id {
             self.operations.insert((self.generation, operation.clone()));
         }
+    }
+}
+
+impl SessionCommand {
+    fn required_text(value: Option<&String>) -> Result<(), &'static str> {
+        value
+            .filter(|value| !value.trim().is_empty())
+            .map(|_| ())
+            .ok_or("missing_session_control")
+    }
+
+    pub fn validate_acquisition(&self) -> Result<(), &'static str> {
+        Self::required_text(self.lease_id.as_ref())?;
+        Self::required_text(self.operation_id.as_ref())?;
+        if self.generation.is_some() || self.timeline_revision.is_some() {
+            return Err("invalid_acquisition_control");
+        }
+        Ok(())
+    }
+
+    pub fn validate_mutation(&self, resource: AudioResource) -> Result<(), &'static str> {
+        Self::required_text(self.lease_id.as_ref())?;
+        Self::required_text(self.operation_id.as_ref())?;
+        if self.generation.is_none_or(|generation| generation == 0) {
+            return Err("missing_session_control");
+        }
+        match resource {
+            AudioResource::Output => {
+                if self
+                    .timeline_revision
+                    .is_none_or(|timeline_revision| timeline_revision == 0)
+                {
+                    return Err("missing_session_control");
+                }
+            }
+            AudioResource::Capture => {
+                if self.timeline_revision.is_some() {
+                    return Err("invalid_capture_control");
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -451,6 +516,7 @@ mod tests {
                 let old = acquire(&mut state, from, "old");
                 let command = SessionCommand {
                     lease_id: Some("new".into()),
+                    operation_id: Some("transfer".into()),
                     ..Default::default()
                 };
                 let Acquire::Release { token, lease, .. } = state.begin_acquire(to, &command)
@@ -465,6 +531,7 @@ mod tests {
                         to,
                         &SessionCommand {
                             generation: Some(old),
+                            timeline_revision: Some(1),
                             ..command
                         },
                         false
@@ -483,13 +550,13 @@ mod tests {
             lease_id: Some("same".into()),
             operation_id: Some("prepare".into()),
             generation: Some(generation),
-            timeline_revision: None,
+            timeline_revision: Some(1),
         };
         assert!(matches!(
             state.begin_acquire(SessionOwner::Capture, &same),
             Acquire::Idempotent
         ));
-        let next = SessionCommand {
+        let mut next = SessionCommand {
             operation_id: Some("next".into()),
             ..same.clone()
         };
@@ -498,6 +565,7 @@ mod tests {
             panic!()
         };
         assert!(state.fail_release(token).is_some());
+        next.timeline_revision = Some(state.snapshot().timeline_revision);
         assert_eq!(
             state.authorize(SessionOwner::Capture, &next, false),
             Err("session_not_active")
@@ -528,11 +596,82 @@ mod tests {
     }
 
     #[test]
-    fn released_legacy_command_remains_a_safe_noop() {
+    fn incomplete_mutation_control_is_rejected() {
         let mut state = SessionCoordinator::new(true, true);
-        assert!(state
-            .authorize(SessionOwner::Playback, &SessionCommand::default(), false)
-            .unwrap());
+        assert_eq!(
+            state.authorize(SessionOwner::Playback, &SessionCommand::default(), false),
+            Err("missing_session_control")
+        );
+    }
+
+    #[test]
+    fn acquisition_requires_identity_without_generation_metadata() {
+        assert_eq!(
+            SessionCommand::default().validate_acquisition(),
+            Err("missing_session_control")
+        );
+        assert!(SessionCommand {
+            lease_id: Some("project-playback".into()),
+            operation_id: Some("prepare-1".into()),
+            ..Default::default()
+        }
+        .validate_acquisition()
+        .is_ok());
+        assert_eq!(
+            SessionCommand {
+                lease_id: Some("project-playback".into()),
+                operation_id: Some("prepare-1".into()),
+                generation: Some(1),
+                timeline_revision: None,
+            }
+            .validate_acquisition(),
+            Err("invalid_acquisition_control")
+        );
+    }
+
+    #[test]
+    fn mutations_require_resource_specific_complete_metadata() {
+        let output = SessionCommand {
+            lease_id: Some("project-playback".into()),
+            operation_id: Some("pause-1".into()),
+            generation: Some(1),
+            timeline_revision: Some(1),
+        };
+        assert!(output.validate_mutation(AudioResource::Output).is_ok());
+        assert_eq!(
+            SessionCommand {
+                timeline_revision: None,
+                ..output.clone()
+            }
+            .validate_mutation(AudioResource::Output),
+            Err("missing_session_control")
+        );
+        assert_eq!(
+            SessionCommand {
+                generation: Some(0),
+                ..output.clone()
+            }
+            .validate_mutation(AudioResource::Output),
+            Err("missing_session_control")
+        );
+
+        let capture = SessionCommand {
+            timeline_revision: None,
+            ..output.clone()
+        };
+        assert!(capture.validate_mutation(AudioResource::Capture).is_ok());
+        assert_eq!(
+            output.validate_mutation(AudioResource::Capture),
+            Err("invalid_capture_control")
+        );
+        assert_eq!(
+            SessionCommand {
+                lease_id: Some(" ".into()),
+                ..capture
+            }
+            .validate_mutation(AudioResource::Capture),
+            Err("missing_session_control")
+        );
     }
 
     #[test]
@@ -607,5 +746,26 @@ mod tests {
         assert_eq!(snapshot.status, SessionStatus::Released);
         assert_eq!(snapshot.generation, generation);
         assert_eq!(snapshot.terminal_diagnostic, None);
+    }
+
+    #[test]
+    fn capture_terminal_uses_the_runtime_capture_generation() {
+        let mut state = SessionCoordinator::new_for_resource(
+            AudioResource::Capture,
+            AudioSource::TunerCapture,
+            false,
+            true,
+        );
+        let generation = acquire(&mut state, SessionOwner::Capture, "tuner-capture");
+        let terminal = state
+            .mark_terminal_with_capture_generation(
+                generation,
+                Some(generation + 7),
+                "stream-interruption",
+            )
+            .unwrap();
+
+        assert_eq!(terminal.generation, generation);
+        assert_eq!(terminal.capture_generation, Some(generation + 7));
     }
 }

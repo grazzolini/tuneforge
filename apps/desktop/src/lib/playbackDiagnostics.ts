@@ -5,7 +5,6 @@ import type {
 } from "./nativeAudio";
 
 const NATIVE_PLAYBACK_ERROR_KEY = "tuneforge.playback-native-error";
-const NATIVE_FALLBACK_CAUSE_KEY = "tuneforge.playback-native-fallback-cause";
 const PLAYBACK_BACKEND_KEY = "tuneforge.playback-backend";
 const WEB_PLAYBACK_ERROR_KEY = "tuneforge.playback-web-error";
 
@@ -17,7 +16,7 @@ export type PlaybackBackend =
   | {
       backend: "web";
       detail: string | null;
-      mode: "fallback" | "forced";
+      mode: "browser" | "forced";
     };
 
 export type PlaybackCurrentState =
@@ -30,7 +29,7 @@ export type PlaybackCurrentState =
 export type PlaybackCurrentPath =
   | "none"
   | "native"
-  | "web-fallback"
+  | "web"
   | "web-forced";
 
 export type PlaybackLiveDiagnostics = {
@@ -84,18 +83,13 @@ export function resetLivePlaybackDiagnostics() {
 }
 
 export function markPlaybackStarting(
-  path: "native" | "web-fallback" | "web-forced",
+  path: "native" | "web" | "web-forced",
 ) {
-  const statusMessage =
-    path === "web-fallback"
-      ? "Native playback unavailable. Starting Web Audio fallback…"
-      : "Starting playback…";
+  const statusMessage = "Starting playback…";
   updateLiveDiagnostics({
     currentState: "starting",
     currentPath: "none",
-    ...(path === "web-fallback"
-      ? { nativeSessionLaneCount: null, nativeBufferHealth: [] }
-      : {}),
+    ...(path === "web" ? { nativeSessionLaneCount: null, nativeBufferHealth: [] } : {}),
     statusMessage,
   });
 }
@@ -106,9 +100,8 @@ export function markPlaybackConfirmed(backend: PlaybackBackend) {
       ? "native"
       : backend.mode === "forced"
         ? "web-forced"
-        : "web-fallback";
-  const statusMessage =
-    currentPath === "web-fallback" ? "Playing with Web Audio fallback." : null;
+        : "web";
+  const statusMessage = null;
   const nativeBackend =
     backend.backend === "native" ? backend.detail : liveDiagnostics.nativeBackend;
   if (
@@ -137,10 +130,7 @@ export function markPlaybackConfirmed(backend: PlaybackBackend) {
 export function markPlaybackPaused() {
   updateLiveDiagnostics({
     currentState: "paused",
-    statusMessage:
-      liveDiagnostics.currentPath === "web-fallback"
-        ? "Paused on Web Audio fallback."
-        : null,
+    statusMessage: null,
   });
 }
 
@@ -232,7 +222,7 @@ export function readRememberedPlaybackBackend(): PlaybackBackend | null {
     if (
       rawBackend.backend === "web" &&
       rawBackend.mode !== "forced" &&
-      rawBackend.mode !== "fallback"
+      rawBackend.mode !== "browser"
     ) {
       return null;
     }
@@ -277,25 +267,6 @@ export function clearRememberedNativePlaybackError() {
   }
   window.localStorage.removeItem(NATIVE_PLAYBACK_ERROR_KEY);
   notifyDiagnosticsChanged();
-}
-
-export function rememberNativeFallbackCause(cause: string) {
-  if (typeof window === "undefined") {
-    return;
-  }
-  window.localStorage.setItem(
-    NATIVE_FALLBACK_CAUSE_KEY,
-    redactPlaybackDiagnosticText(cause),
-  );
-  notifyDiagnosticsChanged();
-}
-
-export function readRememberedNativeFallbackCause() {
-  if (typeof window === "undefined") {
-    return null;
-  }
-  const value = window.localStorage.getItem(NATIVE_FALLBACK_CAUSE_KEY);
-  return value ? redactPlaybackDiagnosticText(value) : null;
 }
 
 export function rememberWebPlaybackError(error: string) {

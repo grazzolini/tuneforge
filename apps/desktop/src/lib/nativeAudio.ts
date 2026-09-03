@@ -16,11 +16,18 @@ export type NativeAudioEventName =
   | "audio://cue"
   | "audio://terminal";
 
-export type NativeAudioSessionControl = {
-  leaseId?: string | null;
-  operationId?: string | null;
-  generation?: number | null;
-  timelineRevision?: number | null;
+export type NativeAudioAcquisitionControl = {
+  leaseId: string;
+  operationId: string;
+};
+
+export type NativeAudioOutputControl = NativeAudioAcquisitionControl & {
+  generation: number;
+  timelineRevision: number;
+};
+
+export type NativeAudioCaptureControl = NativeAudioAcquisitionControl & {
+  generation: number;
 };
 
 export type NativeAudioSessionSnapshot = {
@@ -63,6 +70,9 @@ export type NativeAudioTerminalEvent = {
   resource: "output" | "capture";
   source: "output_runtime" | "capture_runtime" | "project_playback" | "tuner_capture";
   generation: number;
+  timelineRevision: number;
+  captureGeneration: number | null;
+  positionSeconds: number;
   code: string;
   nativeTimeUs: number;
 };
@@ -75,8 +85,7 @@ export type NativeAudioCapabilities = {
   micMonitoringSupported: boolean;
   systemInputVolumeSupported: boolean;
   emitsEvents: NativeAudioEventName[];
-  fallbackRequired: boolean;
-  fallbackReason: string | null;
+  availabilityReason: string | null;
 };
 
 export type NativeAudioDiagnosticsAvailability = {
@@ -185,7 +194,7 @@ export type NativeAudioLaneUpdate = {
   playbackRate?: number | null;
 };
 
-export type NativeAudioSessionRequest = NativeAudioSessionControl & {
+export type NativeAudioSessionRequest = NativeAudioAcquisitionControl & {
   sessionId: string;
   durationSeconds?: number | null;
   playbackRate?: number | null;
@@ -195,15 +204,16 @@ export type NativeAudioSessionRequest = NativeAudioSessionControl & {
 
 export type NativeAudioSession = {
   id: string;
+  leaseId: string;
   nativePlaybackSupported: boolean;
-  fallbackReason: string | null;
+  availabilityReason: string | null;
   laneCount: number;
-  generation?: number | null;
-  timelineRevision?: number | null;
-  nativeTimeUs?: number | null;
+  generation: number;
+  timelineRevision: number;
+  nativeTimeUs: number;
 };
 
-export type NativeAudioPlayRequest = NativeAudioSessionControl & {
+export type NativeAudioPlayRequest = NativeAudioOutputControl & {
   startTimeSeconds?: number | null;
   scheduledStartTimeSeconds?: number | null;
   startAtNativeUs?: number | null;
@@ -213,7 +223,7 @@ export type NativeAudioPlayRequest = NativeAudioSessionControl & {
 
 export const nativePlayCueProvider = { current: null as ((positionSeconds: number) => Array<NativeAudioCue & { kind: "metronome" }>) | null };
 
-export type NativeAudioSeekRequest = NativeAudioSessionControl & {
+export type NativeAudioSeekRequest = NativeAudioOutputControl & {
   timeSeconds: number;
 };
 
@@ -244,25 +254,23 @@ export type NativeAudioSnapshot = {
   durationSeconds: number;
   playbackRate: number;
   nativePlaybackSupported: boolean;
-  fallbackReason: string | null;
+  availabilityReason: string | null;
   lanes: NativeAudioLane[];
   bufferHealth: NativeAudioBufferHealth[];
-  leaseId?: string | null;
-  generation?: number | null;
-  timelineRevision?: number | null;
-  nativeTimeUs?: number | null;
+  leaseId: string | null;
+  generation: number;
+  timelineRevision: number;
+  nativeTimeUs: number;
 };
 
-export type NativeAudioClickRequest = {
-  enabled: boolean;
-  bpm?: number | null;
-  beatsPerBar?: number | null;
-  accentFirstBeat?: boolean | null;
-  gain?: number | null;
-  followTransport?: boolean | null;
-};
+export type NativeStandaloneMetronomeRequest =
+  | (NativeAudioAcquisitionControl & {
+      generation?: never;
+      timelineRevision?: never;
+    } & NativeStandaloneMetronomeConfiguration)
+  | (NativeAudioOutputControl & NativeStandaloneMetronomeConfiguration);
 
-export type NativeStandaloneMetronomeRequest = NativeAudioSessionControl & {
+type NativeStandaloneMetronomeConfiguration = {
   enabled: boolean;
   bpm: number;
   beatsPerBar: number;
@@ -289,10 +297,26 @@ export type NativeAudioPositionEvent = {
   positionSeconds: number;
   durationSeconds: number;
   state: "stopped" | "playing" | "paused";
+  generation: number;
+  timelineRevision: number;
+  nativeTimeUs: number;
+};
+
+export type NativeAudioStateEvent = {
+  sessionId: string | null;
+  state: "stopped" | "playing" | "paused";
+  positionSeconds: number;
+  generation: number;
+  timelineRevision: number;
+  nativeTimeUs: number;
 };
 
 export type NativeAudioErrorEvent = {
   sessionId: string | null;
+  generation: number;
+  timelineRevision: number;
+  nativeTimeUs: number;
+  positionSeconds: number;
   code:
     | "device_changed"
     | "device_not_available"
@@ -301,13 +325,13 @@ export type NativeAudioErrorEvent = {
     | "decoder_worker_failure";
 };
 
-export type NativeAudioInputRequest = NativeAudioSessionControl & {
+export type NativeAudioInputRequest = NativeAudioAcquisitionControl & {
   deviceId?: string | null;
   monitorEnabled?: boolean | null;
   monitorGain?: number | null;
 };
 
-export type NativeAudioMonitorRequest = {
+export type NativeAudioMonitorRequest = NativeAudioCaptureControl & {
   enabled: boolean;
   gain?: number | null;
 };
@@ -330,9 +354,9 @@ export type NativeAudioInputState = {
     | "privacy-blocked"
     | "unavailable";
   error: NativeAudioInputError | null;
-  leaseId?: string | null;
-  generation?: number | null;
-  nativeTimeUs?: number | null;
+  leaseId: string | null;
+  generation: number | null;
+  nativeTimeUs: number;
 };
 
 export type NativeAudioInputError = {
@@ -406,17 +430,15 @@ export function prepareNativeAudioSession(payload: NativeAudioSessionRequest) {
   return invoke<NativeAudioSession>("audio_prepare_session", { payload });
 }
 
-export function playNativeAudio(payload: NativeAudioPlayRequest = {}) {
+export function playNativeAudio(payload: NativeAudioPlayRequest) {
   return invoke<NativeAudioSnapshot>("audio_play", { payload });
 }
 
-export function pauseNativeAudio(payload?: NativeAudioSessionControl) {
-  if (!payload) return invoke<NativeAudioSnapshot>("audio_pause");
+export function pauseNativeAudio(payload: NativeAudioOutputControl) {
   return invoke<NativeAudioSnapshot>("audio_pause", { payload });
 }
 
-export function stopNativeAudio(payload?: NativeAudioSessionControl) {
-  if (!payload) return invoke<NativeAudioSnapshot>("audio_stop");
+export function stopNativeAudio(payload: NativeAudioOutputControl) {
   return invoke<NativeAudioSnapshot>("audio_stop", { payload });
 }
 
@@ -426,13 +448,9 @@ export function seekNativeAudio(payload: NativeAudioSeekRequest) {
 
 export function setNativeAudioLanes(
   payload: NativeAudioLaneUpdate,
-  control?: NativeAudioSessionControl,
+  control: NativeAudioOutputControl,
 ) {
-  return invoke<NativeAudioSnapshot>("audio_set_lanes", control ? { payload, control } : { payload });
-}
-
-export function setNativeAudioClick(payload: NativeAudioClickRequest) {
-  return invoke<NativeAudioSnapshot>("audio_set_click", { payload });
+  return invoke<NativeAudioSnapshot>("audio_set_lanes", { payload, control });
 }
 
 export function setNativeStandaloneMetronome(payload: NativeStandaloneMetronomeRequest) {
@@ -448,19 +466,16 @@ export function getNativeAudioSessionSnapshot() {
 }
 
 export function scheduleNativeAudioCues(
-  payload: NativeAudioSessionControl & { cues: NativeAudioCue[] },
+  payload: NativeAudioOutputControl & { cues: NativeAudioCue[] },
 ) {
   return invoke<NativeAudioSessionSnapshot>("audio_schedule_cues", { payload });
 }
 
 export function cancelNativeAudioCues(
-  payload?: NativeAudioSessionControl,
+  payload: NativeAudioOutputControl,
   kind?: "marker" | "metronome",
 ) {
-  return invoke<NativeAudioSessionSnapshot>(
-    "audio_cancel_cues",
-    payload || kind ? { payload, kind } : undefined,
-  );
+  return invoke<NativeAudioSessionSnapshot>("audio_cancel_cues", { payload, kind });
 }
 
 export function getNativeAudioInputState() {
@@ -475,12 +490,11 @@ export function requestNativeAudioInputPermission() {
   return invoke<NativeAudioInputPermissionStatus>("audio_request_input_permission");
 }
 
-export function startNativeAudioInput(payload: NativeAudioInputRequest = {}) {
+export function startNativeAudioInput(payload: NativeAudioInputRequest) {
   return invoke<NativeAudioInputState>("audio_start_input", { payload });
 }
 
-export function stopNativeAudioInput(payload?: NativeAudioSessionControl) {
-  if (!payload) return invoke<NativeAudioInputState>("audio_stop_input");
+export function stopNativeAudioInput(payload: NativeAudioCaptureControl) {
   return invoke<NativeAudioInputState>("audio_stop_input", { payload });
 }
 
@@ -508,6 +522,12 @@ export function listenNativeAudioPositions(
   handler: (position: NativeAudioPositionEvent) => void,
 ) {
   return listen<NativeAudioPositionEvent>("audio://position", (event) => {
+    handler(event.payload);
+  });
+}
+
+export function listenNativeAudioState(handler: (state: NativeAudioStateEvent) => void) {
+  return listen<NativeAudioStateEvent>("audio://state", (event) => {
     handler(event.payload);
   });
 }

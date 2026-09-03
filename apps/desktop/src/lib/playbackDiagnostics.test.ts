@@ -82,7 +82,7 @@ describe("playback diagnostics", () => {
     });
   });
 
-  it("does not claim Web fallback before confirmation and clears it on error", () => {
+  it("does not claim Web playback before confirmation and clears it on error", () => {
     updateNativePlaybackDiagnostics({
       sessionId: "session_private",
       lanes: [
@@ -97,7 +97,7 @@ describe("playback diagnostics", () => {
       ],
       bufferHealth: [],
     });
-    markPlaybackStarting("web-fallback");
+    markPlaybackStarting("web");
     expect(readPlaybackLiveDiagnostics()).toMatchObject({
       currentState: "starting",
       currentPath: "none",
@@ -105,10 +105,10 @@ describe("playback diagnostics", () => {
       nativeBufferHealth: [],
     });
 
-    markPlaybackConfirmed({ backend: "web", detail: null, mode: "fallback" });
+    markPlaybackConfirmed({ backend: "web", detail: null, mode: "browser" });
     expect(readPlaybackLiveDiagnostics()).toMatchObject({
       currentState: "playing",
-      currentPath: "web-fallback",
+      currentPath: "web",
     });
 
     markPlaybackError("Playback stopped. Web Audio could not continue.");

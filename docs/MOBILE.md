@@ -189,13 +189,23 @@ passwords, expected certificate fingerprint, signer count, and manifest version,
 writes `apps/desktop/src-tauri/target/release/bundle/apk/TuneForge_<version>_android_aarch64_publishable.apk`.
 Packaging never installs, launches, uploads, tags, or publishes the app.
 
-Project playback prefers the native `android-aaudio` path. Web Audio is an automatic disclosed
-fallback after native failure or a build-time development override; it is not a mobile setting.
-Playback state, clocks, and Settings diagnostics change only after the active native session or Web
-media confirms the transition.
+Normal Android Tauri requires native `android-aaudio` playback. Native capability, decode, startup,
+or runtime failure stays terminal for native playback: TuneForge freezes the last authoritative
+position, cancels pending count-in and cues, clears busy state, and shows the transport error. It
+never starts Web Audio or retries itself. A later explicit Play creates one fresh native attempt.
 
-On Android, Web Audio reads project artifacts through a private seekable server bound to an
-ephemeral `127.0.0.1` port. Routes contain only opaque artifact IDs, revalidate the current
+Browser/non-Tauri Android uses Web Audio. A Tauri build compiled with
+`VITE_TUNEFORGE_FORCE_WEB_AUDIO=1` also uses Web Audio only; it is a build-time development override,
+not a mobile setting, and makes no native audio calls. Playback state and clocks change only after
+the active native session or Web media confirms the transition.
+
+Settings diagnostics identify the active policy as `Native required`, `Web Audio (forced)`, or
+`Web Audio`. A valid `device_changed` report is advisory while the stream remains usable; it does
+not stop playback or trigger retry. Diagnostics do not present a `Native preferred` or
+`Web Audio (fallback)` path.
+
+On Android forced-Web playback, Web Audio reads project artifacts through a private seekable server
+bound to an ephemeral `127.0.0.1` port. Routes contain only opaque artifact IDs, revalidate the current
 app-owned project file for every request, and support bounded streaming plus single byte ranges.
 The URL includes an unguessable per-process capability segment. Origin-less Android media requests
 are accepted, while requests that name a foreign browser origin are rejected. The server starts only
@@ -204,10 +214,11 @@ or backend transport.
 
 ## Android Tuner Capture
 
-The packaged Android tuner requires native CPAL/AAudio microphone capture. A native capability,
-permission, startup, or stream failure produces a truthful recoverable tuner error and never falls
-through to Web Audio. `VITE_TUNEFORGE_FORCE_WEB_AUDIO=1` remains an explicit development-only
-all-Web override shared with playback.
+Normal Android Tauri tuner capture requires native CPAL/AAudio. A native capability, permission,
+startup, device, or stream failure produces a truthful recoverable tuner error and never falls
+through to Web Audio or retries automatically. Only explicit Retry or input selection creates a
+fresh capture attempt. `VITE_TUNEFORGE_FORCE_WEB_AUDIO=1` remains an explicit all-Web build override
+shared with playback and the metronome.
 
 The tuner requests `RECORD_AUDIO` at start and distinguishes prompt, prompting, granted, denied,
 blocked, microphone-privacy blocked, and unavailable states. A blocked state points to Android
@@ -218,9 +229,10 @@ the microphone automatically.
 
 Android input routing is `System Default` only, and microphone monitoring remains unavailable. Live
 state is generation-scoped so late samples from a stopped or replaced stream cannot update pitch or
-input level. Settings keeps native capability, selection policy, permission, current path/state, last
-confirmed path, and latest safe historical failure as separate facts. Active capture is never
-restored after reload.
+input level. Capture runs independently from the shared output runtime: tuner start/stop never stops
+playback or the standalone metronome. Settings keeps native capability, selection policy, permission,
+current path/state, last confirmed path, and latest safe historical failure as separate facts. Active
+capture is never restored after reload.
 
 Android power protection follows confirmed work automatically; no manual toggle exists. See
 [POWER_PROTECTION.md](./POWER_PROTECTION.md) for the shared owner, backend, diagnostic, and

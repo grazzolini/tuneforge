@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
   buildManifest,
@@ -7,11 +8,14 @@ import {
   captureMotionPolicy,
   chords,
   chordBackends,
+  createReleaseMediaTunerFixture,
   expectedCatalogEntries,
   manifestItemForCatalogEntry,
   overflowToScrollDelta,
   parseOptions,
   releaseMediaCaptureCatalog,
+  releaseMediaNativeAudioCapabilities,
+  releaseMediaNativeAudioCaptureMetadata,
   releaseMediaNativeAudioMetadata,
   validateReleaseMediaCatalog,
 } from "./capture-release-media.mjs";
@@ -24,6 +28,88 @@ test("native playback fixture exposes stable safe session metadata", () => {
     nativeTimeUs: 1,
   });
   assert.equal(Object.isFrozen(releaseMediaNativeAudioMetadata), true);
+});
+
+test("native release-media fixtures match required audio contracts", () => {
+  assert.deepEqual(releaseMediaNativeAudioCapabilities, {
+    platform: "release-media",
+    backend: "release-media-fixture",
+    nativePlaybackSupported: true,
+    micCaptureSupported: true,
+    micMonitoringSupported: false,
+    systemInputVolumeSupported: false,
+    emitsEvents: ["audio://position", "audio://ended", "audio://error", "audio://input-frame"],
+    availabilityReason: null,
+  });
+  assert.deepEqual(releaseMediaNativeAudioCaptureMetadata, {
+    leaseId: "tuner-capture",
+    generation: 1,
+    captureGeneration: 1,
+    nativeTimeUs: 1,
+    capturePath: "desktop-cpal",
+    permissionState: "granted",
+    error: null,
+  });
+  assert.equal(Object.hasOwn(releaseMediaNativeAudioCapabilities, "fallbackReason"), false);
+  assert.equal(Object.hasOwn(releaseMediaNativeAudioCaptureMetadata, "fallbackReason"), false);
+  assert.equal(Object.isFrozen(releaseMediaNativeAudioCapabilities), true);
+  assert.equal(Object.isFrozen(releaseMediaNativeAudioCaptureMetadata), true);
+});
+
+test("tuner fixture separates session ownership from capture runtime generations", () => {
+  const tuner = createReleaseMediaTunerFixture(releaseMediaNativeAudioCaptureMetadata);
+  const firstStart = tuner.start();
+  const firstFrame = { captureGeneration: firstStart.captureGeneration };
+
+  assert.deepEqual(firstStart, {
+    active: true,
+    deviceId: "release-media-default-input",
+    inputLevel: 0.28,
+    monitorEnabled: false,
+    monitorGain: 0,
+    sampleRate: 48_000,
+    captureGeneration: 1,
+    capturePath: "desktop-cpal",
+    permissionState: "granted",
+    error: null,
+    leaseId: "tuner-capture",
+    generation: 1,
+    nativeTimeUs: 1,
+  });
+  assert.equal(tuner.acceptsFrame(firstFrame), true);
+
+  assert.deepEqual(tuner.stop(), {
+    ...firstStart,
+    active: false,
+    deviceId: null,
+    inputLevel: 0,
+    sampleRate: null,
+    captureGeneration: 2,
+    capturePath: "none",
+    leaseId: null,
+  });
+  assert.equal(tuner.acceptsFrame(firstFrame), false);
+
+  const secondStart = tuner.start();
+  assert.equal(secondStart.leaseId, "tuner-capture");
+  assert.equal(secondStart.generation, 2);
+  assert.equal(secondStart.captureGeneration, 3);
+  assert.equal(tuner.acceptsFrame(firstFrame), false);
+  assert.equal(tuner.acceptsFrame({ captureGeneration: secondStart.captureGeneration }), true);
+});
+
+test("release-media Tauri mock emits correlated contracts without fallback fields", () => {
+  const mockSource = readFileSync(new URL("./capture-release-media.mjs", import.meta.url), "utf8");
+
+  assert.doesNotMatch(mockSource, /\bfallbackReason\b/);
+  assert.doesNotMatch(mockSource, /\bfallbackRequired\b/);
+  assert.doesNotMatch(mockSource, /\baudio_set_click\b/);
+  assert.doesNotMatch(mockSource, /__tuneforgeReleaseMediaTunerFixture/);
+  assert.equal((mockSource.match(/page\.addInitScript/g) ?? []).length, 1);
+  assert.match(mockSource, /captureGeneration: tunerFixture\.captureGeneration\(\)/);
+  assert.match(mockSource, /generation: playbackSnapshot\.generation/);
+  assert.match(mockSource, /timelineRevision: playbackSnapshot\.timelineRevision/);
+  assert.match(mockSource, /nativeTimeUs: playbackSnapshot\.nativeTimeUs/);
 });
 
 test("settings fixture exposes the available default advanced chord backend", () => {

@@ -8,7 +8,6 @@ import { DURABLE_AUDIO_CAPABILITIES_QUERY_KEY } from "../../lib/durableAudio";
 import {
   getPlaybackDiagnosticsVersion,
   readPlaybackLiveDiagnostics,
-  readRememberedNativeFallbackCause,
   readRememberedNativePlaybackError,
   readRememberedPlaybackBackend,
   readRememberedWebPlaybackError,
@@ -418,8 +417,8 @@ function nativePlaybackCapabilityLabel(capabilities: NativeAudioCapabilities | u
   if (capabilities.nativePlaybackSupported && capabilities.backend !== "android-null") {
     return `Native (${capabilities.backend})`;
   }
-  const reason = capabilities.fallbackReason
-    ? ` — ${redactPlaybackDiagnosticText(capabilities.fallbackReason)}`
+  const reason = capabilities.availabilityReason
+    ? ` — ${redactPlaybackDiagnosticText(capabilities.availabilityReason)}`
     : "";
   return `Unavailable${reason}`;
 }
@@ -441,7 +440,7 @@ function lastPlaybackBackendLabel(backend: PlaybackBackend | null) {
     ? `Native (${backend.detail ?? "unknown"})`
     : backend.mode === "forced"
       ? "Web Audio (forced)"
-      : "Web Audio (fallback)";
+      : "Web Audio";
 }
 
 function currentPlaybackStateLabel(
@@ -461,8 +460,8 @@ function currentPlaybackPathLabel(
   if (diagnostics.currentPath === "web-forced") {
     return "Web Audio (forced)";
   }
-  if (diagnostics.currentPath === "web-fallback") {
-    return "Web Audio (fallback)";
+  if (diagnostics.currentPath === "web") {
+    return "Web Audio";
   }
   return "None";
 }
@@ -731,7 +730,9 @@ export function SettingsView() {
   const [availabilityRetrying, setAvailabilityRetrying] = useState(false);
   const [isNativeValidationBusy, setIsNativeValidationBusy] = useState(false);
   const [nativeValidationStatus, setNativeValidationStatus] = useState<SnapshotStatus | null>(null);
-  const webAudioForced = isWebAudioBackendForced();
+  const tauriRuntime = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+  const webAudioForced = tauriRuntime && isWebAudioBackendForced();
+  const normalTauriAudio = tauriRuntime && !webAudioForced;
   const androidRuntime = isAndroidRuntime();
   useSyncExternalStore(
     subscribePlaybackDiagnostics,
@@ -774,23 +775,27 @@ export function SettingsView() {
     staleTime: Infinity,
   });
   const nativeAudioQuery = useQuery({
+    enabled: normalTauriAudio,
     queryKey: ["native-audio-capabilities"],
     queryFn: getNativeAudioCapabilities,
   });
   const nativeDiagnosticsAvailabilityQuery = useQuery({
+    enabled: normalTauriAudio,
     queryKey: ["native-audio-diagnostics-availability"],
     queryFn: getNativeAudioDiagnosticsAvailability,
   });
   const nativeDiagnosticsQuery = useQuery({
-    enabled: nativeDiagnosticsAvailabilityQuery.data?.enabled === true,
+    enabled: normalTauriAudio && nativeDiagnosticsAvailabilityQuery.data?.enabled === true,
     queryKey: ["native-audio-diagnostics"],
     queryFn: readNativeAudioDiagnostics,
   });
   const nativeInputQuery = useQuery({
+    enabled: normalTauriAudio,
     queryKey: ["native-audio-input-state"],
     queryFn: getNativeAudioInputState,
   });
   const nativePermissionQuery = useQuery({
+    enabled: normalTauriAudio,
     queryKey: ["native-audio-input-permission"],
     queryFn: getNativeAudioInputPermissionStatus,
   });
@@ -798,7 +803,6 @@ export function SettingsView() {
   const lastNativeCaptureError = readRememberedTunerNativeCaptureError();
   const lastPlaybackBackend = readRememberedPlaybackBackend();
   const lastNativePlaybackError = readRememberedNativePlaybackError();
-  const latestNativeFallbackCause = readRememberedNativeFallbackCause();
   const latestWebPlaybackError = readRememberedWebPlaybackError();
   const savedThemeOverrideCount = themeOverrideCount(themeOverrides);
   const beatAvailabilityResolved = beatBackendsQuery.data?.backends !== undefined;
@@ -1256,7 +1260,7 @@ export function SettingsView() {
 
           <TunerPreferenceControls
             inputDeviceId={defaultTunerInputDeviceId}
-            nativeCaptureDisabled={webAudioForced}
+            nativeCaptureDisabled={!normalTauriAudio}
             onInputDeviceChange={setDefaultTunerInputDeviceId}
             onReferenceHzChange={setDefaultTunerReferenceHz}
             onVisualModeChange={setDefaultTunerVisualMode}
@@ -1468,7 +1472,7 @@ export function SettingsView() {
                 </div>
                 <div>
                   <dt>Capture Selection Policy</dt>
-                  <dd>{webAudioForced ? "Forced Web Audio" : isAndroidRuntime() || nativeAudioQuery.data?.platform === "android" ? "Native required" : "Native preferred"}</dd>
+                  <dd>{webAudioForced ? "Web Audio (forced)" : normalTauriAudio ? "Native required" : "Web Audio"}</dd>
                 </div>
                 <div>
                   <dt>Current Microphone Permission</dt>
@@ -1500,7 +1504,7 @@ export function SettingsView() {
                 </div>
                 <div>
                   <dt>Playback Selection Policy</dt>
-                  <dd>{webAudioForced ? "Web Audio forced" : "Native preferred"}</dd>
+                  <dd>{webAudioForced ? "Web Audio (forced)" : normalTauriAudio ? "Native required" : "Web Audio"}</dd>
                 </div>
               </dl>
             </section>
@@ -1595,10 +1599,6 @@ export function SettingsView() {
                 <div>
                   <dt>Latest Native Playback Failure</dt>
                   <dd>{lastNativePlaybackError ?? "None"}</dd>
-                </div>
-                <div>
-                  <dt>Latest Native Fallback Cause</dt>
-                  <dd>{latestNativeFallbackCause ?? "None"}</dd>
                 </div>
                 <div>
                   <dt>Latest Web Media Failure</dt>

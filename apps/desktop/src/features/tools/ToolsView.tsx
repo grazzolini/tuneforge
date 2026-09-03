@@ -13,7 +13,7 @@ import {
   type NativeAudioCapabilities,
   type NativeAudioInputFrame,
   type NativeAudioInputState,
-  type NativeAudioSessionControl,
+  type NativeAudioCaptureControl,
 } from "../../lib/nativeAudio";
 import { useStableCallback } from "../../lib/useStableCallback";
 import {
@@ -144,7 +144,7 @@ function ChromaticTunerPage() {
   const [activeCaptureBackend, setActiveCaptureBackend] = useState<CaptureBackend | null>(null);
   const [nativeAudioCapabilities, setNativeAudioCapabilities] =
     useState<NativeAudioCapabilities | null>(null);
-  const webAudioForced = isWebAudioBackendForced();
+  const webAudioForced = isTauriRuntime() && isWebAudioBackendForced();
   const androidRuntime = isAndroidRuntime() || nativeAudioCapabilities?.platform === "android";
   const [reading, setReading] = useState<TunerPitchReading | null>(null);
   const [deviceRefreshToken, setDeviceRefreshToken] = useState(0);
@@ -156,7 +156,7 @@ function ChromaticTunerPage() {
   const mediaSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const nativeCaptureActiveRef = useRef(false);
   const nativeCaptureGenerationRef = useRef<number | null>(null);
-  const nativeCaptureControlRef = useRef<NativeAudioSessionControl | null>(null);
+  const nativeCaptureControlRef = useRef<Omit<NativeAudioCaptureControl, "operationId"> | null>(null);
   const nativeCaptureOperationRef = useRef(0);
   const nativeInputUnlistenRef = useRef<(() => void) | null>(null);
   const nativeStateUnlistenRef = useRef<(() => void) | null>(null);
@@ -184,7 +184,7 @@ function ChromaticTunerPage() {
     let active = true;
 
     async function refreshNativeAudioCapabilities() {
-      if (webAudioForced) {
+      if (webAudioForced || !isTauriRuntime()) {
         setNativeAudioCapabilities(null);
         if (statusRef.current === "unsupported" && canUseTunerCapture(null)) {
           setStatus("idle");
@@ -232,11 +232,12 @@ function ChromaticTunerPage() {
       nativeCaptureActiveRef.current = false;
       const control = nativeCaptureControlRef.current;
       nativeCaptureControlRef.current = null;
-      void stopNativeAudioInput({
-        leaseId: control?.leaseId ?? "tuner-capture",
-        generation: control?.generation,
-        operationId: `tuner-capture-${++nativeCaptureOperationRef.current}`,
-      }).catch(() => undefined);
+      if (control) {
+        void stopNativeAudioInput({
+          ...control,
+          operationId: `tuner-capture-${++nativeCaptureOperationRef.current}`,
+        }).catch(() => undefined);
+      }
     }
 
     try {
@@ -306,7 +307,7 @@ function ChromaticTunerPage() {
   });
 
   const resolveNativeAudioCapabilities = useStableCallback(async function resolveNativeAudioCapabilities() {
-    if (webAudioForced) {
+    if (webAudioForced || !isTauriRuntime()) {
       setNativeAudioCapabilities(null);
       return null;
     }
@@ -397,9 +398,19 @@ function ChromaticTunerPage() {
       leaseId: "tuner-capture",
       operationId: `tuner-capture-${++nativeCaptureOperationRef.current}`,
     });
+    if (
+      !inputState.active ||
+      !inputState.leaseId ||
+      typeof inputState.generation !== "number" ||
+      inputState.generation <= 0 ||
+      typeof inputState.nativeTimeUs !== "number" ||
+      inputState.captureGeneration <= 0
+    ) {
+      throw new Error("Native microphone ownership metadata is unavailable.");
+    }
     nativeCaptureGenerationRef.current = inputState.captureGeneration;
     nativeCaptureControlRef.current = {
-      leaseId: inputState.leaseId ?? "tuner-capture",
+      leaseId: inputState.leaseId,
       generation: inputState.generation,
     };
     nativeCaptureActiveRef.current = inputState.active;
@@ -497,10 +508,8 @@ function ChromaticTunerPage() {
     const selectedDeviceId = nextDeviceId ?? inputDeviceIdRef.current;
     const selectedNativeDevice = isNativeAudioInputDeviceId(selectedDeviceId);
     const nativeCapabilities = await resolveNativeAudioCapabilities();
-    const androidNativeRequired =
-      isAndroidRuntime() || nativeCapabilities?.platform === "android";
     const tauriNativeRequired = isTauriRuntime() && !webAudioForced;
-    const nativeRequired = tauriNativeRequired || androidNativeRequired;
+    const nativeRequired = tauriNativeRequired;
 
     if (nativeRequired && !nativeCapabilities?.micCaptureSupported) {
       const message = "Native microphone capture is unavailable. Check microphone access and retry.";
@@ -516,7 +525,7 @@ function ChromaticTunerPage() {
           selectedDeviceId,
           requestId,
           nativeCapabilities.backend,
-          androidNativeRequired,
+          nativeCapabilities.platform === "android",
         );
         return;
       } catch (error) {
@@ -526,18 +535,12 @@ function ChromaticTunerPage() {
           return;
         }
         releaseCapture();
-        if (tauriNativeRequired || androidNativeRequired) {
+        if (tauriNativeRequired) {
           setStatus("error");
           setErrorMessage(message);
           return;
         }
       }
-    } else if (!webAudioForced && androidNativeRequired) {
-      const message = "Native Android microphone capture is unavailable.";
-      rememberTunerNativeCaptureError(message);
-      setStatus("error");
-      setErrorMessage(message);
-      return;
     } else if (!webAudioForced && selectedNativeDevice) {
       rememberTunerNativeCaptureError(
         "Selected microphone requires native input capture, but native capture is unavailable.",
@@ -584,7 +587,7 @@ function ChromaticTunerPage() {
   ) {
     inputDeviceIdRef.current = value;
     setDefaultTunerInputDeviceId(value);
-    if (statusRef.current === "listening") {
+    if (statusRef.current === "listening" || statusRef.current === "error") {
       void startTuner(value);
     }
   });
@@ -654,7 +657,7 @@ function ChromaticTunerPage() {
           className="tuner-preferences--with-mode"
           clearDevicesWhenSystemDefaultOnly={isTauriRuntime() || androidRuntime}
           inputDeviceId={defaultTunerInputDeviceId}
-          nativeCaptureDisabled={webAudioForced}
+          nativeCaptureDisabled={webAudioForced || !isTauriRuntime()}
           onInputDeviceChange={handleInputDeviceChange}
           onReferenceHzChange={handleReferenceHzChange}
           onVisualModeChange={handleVisualModeChange}

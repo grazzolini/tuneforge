@@ -259,7 +259,7 @@ describe("PlaybackProvider", () => {
     fireEvent.playing(media as HTMLAudioElement);
     expect(readPlaybackLiveDiagnostics()).toMatchObject({
       currentState: "playing",
-      currentPath: "web-fallback",
+      currentPath: "web",
     });
 
     fireEvent.stalled(media as HTMLAudioElement);
@@ -271,7 +271,7 @@ describe("PlaybackProvider", () => {
 
     expect(readPlaybackLiveDiagnostics()).toMatchObject({
       currentState: "playing",
-      currentPath: "web-fallback",
+      currentPath: "web",
     });
     expect(readRememberedWebPlaybackError()).toBeNull();
   });
@@ -285,8 +285,7 @@ describe("PlaybackProvider", () => {
       capabilities: {
         backend: "android-aaudio",
         nativePlaybackSupported: true,
-        fallbackRequired: false,
-        fallbackReason: null,
+        availabilityReason: null,
       },
     });
     let playback: PlaybackContextValue | null = null;
@@ -318,7 +317,7 @@ describe("PlaybackProvider", () => {
         state: "paused",
         positionSeconds: 12.5,
         nativePlaybackSupported: false,
-        fallbackReason: "Native stream failed at /Users/person/My Song.wav.",
+        availabilityReason: "Native stream failed at /Users/person/My Song.wav.",
       },
     });
     act(() => {
@@ -344,7 +343,7 @@ describe("PlaybackProvider", () => {
     Object.defineProperty(window, "__TAURI_INTERNALS__", { configurable: true, value: {} });
     setMockNativeAudioState({ capabilities: {
       backend: "android-aaudio", nativePlaybackSupported: true,
-      fallbackRequired: false, fallbackReason: null,
+availabilityReason: null,
     } });
     let playback: PlaybackContextValue | null = null;
     const firstSession = makePlaybackSession("art_source", { stageTitle: "Source Track" });
@@ -388,8 +387,7 @@ describe("PlaybackProvider", () => {
       capabilities: {
         backend: "android-aaudio",
         nativePlaybackSupported: true,
-        fallbackRequired: false,
-        fallbackReason: null,
+        availabilityReason: null,
       },
     });
     let playback: PlaybackContextValue | null = null;
@@ -469,25 +467,35 @@ describe("PlaybackProvider", () => {
     });
 
     const endedHandler = mockListen.mock.calls.find(([event]) => event === "audio://ended")?.[1];
+    const endedPayload = {
+      sessionId: "proj_123:native:art_source",
+      leaseId: "project-playback",
+      generation: 1,
+      timelineRevision: 1,
+      nativeTimeUs: 1,
+      state: "stopped",
+      positionSeconds: 0,
+      durationSeconds: 182,
+      playbackRate: 1,
+      nativePlaybackSupported: true,
+      availabilityReason: null,
+      lanes: [],
+      bufferHealth: [],
+    };
     act(() => {
       endedHandler?.({
         event: "audio://ended",
         id: 1,
-        payload: {
-          sessionId: "proj_123:native:art_source",
-          leaseId: "project-playback",
-          generation: 1,
-          timelineRevision: 1,
-          nativeTimeUs: 1,
-          state: "stopped",
-          positionSeconds: 0,
-          durationSeconds: 182,
-          playbackRate: 1,
-          nativePlaybackSupported: true,
-          fallbackReason: null,
-          lanes: [],
-          bufferHealth: [],
-        },
+        payload: { ...endedPayload, generation: 99 },
+      });
+    });
+    expect(readPlaybackLiveDiagnostics().currentPath).toBe("native");
+
+    act(() => {
+      endedHandler?.({
+        event: "audio://ended",
+        id: 1,
+        payload: endedPayload,
       });
     });
     await flushPlaybackWork();

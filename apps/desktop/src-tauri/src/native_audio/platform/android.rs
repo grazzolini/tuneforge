@@ -12,7 +12,7 @@ pub fn current_platform() -> AudioPlatform {
         name: "android",
         backend: "android-aaudio",
         native_playback_supported: context_result.is_ok(),
-        fallback_reason: context_result.err(),
+        availability_reason: context_result.err(),
         mic_capture_supported: context_result.is_ok(),
         mic_monitoring_supported: false,
         system_input_volume_supported: false,

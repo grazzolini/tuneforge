@@ -106,6 +106,7 @@ function readPlaybackE2ETelemetry() {
 describe("Desktop app project playback tempo", () => {
   beforeEach(resetAppTestHarness);
   afterEach(() => {
+    vi.unstubAllEnvs();
     delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
   });
 
@@ -274,7 +275,7 @@ describe("Desktop app project playback tempo", () => {
     restoreTauriRuntime();
   });
 
-  it("falls back to Web Audio when native play reports an underrun fallback", async () => {
+  it("does not fall back when native play reports an underrun", async () => {
     const restoreTauriRuntime = mockTauriRuntime();
     const user = userEvent.setup();
     setupTempoAnalysis(120);
@@ -299,22 +300,18 @@ describe("Desktop app project playback tempo", () => {
         getMockInvoke().mock.calls.some(([command]) => command === "audio_play"),
       ).toBe(true),
     );
-    await waitFor(() => {
-      expect(findAudioByArtifactId("art_source")).toBeInTheDocument();
-    });
-    const sourceAudio = findAudioByArtifactId("art_source");
-    markAudioReady(sourceAudio);
     await waitFor(() =>
-      expect(getMockAudioContexts().flatMap((context) => context.createdSources)).toHaveLength(1),
+      expect(readPlaybackE2ETelemetry()).toMatchObject({
+        activePath: "none",
+        transportState: "stopped",
+      }),
     );
+    expect(document.querySelector("audio[data-artifact-id='art_source']")).toBeNull();
+    expect(getMockAudioContexts()).toHaveLength(0);
     expect(window.localStorage.getItem("tuneforge.playback-native-error")).toBe(
       "Native playback underrun persisted; falling back to Web Audio.",
     );
-    expect(readPlaybackE2ETelemetry()).toMatchObject({
-      activePath: "web-audio",
-      transportState: "playing",
-    });
-    expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Play playback" })).toBeInTheDocument();
     restoreTauriRuntime();
   });
 
@@ -368,6 +365,7 @@ describe("Desktop app project playback tempo", () => {
         }),
       );
 
+      vi.stubEnv("VITE_TUNEFORGE_FORCE_WEB_AUDIO", "1");
       emitMockNativePlaybackError({
         sessionId: latestNativeSessionId(),
         code: "output_stream_failure",
@@ -396,7 +394,7 @@ describe("Desktop app project playback tempo", () => {
     }
   });
 
-  it("falls back to Web Audio at the current native time after a runtime underrun error", async () => {
+  it("stops without fallback after a runtime underrun error", async () => {
     const restoreTauriRuntime = mockTauriRuntime();
     const user = userEvent.setup();
     setupTempoAnalysis(120);
@@ -423,17 +421,21 @@ describe("Desktop app project playback tempo", () => {
     );
 
     const sessionId = latestNativeSessionId();
-    emitMockNativePlaybackPosition({
-      sessionId,
-      positionSeconds: 42.25,
-      durationSeconds: 182,
-      state: "playing",
+    act(() => {
+      emitMockNativePlaybackPosition({
+        sessionId,
+        positionSeconds: 42.25,
+        durationSeconds: 182,
+        state: "playing",
+      });
     });
     await waitFor(() => expect(screen.getByLabelText("Playback position")).toHaveValue("42.25"));
 
-    emitMockNativePlaybackError({
-      sessionId: "stale-native-session",
-      code: "output_stream_failure",
+    act(() => {
+      emitMockNativePlaybackError({
+        sessionId: "stale-native-session",
+        code: "output_stream_failure",
+      });
     });
     await waitFor(() => {
       expect(
@@ -442,29 +444,25 @@ describe("Desktop app project playback tempo", () => {
     });
     expect(window.localStorage.getItem("tuneforge.playback-native-error")).toBeNull();
 
-    emitMockNativePlaybackError({
-      sessionId,
-      code: "output_stream_failure",
+    act(() => {
+      emitMockNativePlaybackError({
+        sessionId,
+        code: "output_stream_failure",
+      });
     });
 
-    await waitFor(() => {
-      expect(findAudioByArtifactId("art_source")).toBeInTheDocument();
-    });
-    const sourceAudio = findAudioByArtifactId("art_source");
-    markAudioReady(sourceAudio);
     await waitFor(() =>
-      expect(getMockAudioContexts().flatMap((context) => context.createdSources)).toHaveLength(1),
+      expect(readPlaybackE2ETelemetry()).toMatchObject({
+        activePath: "none",
+        transportState: "stopped",
+      }),
     );
-    expect(getMockAudioContexts().flatMap((context) => context.createdSources)[0]?.start.mock.calls[0]?.[1]).toBeCloseTo(
-      42.25,
-      3,
-    );
+    expect(document.querySelector("audio[data-artifact-id='art_source']")).toBeNull();
+    expect(getMockAudioContexts()).toHaveLength(0);
+    expect(screen.getByLabelText("Playback position")).toHaveValue("42.25");
     expect(window.localStorage.getItem("tuneforge.playback-native-error")).toBe(
       "Native playback output failed.",
     );
-    expect(
-      getMockInvoke().mock.calls.some(([command]) => command === "audio_stop"),
-    ).toBe(true);
     restoreTauriRuntime();
   });
 

@@ -109,6 +109,9 @@ const {
   emitMockNativeAudioInputFrame,
   emitMockNativeAudioInputState,
   emitMockNativeAudioPosition,
+  emitMockNativeAudioCue,
+  emitMockNativeAudioSession,
+  emitMockNativeAudioTerminal,
   emitMockSystemMediaControl,
   getSystemMediaControlListenerCount,
   deferNextSystemMediaControlListen,
@@ -152,7 +155,8 @@ const {
       | "decoder_worker_failure";
   };
   type NativeAudioRuntimeEvent = {
-    event: "audio://position" | "audio://ended" | "audio://error" | "audio://input-state";
+    event: "audio://position" | "audio://ended" | "audio://error" | "audio://input-state" |
+      "audio://session" | "audio://cue" | "audio://terminal";
     id: number;
     payload: Record<string, unknown>;
   };
@@ -912,6 +916,10 @@ const {
         fallbackReason: "Native audio playback is not wired yet; use existing WebView playback.",
         lanes: [],
         bufferHealth: [],
+        leaseId: "project-playback",
+        generation: 1,
+        timelineRevision: 1,
+        nativeTimeUs: 1,
       },
       nativeAudioStartError: null,
       nativeAudioPlayFallbackReason: null,
@@ -1056,6 +1064,15 @@ const {
   function emitMockNativeAudioPosition(position: NativeAudioPositionPayload) {
     emitMockNativeRuntimeEvent("audio://position", position);
   }
+  function emitMockNativeAudioCue(payload: Record<string, unknown>) {
+    emitMockNativeRuntimeEvent("audio://cue", payload);
+  }
+  function emitMockNativeAudioSession(payload: Record<string, unknown>) {
+    emitMockNativeRuntimeEvent("audio://session", payload);
+  }
+  function emitMockNativeAudioTerminal(payload: Record<string, unknown>) {
+    emitMockNativeRuntimeEvent("audio://terminal", payload);
+  }
   function emitMockNativeAudioError(error: NativeAudioErrorPayload) {
     emitMockNativeRuntimeEvent("audio://error", error);
   }
@@ -1123,7 +1140,10 @@ const {
         eventName === "audio://position" ||
         eventName === "audio://ended" ||
         eventName === "audio://error" ||
-        eventName === "audio://input-state"
+        eventName === "audio://input-state" ||
+        eventName === "audio://session" ||
+        eventName === "audio://cue" ||
+        eventName === "audio://terminal"
       ) {
         const listenerId = nextNativeRuntimeListenerId;
         nextNativeRuntimeListenerId += 1;
@@ -1308,6 +1328,9 @@ const {
         nativePlaybackSupported,
         fallbackReason,
         laneCount: lanes.length,
+        generation: state.nativeAudioSnapshot.generation,
+        timelineRevision: state.nativeAudioSnapshot.timelineRevision,
+        nativeTimeUs: state.nativeAudioSnapshot.nativeTimeUs,
       };
     }
 
@@ -1396,6 +1419,17 @@ const {
 
     if (command === "audio_set_click" || command === "audio_get_snapshot") {
       return clone(state.nativeAudioSnapshot);
+    }
+
+    if (command === "audio_get_session_snapshot" || command === "audio_schedule_cues" || command === "audio_cancel_cues") {
+      return {
+        status: "output",
+        owner: "playback",
+        leaseId: "project-playback",
+        generation: state.nativeAudioSnapshot.generation,
+        timelineRevision: state.nativeAudioSnapshot.timelineRevision,
+        nativeTimeUs: state.nativeAudioSnapshot.nativeTimeUs,
+      };
     }
 
     if (command === "audio_start_input") {
@@ -2542,6 +2576,9 @@ const {
     emitMockNativeAudioInputFrame,
     emitMockNativeAudioInputState,
     emitMockNativeAudioPosition,
+    emitMockNativeAudioCue,
+    emitMockNativeAudioSession,
+    emitMockNativeAudioTerminal,
     emitMockSystemMediaControl,
     getSystemMediaControlListenerCount,
     deferNextSystemMediaControlListen,
@@ -2570,6 +2607,9 @@ export {
   mockOpen,
   mockSave,
   mockConfirm,
+  emitMockNativeAudioCue,
+  emitMockNativeAudioSession,
+  emitMockNativeAudioTerminal,
   mockInvoke,
   mockListProjects,
   mockImportProject,

@@ -36,7 +36,7 @@ use super::{
     diagnostics::{self, DiagnosticCheckpoint, DiagnosticSafeCode},
     mixer::{AudioLaneRequest, AudioLaneRole, EffectiveAudioLane},
     session::{RuntimeReport, RuntimeReportKind, SessionCommand, SessionOwner},
-    timeline::{self, Timeline},
+    timeline::{self, CueRequest, Timeline},
     AudioCapabilities,
 };
 
@@ -59,6 +59,9 @@ const CLICK_DURATION_SECONDS: f64 = 0.032;
 const CLICK_ACCENT_DURATION_SECONDS: f64 = 0.045;
 const CLICK_FREQUENCY_HZ: f64 = 1175.0;
 const CLICK_ACCENT_FREQUENCY_HZ: f64 = 1760.0;
+const PRECOUNT_FREQUENCY_HZ: f64 = 760.0;
+const PRECOUNT_ATTACK_SECONDS: f64 = 0.002;
+const PRECOUNT_DURATION_SECONDS: f64 = 0.045;
 #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
 const STREAM_CHUNK_FRAMES: usize = 2048;
 #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
@@ -105,6 +108,14 @@ pub struct AudioPlayRequest {
     #[serde(default, flatten)]
     pub control: SessionCommand,
     pub start_at_native_us: Option<u64>,
+    pub precount: Option<AudioPrecountRequest>,
+    pub metronome_cues: Option<Vec<CueRequest>>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioPrecountRequest {
+    pub intervals_seconds: Vec<f64>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -417,6 +428,14 @@ struct PlaybackShared {
     report_sender: mpsc::SyncSender<RuntimeReport>,
     pending_cues: VecDeque<timeline::CueEvent>,
     terminal_reported: bool,
+    cue_voices: Vec<CueVoice>,
+}
+
+struct CueVoice {
+    phase: usize,
+    frames: usize,
+    frequency: f64,
+    gain: f32,
 }
 
 impl PlaybackShared {
@@ -1534,17 +1553,89 @@ fn playback_lanes_drained(lanes: &[PlaybackLane]) -> bool {
         })
 }
 
-fn advance_timeline(shared: &mut PlaybackShared, frames: usize) -> (usize, bool) {
+fn advance_timeline(
+    shared: &mut PlaybackShared,
+    frames: usize,
+    callback_time: u64,
+) -> (usize, bool, Vec<timeline::FiredCue>) {
     if shared.status != TransportStatus::Playing || shared.buffering {
-        return (frames, false);
+        return (frames, false, Vec::new());
     }
     let Ok(mut timeline) = shared.timeline.lock() else {
-        return (frames, false);
+        return (frames, false, Vec::new());
     };
-    let advance = timeline.advance(frames, timeline::native_time_us());
+    let advance = timeline.advance(frames, callback_time);
     shared.position_seconds = timeline.position();
-    shared.pending_cues.extend(advance.cues);
-    (advance.start_offset, advance.ended)
+    let fired = advance.cues;
+    shared
+        .pending_cues
+        .extend(fired.iter().map(|cue| cue.event.clone()));
+    (advance.start_offset, advance.ended, fired)
+}
+
+fn timeline_start_offset(shared: &PlaybackShared, frames: usize, callback_time: u64) -> usize {
+    shared.timeline.lock().map_or(frames, |timeline| {
+        timeline.start_offset(frames, callback_time)
+    })
+}
+
+fn cue_frame_sample(shared: &mut PlaybackShared) -> f32 {
+    let sample_rate = f64::from(shared.sample_rate);
+    let sample = shared
+        .cue_voices
+        .iter()
+        .map(|voice| {
+            let progress = voice.phase as f64 / voice.frames as f64;
+            let cycle = voice.frequency * voice.phase as f64 / sample_rate;
+            let metronome = voice.frequency != PRECOUNT_FREQUENCY_HZ;
+            let wave = if metronome {
+                if cycle.fract() < 0.5 {
+                    1.0
+                } else {
+                    -1.0
+                }
+            } else {
+                1.0 - 4.0 * (cycle.fract() - 0.5).abs()
+            };
+            let attack_seconds = if metronome {
+                0.004
+            } else {
+                PRECOUNT_ATTACK_SECONDS
+            };
+            let attack = (attack_seconds * sample_rate / voice.frames as f64).min(1.0);
+            let exponent = if progress < attack {
+                1.0 - progress / attack
+            } else {
+                (progress - attack) / (1.0 - attack)
+            };
+            let envelope = 0.0001_f64.powf(exponent);
+            (wave * envelope * f64::from(voice.gain)) as f32
+        })
+        .sum();
+    for voice in &mut shared.cue_voices {
+        voice.phase += 1;
+    }
+    shared.cue_voices.retain(|voice| voice.phase < voice.frames);
+    sample
+}
+
+fn start_cue_voice(shared: &mut PlaybackShared, cue: &timeline::FiredCue) {
+    let (frequency, duration, scale) = match cue.event.kind {
+        timeline::CueKind::PrecountBeat => (PRECOUNT_FREQUENCY_HZ, PRECOUNT_DURATION_SECONDS, 1.0),
+        timeline::CueKind::Metronome if cue.event.accent => (
+            CLICK_ACCENT_FREQUENCY_HZ,
+            CLICK_ACCENT_DURATION_SECONDS,
+            0.42,
+        ),
+        timeline::CueKind::Metronome => (CLICK_FREQUENCY_HZ, CLICK_DURATION_SECONDS, 0.32),
+        _ => return,
+    };
+    shared.cue_voices.push(CueVoice {
+        phase: 0,
+        frames: (f64::from(shared.sample_rate) * duration) as usize,
+        frequency,
+        gain: cue.event.gain * scale,
+    });
 }
 
 #[cfg(test)]
@@ -1553,27 +1644,39 @@ fn render_shared_output(shared: &mut PlaybackShared, output: &mut [f32]) {
         output.fill(0.0);
         return;
     }
+    let callback_time = timeline::native_time_us();
+    let start_offset = timeline_start_offset(shared, output.len() / shared.channels, callback_time);
     if shared.status == TransportStatus::Playing && !shared.buffering {
-        let frame_count = output.len() / shared.channels;
+        let frame_count = output.len() / shared.channels - start_offset;
         let audible_underrun = prepare_lane_scratch(
             shared.diagnostics_generation,
             &mut shared.lanes,
-            output.len(),
+            frame_count * shared.channels,
         );
         update_underrun_state(shared, audible_underrun, frame_count);
     }
-    let (start_offset, ended) = advance_timeline(shared, output.len() / shared.channels);
+    let (start_offset, ended, fired) =
+        advance_timeline(shared, output.len() / shared.channels, callback_time);
     for (frame_index, frame) in output.chunks_mut(shared.channels).enumerate() {
+        fired
+            .iter()
+            .filter(|cue| cue.frame_offset == frame_index)
+            .for_each(|cue| start_cue_voice(shared, cue));
+        let cue_sample = cue_frame_sample(shared);
         if shared.status != TransportStatus::Playing
             || shared.buffering
             || frame_index < start_offset
         {
-            frame.fill(0.0);
+            frame.fill(cue_sample);
             continue;
         }
 
         for (channel, sample) in frame.iter_mut().enumerate() {
-            *sample = mix_shared_frame(shared, channel, frame_index * shared.channels + channel);
+            *sample = mix_shared_frame(
+                shared,
+                channel,
+                (frame_index - start_offset) * shared.channels + channel,
+            ) + cue_sample;
         }
     }
     if shared.diagnostics_generation != 0
@@ -1609,32 +1712,41 @@ where
         }
         return;
     }
+    let callback_time = timeline::native_time_us();
+    let start_offset = timeline_start_offset(shared, output.len() / shared.channels, callback_time);
     if shared.status == TransportStatus::Playing && !shared.buffering {
-        let frame_count = output.len() / shared.channels;
+        let frame_count = output.len() / shared.channels - start_offset;
         let audible_underrun = prepare_lane_scratch(
             shared.diagnostics_generation,
             &mut shared.lanes,
-            output.len(),
+            frame_count * shared.channels,
         );
         update_underrun_state(shared, audible_underrun, frame_count);
     }
+    let (start_offset, ended, fired) =
+        advance_timeline(shared, output.len() / shared.channels, callback_time);
 
     let track_nonzero = shared.diagnostics_generation != 0;
     let mut any_nonzero = false;
-    let (start_offset, ended) = advance_timeline(shared, output.len() / shared.channels);
     for (frame_index, frame) in output.chunks_mut(shared.channels).enumerate() {
+        fired
+            .iter()
+            .filter(|cue| cue.frame_offset == frame_index)
+            .for_each(|cue| start_cue_voice(shared, cue));
+        let cue_sample = cue_frame_sample(shared);
         if shared.status != TransportStatus::Playing
             || shared.buffering
             || frame_index < start_offset
         {
             for sample in frame {
-                *sample = silent;
+                *sample = T::from_sample(cue_sample);
             }
             continue;
         }
 
         for (channel, sample) in frame.iter_mut().enumerate() {
-            let mixed = mix_shared_frame(shared, channel, frame_index * shared.channels + channel);
+            let sample_index = (frame_index - start_offset) * shared.channels + channel;
+            let mixed = mix_shared_frame(shared, channel, sample_index) + cue_sample;
             if track_nonzero {
                 any_nonzero |= mixed.abs() > AUDIBLE_GAIN_FLOOR;
             }
@@ -1728,6 +1840,7 @@ fn start_native_runtime(
         report_sender,
         pending_cues: VecDeque::new(),
         terminal_reported: false,
+        cue_voices: Vec::new(),
     }));
 
     drop(device);
@@ -3018,11 +3131,77 @@ mod tests {
             report_sender,
             pending_cues: VecDeque::new(),
             terminal_reported: false,
+            cue_voices: Vec::new(),
         }
     }
 
     fn push_ring_samples(ring: &Arc<Mutex<RingBuffer>>, samples: &[f32]) {
         assert!(ring.lock().expect("ring lock").push_samples(samples));
+    }
+
+    #[test]
+    fn cue_voices_use_uniform_precount_and_metronome_accent_gain() {
+        let ring = Arc::new(Mutex::new(RingBuffer::new(1_000)));
+        let mut shared = shared_with_lane(ring, 48_000, 1, 1.0);
+        let cue = |kind, accent, gain| timeline::FiredCue {
+            event: timeline::CueEvent {
+                generation: 1,
+                revision: 1,
+                cue_index: 0,
+                kind,
+                accent,
+                gain,
+                scheduled_native_time_us: 1,
+                actual_native_time_us: 1,
+                insertion_sequence: 1,
+            },
+            frame_offset: 0,
+        };
+        start_cue_voice(
+            &mut shared,
+            &cue(timeline::CueKind::PrecountBeat, true, 1.0),
+        );
+        assert_eq!(shared.cue_voices[0].frequency, PRECOUNT_FREQUENCY_HZ);
+        assert_eq!(shared.cue_voices[0].frames, 2_160);
+        assert!(cue_frame_sample(&mut shared).abs() < 0.0002);
+        shared.cue_voices[0].phase = 96;
+        assert!(cue_frame_sample(&mut shared).abs() > 0.8);
+        shared.cue_voices.remove(0);
+        start_cue_voice(&mut shared, &cue(timeline::CueKind::Metronome, true, 0.25));
+        assert_eq!(shared.cue_voices[0].frequency, CLICK_ACCENT_FREQUENCY_HZ);
+        assert_eq!(shared.cue_voices[0].frames, 2_160);
+        assert!((shared.cue_voices[0].gain - 0.105).abs() < f32::EPSILON);
+        assert!(cue_frame_sample(&mut shared).abs() < 0.00002);
+        shared.cue_voices[0].phase = 192;
+        assert!(cue_frame_sample(&mut shared).abs() > 0.1);
+    }
+
+    #[test]
+    fn count_in_renderers_do_not_consume_source_before_start_offset() {
+        let render = |typed: bool| {
+            let ring = Arc::new(Mutex::new(RingBuffer::new(1_000)));
+            push_ring_samples(&ring, &[0.25; 10]);
+            let mut shared = shared_with_lane(ring.clone(), 1_000, 1, 1.0);
+            let now = timeline::native_time_us();
+            shared
+                .timeline
+                .lock()
+                .unwrap()
+                .arm(1, None, Some(now + 1_000_000), now)
+                .unwrap();
+            if typed {
+                let mut output = [1_i16; 10];
+                render_shared_output_typed(&mut shared, &mut output);
+                assert_eq!(output, [0; 10]);
+            } else {
+                let mut output = [1.0; 10];
+                render_shared_output(&mut shared, &mut output);
+                assert_eq!(output, [0.0; 10]);
+            }
+            assert_eq!(ring.lock().unwrap().fill_samples(), 10);
+        };
+        render(false);
+        render(true);
     }
 
     #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
@@ -3301,6 +3480,8 @@ mod tests {
                 scheduled_start_time_seconds: None,
                 control: SessionCommand::default(),
                 start_at_native_us: None,
+                precount: None,
+                metronome_cues: None,
             })
             .expect_err("reject unavailable runtime");
 
@@ -3345,6 +3526,8 @@ mod tests {
                 scheduled_start_time_seconds: None,
                 control: SessionCommand::default(),
                 start_at_native_us: None,
+                precount: None,
+                metronome_cues: None,
             })
             .expect_err("reject terminal runtime error");
         let snapshot = state.snapshot();
@@ -3676,6 +3859,8 @@ mod tests {
                 scheduled_start_time_seconds: Some(2.0),
                 control: SessionCommand::default(),
                 start_at_native_us: None,
+                precount: None,
+                metronome_cues: None,
             })
             .expect("play");
 
@@ -3881,6 +4066,8 @@ mod tests {
                 scheduled_start_time_seconds: None,
                 control: SessionCommand::default(),
                 start_at_native_us: None,
+                precount: None,
+                metronome_cues: None,
             })
             .expect("restart loop");
         assert_eq!(snapshot.state, "playing");

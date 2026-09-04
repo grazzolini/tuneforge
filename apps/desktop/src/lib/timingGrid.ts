@@ -124,12 +124,16 @@ export function snapLoopPointToTiming(
 export function countInIntervalsForTiming({
   clickCount,
   fallbackBeatSeconds,
+  sourceTempoBpm,
   startTimeSeconds,
+  targetTempoBpm,
   timingGrid,
 }: {
   clickCount: number;
   fallbackBeatSeconds: number;
+  sourceTempoBpm: number | null;
   startTimeSeconds: number;
+  targetTempoBpm: number | null;
   timingGrid: AnalysisTimingGrid | null;
 }) {
   const fallbackIntervals = Array.from({ length: clickCount }, () => fallbackBeatSeconds);
@@ -142,7 +146,26 @@ export function countInIntervalsForTiming({
     return fallbackIntervals;
   }
 
-  const localFallback = localBeatSeconds(timingGrid.beats, anchorIndex) ?? fallbackBeatSeconds;
+  const normalizedSourceTempo = positiveFiniteNumber(sourceTempoBpm);
+  const normalizedTargetTempo = positiveFiniteNumber(targetTempoBpm);
+  const sourcePeriod = normalizedSourceTempo ? 60 / normalizedSourceTempo : null;
+  const tempoScale =
+    normalizedSourceTempo && normalizedTargetTempo
+      ? normalizedSourceTempo / normalizedTargetTempo
+      : 1;
+  const localStartIndex = Math.max(0, anchorIndex - clickCount);
+  const localEndIndex = Math.min(timingGrid.beats.length - 1, anchorIndex + clickCount);
+  const validSourceGaps: number[] = [];
+  for (let index = localStartIndex; index < localEndIndex; index += 1) {
+    const gap = timingGrid.beats[index + 1].seconds - timingGrid.beats[index].seconds;
+    if (isAcceptedSourceGap(gap, sourcePeriod)) {
+      validSourceGaps.push(gap);
+    }
+  }
+  const medianSourceGap = median(validSourceGaps) ?? sourcePeriod;
+  const medianTargetGap = medianSourceGap
+    ? medianSourceGap * tempoScale
+    : fallbackBeatSeconds;
   return fallbackIntervals.map((_interval, index) => {
     const fromIndex = anchorIndex - clickCount + index;
     const toIndex = fromIndex + 1;
@@ -151,9 +174,15 @@ export function countInIntervalsForTiming({
       timingGrid.beats[toIndex] &&
       timingGrid.beats[toIndex].seconds > timingGrid.beats[fromIndex].seconds
     ) {
-      return timingGrid.beats[toIndex].seconds - timingGrid.beats[fromIndex].seconds;
+      const sourceGap = timingGrid.beats[toIndex].seconds - timingGrid.beats[fromIndex].seconds;
+      if (isAcceptedSourceGap(sourceGap, sourcePeriod)) {
+        const targetGap = sourceGap * tempoScale;
+        if (Math.abs(targetGap - medianTargetGap) <= medianTargetGap * 0.15) {
+          return targetGap;
+        }
+      }
     }
-    return localFallback;
+    return medianTargetGap;
   });
 }
 
@@ -274,15 +303,29 @@ function firstBeatIndexAtOrAfter(beats: AnalysisTimingBeat[], value: number) {
   return index === -1 ? beats.length : index;
 }
 
-function localBeatSeconds(beats: AnalysisTimingBeat[], anchorIndex: number) {
-  const previous = beats[anchorIndex - 1];
-  const anchor = beats[anchorIndex];
-  if (previous && anchor && anchor.seconds > previous.seconds) {
-    return anchor.seconds - previous.seconds;
+function positiveFiniteNumber(value: number | null) {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? value
+    : null;
+}
+
+function isAcceptedSourceGap(gap: number, sourcePeriod: number | null) {
+  if (!Number.isFinite(gap) || gap <= 0) {
+    return false;
   }
-  const next = beats[anchorIndex + 1];
-  if (anchor && next && next.seconds > anchor.seconds) {
-    return next.seconds - anchor.seconds;
+  return (
+    sourcePeriod === null ||
+    (gap >= sourcePeriod * 0.75 && gap <= sourcePeriod * 1.25)
+  );
+}
+
+function median(values: number[]) {
+  if (!values.length) {
+    return null;
   }
-  return null;
+  const sorted = [...values].sort((first, second) => first - second);
+  const midpoint = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0
+    ? (sorted[midpoint - 1] + sorted[midpoint]) / 2
+    : sorted[midpoint];
 }

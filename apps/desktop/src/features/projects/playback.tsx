@@ -26,7 +26,9 @@ import {
   setNativeAudioLanes,
   stopNativeAudio,
   type NativeAudioLaneRequest,
+  type NativeAudioCue,
   type NativeAudioSessionControl,
+  type NativeAudioSessionSnapshot,
   type NativeAudioSnapshot,
 } from "../../lib/nativeAudio";
 import {
@@ -724,6 +726,54 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     pendingNativeLaneMutationRef.current = entry;
     return entry.promise;
   });
+
+  const updateFollowedMetronomeCues = useStableCallback(
+    function updateFollowedMetronomeCues(cues: NativeAudioCue[]) {
+      const tag = nativeOutputMutationTag();
+      let resolveResult!: (snapshot: NativeAudioSessionSnapshot | null) => void;
+      let rejectResult!: (error: unknown) => void;
+      const result = new Promise<NativeAudioSessionSnapshot | null>((resolve, reject) => {
+        resolveResult = resolve;
+        rejectResult = reject;
+      });
+      const previous = nativeOutputMutationTailRef.current;
+      const run = async () => {
+        if (!tag || !nativeOutputMutationIsCurrent(tag)) {
+          resolveResult(null);
+          return;
+        }
+        let snapshot: NativeAudioSessionSnapshot;
+        try {
+          const control = nativeControl();
+          snapshot = await (cues.length
+            ? scheduleNativeAudioCues({ ...control, cues })
+            : cancelNativeAudioCues(control, "metronome"));
+        } catch (error) {
+          if (nativeOutputMutationIsCurrent(tag)) {
+            rejectResult(error);
+          } else {
+            resolveResult(null);
+          }
+          return;
+        }
+        if (
+          !nativeOutputMutationIsCurrent(tag) ||
+          snapshot.resource !== "output" ||
+          snapshot.leaseId !== "project-playback" ||
+          snapshot.generation !== tag.generation ||
+          snapshot.timelineRevision < (nativePlaybackRef.current.timelineRevision ?? 0)
+        ) {
+          resolveResult(null);
+          return;
+        }
+        nativePlaybackRef.current.timelineRevision = snapshot.timelineRevision;
+        resolveResult(snapshot);
+      };
+      const queued = previous.catch(() => undefined).then(run);
+      nativeOutputMutationTailRef.current = queued.then(() => undefined, () => undefined);
+      return result;
+    },
+  );
 
   const clearPlaybackControlBackend = useCallback(() => {
     setPlaybackControlBackend("none");
@@ -3697,6 +3747,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
         markPlaybackConfirmed({ backend: "native", detail: nativeBackendRef.current });
       }),
       listenNativeAudioTerminal((terminal) => {
+        if (terminal.resource !== "output") return;
         if (terminal.generation !== nativePlaybackRef.current.generation) return;
         const activePrecount = nativePrecountRef.current;
         if (activePrecount) countInTelemetryRef.current = { ...countInTelemetryRef.current, active: false,
@@ -3884,6 +3935,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       primeWebAudioForGesture,
       getPlaybackSnapshot,
       registerProjectSession,
+      updateFollowedMetronomeCues,
       updateActiveLoopRange,
       togglePlayback,
       playPlayback,
@@ -3905,6 +3957,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       playbackTimeSeconds,
       playPlayback,
       registerProjectSession,
+      updateFollowedMetronomeCues,
       updateActiveLoopRange,
       seekBy,
       seekTo,

@@ -1,14 +1,13 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
-  cancelNativeAudioCues,
-  getNativeAudioSessionSnapshot,
   isWebAudioBackendForced,
   listenNativeAudioCues,
   listenNativeAudioSessions,
   listenNativeAudioTerminal,
   nativePlayCueProvider,
-  scheduleNativeAudioCues,
+  setNativeStandaloneMetronome,
   type NativeAudioSessionSnapshot,
+  type NativeStandaloneMetronomeState,
 } from "../../lib/nativeAudio";
 import { useStableCallback } from "../../lib/useStableCallback";
 import { nextTimedBeatIndex, type AnalysisTimingBeat } from "../../lib/timingGrid";
@@ -37,13 +36,24 @@ const SCHEDULE_AHEAD_SECONDS = 0.12;
 const SCHEDULER_INTERVAL_MS = 25;
 const START_DELAY_SECONDS = 0.035;
 
+type NativeMetronomeCommand = {
+  enabled: boolean;
+  epoch: number;
+  lifecycle: number;
+};
+
 export function MetronomeProvider({ children }: { children: ReactNode }) {
-  const { getPlaybackSnapshot, isPlaying, session } = usePlayback();
+  const {
+    getPlaybackSnapshot,
+    isPlaying,
+    session,
+    updateFollowedMetronomeCues,
+  } = usePlayback();
   const [bpm, setBpm] = useState(() => normalizeMetronomeBpm(null));
   const [bpmDraft, setBpmDraft] = useState(() => normalizeMetronomeBpm(null).toString());
   const [beatsPerBar, setBeatsPerBar] = useState(DEFAULT_BEATS_PER_BAR);
   const [accentFirstBeat, setAccentFirstBeat] = useState(true);
-  const [followPlayback, setFollowPlayback] = useState(false);
+  const [followPlayback, setFollowPlayback] = useState(true);
   const [volume, setVolumeState] = useState(DEFAULT_METRONOME_VOLUME);
   const [isRunning, setIsRunning] = useState(false);
   const [activeBeat, setActiveBeat] = useState<number | null>(null);
@@ -61,7 +71,11 @@ export function MetronomeProvider({ children }: { children: ReactNode }) {
   const lastSyncedScheduledBeatRef = useRef<number | null>(null);
   const [nativeSession, setNativeSession] = useState<NativeAudioSessionSnapshot | null>(null);
   const nativeActivationEpochRef = useRef(0);
-  const nativeScheduleRef = useRef(0);
+  const nativeStandaloneRef = useRef<NativeStandaloneMetronomeState | null>(null);
+  const nativeStandaloneCommandEpochRef = useRef(0);
+  const nativeStandaloneCommandQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const nativeStandaloneLifecycleRef = useRef(0);
+  const nativeStandaloneOperationRef = useRef(0);
   const nextFreeRunBeatIndexRef = useRef(0);
   const schedulerIntervalRef = useRef<number | null>(null);
   const tapTempoStateRef = useRef<TapTempoState>(createTapTempoState());
@@ -114,12 +128,6 @@ export function MetronomeProvider({ children }: { children: ReactNode }) {
     if (audioContext && audioContext.state !== "closed") {
       void audioContext.close().catch(() => undefined);
     }
-  });
-
-  const pauseSyncedClock = useStableCallback(function pauseSyncedClock() {
-    clearScheduler();
-    lastSyncedPlaybackTimeRef.current = null;
-    lastSyncedScheduledBeatRef.current = null;
   });
 
   const ensureAudioContext = useStableCallback(function ensureAudioContext() {
@@ -267,14 +275,61 @@ export function MetronomeProvider({ children }: { children: ReactNode }) {
 
   const seedBpm = useStableCallback(function seedBpm(value: unknown) {
     const nextBpm = normalizeMetronomeBpm(value);
+    bpmRef.current = nextBpm;
     setBpm(nextBpm);
     setBpmDraft(nextBpm.toString());
   });
 
+  const enqueueNativeMetronomeCommand = useStableCallback(function enqueueNativeMetronomeCommand(
+    command: NativeMetronomeCommand,
+  ) {
+    const execute = async () => {
+      if (
+        command.lifecycle !== nativeStandaloneLifecycleRef.current ||
+        command.epoch !== nativeStandaloneCommandEpochRef.current
+      ) {
+        return null;
+      }
+      const current = nativeStandaloneRef.current;
+      if (!command.enabled && !current) {
+        return null;
+      }
+      const next = await setNativeStandaloneMetronome({
+        enabled: command.enabled,
+        bpm: bpmRef.current,
+        beatsPerBar: beatsPerBarRef.current,
+        accentFirstBeat: accentFirstBeatRef.current,
+        gain: volumeRef.current,
+        followPlayback: followPlaybackRef.current,
+        leaseId: current?.leaseId ?? "standalone-metronome",
+        operationId: `standalone-metronome-${++nativeStandaloneOperationRef.current}`,
+        generation: current?.generation,
+        timelineRevision: current?.revision,
+      });
+      if (command.lifecycle === nativeStandaloneLifecycleRef.current) {
+        nativeStandaloneRef.current = next;
+      }
+      return next;
+    };
+    const result = nativeStandaloneCommandQueueRef.current.then(execute, execute);
+    nativeStandaloneCommandQueueRef.current = result.then(() => undefined, () => undefined);
+    return result;
+  });
+
   const startMetronome = useStableCallback(async function startMetronome() {
     setErrorMessage(null);
-    if (followPlaybackRef.current && isTauriRuntime() && !isWebAudioBackendForced()) {
+    if (isTauriRuntime() && !isWebAudioBackendForced()) {
+      const epoch = ++nativeStandaloneCommandEpochRef.current;
+      const lifecycle = nativeStandaloneLifecycleRef.current;
       setIsRunning(true);
+      try {
+        await enqueueNativeMetronomeCommand({ enabled: true, epoch, lifecycle });
+      } catch {
+        if (epoch === nativeStandaloneCommandEpochRef.current) {
+          setIsRunning(false);
+          setErrorMessage("Could not start native metronome audio. Check the output device and retry.");
+        }
+      }
       return;
     }
     const audioContext = await activateAudioContext();
@@ -286,8 +341,48 @@ export function MetronomeProvider({ children }: { children: ReactNode }) {
 
   const stopMetronome = useStableCallback(function stopMetronome() {
     stopAudioClock();
+    if (isTauriRuntime() && !isWebAudioBackendForced()) {
+      const epoch = ++nativeStandaloneCommandEpochRef.current;
+      const lifecycle = nativeStandaloneLifecycleRef.current;
+      void enqueueNativeMetronomeCommand({ enabled: false, epoch, lifecycle }).then(() => {
+        if (epoch === nativeStandaloneCommandEpochRef.current) {
+          setIsRunning(false);
+          setErrorMessage(null);
+        }
+      }).catch(() => {
+        if (epoch === nativeStandaloneCommandEpochRef.current) {
+          setIsRunning(true);
+          setErrorMessage("Could not stop native metronome audio. Retry Stop before leaving it running.");
+        }
+      });
+      return;
+    }
     setIsRunning(false);
   });
+
+  const reconcileNativeMetronomeFailure = useStableCallback(
+    async function reconcileNativeMetronomeFailure(failedEpoch: number) {
+      if (failedEpoch !== nativeStandaloneCommandEpochRef.current) return;
+      const stopEpoch = ++nativeStandaloneCommandEpochRef.current;
+      const lifecycle = nativeStandaloneLifecycleRef.current;
+      setErrorMessage("Native metronome audio changed unexpectedly; stopping it safely.");
+      try {
+        await enqueueNativeMetronomeCommand({
+          enabled: false,
+          epoch: stopEpoch,
+          lifecycle,
+        });
+        if (stopEpoch === nativeStandaloneCommandEpochRef.current) {
+          setIsRunning(false);
+        }
+      } catch {
+        if (stopEpoch === nativeStandaloneCommandEpochRef.current) {
+          setIsRunning(true);
+          setErrorMessage("Native metronome state is uncertain. Choose Stop again.");
+        }
+      }
+    },
+  );
 
   const setFollowPlaybackEnabled = useStableCallback(async function setFollowPlaybackEnabled(
     enabled: boolean,
@@ -361,23 +456,20 @@ export function MetronomeProvider({ children }: { children: ReactNode }) {
     if (!isRunning) {
       return;
     }
-    if (!followPlayback) {
-      const audioContext = audioContextRef.current;
-      if (audioContext && audioContext.state !== "closed") {
-        startFreeRunClock(audioContext);
-        return;
-      }
-      void activateAudioContext().then((nextAudioContext) => {
-        if (nextAudioContext && isRunningRef.current && !followPlaybackRef.current) {
-          startFreeRunClock(nextAudioContext);
-        }
-      });
+    if (isTauriRuntime() && !isWebAudioBackendForced()) {
       return;
     }
-
-    clearScheduler();
-    lastSyncedPlaybackTimeRef.current = null;
-    lastSyncedScheduledBeatRef.current = null;
+    void activateAudioContext().then((audioContext) => {
+      if (!audioContext || !isRunningRef.current) return;
+      const snapshot = getPlaybackSnapshot();
+      if (!followPlaybackRef.current || !snapshot.session || !snapshot.isPlaying) {
+        startFreeRunClock(audioContext);
+      } else {
+        clearScheduler();
+        lastSyncedPlaybackTimeRef.current = null;
+        lastSyncedScheduledBeatRef.current = null;
+      }
+    });
   }, [
     accentFirstBeat,
     activateAudioContext,
@@ -385,27 +477,40 @@ export function MetronomeProvider({ children }: { children: ReactNode }) {
     bpm,
     clearScheduler,
     followPlayback,
+    getPlaybackSnapshot,
     isRunning,
     startFreeRunClock,
   ]);
 
   useEffect(() => {
-    if (!isRunning || !followPlayback) {
+    if (
+      !isRunning ||
+      !followPlayback ||
+      (isTauriRuntime() && !isWebAudioBackendForced())
+    ) {
       return;
     }
 
     let frameId: number | null = null;
     function tick() {
-      if (isTauriRuntime() && !isWebAudioBackendForced()) return;
       const snapshot = getPlaybackSnapshot();
+      const audioContext = ensureAudioContext();
+      if (!audioContext) {
+        frameId = window.requestAnimationFrame(tick);
+        return;
+      }
       if (!snapshot.session || !snapshot.isPlaying) {
-        pauseSyncedClock();
-      } else {
-        const audioContext = ensureAudioContext();
-        if (audioContext) {
-          void activateWebAudioContext(audioContext).catch(() => undefined);
-          scheduleSynced(audioContext, snapshot);
+        lastSyncedPlaybackTimeRef.current = null;
+        lastSyncedScheduledBeatRef.current = null;
+        if (schedulerIntervalRef.current === null) {
+          startFreeRunClock(audioContext);
         }
+      } else {
+        if (schedulerIntervalRef.current !== null) {
+          clearScheduler();
+        }
+        void activateWebAudioContext(audioContext).catch(() => undefined);
+        scheduleSynced(audioContext, snapshot);
       }
       frameId = window.requestAnimationFrame(tick);
     }
@@ -417,39 +522,74 @@ export function MetronomeProvider({ children }: { children: ReactNode }) {
       }
     };
   }, [
+    clearScheduler,
     ensureAudioContext,
     followPlayback,
     getPlaybackSnapshot,
     isRunning,
-    pauseSyncedClock,
     scheduleSynced,
+    startFreeRunClock,
   ]);
 
   useEffect(() => {
     if (!isTauriRuntime() || isWebAudioBackendForced()) return;
     const unlisteners = Promise.all([
-      listenNativeAudioSessions((next) =>
+      listenNativeAudioSessions((next) => {
+        if (next.resource !== "output") return;
         setNativeSession((current) =>
           current?.generation === next.generation &&
           current.timelineRevision === next.timelineRevision &&
           current.status === next.status ? current : next,
-        ),
-      ),
+        );
+      }),
       listenNativeAudioCues((cue) => {
         if (
           cue.kind !== "metronome" ||
-          cue.generation !== nativeSession?.generation ||
-          cue.revision !== nativeSession.timelineRevision
+          (cue.source === "project_playback" &&
+            (cue.generation !== nativeSession?.generation ||
+              cue.revision !== nativeSession.timelineRevision)) ||
+          (cue.source === "standalone_metronome" &&
+            (cue.generation !== nativeStandaloneRef.current?.generation ||
+              cue.revision !== nativeStandaloneRef.current.revision))
         ) return;
         setActiveBeat(beatNumberForIndex(cue.cueIndex, beatsPerBarRef.current));
         activeBeatTimeoutsRef.current.push(window.setTimeout(() => setActiveBeat(null), 90));
       }),
       listenNativeAudioTerminal((event) => {
-        if (event.generation === nativeSession?.generation) setNativeSession(null);
+        if (
+          event.resource === "output" &&
+          (event.generation === nativeSession?.generation ||
+            event.generation === nativeStandaloneRef.current?.generation)
+        ) {
+          nativeStandaloneLifecycleRef.current += 1;
+          nativeStandaloneCommandEpochRef.current += 1;
+          setNativeSession(null);
+          nativeStandaloneRef.current = null;
+          setIsRunning(false);
+          setErrorMessage("Native metronome audio stopped. Check the output device and retry.");
+        }
       }),
     ]);
     return () => void unlisteners.then((items) => items.forEach((unlisten) => unlisten()));
   }, [nativeSession?.generation, nativeSession?.timelineRevision]);
+
+  useEffect(() => {
+    if (!isRunning || !isTauriRuntime() || isWebAudioBackendForced()) return;
+    const epoch = nativeStandaloneCommandEpochRef.current;
+    const lifecycle = nativeStandaloneLifecycleRef.current;
+    void enqueueNativeMetronomeCommand({ enabled: true, epoch, lifecycle }).catch(() => {
+      void reconcileNativeMetronomeFailure(epoch);
+    });
+  }, [
+    accentFirstBeat,
+    beatsPerBar,
+    bpm,
+    enqueueNativeMetronomeCommand,
+    followPlayback,
+    isRunning,
+    reconcileNativeMetronomeFailure,
+    volume,
+  ]);
 
   const nativeCuePlan = useStableCallback((positionSeconds: number) => {
     const snapshot = getPlaybackSnapshot();
@@ -471,10 +611,6 @@ export function MetronomeProvider({ children }: { children: ReactNode }) {
   const isNativeActivationEpochCurrent = useStableCallback(
     (epoch: number) => nativeActivationEpochRef.current === epoch,
   );
-  const nextNativeOperationId = useStableCallback(
-    () => `project-metronome-${++nativeScheduleRef.current}`,
-  );
-
   useEffect(() => {
     if (!isRunning || !followPlayback || !isTauriRuntime() || isWebAudioBackendForced()) return;
     const activationEpoch = advanceNativeActivationEpoch();
@@ -483,16 +619,12 @@ export function MetronomeProvider({ children }: { children: ReactNode }) {
       if (nativePlayCueProvider.current === nativeCuePlan) nativePlayCueProvider.current = null;
       if (!isNativeActivationEpochCurrent(activationEpoch)) return;
       const cleanupEpoch = advanceNativeActivationEpoch();
-      void getNativeAudioSessionSnapshot().then((snapshot) => {
-        if (!isNativeActivationEpochCurrent(cleanupEpoch)) return;
-        return cancelNativeAudioCues({
-          leaseId: "project-playback", generation: snapshot.generation,
-          timelineRevision: snapshot.timelineRevision,
-          operationId: nextNativeOperationId(),
-        }, "metronome");
+      void updateFollowedMetronomeCues?.([]).then((snapshot) => {
+        if (!snapshot || !isNativeActivationEpochCurrent(cleanupEpoch)) return;
+        setNativeSession(snapshot);
       }).catch(() => undefined);
     };
-  }, [advanceNativeActivationEpoch, followPlayback, isNativeActivationEpochCurrent, isRunning, nativeCuePlan, nextNativeOperationId]);
+  }, [advanceNativeActivationEpoch, followPlayback, isNativeActivationEpochCurrent, isRunning, nativeCuePlan, updateFollowedMetronomeCues]);
 
   useEffect(() => {
     if (
@@ -500,28 +632,23 @@ export function MetronomeProvider({ children }: { children: ReactNode }) {
     ) return;
     let cancelled = false;
     const activationEpoch = nativeActivationEpochRef.current;
-    void getNativeAudioSessionSnapshot().then((snapshot) => {
-      if (cancelled || nativeActivationEpochRef.current !== activationEpoch) return;
+    const cues = nativeCuePlan(getPlaybackSnapshot().playbackTimeSeconds);
+    void updateFollowedMetronomeCues?.(cues).then((snapshot) => {
+      if (!snapshot || cancelled || nativeActivationEpochRef.current !== activationEpoch) return;
       setNativeSession(snapshot);
-      if (snapshot.status !== "output" || snapshot.leaseId !== "project-playback") return;
-      const control = {
-        leaseId: "project-playback", generation: snapshot.generation,
-        timelineRevision: snapshot.timelineRevision,
-        operationId: nextNativeOperationId(),
-      };
-      const cues = nativeCuePlan(getPlaybackSnapshot().playbackTimeSeconds);
-      return cues.length ? scheduleNativeAudioCues({ ...control, cues }) : cancelNativeAudioCues(control, "metronome");
     }).catch(() => undefined);
     return () => { cancelled = true; };
-  }, [accentFirstBeat, beatsPerBar, bpm, followPlayback, getPlaybackSnapshot, isRunning, nativeCuePlan, nextNativeOperationId, volume]);
+  }, [accentFirstBeat, beatsPerBar, bpm, followPlayback, getPlaybackSnapshot, isRunning, nativeCuePlan, updateFollowedMetronomeCues, volume]);
 
-  const syncStatus = followPlayback
-    ? session
-      ? isPlaying
-        ? `Following ${session.projectName}`
-        : `Waiting for ${session.projectName} playback`
-      : "No project playback active"
-    : "Standalone clock";
+  const tempoStatus = `${bpm.toFixed(1)} BPM`;
+  const freeRunningStatus = `Free-running at ${tempoStatus}`;
+  const syncStatus = !isRunning
+    ? `Ready at ${tempoStatus}`
+    : followPlayback && session && isPlaying
+      ? `Following ${session.projectName} playback`
+      : followPlayback && session
+        ? `${freeRunningStatus} · follows ${session.projectName} when playback starts`
+        : freeRunningStatus;
 
   const value = useMemo(
     () => ({

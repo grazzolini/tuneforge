@@ -231,6 +231,8 @@ const {
       capturePath: "none" | "desktop-cpal" | "android-aaudio";
       permissionState: string;
       error: { code: string; message: string; guidance: string | null } | null;
+      leaseId?: string | null;
+      generation?: number | null;
     };
     nativeAudioInputPermission: {
       state: string;
@@ -1421,8 +1423,26 @@ const {
       return clone(state.nativeAudioSnapshot);
     }
 
+    if (command === "audio_set_standalone_metronome") {
+      const payload = (args?.payload ?? {}) as Record<string, unknown>;
+      return {
+        enabled: payload.enabled === true,
+        bpm: Number(payload.bpm ?? 120),
+        beatsPerBar: Number(payload.beatsPerBar ?? 4),
+        accentFirstBeat: payload.accentFirstBeat !== false,
+        gain: Number(payload.gain ?? 0.8),
+        followPlayback: payload.followPlayback !== false,
+        leaseId: String(payload.leaseId ?? "standalone-metronome"),
+        generation: Number(payload.generation ?? 1),
+        revision: Number(payload.timelineRevision ?? 0) + 1,
+        nativeTimeUs: 1,
+      };
+    }
+
     if (command === "audio_get_session_snapshot" || command === "audio_schedule_cues" || command === "audio_cancel_cues") {
       return {
+        resource: "output",
+        source: "project_playback",
         status: "output",
         owner: "playback",
         leaseId: "project-playback",
@@ -1440,6 +1460,7 @@ const {
         deviceId?: string | null;
         monitorEnabled?: boolean | null;
         monitorGain?: number | null;
+        leaseId?: string | null;
       };
       state.nativeAudioInputState = {
         active: true,
@@ -1454,6 +1475,8 @@ const {
         permissionState:
           state.nativeAudioCapabilities.platform === "android" ? "granted" : "unavailable",
         error: null,
+        leaseId: String(payload.leaseId ?? "tuner-capture"),
+        generation: Number(state.nativeAudioInputState.generation ?? 0) + 1,
       };
       return clone(state.nativeAudioInputState);
     }

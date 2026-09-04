@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
@@ -35,7 +35,9 @@ use tauri::Emitter;
 use super::{
     diagnostics::{self, DiagnosticCheckpoint, DiagnosticSafeCode},
     mixer::{AudioLaneRequest, AudioLaneRole, EffectiveAudioLane},
-    session::{RuntimeReport, RuntimeReportKind, SessionCommand, SessionOwner},
+    session::{
+        AudioResource, AudioSource, RuntimeReport, RuntimeReportKind, SessionCommand, SessionOwner,
+    },
     timeline::{self, CueRequest, Timeline},
     AudioCapabilities,
 };
@@ -135,6 +137,34 @@ pub struct AudioClickRequest {
     pub accent_first_beat: Option<bool>,
     pub gain: Option<f32>,
     pub follow_transport: Option<bool>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StandaloneMetronomeRequest {
+    pub enabled: bool,
+    pub bpm: f64,
+    pub beats_per_bar: u32,
+    pub accent_first_beat: bool,
+    pub gain: f32,
+    pub follow_playback: bool,
+    #[serde(default, flatten)]
+    pub control: SessionCommand,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StandaloneMetronomeState {
+    pub enabled: bool,
+    pub bpm: f64,
+    pub beats_per_bar: u32,
+    pub accent_first_beat: bool,
+    pub gain: f32,
+    pub follow_playback: bool,
+    pub lease_id: Option<String>,
+    pub generation: u64,
+    pub revision: u64,
+    pub native_time_us: u64,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -385,6 +415,11 @@ struct ClickState {
     accent_first_beat: bool,
     gain: f32,
     follow_transport: bool,
+    generation: u64,
+    revision: u64,
+    free_run_frame: u64,
+    following_playback: bool,
+    last_emitted_beat: Option<u64>,
 }
 
 impl Default for ClickState {
@@ -396,8 +431,21 @@ impl Default for ClickState {
             accent_first_beat: true,
             gain: 0.75,
             follow_transport: true,
+            generation: 0,
+            revision: 0,
+            free_run_frame: 0,
+            following_playback: false,
+            last_emitted_beat: None,
         }
     }
+}
+
+#[derive(Clone, Default)]
+struct StandaloneMetronomeControl {
+    lease_id: Option<String>,
+    generation: u64,
+    revision: u64,
+    operations: HashMap<(String, String), StandaloneMetronomeState>,
 }
 
 struct PlaybackShared {
@@ -565,6 +613,7 @@ struct PlaybackRuntime {
     audio_thread: Option<JoinHandle<()>>,
     reporter_thread: Option<JoinHandle<()>>,
     worker_threads: Vec<JoinHandle<()>>,
+    auxiliary_only: bool,
 }
 
 #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
@@ -584,6 +633,7 @@ pub struct TransportState {
     raw_lanes: Vec<AudioLaneRequest>,
     lanes: Vec<EffectiveAudioLane>,
     click: ClickState,
+    standalone_metronome: StandaloneMetronomeControl,
     diagnostics_generation: u64,
     timeline: Option<Arc<Mutex<Timeline>>>,
     generation: u64,
@@ -593,6 +643,10 @@ pub struct TransportState {
     app: Option<AppHandle>,
     #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
     runtime: Option<PlaybackRuntime>,
+    #[cfg(test)]
+    fail_next_runtime_start: bool,
+    #[cfg(test)]
+    fail_next_release: bool,
 }
 
 impl Default for TransportState {
@@ -609,6 +663,7 @@ impl Default for TransportState {
             raw_lanes: Vec::new(),
             lanes: Vec::new(),
             click: ClickState::default(),
+            standalone_metronome: StandaloneMetronomeControl::default(),
             diagnostics_generation: 0,
             timeline: None,
             generation: 0,
@@ -618,6 +673,10 @@ impl Default for TransportState {
             app: None,
             #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
             runtime: None,
+            #[cfg(test)]
+            fail_next_runtime_start: false,
+            #[cfg(test)]
+            fail_next_release: false,
         }
     }
 }
@@ -642,6 +701,86 @@ impl TransportState {
         self.raw_lanes.len().min(6)
     }
 
+    pub fn has_runtime(&self) -> bool {
+        #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+        {
+            self.runtime.is_some()
+        }
+        #[cfg(not(any(target_os = "android", target_os = "linux", target_os = "macos")))]
+        {
+            false
+        }
+    }
+
+    pub fn has_auxiliary_runtime(&self) -> bool {
+        #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+        {
+            self.runtime
+                .as_ref()
+                .is_some_and(|runtime| runtime.auxiliary_only)
+        }
+        #[cfg(not(any(target_os = "android", target_os = "linux", target_os = "macos")))]
+        {
+            false
+        }
+    }
+
+    #[cfg(all(
+        test,
+        any(target_os = "android", target_os = "linux", target_os = "macos")
+    ))]
+    pub(crate) fn install_test_auxiliary_runtime(&mut self) {
+        let timeline = self
+            .timeline
+            .clone()
+            .unwrap_or_else(|| Arc::new(Mutex::new(Timeline::default())));
+        let report_sender = self.report_sender.clone().unwrap_or_else(|| {
+            let (sender, _receiver) = mpsc::sync_channel(1);
+            sender
+        });
+        let shared = PlaybackShared {
+            session_id: Some("standalone-metronome".into()),
+            status: TransportStatus::Stopped,
+            position_seconds: 0.0,
+            duration_seconds: 0.0,
+            playback_rate: self.playback_rate,
+            native_playback_supported: true,
+            fallback_reason: None,
+            sample_rate: 1_000,
+            channels: 1,
+            lanes: Vec::new(),
+            snapshot_lanes: Vec::new(),
+            click: self.click.clone(),
+            ended_pending: false,
+            error_pending: None,
+            terminal_error: None,
+            buffering: false,
+            sustained_underrun_frames: 0,
+            underrun_error_pending: false,
+            fallback_cause: None,
+            diagnostics_generation: 0,
+            diagnostics_gain_first_change_recorded: false,
+            timeline,
+            generation: self.generation,
+            report_sender,
+            pending_cues: VecDeque::new(),
+            terminal_reported: false,
+            cue_voices: Vec::new(),
+        };
+        let (audio_stop_sender, _audio_stop_receiver) = mpsc::channel();
+        let (reporter_stop_sender, _reporter_stop_receiver) = mpsc::channel();
+        self.runtime = Some(PlaybackRuntime {
+            shared: Arc::new(Mutex::new(shared)),
+            audio_stop_sender,
+            reporter_stop_sender,
+            worker_control_senders: Vec::new(),
+            audio_thread: None,
+            reporter_thread: None,
+            worker_threads: Vec::new(),
+            auxiliary_only: true,
+        });
+    }
+
     pub fn begin_explicit_attempt(&mut self, capabilities: AudioCapabilities) {
         #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
         if self.runtime.as_ref().is_some_and(|runtime| {
@@ -656,6 +795,10 @@ impl TransportState {
     }
 
     pub fn release_for_transfer(&mut self) -> Result<(), &'static str> {
+        #[cfg(test)]
+        if std::mem::take(&mut self.fail_next_release) {
+            return Err("release_timeout");
+        }
         self.status = TransportStatus::Stopped;
         self.started_at = None;
         if let Some(timeline) = &self.timeline {
@@ -737,6 +880,13 @@ impl TransportState {
             capabilities.native_playback_supported && runtime_unavailable_reason.is_none();
         let fallback_reason =
             runtime_unavailable_reason.or_else(|| capabilities.fallback_reason.map(str::to_string));
+        #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+        let preserve_standalone_runtime = self.click.enabled && self.runtime.is_some();
+        #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+        if !preserve_standalone_runtime {
+            self.stop_runtime();
+        }
+        #[cfg(not(any(target_os = "android", target_os = "linux", target_os = "macos")))]
         self.stop_runtime();
 
         self.session_id = Some(request.session_id.clone());
@@ -752,7 +902,24 @@ impl TransportState {
         #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
         {
             self.app = app;
-            self.runtime = None;
+            if preserve_standalone_runtime {
+                if let Some(runtime) = &mut self.runtime {
+                    runtime.auxiliary_only = true;
+                    if let Ok(mut shared) = runtime.shared.lock() {
+                        shared.session_id = self.session_id.clone();
+                        shared.status = TransportStatus::Stopped;
+                        shared.position_seconds = 0.0;
+                        shared.duration_seconds = self.duration_seconds;
+                        shared.playback_rate = self.playback_rate;
+                        shared.snapshot_lanes = self.lanes.clone();
+                        shared.click = self.click.clone();
+                        shared.ended_pending = false;
+                        shared.buffering = false;
+                    }
+                }
+            } else if self.click.enabled {
+                let _ = self.ensure_runtime(false);
+            }
         }
 
         AudioSession {
@@ -836,6 +1003,7 @@ impl TransportState {
             accent_first_beat: request.accent_first_beat.unwrap_or(true),
             gain: request.gain.unwrap_or(0.75).clamp(0.0, 1.0),
             follow_transport: request.follow_transport.unwrap_or(true),
+            ..self.click.clone()
         };
 
         #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
@@ -846,6 +1014,191 @@ impl TransportState {
         }
 
         self.snapshot()
+    }
+
+    pub fn bind_auxiliary_runtime(
+        &mut self,
+        timeline: Arc<Mutex<Timeline>>,
+        #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+        report_sender: mpsc::SyncSender<RuntimeReport>,
+    ) {
+        if self.timeline.is_none() {
+            self.timeline = Some(timeline);
+        }
+        #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+        if self.report_sender.is_none() {
+            self.report_sender = Some(report_sender);
+        }
+    }
+
+    pub fn set_standalone_metronome(
+        &mut self,
+        app: AppHandle,
+        request: StandaloneMetronomeRequest,
+        capabilities: AudioCapabilities,
+    ) -> Result<StandaloneMetronomeState, String> {
+        self.set_standalone_metronome_inner(Some(app), request, capabilities)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_standalone_metronome_for_test(
+        &mut self,
+        request: StandaloneMetronomeRequest,
+        capabilities: AudioCapabilities,
+    ) -> Result<StandaloneMetronomeState, String> {
+        self.set_standalone_metronome_inner(None, request, capabilities)
+    }
+
+    fn set_standalone_metronome_inner(
+        &mut self,
+        app: Option<AppHandle>,
+        request: StandaloneMetronomeRequest,
+        capabilities: AudioCapabilities,
+    ) -> Result<StandaloneMetronomeState, String> {
+        let previous_click = self.click.clone();
+        let previous_control = self.standalone_metronome.clone();
+        let previous_session_id = self.session_id.clone();
+        let previous_generation = self.generation;
+        let previous_native_playback_supported = self.native_playback_supported;
+        let previous_fallback_reason = self.fallback_reason.clone();
+        let previous_status = self.status;
+        let previous_position_seconds = self.position_seconds;
+        let previous_started_at = self.started_at;
+        #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+        let previous_app = self.app.clone();
+        let state = self.apply_standalone_metronome(&request)?;
+        #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+        let lifecycle_result = (|| {
+            if let Some(app) = app {
+                self.app = Some(app);
+            }
+            self.native_playback_supported = capabilities.native_playback_supported;
+            self.fallback_reason = capabilities.fallback_reason.map(str::to_string);
+            if let Some(runtime) = &self.runtime {
+                if let Ok(mut shared) = runtime.shared.lock() {
+                    shared.click = self.click.clone();
+                }
+            } else if self.click.enabled {
+                if self.session_id.is_none() {
+                    self.session_id = Some("standalone-metronome".to_string());
+                }
+                self.generation = self.standalone_metronome.generation;
+                self.ensure_runtime(false)?;
+            }
+            if !self.click.enabled && self.status != TransportStatus::Playing {
+                self.release_for_transfer().map_err(str::to_string)?;
+            }
+            Ok::<(), String>(())
+        })();
+        #[cfg(not(any(target_os = "android", target_os = "linux", target_os = "macos")))]
+        let lifecycle_result = Ok::<(), String>(());
+        if let Err(error) = lifecycle_result {
+            self.click = previous_click;
+            self.standalone_metronome = previous_control;
+            self.session_id = previous_session_id;
+            self.generation = previous_generation;
+            self.native_playback_supported = previous_native_playback_supported;
+            self.fallback_reason = previous_fallback_reason;
+            self.status = previous_status;
+            self.position_seconds = previous_position_seconds;
+            self.started_at = previous_started_at;
+            #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+            {
+                self.app = previous_app;
+            }
+            #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+            if let Some(runtime) = &self.runtime {
+                if let Ok(mut shared) = runtime.shared.lock() {
+                    shared.click = self.click.clone();
+                }
+            }
+            return Err(error);
+        }
+        Ok(state)
+    }
+
+    fn apply_standalone_metronome(
+        &mut self,
+        request: &StandaloneMetronomeRequest,
+    ) -> Result<StandaloneMetronomeState, String> {
+        let lease = request
+            .control
+            .lease_id
+            .clone()
+            .unwrap_or_else(|| "standalone-metronome".to_string());
+        let operation_key = request
+            .control
+            .operation_id
+            .as_ref()
+            .map(|operation| (lease.clone(), operation.clone()));
+        if let Some(state) = operation_key
+            .as_ref()
+            .and_then(|key| self.standalone_metronome.operations.get(key))
+        {
+            return Ok(state.clone());
+        }
+        let control = &mut self.standalone_metronome;
+        if control.lease_id.is_some()
+            && (control.lease_id.as_deref() != Some(&lease)
+                || request
+                    .control
+                    .generation
+                    .is_some_and(|generation| generation != control.generation))
+        {
+            return Err("stale_session_generation".to_string());
+        }
+        if request
+            .control
+            .timeline_revision
+            .is_some_and(|revision| revision != control.revision)
+        {
+            return Err("stale_timeline_revision".to_string());
+        }
+        if request.enabled && !self.click.enabled {
+            control.generation = control.generation.wrapping_add(1).max(1);
+            control.revision = 1;
+            control.lease_id = Some(lease);
+            control.operations.clear();
+        } else if control.lease_id.is_none() {
+            control.lease_id = Some(lease);
+        } else {
+            control.revision = control.revision.wrapping_add(1).max(1);
+        }
+        self.click = ClickState {
+            enabled: request.enabled,
+            bpm: request.bpm.clamp(30.0, 300.0),
+            beats_per_bar: request.beats_per_bar.clamp(1, 12),
+            accent_first_beat: request.accent_first_beat,
+            gain: request.gain.clamp(0.0, 1.0),
+            follow_transport: request.follow_playback,
+            generation: control.generation,
+            revision: control.revision,
+            free_run_frame: 0,
+            following_playback: false,
+            last_emitted_beat: None,
+        };
+        let state = self.standalone_metronome_state();
+        if let Some(key) = operation_key {
+            self.standalone_metronome
+                .operations
+                .insert(key, state.clone());
+        }
+        Ok(state)
+    }
+
+    fn standalone_metronome_state(&self) -> StandaloneMetronomeState {
+        StandaloneMetronomeState {
+            enabled: self.click.enabled,
+            bpm: self.click.bpm,
+            beats_per_bar: self.click.beats_per_bar,
+            accent_first_beat: self.click.accent_first_beat,
+            gain: self.click.gain,
+            follow_playback: self.click.follow_transport,
+            lease_id: self.standalone_metronome.lease_id.clone(),
+            generation: self.standalone_metronome.generation,
+            revision: self.standalone_metronome.revision,
+            native_time_us: timeline::native_time_us(),
+        }
     }
 
     pub fn play(&mut self, request: AudioPlayRequest) -> Result<AudioSnapshot, String> {
@@ -864,7 +1217,7 @@ impl TransportState {
         }
         let _ = request.scheduled_start_time_seconds;
         #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
-        let runtime_started = self.ensure_runtime()?;
+        let runtime_started = self.ensure_runtime(true)?;
         #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
         let terminal_runtime = self.runtime.as_ref().and_then(|runtime| {
             let shared = runtime.shared.lock().ok()?;
@@ -939,7 +1292,7 @@ impl TransportState {
 
         #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
         if let Some(runtime) = &self.runtime {
-            if let Ok(shared) = runtime.shared.lock() {
+            if let Ok(mut shared) = runtime.shared.lock() {
                 self.position_seconds = shared.position_seconds;
                 if let Some(reason) = shared
                     .terminal_error
@@ -952,9 +1305,20 @@ impl TransportState {
                 {
                     self.native_playback_supported = false;
                     self.fallback_reason = Some(reason);
+                } else if self.click.enabled {
+                    shared.status = TransportStatus::Paused;
+                    shared.position_seconds = self.position_seconds;
+                    shared.buffering = false;
+                    shared.ended_pending = false;
+                    shared.click = self.click.clone();
                 }
             }
         }
+        #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+        if !self.click.enabled || !self.native_playback_supported {
+            self.stop_runtime();
+        }
+        #[cfg(not(any(target_os = "android", target_os = "linux", target_os = "macos")))]
         self.stop_runtime();
 
         self.snapshot()
@@ -988,6 +1352,22 @@ impl TransportState {
         self.position_seconds = 0.0;
         self.status = TransportStatus::Stopped;
         self.started_at = None;
+        #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+        if self.click.enabled {
+            if let Some(runtime) = &self.runtime {
+                seek_runtime_workers(runtime, 0.0, self.diagnostics_generation);
+                if let Ok(mut shared) = runtime.shared.lock() {
+                    shared.status = TransportStatus::Stopped;
+                    shared.position_seconds = 0.0;
+                    shared.buffering = false;
+                    shared.ended_pending = false;
+                    shared.click = self.click.clone();
+                }
+            }
+        } else {
+            self.stop_runtime();
+        }
+        #[cfg(not(any(target_os = "android", target_os = "linux", target_os = "macos")))]
         self.stop_runtime();
 
         self.snapshot()
@@ -1079,7 +1459,11 @@ impl TransportState {
     }
 
     #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
-    fn ensure_runtime(&mut self) -> Result<bool, String> {
+    fn ensure_runtime(&mut self, require_project_runtime: bool) -> Result<bool, String> {
+        #[cfg(test)]
+        if std::mem::take(&mut self.fail_next_runtime_start) {
+            return Err("injected_runtime_start_failure".to_string());
+        }
         let runtime_finished = self.runtime.as_ref().is_some_and(|runtime| {
             runtime
                 .audio_thread
@@ -1089,8 +1473,15 @@ impl TransportState {
                     .reporter_thread
                     .as_ref()
                     .is_some_and(JoinHandle::is_finished)
+                || (require_project_runtime
+                    && runtime.worker_threads.iter().any(JoinHandle::is_finished))
         });
-        if runtime_finished {
+        let runtime_kind_mismatch = require_project_runtime
+            && self
+                .runtime
+                .as_ref()
+                .is_some_and(|runtime| runtime.auxiliary_only);
+        if runtime_finished || runtime_kind_mismatch {
             self.stop_runtime();
         }
         if self.runtime.is_some() {
@@ -1103,17 +1494,31 @@ impl TransportState {
             #[cfg(not(test))]
             return Err("Native audio runtime is unavailable.".to_string());
         };
-        let session_id = self
-            .session_id
-            .as_deref()
-            .ok_or_else(|| "Native audio session is not prepared.".to_string())?;
+        let session_id = if require_project_runtime {
+            self.session_id
+                .as_deref()
+                .ok_or_else(|| "Native audio session is not prepared.".to_string())?
+        } else {
+            "standalone-metronome"
+        };
+        let raw_lanes = require_project_runtime
+            .then_some(self.raw_lanes.as_slice())
+            .unwrap_or(&[]);
+        let lanes = require_project_runtime
+            .then_some(self.lanes.as_slice())
+            .unwrap_or(&[]);
+        let duration_seconds = if require_project_runtime {
+            self.duration_seconds
+        } else {
+            0.0
+        };
         match start_native_runtime(
             app,
             session_id,
-            self.duration_seconds,
+            duration_seconds,
             self.playback_rate,
-            &self.raw_lanes,
-            &self.lanes,
+            raw_lanes,
+            lanes,
             &self.click,
             self.diagnostics_generation,
             self.timeline
@@ -1124,7 +1529,8 @@ impl TransportState {
                 .clone()
                 .ok_or_else(|| "Native session reporter is unavailable.".to_string())?,
         ) {
-            Ok(runtime) => {
+            Ok(mut runtime) => {
+                runtime.auxiliary_only = !require_project_runtime;
                 self.runtime = Some(runtime);
                 Ok(true)
             }
@@ -1423,16 +1829,12 @@ fn mix_shared_frame(shared: &mut PlaybackShared, channel: usize, sample_index: u
         }
     }
 
-    if !shared.click.follow_transport || shared.status == TransportStatus::Playing {
-        sample += click_sample(&shared.click, shared.position_seconds, channel);
-    }
-
     sample.clamp(-1.0, 1.0)
 }
 
 fn mix_shared_frame_without_diagnostics(
     shared: &mut PlaybackShared,
-    channel: usize,
+    _channel: usize,
     sample_index: usize,
 ) -> f32 {
     let mut sample = 0.0;
@@ -1450,11 +1852,51 @@ fn mix_shared_frame_without_diagnostics(
         }
     }
 
-    if !shared.click.follow_transport || shared.status == TransportStatus::Playing {
-        sample += click_sample(&shared.click, shared.position_seconds, channel);
-    }
-
     sample.clamp(-1.0, 1.0)
+}
+
+fn standalone_click_frame(shared: &mut PlaybackShared) -> f32 {
+    if !shared.click.enabled {
+        return 0.0;
+    }
+    let following_playback = shared.click.follow_transport
+        && shared.status == TransportStatus::Playing
+        && !shared.buffering;
+    if following_playback != shared.click.following_playback {
+        shared.click.following_playback = following_playback;
+        shared.click.free_run_frame = 0;
+        shared.click.last_emitted_beat = None;
+    }
+    if following_playback {
+        return 0.0;
+    }
+    let position_seconds = shared.click.free_run_frame as f64 / f64::from(shared.sample_rate);
+    let beat_seconds = 60.0 / shared.click.bpm;
+    let beat_index = (position_seconds / beat_seconds).floor().max(0.0) as u64;
+    let beat_offset = position_seconds - beat_index as f64 * beat_seconds;
+    if beat_offset < 1.0 / f64::from(shared.sample_rate)
+        && shared.click.last_emitted_beat != Some(beat_index)
+    {
+        shared.click.last_emitted_beat = Some(beat_index);
+        let now = timeline::native_time_us();
+        shared.pending_cues.push_back(timeline::CueEvent {
+            resource: "output",
+            source: "standalone_metronome",
+            generation: shared.click.generation,
+            revision: shared.click.revision,
+            cue_index: beat_index.min(u64::from(u32::MAX)) as u32,
+            kind: timeline::CueKind::Metronome,
+            accent: shared.click.accent_first_beat
+                && beat_index % u64::from(shared.click.beats_per_bar) == 0,
+            gain: shared.click.gain,
+            scheduled_native_time_us: now,
+            actual_native_time_us: now,
+            insertion_sequence: beat_index,
+        });
+    }
+    let sample = click_sample(&shared.click, position_seconds, 0);
+    shared.click.free_run_frame = shared.click.free_run_frame.saturating_add(1);
+    sample
 }
 
 fn prepare_lane_scratch(
@@ -1662,7 +2104,7 @@ fn render_shared_output(shared: &mut PlaybackShared, output: &mut [f32]) {
             .iter()
             .filter(|cue| cue.frame_offset == frame_index)
             .for_each(|cue| start_cue_voice(shared, cue));
-        let cue_sample = cue_frame_sample(shared);
+        let cue_sample = cue_frame_sample(shared) + standalone_click_frame(shared);
         if shared.status != TransportStatus::Playing
             || shared.buffering
             || frame_index < start_offset
@@ -1672,11 +2114,13 @@ fn render_shared_output(shared: &mut PlaybackShared, output: &mut [f32]) {
         }
 
         for (channel, sample) in frame.iter_mut().enumerate() {
-            *sample = mix_shared_frame(
+            let click_pan = if channel == 0 { 1.0 } else { 0.92 };
+            *sample = (mix_shared_frame(
                 shared,
                 channel,
                 (frame_index - start_offset) * shared.channels + channel,
-            ) + cue_sample;
+            ) + cue_sample * click_pan)
+                .clamp(-1.0, 1.0);
         }
     }
     if shared.diagnostics_generation != 0
@@ -1733,7 +2177,7 @@ where
             .iter()
             .filter(|cue| cue.frame_offset == frame_index)
             .for_each(|cue| start_cue_voice(shared, cue));
-        let cue_sample = cue_frame_sample(shared);
+        let cue_sample = cue_frame_sample(shared) + standalone_click_frame(shared);
         if shared.status != TransportStatus::Playing
             || shared.buffering
             || frame_index < start_offset
@@ -1746,7 +2190,9 @@ where
 
         for (channel, sample) in frame.iter_mut().enumerate() {
             let sample_index = (frame_index - start_offset) * shared.channels + channel;
-            let mixed = mix_shared_frame(shared, channel, sample_index) + cue_sample;
+            let click_pan = if channel == 0 { 1.0 } else { 0.92 };
+            let mixed = (mix_shared_frame(shared, channel, sample_index) + cue_sample * click_pan)
+                .clamp(-1.0, 1.0);
             if track_nonzero {
                 any_nonzero |= mixed.abs() > AUDIBLE_GAIN_FLOOR;
             }
@@ -1919,6 +2365,7 @@ fn start_native_runtime(
         audio_thread: Some(audio_thread),
         reporter_thread: Some(reporter_thread),
         worker_threads,
+        auxiliary_only: false,
     })
 }
 
@@ -2037,7 +2484,7 @@ where
 
 #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
 fn emit_runtime_events(app: &AppHandle, shared: &Arc<Mutex<PlaybackShared>>) -> bool {
-    let (snapshot, ended, error, terminal, cues, reporter) = {
+    let (snapshot, ended, error, terminal, cues, reporter, metronome_enabled) = {
         let mut shared = match shared.lock() {
             Ok(shared) => shared,
             Err(_) => return false,
@@ -2075,6 +2522,7 @@ fn emit_runtime_events(app: &AppHandle, shared: &Arc<Mutex<PlaybackShared>>) -> 
             terminal,
             cues,
             (shared.generation, shared.report_sender.clone()),
+            shared.click.enabled,
         )
     };
 
@@ -2098,6 +2546,7 @@ fn emit_runtime_events(app: &AppHandle, shared: &Arc<Mutex<PlaybackShared>>) -> 
     if ended {
         let _ = app.emit(AUDIO_EVENT_ENDED, snapshot.clone());
         let _ = reporter.1.try_send(RuntimeReport {
+            resource: AudioResource::Output,
             generation: reporter.0,
             kind: RuntimeReportKind::Ended,
         });
@@ -2116,24 +2565,32 @@ fn emit_runtime_events(app: &AppHandle, shared: &Arc<Mutex<PlaybackShared>>) -> 
     }
     if let Some(code) = terminal {
         let _ = reporter.1.try_send(RuntimeReport {
+            resource: AudioResource::Output,
             generation: reporter.0,
             kind: RuntimeReportKind::Terminal(code),
         });
         let _ = app.emit(
             AUDIO_EVENT_TERMINAL,
             super::session::TerminalEvent {
+                resource: AudioResource::Output,
+                source: AudioSource::OutputRuntime,
                 generation: reporter.0,
                 code,
                 native_time_us: timeline::native_time_us(),
             },
         );
     }
-    ended || terminal.is_some()
+    should_stop_runtime_after_report(ended, terminal.is_some(), metronome_enabled)
 }
 
 #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
 fn should_emit_ended(ended_pending: bool, requires_error_handling: bool) -> bool {
     ended_pending && !requires_error_handling
+}
+
+#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+fn should_stop_runtime_after_report(ended: bool, terminal: bool, metronome_enabled: bool) -> bool {
+    terminal || (ended && !metronome_enabled)
 }
 
 #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
@@ -3145,6 +3602,8 @@ mod tests {
         let mut shared = shared_with_lane(ring, 48_000, 1, 1.0);
         let cue = |kind, accent, gain| timeline::FiredCue {
             event: timeline::CueEvent {
+                resource: "output",
+                source: "project_playback",
                 generation: 1,
                 revision: 1,
                 cue_index: 0,
@@ -3237,6 +3696,7 @@ mod tests {
                 audio_thread: Some(audio_thread),
                 reporter_thread: Some(reporter_thread),
                 worker_threads: vec![worker_thread],
+                auxiliary_only: false,
             },
             vec![
                 audio_exited_receiver,
@@ -3518,6 +3978,7 @@ mod tests {
             audio_thread: None,
             reporter_thread: None,
             worker_threads: Vec::new(),
+            auxiliary_only: false,
         });
 
         let error = state
@@ -3586,6 +4047,7 @@ mod tests {
             audio_thread: None,
             reporter_thread: None,
             worker_threads: Vec::new(),
+            auxiliary_only: false,
         });
 
         let snapshot = state.stop();
@@ -3878,6 +4340,7 @@ mod tests {
             accent_first_beat: true,
             gain: 1.0,
             follow_transport: true,
+            ..ClickState::default()
         };
 
         let accented = click_sample(&click, 0.001, 0).abs();
@@ -4269,6 +4732,293 @@ mod tests {
         assert!(output.iter().all(|sample| *sample == 0.0));
         assert_eq!(shared.position_seconds, 0.0);
         assert_eq!(shared.lanes[0].underrun_count, 0);
+    }
+
+    fn standalone_request(
+        enabled: bool,
+        operation_id: &str,
+        generation: Option<u64>,
+        revision: Option<u64>,
+    ) -> StandaloneMetronomeRequest {
+        StandaloneMetronomeRequest {
+            enabled,
+            bpm: 120.0,
+            beats_per_bar: 4,
+            accent_first_beat: true,
+            gain: 0.8,
+            follow_playback: true,
+            control: SessionCommand {
+                lease_id: Some("standalone-metronome".into()),
+                operation_id: Some(operation_id.into()),
+                generation,
+                timeline_revision: revision,
+            },
+        }
+    }
+
+    #[test]
+    fn standalone_metronome_control_is_idempotent_and_rejects_stale_updates() {
+        let mut transport = TransportState::default();
+        let started = transport
+            .apply_standalone_metronome(&standalone_request(true, "start", None, None))
+            .unwrap();
+        let duplicate = transport
+            .apply_standalone_metronome(&standalone_request(
+                true,
+                "start",
+                Some(started.generation),
+                Some(started.revision),
+            ))
+            .unwrap();
+        assert_eq!(duplicate.revision, started.revision);
+        let updated = transport
+            .apply_standalone_metronome(&standalone_request(
+                true,
+                "update",
+                Some(started.generation),
+                Some(started.revision),
+            ))
+            .unwrap();
+        let duplicate_update = transport
+            .apply_standalone_metronome(&standalone_request(
+                true,
+                "update",
+                Some(started.generation),
+                Some(started.revision),
+            ))
+            .unwrap();
+        assert_eq!(duplicate_update.revision, updated.revision);
+        assert_eq!(
+            transport
+                .apply_standalone_metronome(&standalone_request(
+                    false,
+                    "stale",
+                    Some(started.generation + 1),
+                    Some(updated.revision),
+                ))
+                .unwrap_err(),
+            "stale_session_generation"
+        );
+        let stopped = transport
+            .apply_standalone_metronome(&standalone_request(
+                false,
+                "stop",
+                Some(started.generation),
+                Some(updated.revision),
+            ))
+            .unwrap();
+        assert!(!stopped.enabled);
+        assert!(stopped.revision > updated.revision);
+        let duplicate_stop = transport
+            .apply_standalone_metronome(&standalone_request(
+                false,
+                "stop",
+                Some(started.generation),
+                Some(updated.revision),
+            ))
+            .unwrap();
+        assert_eq!(duplicate_stop.revision, stopped.revision);
+        assert!(!duplicate_stop.enabled);
+    }
+
+    #[test]
+    #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+    fn standalone_enable_rolls_back_control_when_runtime_start_fails() {
+        let mut transport = TransportState::default();
+        transport.fail_next_runtime_start = true;
+        let request = standalone_request(true, "start", None, None);
+
+        assert_eq!(
+            transport
+                .set_standalone_metronome_inner(None, request.clone(), capabilities())
+                .unwrap_err(),
+            "injected_runtime_start_failure"
+        );
+        assert!(!transport.click.enabled);
+        assert_eq!(transport.standalone_metronome.generation, 0);
+        assert_eq!(transport.standalone_metronome.revision, 0);
+        assert!(transport.standalone_metronome.operations.is_empty());
+        assert!(transport.runtime.is_none());
+
+        let retried = transport
+            .set_standalone_metronome_inner(None, request, capabilities())
+            .expect("retry remains valid");
+        assert!(retried.enabled);
+        assert_eq!(retried.generation, 1);
+        assert_eq!(retried.revision, 1);
+    }
+
+    #[test]
+    #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+    fn standalone_disable_rolls_back_control_when_release_fails() {
+        let mut transport = TransportState::default();
+        let started = transport
+            .set_standalone_metronome_inner(
+                None,
+                standalone_request(true, "start", None, None),
+                capabilities(),
+            )
+            .unwrap();
+        transport.install_test_auxiliary_runtime();
+        transport.fail_next_release = true;
+        let stop = standalone_request(
+            false,
+            "stop",
+            Some(started.generation),
+            Some(started.revision),
+        );
+
+        assert_eq!(
+            transport
+                .set_standalone_metronome_inner(None, stop.clone(), capabilities())
+                .unwrap_err(),
+            "release_timeout"
+        );
+        assert!(transport.click.enabled);
+        assert_eq!(transport.standalone_metronome.revision, started.revision);
+        assert!(!transport
+            .standalone_metronome
+            .operations
+            .contains_key(&("standalone-metronome".into(), "stop".into())));
+        let runtime = transport.runtime.as_ref().expect("runtime retained");
+        assert!(runtime.shared.lock().unwrap().click.enabled);
+
+        let stopped = transport
+            .set_standalone_metronome_inner(None, stop, capabilities())
+            .expect("same stop tuple remains valid");
+        assert!(!stopped.enabled);
+        assert!(transport.runtime.is_none());
+    }
+
+    #[test]
+    #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+    fn pause_and_stop_keep_enabled_standalone_runtime_free_running() {
+        let mut shared =
+            shared_with_lane(Arc::new(Mutex::new(RingBuffer::new(1_000))), 1_000, 1, 1.0);
+        shared.click.enabled = true;
+        shared.click.follow_transport = true;
+        let (runtime, exits) = stoppable_runtime(shared);
+        let shared = runtime.shared.clone();
+        let mut state = TransportState::default();
+        state.session_id = Some("session".into());
+        state.status = TransportStatus::Playing;
+        state.position_seconds = 2.0;
+        state.duration_seconds = 10.0;
+        state.native_playback_supported = true;
+        state.click = shared.lock().unwrap().click.clone();
+        state.runtime = Some(runtime);
+
+        assert_eq!(state.pause().state, "paused");
+        assert!(state.runtime.is_some());
+        {
+            let mut shared = shared.lock().unwrap();
+            assert_eq!(shared.status, TransportStatus::Paused);
+            render_shared_output(&mut shared, &mut [0.0; 8]);
+            assert_eq!(
+                shared.pending_cues.front().map(|cue| cue.source),
+                Some("standalone_metronome")
+            );
+        }
+
+        assert_eq!(state.stop().state, "stopped");
+        assert!(state.runtime.is_some());
+        assert_eq!(shared.lock().unwrap().status, TransportStatus::Stopped);
+        assert!(exits.iter().all(|receiver| receiver.try_recv().is_err()));
+    }
+
+    #[test]
+    #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+    fn reporter_keeps_output_alive_after_end_only_for_enabled_metronome() {
+        assert!(!should_stop_runtime_after_report(true, false, true));
+        assert!(should_stop_runtime_after_report(true, false, false));
+        assert!(should_stop_runtime_after_report(false, true, true));
+    }
+
+    #[test]
+    #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+    fn unavailable_playback_prepare_preserves_existing_standalone_runtime() {
+        let ring = Arc::new(Mutex::new(RingBuffer::new(1_000)));
+        let mut shared = shared_with_lane(ring, 1_000, 1, 1.0);
+        shared.click.enabled = true;
+        let (runtime, _exits) = stoppable_runtime(shared);
+        let retained_shared = runtime.shared.clone();
+        let click = runtime.shared.lock().unwrap().click.clone();
+        let mut state = TransportState::default();
+        state.click = click;
+        state.runtime = Some(runtime);
+
+        let session = state.prepare(
+            None,
+            AudioSessionRequest {
+                session_id: "unavailable-project".into(),
+                duration_seconds: Some(10.0),
+                playback_rate: Some(1.0),
+                lanes: Vec::new(),
+                control: SessionCommand::default(),
+                owner: None,
+            },
+            Vec::new(),
+            unsupported_capabilities("Project playback is unavailable."),
+        );
+
+        assert!(!session.native_playback_supported);
+        assert!(state.click.enabled);
+        let runtime = state.runtime.as_ref().expect("standalone runtime retained");
+        assert!(runtime.auxiliary_only);
+        assert!(Arc::ptr_eq(&runtime.shared, &retained_shared));
+    }
+
+    #[test]
+    fn callback_mixes_free_running_metronome_with_project_lane_and_emits_correlation() {
+        let ring = Arc::new(Mutex::new(RingBuffer::new(1_000)));
+        push_ring_samples(&ring, &[0.2; 64]);
+        let mut shared = shared_with_lane(ring, 1_000, 1, 1.0);
+        shared.click = ClickState {
+            enabled: true,
+            bpm: 120.0,
+            beats_per_bar: 4,
+            accent_first_beat: true,
+            gain: 0.8,
+            follow_transport: false,
+            generation: 3,
+            revision: 2,
+            free_run_frame: 0,
+            following_playback: false,
+            last_emitted_beat: None,
+        };
+        let mut output = vec![0.0; 32];
+
+        render_shared_output(&mut shared, &mut output);
+
+        assert!(output[0] > 0.2);
+        let cue = shared.pending_cues.front().unwrap();
+        assert_eq!(cue.resource, "output");
+        assert_eq!(cue.source, "standalone_metronome");
+        assert_eq!(cue.generation, 3);
+        assert_eq!(cue.revision, 2);
+    }
+
+    #[test]
+    fn following_metronome_returns_to_free_run_when_playback_pauses() {
+        let ring = Arc::new(Mutex::new(RingBuffer::new(1_000)));
+        push_ring_samples(&ring, &[0.2; 64]);
+        let mut shared = shared_with_lane(ring, 1_000, 1, 1.0);
+        shared.click.enabled = true;
+        shared.click.follow_transport = true;
+        shared.click.generation = 1;
+        shared.click.revision = 1;
+        let mut output = vec![0.0; 16];
+
+        render_shared_output(&mut shared, &mut output);
+        assert!(shared.pending_cues.is_empty());
+        shared.status = TransportStatus::Paused;
+        render_shared_output(&mut shared, &mut output);
+
+        assert_eq!(
+            shared.pending_cues.front().unwrap().source,
+            "standalone_metronome"
+        );
+        assert!(output.iter().any(|sample| sample.abs() > 0.0));
     }
 
     #[test]

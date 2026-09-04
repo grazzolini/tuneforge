@@ -217,7 +217,9 @@ Validation failures return `INVALID_REQUEST` with serialized validation details.
 ## Packaging Constraints
 
 - FFmpeg is a host dependency and is not bundled.
-- Desktop tuner microphone capture and project playback use `cpal` locally and fall back to Web Audio when native audio is unavailable.
+- Normal Tauri project playback, metronome output, and tuner microphone capture use the native
+  audio control plane. Native failure remains terminal until a later explicit action; it does not
+  fall back to Web Audio. Browser, non-Tauri, and forced-Web Tauri builds use Web Audio.
 - Native desktop tempo playback uses `signalsmith-stretch` for pitch preservation.
 - Native desktop playback decodes local files through a WAV fast path or Symphonia. FFmpeg remains a host dependency for transform/export work.
 - Native audio development notes live in [NATIVE_AUDIO.md](NATIVE_AUDIO.md).

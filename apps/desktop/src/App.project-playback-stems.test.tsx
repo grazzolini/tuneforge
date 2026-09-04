@@ -2,6 +2,7 @@ import { act, fireEvent, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  emitMockNativeAudioTerminal,
   resetAppTestHarness,
   flushPendingPreview,
   findAudioByArtifactId,
@@ -1039,6 +1040,86 @@ describe("Desktop app project playback stems", () => {
     await waitFor(() => expect(invokeCalls("audio_play")).toHaveLength(3));
     expect(invokeCalls("audio_set_lanes")).toHaveLength(laneCount);
     restoreTauriRuntime();
+  });
+
+  it("keeps a terminal state when an in-flight native lane update completes late", async () => {
+    const restoreTauriRuntime = enableNativePlayback();
+    const invoke = getMockInvoke();
+    const originalInvoke = invoke.getMockImplementation();
+    if (!originalInvoke) {
+      throw new Error("Mock invoke implementation was not installed.");
+    }
+    let releaseLaneUpdate!: () => void;
+    const laneUpdateGate = new Promise<void>((resolve) => {
+      releaseLaneUpdate = resolve;
+    });
+    let finishLaneUpdate!: () => void;
+    const laneUpdateFinished = new Promise<void>((resolve) => {
+      finishLaneUpdate = resolve;
+    });
+    const user = userEvent.setup();
+
+    try {
+      renderApp(["/projects/proj_123"]);
+      expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+      await generateStems(user);
+      await openPlaybackWorkspace(user);
+      const stemList = await screen.findByRole("group", { name: "Playback stem list" });
+      await user.click(
+        within(stemList).getAllByRole("button", { name: /Vocals/i })[0] as HTMLElement,
+      );
+      await user.click(screen.getByRole("button", { name: "Play playback" }));
+      await waitFor(() => expect(invokeCalls("audio_play")).toHaveLength(1));
+      const laneUpdateCount = invokeCalls("audio_set_lanes").length;
+
+      invoke.mockImplementation(async (command, args) => {
+        if (command === "audio_set_lanes") {
+          await laneUpdateGate;
+          const snapshot = await originalInvoke(command, args);
+          finishLaneUpdate();
+          return snapshot;
+        }
+        return originalInvoke(command, args);
+      });
+      await user.click(screen.getByRole("button", { name: "Mute Drums" }));
+      await waitFor(() =>
+        expect(invokeCalls("audio_set_lanes")).toHaveLength(laneUpdateCount + 1),
+      );
+      const laneCalls = invokeCalls("audio_set_lanes");
+      const laneControl = (laneCalls[laneCalls.length - 1]?.[1] as {
+        control?: { generation?: number; timelineRevision?: number };
+      } | undefined)?.control;
+
+      act(() => emitMockNativeAudioTerminal({
+        resource: "output",
+        source: "output_runtime",
+        generation: laneControl?.generation,
+        timelineRevision: laneControl?.timelineRevision,
+        positionSeconds: 41,
+        code: "output_stream_failure",
+        nativeTimeUs: 10,
+      }));
+      expect(screen.getByRole("button", { name: "Play playback" })).toBeInTheDocument();
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "Playback stopped. Check your audio output, then press Play to retry.",
+      );
+      expect(screen.getByLabelText("Playback position")).toHaveValue("41");
+
+      await act(async () => {
+        releaseLaneUpdate();
+        await laneUpdateFinished;
+      });
+      await waitFor(() => expect(screen.getByRole("button", { name: "Play playback" })).toBeInTheDocument());
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "Playback stopped. Check your audio output, then press Play to retry.",
+      );
+      expect(screen.getByLabelText("Playback position")).toHaveValue("41");
+      expect(invokeCalls("audio_play")).toHaveLength(1);
+    } finally {
+      releaseLaneUpdate();
+      invoke.mockImplementation(originalInvoke);
+      restoreTauriRuntime();
+    }
   });
 
   it("keeps a paused native handoff paused after its deferred Play completes", async () => {

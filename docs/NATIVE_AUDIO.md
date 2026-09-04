@@ -1,47 +1,55 @@
 # Native Audio
 
-TuneForge prefers native audio for project playback and keeps Web Audio as a disclosed fallback or
-development override. Native audio is added feature by feature behind the Tauri native audio
-boundary.
+TuneForge uses native audio in a normal Tauri runtime. Web Audio remains the complete audio path
+for browsers and non-Tauri runtimes, and for a Tauri build compiled with the forced-Web override.
 
 ## Current Scope
 
 - Tuner microphone capture uses native `cpal` on supported desktop builds and CPAL/AAudio on
   Android.
-- Tuner device listing uses native input enumeration first, then cached/browser labels as fallback.
-- Source, practice-mix, and stem playback prefer native `cpal` on macOS/Linux and CPAL/AAudio on
+- Source, practice-mix, and stem playback use native `cpal` on macOS/Linux and CPAL/AAudio on
   Android when every active
   artifact has a local path. WAV uses a fast streaming reader; other common formats decode through
   Symphonia for playback only.
+- One native output runtime mixes project lanes, count-in cues, and the standalone metronome. A
+  separate native capture runtime can run tuner input at the same time; starting or stopping either
+  resource does not replace the other.
 - Native playback supports shared transport play/pause/seek, position events, mute/solo lane gains,
   project count-ins, and generated metronome click lanes for follow-playback mode. Project count-ins
   use a 760 Hz triangle click with a 2 ms attack, 45 ms duration, and exponential decay on both
   native and Web Audio paths; timing-grid gaps are filtered against source BPM and scaled to the
   displayed playback tempo.
+- The standalone metronome free-runs at its configured BPM when no project is playing. Follow is on
+  by default: during playback it follows the analysed beat grid when available, otherwise the
+  playback timeline. Pause, stop, or natural end re-anchor it to free-run. With Follow off it stays
+  free-running alongside playback.
 - Native tempo changes use `signalsmith-stretch` for pitch-preserving playback.
-- If native setup, decode, seek, or output startup fails, playback falls back to Web Audio at the
-  same transport position.
+- A normal Tauri native failure is terminal for that resource. Playback holds its last authoritative
+  position, cancels pending cues, and shows the transport error; tuner capture clears live input.
+  Neither path starts Web Audio or retries automatically. A later explicit Play, metronome Start,
+  tuner Retry, or input selection starts one fresh native attempt.
 - Linux native capture and playback currently use `cpal`'s ALSA host. On PipeWire/PulseAudio
   desktops this usually routes through the host ALSA compatibility layer, but device labels may
   still look like ALSA PCM names.
 - Android native playback and tuner capture report the `android-aaudio` backend and require Android
   API 26 or newer. Tuner monitoring remains unsupported.
-- Android Web Audio fallback and forced-Web-Audio playback use a private seekable loopback
+- Android forced-Web-Audio playback uses a private seekable loopback
   transport so Chromium can request complete byte ranges without exposing arbitrary file paths.
 - Synced Android source, practice-mix, and stem artifacts accept PCM16 WAV, FLAC, MP3, and AAC-LC
   M4A. Receive validation checks the declared suffix, container, codec, and a bounded first decoded
   packet before commit without decoding the full file. Playback and the private range transport use
   the preserved bytes; TuneForge does not create a receiver-side transcode or playback proxy.
 
-## Backend Selection
+## Backend Selection And Failure Handling
 
-The frontend prefers native audio when a feature is supported and falls back to Web Audio when
-native support is unavailable or startup fails.
+Normal Tauri requires native playback, metronome, and tuner capture. Capability or runtime failure
+remains a safe native failure; it never transfers to Web Audio. Native control responses and events
+are generation- and revision-correlated, so stale output positions, cues, capture frames, and terminal
+reports do not replace newer state.
 
-Packaged Android tuner capture is an exception: it requires the native AAudio path and never silently
-falls back to `getUserMedia` after a capability, permission, startup, or stream failure. The global
-`VITE_TUNEFORGE_FORCE_WEB_AUDIO=1` development override remains an explicit all-Web mode for both
-tuner capture and playback.
+Browser and non-Tauri runtimes use Web Audio only. A Tauri build with
+`VITE_TUNEFORGE_FORCE_WEB_AUDIO=1` also uses Web Audio only and makes no native audio calls. The flag
+is a compile-time override, not a setting or a runtime switch; rebuild and relaunch to change mode.
 
 Playback owns media-key controls, while playback and tuner capture participate in TuneForge's
 shared power-protection model. See [POWER_PROTECTION.md](./POWER_PROTECTION.md) for the
@@ -57,28 +65,23 @@ cross-platform owner, backend, diagnostic, and validation rules.
   newer session, position, or lane state. Pause and Stop remain prompt cancellation boundaries and
   are not held behind an unresolved Play response.
 - Web Audio/HTML media playback owns the transport only after a `playing` event or confirmed media
-  progress,
-  including `VITE_TUNEFORGE_FORCE_WEB_AUDIO=1` and native fallback. It uses the browser Screen Wake
-  Lock while playing. Browser Screen Wake Lock protects the visible screen only; it does not claim
-  native background protection.
+  progress. This applies to browser, non-Tauri, and forced-Web Tauri builds. It uses the browser
+  Screen Wake Lock while playing. Browser Screen Wake Lock protects the visible screen only; it does
+  not claim native background protection.
 - Native tuner capture acquires the same OS power-protection manager only after the CPAL/AAudio
   stream starts. Worker exit releases its scoped owner on stop, interruption, replacement, Android
   suspension, or teardown even when WebView effects cannot run.
-- Confirmed Web Audio tuner capture owns the same shared browser Screen Wake Lock and a native
-  `tuner-capture` reason in packaged Tauri builds. Track termination, stop, error, replacement, and
-  unmount clear both. Pending permission and startup never acquire protection. Playback and tuner
-  browser owners share one sentinel, so either owner can stop without releasing the other.
-- Native fallback is an explicit ownership transfer. TuneForge clears system media state and native
-  power protection, starts the Web Audio path at the fallback position, then re-registers system
-  media state for the Web Audio owner and acquires the browser wake lock. Diagnostics keep the
-  native fallback reason.
-- Native output events carry only a session ID and one safe code: `device_changed`,
-  `device_not_available`, `stream_invalidated`, `output_stream_failure`, or
-  `decoder_worker_failure`. A device change is informational and leaves playback alone.
-  Device loss and stream invalidation retire native playback and hand off once to Web Audio at the
-  synchronously captured, clamped position. Pause, stop, project changes, and unmount cancel a
-  pending handoff. TuneForge never retries native playback automatically; the next explicit Play
-  makes one new native attempt.
+- Confirmed Web Audio tuner capture owns the shared browser Screen Wake Lock. Track termination,
+  stop, error, replacement, and unmount clear it. Pending permission and startup never acquire
+  protection. Playback and tuner browser owners share one sentinel, so either owner can stop without
+  releasing the other.
+- Native lifecycle events carry safe codes plus resource, ownership generation, revision where
+  applicable, and native timing. They never include paths, device IDs, endpoints, or audio content.
+  Output codes include `device_changed`, `device_not_available`, `stream_invalidated`,
+  `output_stream_failure`, and `decoder_worker_failure`. `device_changed` is advisory while the
+  stream remains valid. Device loss, invalidation, missed release acknowledgement, or runtime
+  failure terminalizes only the affected native resource. Pause, stop, seek, project changes, and
+  unmount do not retry native audio.
 - Failed native prepare/play attempts before audio starts never activate native transport ownership.
 
 ## Linux Build Prerequisites
@@ -111,9 +114,9 @@ If the backend is already running separately:
 VITE_TUNEFORGE_FORCE_WEB_AUDIO=1 pnpm dev:desktop
 ```
 
-This is a global native audio override, not a per-feature setting. It affects tuner capture and
-project playback so Web Audio remains the comparison path for both. It does not disable native
-capability detection, and it is not a persisted current-playback state.
+This is a global native audio override, not a per-feature setting. It affects tuner capture,
+project playback, count-in, and standalone metronome. It is a build-time setting, so it must be set
+before the desktop frontend is built or started. It is not persisted current-playback state.
 
 ## Diagnostics
 
@@ -124,12 +127,11 @@ Settings -> Local Data -> Show diagnostics reports:
 - input capture availability
 - capture selection policy, current Android permission, current state, and current confirmed path
 - last confirmed tuner capture path and latest safe historical failure
-- audio override and playback selection policy
-- native playback capability, even while Web Audio is forced
+- audio override, playback selection policy, and capture selection policy
+- native playback capability in normal Tauri only
 - current playback state and current confirmed path
 - last confirmed playback path
 - latest native playback failure
-- latest native fallback cause
 - latest Web media failure
 - active native session lane count
 - native playback buffer health per lane, including fill level, underrun count, worker errors, and
@@ -140,13 +142,17 @@ Settings -> Local Data -> Show diagnostics reports:
   screen coverage, plus latest safe power-protection error and last confirmed native backend
 
 Current state is live and starts as `Not playing` / `None` after reload. Only last-confirmed path and
-redacted failures are restored from local storage. A native failure does not claim Web fallback
-until Web playback is confirmed, and `android-null` is always reported as unavailable. Diagnostic
-reasons omit local paths, URLs, artifact IDs, and session IDs. Active power state is never restored
-from local storage; only a safe historical backend and error may survive reload.
+redacted failures are restored from local storage. `android-null` is always reported as unavailable.
+Diagnostic reasons omit local paths, URLs, artifact IDs, and session IDs. Active power state is never
+restored from local storage; only a safe historical backend and error may survive reload.
 
-When `VITE_TUNEFORGE_FORCE_WEB_AUDIO=1` is active, diagnostics report the build-time override and
-`Web Audio forced` policy while continuing to report native capability independently.
+Selection-policy labels are exact: normal Tauri shows `Native required`; a forced-Web Tauri build
+shows `Web Audio (forced)` and the build-time override; browser and non-Tauri show `Web Audio`.
+Diagnostics never show `Native preferred` or `Web Audio (fallback)`.
+
+Native capability queries and listeners run only in normal Tauri. When
+`VITE_TUNEFORGE_FORCE_WEB_AUDIO=1` is active, diagnostics report `Web Audio (forced)` and the
+build-time override; native capability remains Unknown/unqueried and no native audio call runs.
 
 ### Retained Native Audio Diagnostics
 
@@ -219,9 +225,11 @@ BlackHole capture are release checks, not default `pnpm test` coverage.
 | Tempo control | tempo change applies and stays stable | tempo change applies and stays stable | tempo change applies and stays stable |
 | Metronome follow | follows active track tempo while BPM changes | follows active track tempo while BPM changes | follows active track tempo while BPM changes |
 | Media keys / headset controls | system media controls play/pause/stop/seek native transport only | MPRIS controls play/pause/stop/seek native transport only | system media controls play/pause/stop/seek browser transport only |
-| Wake prevention | native display idle inhibition while playing; released on pause/stop/end/fallback | portal or logind inhibition while playing; released on pause/stop/end/fallback | Screen Wake Lock while playing; released on pause/stop/end |
-| Native runtime fallback ownership | system state/inhibition clear before Web Audio starts at fallback position, then system controls route to Web Audio | same | not applicable; web owns controls from start |
-| Fallback + no output device | falls back (or errors and recovers) without crash when no native output exists | same | same |
+| Wake prevention | native display idle inhibition while playing; released on pause/stop/end/failure | portal or logind inhibition while playing; released on pause/stop/end/failure | Screen Wake Lock while playing; released on pause/stop/end |
+| Native terminal output | holds last authoritative position, cancels pending cues, and waits for explicit Play | same | not applicable; Web Audio owns playback from start |
+| No output device | shows native error without crash, Web start, or automatic retry; explicit Play makes one fresh attempt | same | Web Audio error behavior applies |
+| Tuner plus output | tuner capture can run with playback and metronome; stopping one leaves others active | same | Web capture can run with Web playback and metronome |
+| Standalone metronome | free-run, followed playback, and Follow off stay distinct across pause, seek, stop, and replay | same | same |
 
 For manual Linux, macOS, Android, and browser power validation, use the owner-specific evidence and
 release checks in [POWER_PROTECTION.md](./POWER_PROTECTION.md#validation).

@@ -146,7 +146,7 @@ fn reset_drops_old_producer_events_until_a_new_generation_is_active() {
 }
 
 #[test]
-fn skipped_errors_and_safe_fallback_codes_are_counted_without_raw_errors() {
+fn skipped_errors_and_safe_terminal_codes_are_counted_without_raw_errors() {
     let (recorder, _) = recorder();
     let generation = recorder.begin_operation(DiagnosticOperationKind::Play, 1);
     recorder.record_checkpoint(

@@ -62,7 +62,7 @@ pub struct AudioInputRequest {
     pub device_id: Option<String>,
     pub monitor_enabled: Option<bool>,
     pub monitor_gain: Option<f32>,
-    #[serde(default, flatten)]
+    #[serde(flatten)]
     pub control: SessionCommand,
 }
 
@@ -71,6 +71,8 @@ pub struct AudioInputRequest {
 pub struct AudioMonitorRequest {
     pub enabled: bool,
     pub gain: Option<f32>,
+    #[serde(flatten)]
+    pub control: SessionCommand,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -153,6 +155,8 @@ pub struct CaptureState {
     permission_pending: bool,
     session_generation: u64,
     report_sender: Option<mpsc::SyncSender<RuntimeReport>>,
+    #[cfg(test)]
+    fail_next_release: bool,
     #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
     runtime: Option<CaptureRuntime>,
 }
@@ -203,6 +207,8 @@ impl Default for CaptureState {
             permission_pending: false,
             session_generation: 0,
             report_sender: None,
+            #[cfg(test)]
+            fail_next_release: false,
             #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
             runtime: None,
         }
@@ -220,6 +226,10 @@ impl CaptureState {
     }
 
     pub fn release_for_transfer(&mut self) -> Result<(), &'static str> {
+        #[cfg(test)]
+        if std::mem::take(&mut self.fail_next_release) {
+            return Err("release_timeout");
+        }
         #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
         if let Some(runtime) = &self.runtime {
             let _ = runtime.stop_sender.send(CaptureControl::Stop);
@@ -238,6 +248,11 @@ impl CaptureState {
         self.stop_runtime();
         self.clear_live_state();
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_next_release_for_test(&mut self) {
+        self.fail_next_release = true;
     }
 
     pub fn list_devices(&self, capabilities: AudioCapabilities) -> AudioInputDevices {
@@ -1179,6 +1194,9 @@ fn finish_capture_with_error(
             resource: AudioResource::Capture,
             source: AudioSource::CaptureRuntime,
             generation: session_generation,
+            timeline_revision: 0,
+            capture_generation: Some(capture_generation),
+            position_seconds: 0.0,
             code: terminal_code,
             native_time_us: timeline::native_time_us(),
         },
@@ -1333,8 +1351,7 @@ mod tests {
             mic_monitoring_supported: false,
             system_input_volume_supported: false,
             emits_events: Vec::new(),
-            fallback_required: !native_playback_supported,
-            fallback_reason: None,
+            availability_reason: (!native_playback_supported).then_some("native_audio_unavailable"),
         }
     }
 
@@ -1494,6 +1511,7 @@ mod tests {
             permission_pending: false,
             session_generation: 0,
             report_sender: None,
+            fail_next_release: false,
             #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
             runtime: None,
         };

@@ -294,18 +294,31 @@ export function MetronomeProvider({ children }: { children: ReactNode }) {
       if (!command.enabled && !current) {
         return null;
       }
-      const next = await setNativeStandaloneMetronome({
+      if (current && !current.leaseId) {
+        throw new Error("Native metronome ownership metadata is unavailable.");
+      }
+      const configuration = {
         enabled: command.enabled,
         bpm: bpmRef.current,
         beatsPerBar: beatsPerBarRef.current,
         accentFirstBeat: accentFirstBeatRef.current,
         gain: volumeRef.current,
         followPlayback: followPlaybackRef.current,
-        leaseId: current?.leaseId ?? "standalone-metronome",
         operationId: `standalone-metronome-${++nativeStandaloneOperationRef.current}`,
-        generation: current?.generation,
-        timelineRevision: current?.revision,
-      });
+      };
+      const next = await setNativeStandaloneMetronome(
+        current?.leaseId
+          ? {
+              ...configuration,
+              leaseId: current.leaseId,
+              generation: current.generation,
+              timelineRevision: current.revision,
+            }
+          : { ...configuration, leaseId: "standalone-metronome" },
+      );
+      if (!next.leaseId || next.generation <= 0 || next.revision <= 0) {
+        throw new Error("Native metronome ownership metadata is unavailable.");
+      }
       if (command.lifecycle === nativeStandaloneLifecycleRef.current) {
         nativeStandaloneRef.current = next;
       }
@@ -392,7 +405,9 @@ export function MetronomeProvider({ children }: { children: ReactNode }) {
     if (!enabled) {
       return;
     }
-    await startMetronome();
+    if (!isTauriRuntime() || isWebAudioBackendForced()) {
+      await startMetronome();
+    }
   });
 
   const launchMetronome = useStableCallback(async function launchMetronome(
@@ -574,7 +589,12 @@ export function MetronomeProvider({ children }: { children: ReactNode }) {
   }, [nativeSession?.generation, nativeSession?.timelineRevision]);
 
   useEffect(() => {
-    if (!isRunning || !isTauriRuntime() || isWebAudioBackendForced()) return;
+    if (
+      !isRunning ||
+      !nativeStandaloneRef.current ||
+      !isTauriRuntime() ||
+      isWebAudioBackendForced()
+    ) return;
     const epoch = nativeStandaloneCommandEpochRef.current;
     const lifecycle = nativeStandaloneLifecycleRef.current;
     void enqueueNativeMetronomeCommand({ enabled: true, epoch, lifecycle }).catch(() => {

@@ -27,7 +27,7 @@ import {
   stopNativeAudio,
   type NativeAudioLaneRequest,
   type NativeAudioCue,
-  type NativeAudioSessionControl,
+  type NativeAudioOutputControl,
   type NativeAudioSessionSnapshot,
   type NativeAudioSnapshot,
 } from "../../lib/nativeAudio";
@@ -41,7 +41,6 @@ import {
   nativePlaybackErrorMessage,
   playbackErrorMessage,
   rememberNativePlaybackError,
-  rememberNativeFallbackCause,
   rememberWebPlaybackError,
   resetLivePlaybackDiagnostics,
   updateNativePlaybackDiagnostics,
@@ -143,15 +142,8 @@ type NativeOutputMutationTag = {
 };
 
 type PendingWebPlayback = {
-  fallbackCause: string | null;
-  mode: "fallback" | "forced";
   signature: string;
   startTimeSeconds: number;
-};
-
-type PendingNativeRecovery = {
-  generation: number;
-  sessionId: string;
 };
 
 type WebMediaSourceEnablementOwner = {
@@ -426,8 +418,6 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
   } | null>(null);
   const nativeCapabilitiesPromiseRef = useRef<ReturnType<typeof getNativeAudioCapabilities> | null>(null);
   const nativeBackendRef = useRef<string | null>(null);
-  const pendingNativeFallbackCauseRef = useRef<string | null>(null);
-  const pendingNativeRecoveryRef = useRef<PendingNativeRecovery | null>(null);
   const pendingWebPlaybackRef = useRef<PendingWebPlayback | null>(null);
   const webStallTimersRef = useRef(new Map<HTMLAudioElement, number>());
   const webMediaSourcesEnabledRef = useRef(initialWebMediaSourcesEnabled);
@@ -599,7 +589,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     return true;
   });
 
-  function nativeControl(includeRevision = true) {
+  function nativeControl() {
     const native = nativePlaybackRef.current;
     if (native.generation === null || native.timelineRevision === null) {
       throw new Error("Native session metadata is unavailable.");
@@ -609,7 +599,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       leaseId: "project-playback",
       operationId: `project-playback-${native.operationSequence}`,
       generation: native.generation,
-      ...(includeRevision ? { timelineRevision: native.timelineRevision } : {}),
+      timelineRevision: native.timelineRevision,
     };
   }
 
@@ -647,7 +637,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
   }
 
   const enqueueNativeOutputMutation = useStableCallback(function enqueueNativeOutputMutation(
-    execute: (control: NativeAudioSessionControl) => Promise<NativeAudioSnapshot>,
+    execute: (control: NativeAudioOutputControl) => Promise<NativeAudioSnapshot>,
     { bypassQueue = false }: { bypassQueue?: boolean } = {},
   ) {
     const tag = nativeOutputMutationTag();
@@ -901,7 +891,6 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     error: unknown,
   ) {
     const message = playbackErrorMessage(error);
-    pendingNativeFallbackCauseRef.current = message;
     rememberNativePlaybackError(message);
     return message;
   });
@@ -912,8 +901,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     if (!targetSession) {
       return false;
     }
-    const sessionSignature = nativeSessionSignature(targetSession);
-    if (nativePlaybackRef.current.blockedSessionSignature === sessionSignature) {
+    if (nativePlaybackRef.current.blockedSessionSignature !== null) {
       return false;
     }
     const artifactIds = getSessionPlaybackArtifactIds(targetSession);
@@ -931,7 +919,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       capabilities.backend === "android-null"
     ) {
       recordNativePlaybackFailure(
-        capabilities?.fallbackReason ?? "Native playback is unavailable.",
+        capabilities?.availabilityReason ?? "Native playback is unavailable.",
       );
       return false;
     }
@@ -984,6 +972,52 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       });
     nativeStopPromiseRef.current = stopPromise;
     return stopPromise;
+  });
+
+  const failNativePlaybackCommand = useStableCallback(function failNativePlaybackCommand(
+    error: unknown,
+    primaryMessage: string,
+    positionSeconds: number = playbackTimeSecondsRef.current,
+  ) {
+    const activeSession = sessionRef.current;
+    nativeControlGenerationRef.current += 1;
+    recordNativePlaybackFailure(error);
+    cancelPrecount("unavailable");
+    clearPendingTransition();
+    allowFreshPlaybackRef.current = true;
+    pendingNativePlayRef.current = null;
+    pendingNativePauseRef.current = null;
+    if (activeSession) {
+      nativePlaybackRef.current.blockedSessionSignature = nativeSessionSignature(activeSession);
+    }
+    const stoppedTime = clampTime(
+      positionSeconds,
+      playbackDurationSecondsRef.current || activeSession?.durationHintSeconds || 0,
+    );
+    void requestNativeStop();
+    markNativePlaybackInactive();
+    nativePlaybackRef.current = {
+      ...nativePlaybackRef.current,
+      preparePromise: null,
+      prepareSignature: null,
+      sessionSignature: null,
+      playbackSignature: null,
+      generation: null,
+      timelineRevision: null,
+    };
+    clearPlaybackControlBackend();
+    setIsPrecounting(false);
+    setIsPlaying(false);
+    setPlaybackTimeSeconds(stoppedTime);
+    if (activeSession) {
+      syncStemElementTimes(activeSession.visibleStemArtifactIds, stoppedTime);
+      getRenderedMediaElements(activeSession).forEach((element) => {
+        element.pause();
+        element.currentTime = stoppedTime;
+      });
+    }
+    markPlaybackError(primaryMessage);
+    void releaseSystemMediaControls().catch(() => undefined);
   });
 
   const pauseRenderedMediaElements = useStableCallback(function pauseRenderedMediaElements(
@@ -1044,6 +1078,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
         lanes,
       });
       if (
+        preparedSession.leaseId !== "project-playback" ||
         typeof preparedSession.generation !== "number" ||
         typeof preparedSession.timelineRevision !== "number"
       ) {
@@ -1061,7 +1096,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
           };
         }
         recordNativePlaybackFailure(
-          preparedSession.fallbackReason ?? "Native playback prepare fell back to Web Audio.",
+          preparedSession.availabilityReason ?? "Native playback is unavailable.",
         );
         return false;
       }
@@ -1267,7 +1302,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
           transportState: snapshot.state,
         });
         recordNativePlaybackFailure(
-          snapshot.fallbackReason ?? "Native playback start fell back to Web Audio.",
+          snapshot.availabilityReason ?? "Native playback is unavailable.",
         );
         nativePlaybackRef.current.blockedSessionSignature = sessionSignature;
         markNativePlaybackInactive();
@@ -1897,15 +1932,10 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     markWebPlaybackStartResult(true);
     setPlaybackControlBackend("web");
     setIsPlaying(true);
-    if (!isWebAudioBackendForced()) {
-      rememberNativeFallbackCause(
-        pendingNativeFallbackCauseRef.current ?? "Native playback is unavailable.",
-      );
-    }
     markPlaybackConfirmed({
       backend: "web",
       detail: null,
-      mode: isWebAudioBackendForced() ? "forced" : "fallback",
+      mode: isTauriRuntime() && isWebAudioBackendForced() ? "forced" : "browser",
     });
     scheduleStemClock(targetPlaybackState);
     return true;
@@ -2033,7 +2063,10 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
           }
         })
         .catch((error) => {
-          rememberNativePlaybackError(playbackErrorMessage(error));
+          failNativePlaybackCommand(
+            error,
+            "Playback stopped. Check your audio output, then press Play to retry.",
+          );
         });
     }
   });
@@ -2117,20 +2150,30 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       setPlaybackTimeSeconds(snapshot.positionSeconds);
       const cues = nativePlayCueProvider.current?.(snapshot.positionSeconds);
       if (cues) {
-        const control = nativeControl();
-        void (cues.length
-          ? scheduleNativeAudioCues({ ...control, cues })
-          : cancelNativeAudioCues(control, "metronome")
-        ).catch(() => undefined);
+        void updateFollowedMetronomeCues(cues).catch((error) => {
+          if (
+            nativeControlGenerationRef.current === seekGeneration &&
+            nativePlaybackRef.current.sessionSignature === seekSessionSignature
+          ) {
+            failNativePlaybackCommand(
+              error,
+              "Playback stopped. Check your audio output, then press Play to retry.",
+              snapshot.positionSeconds,
+            );
+          }
+        });
       }
       return snapshot;
-    } catch {
+    } catch (error) {
       if (
         nativeControlGenerationRef.current === seekGeneration &&
         nativePlaybackRef.current.sessionSignature === seekSessionSignature
       ) {
-        markNativePlaybackInactive();
-        clearPlaybackControlBackend();
+        failNativePlaybackCommand(
+          error,
+          "Playback stopped. Check your audio output, then press Play to retry.",
+          timeSeconds,
+        );
       }
       return null;
     }
@@ -2319,21 +2362,11 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     if (!targetSession || !elements.length) {
       return;
     }
-    const mode = isWebAudioBackendForced() ? "forced" : "fallback";
-    const fallbackCause =
-      mode === "fallback"
-        ? pendingNativeFallbackCauseRef.current ?? "Native playback is unavailable."
-        : null;
-    if (fallbackCause) {
-      rememberNativeFallbackCause(fallbackCause);
-    }
     pendingWebPlaybackRef.current = {
-      fallbackCause,
-      mode,
       signature: playbackSignature(targetSession),
       startTimeSeconds: elements[0]?.currentTime ?? playbackTimeSecondsRef.current,
     };
-    markPlaybackStarting(mode === "forced" ? "web-forced" : "web-fallback");
+    markPlaybackStarting(isTauriRuntime() && isWebAudioBackendForced() ? "web-forced" : "web");
   });
 
   const playWebMediaElements = useStableCallback(async function playWebMediaElements(
@@ -2388,13 +2421,12 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       return;
     }
     pendingWebPlaybackRef.current = null;
-    pendingNativeFallbackCauseRef.current = null;
     setPlaybackControlBackend("web");
     setIsPlaying(true);
     markPlaybackConfirmed({
       backend: "web",
       detail: null,
-      mode: attempt.mode,
+      mode: isTauriRuntime() && isWebAudioBackendForced() ? "forced" : "browser",
     });
   });
 
@@ -2509,6 +2541,14 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
         }
         if (started) {
           clearPendingTransition();
+          return;
+        }
+        if (isTauriRuntime() && !isWebAudioBackendForced()) {
+          clearPendingTransition();
+          setIsPlaying(false);
+          markPlaybackError(
+            "Playback could not start. Check your audio output, then press Play to retry.",
+          );
           return;
         }
         pendingTransition = latestPendingTransition;
@@ -2703,10 +2743,6 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     loopEpochRef.current += 1;
     playbackIntentEpochRef.current += 1;
     allowFreshPlaybackRef.current = false;
-    if (pendingNativeRecoveryRef.current) {
-      pendingNativeRecoveryRef.current = null;
-      nativeControlGenerationRef.current += 1;
-    }
     cancelPrecount("playback-stopped");
     const pendingTransition = pendingTransitionRef.current;
     const pendingTransitionWasPlaying = pendingTransition?.shouldPlay === true;
@@ -2784,7 +2820,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
           }
           if (!snapshot.nativePlaybackSupported) {
             recordNativePlaybackFailure(
-              snapshot.fallbackReason ?? "Native playback became unavailable while pausing.",
+              snapshot.availabilityReason ?? "Native playback became unavailable while pausing.",
             );
             nativePlaybackRef.current.blockedSessionSignature = pausedSessionSignature;
             setPlaybackTimeSeconds(snapshot.positionSeconds);
@@ -2792,7 +2828,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
             clearPlaybackControlBackend();
             setIsPlaying(false);
             markPlaybackError(
-              "Native playback became unavailable. Press Play to continue with Web Audio.",
+              "Playback stopped. Check your audio output, then press Play to retry.",
             );
             void requestNativeStop();
             void releaseSystemMediaControls().catch(() => undefined);
@@ -2807,10 +2843,20 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
           markNativePlaybackInactive();
           markPlaybackPaused();
         })
-        .catch(() => {
+        .catch((error) => {
           if (pendingNativePauseRef.current?.generation === pauseGeneration) {
             pendingNativePauseRef.current = null;
           }
+          if (
+            nativeControlGenerationRef.current !== pauseGeneration ||
+            nativePlaybackRef.current.sessionSignature !== pausedSessionSignature
+          ) {
+            return;
+          }
+          failNativePlaybackCommand(
+            error,
+            "Playback stopped. Check your audio output, then press Play to retry.",
+          );
         });
       return;
     }
@@ -2840,6 +2886,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     cancelPrecount,
     clearPlaybackControlBackend,
     enqueueNativeOutputMutation,
+    failNativePlaybackCommand,
     getActiveMediaElements,
     markNativePlaybackInactive,
     recordNativePlaybackFailure,
@@ -2880,7 +2927,9 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       return;
     }
     if (isTauriRuntime() && !isWebAudioBackendForced()) {
-      markPlaybackError("Native playback could not start. Press Play to retry.");
+      markPlaybackError(
+        "Playback could not start. Check your audio output, then press Play to retry.",
+      );
       return;
     }
 
@@ -2998,12 +3047,19 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
 
     if (isTauriRuntime() && !isWebAudioBackendForced()) {
       setPlaybackTimeSeconds(startTimeSeconds);
-      await tryStartNativePlayback(
+      const started = await tryStartNativePlayback(
         targetSession,
         startTimeSeconds,
         countInIntervals,
         loopEpoch,
       );
+      if (!started) {
+        setIsPrecounting(false);
+        setIsPlaying(false);
+        markPlaybackError(
+          "Playback could not start. Check your audio output, then press Play to retry.",
+        );
+      }
       return true;
     }
 
@@ -3158,9 +3214,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-    if (
-      nativePlaybackRef.current.blockedSessionSignature === nativeSessionSignature(targetSession)
-    ) {
+    if (nativePlaybackRef.current.blockedSessionSignature !== null) {
       nativePlaybackRef.current.blockedSessionSignature = null;
     }
 
@@ -3261,7 +3315,6 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     loopEpochRef.current += 1;
     playbackIntentEpochRef.current += 1;
     allowFreshPlaybackRef.current = true;
-    pendingNativeRecoveryRef.current = null;
     nativeControlGenerationRef.current += 1;
     cancelPrecount("playback-stopped");
     clearPendingTransition();
@@ -3329,7 +3382,6 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     if (previousSession && previousSession.projectId !== nextSession.projectId) {
       loopEpochRef.current += 1;
       invalidateNativeOutputMutations();
-      pendingNativeRecoveryRef.current = null;
       nativeControlGenerationRef.current += 1;
       const resetTime = playbackResetTimeForSession(nextSession);
       cancelPrecount("session-changed");
@@ -3377,8 +3429,9 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
         setSession(nextSession);
         setPlaybackTimeSeconds(nextTime);
         setPlaybackDurationSeconds(nextSession.durationHintSeconds || playbackDurationSecondsRef.current);
+        const laneMutationTag = nativeOutputMutationTag();
 
-        const fallbackFromNativeLaneUpdate = (message: string) => {
+        const failNativeLaneUpdate = (message: string) => {
           const latestSession = sessionRef.current;
           if (
             !latestSession ||
@@ -3388,32 +3441,17 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
             return;
           }
 
-          recordNativePlaybackFailure(message);
-          nativePlaybackRef.current.blockedSessionSignature = nextNativeSessionSignature;
-          markNativePlaybackInactive();
-          const fallbackTime = clampTime(
+          const stoppedTime = clampTime(
             playbackTimeSecondsRef.current,
             playbackDurationSecondsRef.current || latestSession.durationHintSeconds || 0,
           );
-          void requestNativeStop();
-          syncStemElementTimes(latestSession.visibleStemArtifactIds, fallbackTime);
-          getRenderedMediaElements(latestSession).forEach((element) => {
-            element.pause();
-            element.currentTime = fallbackTime;
-          });
-          setPlaybackTimeSeconds(fallbackTime);
-          clearPlaybackControlBackend();
-          setIsPlaying(false);
-          if (shouldPlay) {
-            markPlaybackStarting("web-fallback");
-            void releaseSystemMediaControls()
-              .then(() => {
-                void playPlaybackImmediately();
-              })
-              .catch(() => markPlaybackError("Playback stopped. Fallback could not start."));
-            return;
-          }
-          void releaseSystemMediaControls().catch((error) => recordNativePlaybackFailure(error));
+          failNativePlaybackCommand(
+            message,
+            shouldPlay
+              ? "Playback stopped. Check your audio output, then press Play to retry."
+              : "Playback could not update. Check your audio output, then press Play to retry.",
+            stoppedTime,
+          );
         };
 
         void enqueueNativeLaneMutation(nextSession)
@@ -3421,16 +3459,18 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
             const latestSession = sessionRef.current;
             if (
               !snapshot ||
+              !laneMutationTag ||
+              !nativeOutputMutationIsCurrent(laneMutationTag) ||
               !latestSession ||
               playbackSignature(latestSession) !== nextSignature ||
-              nativeSessionSignature(latestSession) !== nextNativeSessionSignature
+              nativeSessionSignature(latestSession) !== nextNativeSessionSignature ||
+              !recordNativeSnapshot(snapshot)
             ) {
               return;
             }
-            recordNativeSnapshot(snapshot);
             if (!snapshot.nativePlaybackSupported) {
-              fallbackFromNativeLaneUpdate(
-                snapshot.fallbackReason ?? "Native playback lane update fell back to Web Audio.",
+              failNativeLaneUpdate(
+                snapshot.availabilityReason ?? "Native playback lane update failed.",
               );
               return;
             }
@@ -3460,7 +3500,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
             setIsPlaying(snapshot.state === "playing");
           })
           .catch((error) => {
-            fallbackFromNativeLaneUpdate(playbackErrorMessage(error));
+            failNativeLaneUpdate(playbackErrorMessage(error));
           });
         return;
       }
@@ -3541,14 +3581,13 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     closePlaybackAudioContext,
     disposeStemPlaybackState,
     enqueueNativeLaneMutation,
+    failNativePlaybackCommand,
     getActiveMediaElements,
     getRenderedMediaElements,
     markNativePlaybackInactive,
     playbackResetTimeForSession,
     playbackStartTimeForSession,
-    playPlaybackImmediately,
     readMasterTime,
-    recordNativePlaybackFailure,
     recordNativeSnapshot,
     requestNativeStop,
     setIsPlaying,
@@ -3587,7 +3626,6 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
 
   useEffect(
     () => () => {
-      pendingNativeRecoveryRef.current = null;
       nativeControlGenerationRef.current += 1;
       cancelPrecount("unavailable");
       closePlaybackAudioContext();
@@ -3640,7 +3678,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
         }
         recordNativeSnapshot(snapshot);
       } catch {
-        // Transport error events own playback failure and fallback handling.
+        // Transport error events own playback failure handling.
       } finally {
         requestInFlight = false;
       }
@@ -3656,7 +3694,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
   }, [isPlaying, playbackControlBackend, recordNativeSnapshot]);
 
   useEffect(() => {
-    if (!isTauriRuntime()) {
+    if (!isTauriRuntime() || isWebAudioBackendForced()) {
       return;
     }
 
@@ -3667,7 +3705,9 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
           !activeSession ||
           !nativePlaybackRef.current.active ||
           nativePrecountRef.current !== null ||
-          position.sessionId !== nativePlaybackRef.current.sessionSignature
+          position.sessionId !== nativePlaybackRef.current.sessionSignature ||
+          position.generation !== nativePlaybackRef.current.generation ||
+          position.timelineRevision !== nativePlaybackRef.current.timelineRevision
         ) {
           return;
         }
@@ -3698,7 +3738,11 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
         });
       }),
       listenNativeAudioEnded((snapshot: NativeAudioSnapshot) => {
-        if (snapshot.sessionId !== nativePlaybackRef.current.sessionSignature) {
+        if (
+          snapshot.sessionId !== nativePlaybackRef.current.sessionSignature ||
+          snapshot.generation !== nativePlaybackRef.current.generation ||
+          snapshot.timelineRevision !== nativePlaybackRef.current.timelineRevision
+        ) {
           return;
         }
         const activeSession = sessionRef.current;
@@ -3747,11 +3791,29 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
         markPlaybackConfirmed({ backend: "native", detail: nativeBackendRef.current });
       }),
       listenNativeAudioTerminal((terminal) => {
-        if (terminal.resource !== "output") return;
-        if (terminal.generation !== nativePlaybackRef.current.generation) return;
+        if (
+          terminal.resource !== "output" ||
+          terminal.generation !== nativePlaybackRef.current.generation ||
+          terminal.timelineRevision !== nativePlaybackRef.current.timelineRevision
+        ) return;
+        const activeSession = sessionRef.current;
+        const stoppedTime = clampTime(
+          terminal.positionSeconds,
+          playbackDurationSecondsRef.current || activeSession?.durationHintSeconds || 0,
+        );
         const activePrecount = nativePrecountRef.current;
         if (activePrecount) countInTelemetryRef.current = { ...countInTelemetryRef.current, active: false,
           lastCancelled: playbackCountInCancelledEvent(activePrecount.telemetry, terminal.nativeTimeUs / 1_000_000, "unavailable") };
+        loopEpochRef.current += 1;
+        playbackIntentEpochRef.current += 1;
+        nativeControlGenerationRef.current += 1;
+        invalidateNativeOutputMutations();
+        precountSequenceRef.current += 1;
+        allowFreshPlaybackRef.current = true;
+        clearPendingTransition();
+        pendingNativePlayRef.current = null;
+        pendingNativePauseRef.current = null;
+        pendingWebPlaybackRef.current = null;
         nativePrecountRef.current = null;
         nativePlaybackRef.current = {
           ...nativePlaybackRef.current,
@@ -3765,14 +3827,24 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
           timelineRevision: null,
         };
         clearPlaybackControlBackend();
+        setPlaybackTimeSeconds(stoppedTime);
         setIsPrecounting(false);
         setIsPlaying(false);
-        markPlaybackError("Native playback stopped. Press Play to retry.");
+        syncStemElementTimes(activeSession?.visibleStemArtifactIds ?? [], stoppedTime);
+        getRenderedMediaElements(activeSession).forEach((element) => {
+          element.pause();
+          element.currentTime = stoppedTime;
+        });
+        markPlaybackError("Playback stopped. Check your audio output, then press Play to retry.");
+        writePlaybackE2ETelemetry({
+          activePath: "none",
+          transportState: "paused",
+          positionSeconds: stoppedTime,
+        });
       }),
       listenNativeAudioErrors((error) => {
         const activeSession = sessionRef.current;
         const pendingNativePlay = pendingNativePlayRef.current;
-        const pendingNativePause = pendingNativePauseRef.current;
         const matchingPendingPlay = Boolean(
           activeSession &&
             pendingNativePlay &&
@@ -3781,14 +3853,11 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
             pendingNativePlay.playbackSignature === playbackSignature(activeSession),
         );
         const ownsPausedNativeSession = playbackControlBackendRef.current === "native";
-        const matchingPendingPause = Boolean(
-          pendingNativePause &&
-            pendingNativePause.generation === nativeControlGenerationRef.current &&
-            pendingNativePause.sessionSignature === error.sessionId,
-        );
         if (
           !activeSession ||
           error.sessionId !== nativePlaybackRef.current.sessionSignature ||
+          error.generation !== nativePlaybackRef.current.generation ||
+          error.timelineRevision !== nativePlaybackRef.current.timelineRevision ||
           nativeSessionSignature(activeSession) !== error.sessionId ||
           (!nativePlaybackRef.current.active &&
             !matchingPendingPlay &&
@@ -3801,82 +3870,22 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
           rememberNativePlaybackError(message);
           return;
         }
-        if (!isWebAudioBackendForced()) {
-          recordNativePlaybackFailure(message);
-          nativePlaybackRef.current.blockedSessionSignature = error.sessionId;
-          markNativePlaybackInactive();
-          clearPlaybackControlBackend();
-          setIsPlaying(false);
-          markPlaybackError("Native playback stopped. Press Play to retry.");
-          return;
-        }
-        const shouldContinuePlayback =
-          (nativePlaybackRef.current.active || matchingPendingPlay) &&
-          !matchingPendingPause;
-        nativeControlGenerationRef.current += 1;
-        pendingNativePlayRef.current = null;
-        pendingNativePauseRef.current = null;
-        recordNativePlaybackFailure(message);
-        const fallbackTime = clampTime(
-          playbackTimeSecondsRef.current,
+        const stoppedTime = clampTime(
+          error.positionSeconds,
           playbackDurationSecondsRef.current || activeSession.durationHintSeconds || 0,
         );
-        nativePlaybackRef.current.blockedSessionSignature = nativeSessionSignature(activeSession);
-        markNativePlaybackInactive();
-        clearPlaybackControlBackend();
-        setIsPlaying(false);
-        if (shouldContinuePlayback) {
-          markPlaybackStarting("web-fallback");
-        } else {
-          markPlaybackError(
-            "Native playback became unavailable. Press Play to continue with Web Audio.",
-          );
-        }
-        void requestNativeStop();
-        nativePlaybackRef.current = {
-          ...nativePlaybackRef.current,
-          preparePromise: null,
-          prepareSignature: null,
-          sessionSignature: null,
-          playbackSignature: null,
-        };
-        const fallbackGeneration = nativeControlGenerationRef.current;
-        pendingNativeRecoveryRef.current = {
-          generation: fallbackGeneration,
-          sessionId: nativeSessionSignature(activeSession),
-        };
-        syncStemElementTimes(activeSession.visibleStemArtifactIds, fallbackTime);
-        getRenderedMediaElements(activeSession).forEach((element) => {
-          element.pause();
-          element.currentTime = fallbackTime;
-        });
-        setPlaybackTimeSeconds(fallbackTime);
+        failNativePlaybackCommand(
+          message,
+          error.code === "decoder_worker_failure"
+            ? "Playback stopped because the audio decoder failed. Press Play to retry."
+            : "Playback stopped. Check your audio output, then press Play to retry.",
+          stoppedTime,
+        );
         writePlaybackE2ETelemetry({
           activePath: "none",
           transportState: "paused",
-          positionSeconds: fallbackTime,
+          positionSeconds: stoppedTime,
         });
-        if (!shouldContinuePlayback) {
-          void releaseSystemMediaControls().catch(() => undefined);
-          return;
-        }
-        void releaseSystemMediaControls()
-          .then(() => {
-            const currentSession = sessionRef.current;
-            if (
-              nativeControlGenerationRef.current !== fallbackGeneration ||
-              pendingNativeRecoveryRef.current?.generation !== fallbackGeneration ||
-              pendingNativeRecoveryRef.current.sessionId !== error.sessionId ||
-              !currentSession ||
-              nativeSessionSignature(currentSession) !== error.sessionId ||
-              nativePlaybackRef.current.blockedSessionSignature !== error.sessionId
-            ) {
-              return;
-            }
-            pendingNativeRecoveryRef.current = null;
-            void playPlaybackImmediately();
-          })
-          .catch(() => markPlaybackError("Playback stopped. Fallback could not start."));
       }),
     ]);
 
@@ -3887,10 +3896,11 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     };
   }, [
     clearPlaybackControlBackend,
+    clearPendingTransition,
+    failNativePlaybackCommand,
     getRenderedMediaElements,
     markNativePlaybackInactive,
     playbackResetTimeForSession,
-    playPlaybackImmediately,
     recordNativePlaybackFailure,
     recordNativeSnapshot,
     requestNativeStop,

@@ -291,8 +291,7 @@ describe("Desktop app tools metronome", () => {
   it("schedules normal-Tauri follow cues with the project control tuple", async () => {
     (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
     setMockNativeAudioState({ capabilities: {
-      nativePlaybackSupported: true, fallbackRequired: false,
-      fallbackReason: null, backend: "desktop-cpal",
+      nativePlaybackSupported: true,      availabilityReason: null, backend: "desktop-cpal",
     } });
     setProjectAnalysis("proj_123", timingAnalysis);
     const user = userEvent.setup();
@@ -371,11 +370,47 @@ describe("Desktop app tools metronome", () => {
     delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
   });
 
+  it("fails closed on missing native ownership and retries only from Start", async () => {
+    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    setMockNativeAudioState({ capabilities: {
+      nativePlaybackSupported: true, availabilityReason: null, backend: "desktop-cpal",
+    } });
+    const invoke = getMockInvoke();
+    const originalInvoke = invoke.getMockImplementation()!;
+    let startAttempts = 0;
+    invoke.mockImplementation(async (command, args) => {
+      if (command === "audio_set_standalone_metronome") {
+        startAttempts += 1;
+        return {
+          enabled: true, bpm: 100, beatsPerBar: 4, accentFirstBeat: true,
+          gain: 0.8, followPlayback: true, leaseId: null,
+          generation: 0, revision: 0, nativeTimeUs: 1,
+        };
+      }
+      return originalInvoke(command, args);
+    });
+    const user = userEvent.setup();
+    renderApp(["/tools?tool=metronome"]);
+    await screen.findByRole("heading", { name: "Metronome" });
+
+    await user.click(screen.getByRole("button", { name: "Start" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Start" })).toBeInTheDocument());
+    expect(startAttempts).toBe(1);
+    expect(getMockAudioContexts()).toHaveLength(0);
+
+    await user.click(screen.getByLabelText("Follow project playback"));
+    await user.click(screen.getByLabelText("Follow project playback"));
+    expect(startAttempts).toBe(1);
+
+    await user.click(screen.getByRole("button", { name: "Start" }));
+    await waitFor(() => expect(startAttempts).toBe(2));
+    delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+  });
+
   it("serializes rapid native settings and stop using the latest revision", async () => {
     (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
     setMockNativeAudioState({ capabilities: {
-      nativePlaybackSupported: true, fallbackRequired: false,
-      fallbackReason: null, backend: "desktop-cpal",
+      nativePlaybackSupported: true,      availabilityReason: null, backend: "desktop-cpal",
     } });
     const firstStart = createDeferred<{
       enabled: boolean; bpm: number; beatsPerBar: number; accentFirstBeat: boolean;
@@ -424,8 +459,7 @@ describe("Desktop app tools metronome", () => {
   it("reconciles a failed native settings update by stopping the active metronome", async () => {
     (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
     setMockNativeAudioState({ capabilities: {
-      nativePlaybackSupported: true, fallbackRequired: false,
-      fallbackReason: null, backend: "desktop-cpal",
+      nativePlaybackSupported: true,      availabilityReason: null, backend: "desktop-cpal",
     } });
     const invoke = getMockInvoke();
     const originalInvoke = invoke.getMockImplementation()!;
@@ -433,6 +467,7 @@ describe("Desktop app tools metronome", () => {
     renderApp(["/tools?tool=metronome"]);
     await screen.findByRole("heading", { name: "Metronome" });
     await user.click(screen.getByRole("button", { name: "Start" }));
+    fireEvent.change(screen.getByLabelText("Metronome volume"), { target: { value: "0.7" } });
     await waitFor(() => expect(invoke.mock.calls.filter(
       ([command]) => command === "audio_set_standalone_metronome",
     ).length).toBeGreaterThanOrEqual(2));
@@ -460,8 +495,7 @@ describe("Desktop app tools metronome", () => {
   it("replaces followed cues from the authoritative completed native seek position", async () => {
     (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
     setMockNativeAudioState({ capabilities: {
-      nativePlaybackSupported: true, fallbackRequired: false,
-      fallbackReason: null, backend: "desktop-cpal",
+      nativePlaybackSupported: true,      availabilityReason: null, backend: "desktop-cpal",
     } });
     setProjectAnalysis("proj_123", timingAnalysis);
     const user = userEvent.setup();
@@ -483,7 +517,7 @@ describe("Desktop app tools metronome", () => {
     invoke.mockImplementation(async (command, args) => command === "audio_seek" ? {
       sessionId: preparedSessionId, state: "playing", positionSeconds: authoritativePosition,
       durationSeconds: 182, playbackRate: 1, nativePlaybackSupported: true,
-      fallbackReason: null, lanes: [], bufferHealth: [], leaseId: "project-playback",
+      availabilityReason: null, lanes: [], bufferHealth: [], leaseId: "project-playback",
       generation: 1, timelineRevision: 2, nativeTimeUs: 10,
     } : originalInvoke!(command, args));
     const beforeSeek = invoke.mock.calls.filter(([name]) => name === "audio_schedule_cues").length;
@@ -507,8 +541,7 @@ describe("Desktop app tools metronome", () => {
   it("ignores a native seek snapshot from a mismatched session", async () => {
     (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
     setMockNativeAudioState({ capabilities: {
-      nativePlaybackSupported: true, fallbackRequired: false,
-      fallbackReason: null, backend: "desktop-cpal",
+      nativePlaybackSupported: true,      availabilityReason: null, backend: "desktop-cpal",
     } });
     setProjectAnalysis("proj_123", timingAnalysis);
     const user = userEvent.setup();

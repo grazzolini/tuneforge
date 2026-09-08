@@ -21,6 +21,7 @@ const flatpakManifest = readFileSync(
   "utf8",
 );
 const pnpmSeeder = readFileSync(new URL("../packaging/flatpak/seed-pnpm-store.mjs", import.meta.url), "utf8");
+const pnpmPath = process.env.npm_execpath ?? "pnpm";
 
 function run(command, args, cwd) {
   const result = spawnSync(command, args, { cwd, encoding: "utf8" });
@@ -193,7 +194,7 @@ test("pnpm store seeding preserves durable warm caches and rejects corrupt store
       tarballRoot: sources,
       storeDir,
       cacheDir,
-      pnpmPath: "pnpm",
+      pnpmPath,
     });
   } finally {
     process.chdir(previousCwd);
@@ -232,7 +233,7 @@ test("pnpm store seeding preserves durable warm caches and rejects corrupt store
       tarballRoot: warmSources,
       storeDir,
       cacheDir,
-      pnpmPath: "pnpm",
+      pnpmPath,
     });
   } finally {
     process.chdir(previousCwd);
@@ -258,7 +259,7 @@ test("pnpm store seeding preserves durable warm caches and rejects corrupt store
         tarballRoot: missingSources,
         storeDir: missingBlobStore,
         cacheDir,
-        pnpmPath: "pnpm",
+        pnpmPath,
       }),
     );
   } finally {

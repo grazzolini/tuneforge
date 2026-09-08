@@ -94,6 +94,7 @@ describe("Desktop app tools tuner", () => {
 
   it("keeps tuner preferences synced between tools and settings", async () => {
     const user = userEvent.setup();
+    mockTauriRuntime();
     setMockNativeAudioState({
       capabilities: {
         micCaptureSupported: true,
@@ -177,6 +178,7 @@ describe("Desktop app tools tuner", () => {
 
   it("controls the selected native microphone volume", async () => {
     const user = userEvent.setup();
+    mockTauriRuntime();
     setMockNativeAudioState({
       capabilities: {
         micCaptureSupported: true,
@@ -508,6 +510,7 @@ describe("Desktop app tools tuner", () => {
 
   it("does not query native microphone devices while the tuner is idle until the picker is opened", async () => {
     const setIntervalSpy = vi.spyOn(window, "setInterval");
+    mockTauriRuntime();
     setMockNativeAudioState({
       capabilities: {
         micCaptureSupported: true,
@@ -537,6 +540,7 @@ describe("Desktop app tools tuner", () => {
   });
 
   it("runs a follow-up refresh when devices change during active native discovery", async () => {
+    mockTauriRuntime();
     setMockNativeAudioState({
       capabilities: {
         micCaptureSupported: true,
@@ -680,10 +684,24 @@ describe("Desktop app tools tuner", () => {
       "Native microphone capture could not start. Check the microphone and choose Retry.",
     );
     expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+
+    setMockNativeAudioState({ startError: null });
+    await refreshMicrophoneOptions("USB Interface");
+    const attemptsBeforeSelection = getMockInvoke().mock.calls.filter(
+      ([command]) => command === "audio_start_input",
+    ).length;
+    await user.selectOptions(screen.getByLabelText("Microphone source"), "cpal:1:usb");
+
+    await waitFor(() => expect(screen.getByText("Listening")).toBeInTheDocument());
+    expect(getMockInvoke().mock.calls.filter(
+      ([command]) => command === "audio_start_input",
+    )).toHaveLength(attemptsBeforeSelection + 1);
+    expect(getMockMediaDevices().getUserMedia).not.toHaveBeenCalled();
   });
 
   it("never falls back to Web Audio when packaged Android native capture fails", async () => {
     const user = userEvent.setup();
+    mockTauriRuntime();
     window.localStorage.setItem(
       "tuneforge.tuner-microphone-devices",
       JSON.stringify([{ deviceId: "cached", label: "Cached browser microphone" }]),
@@ -711,6 +729,7 @@ describe("Desktop app tools tuner", () => {
 
   it("continues Android startup after a prompted permission grant", async () => {
     const user = userEvent.setup();
+    mockTauriRuntime();
     setMockNativeAudioState({
       capabilities: { platform: "android", backend: "android-aaudio", micCaptureSupported: true },
       inputPermission: { state: "prompt", error: null },
@@ -749,6 +768,7 @@ describe("Desktop app tools tuner", () => {
 
   it("keeps Android permission denial recoverable without starting capture", async () => {
     const user = userEvent.setup();
+    mockTauriRuntime();
     const denial = {
       code: "permission-denied",
       message: "Microphone permission was denied.",
@@ -786,6 +806,7 @@ describe("Desktop app tools tuner", () => {
 
   it("reports permanently blocked Android permission without prompting or fallback", async () => {
     const user = userEvent.setup();
+    mockTauriRuntime();
     setMockNativeAudioState({
       capabilities: { platform: "android", backend: "android-aaudio", micCaptureSupported: true },
       inputPermission: {
@@ -809,6 +830,7 @@ describe("Desktop app tools tuner", () => {
 
   it("stops Android capture on a generation-matched terminal state event", async () => {
     const user = userEvent.setup();
+    mockTauriRuntime();
     setMockNativeAudioState({
       capabilities: {
         platform: "android",
@@ -847,26 +869,14 @@ describe("Desktop app tools tuner", () => {
     expect(getMockMediaDevices().getUserMedia).not.toHaveBeenCalled();
   });
 
-  it("falls back to system-default Web Audio when a native microphone selection fails", async () => {
+  it("uses Web microphone selection without native calls outside Tauri", async () => {
     const user = userEvent.setup();
     getMockMediaDevices().revealLabels();
-    setMockNativeAudioState({
-      capabilities: {
-        micCaptureSupported: true,
-        backend: "desktop-cpal",
-      },
-      inputDevices: {
-        supported: true,
-        devices: [{ id: "cpal:0:built-in", label: "Built-in Microphone", isDefault: false }],
-        error: null,
-      },
-      startError: "Native microphone failed.",
-    });
     renderApp(["/tools"]);
 
     expect(await screen.findByRole("heading", { name: "Tools" })).toBeInTheDocument();
     await refreshMicrophoneOptions("Built-in Microphone");
-    await user.selectOptions(screen.getByLabelText("Microphone source"), "cpal:0:built-in");
+    await user.selectOptions(screen.getByLabelText("Microphone source"), "built-in");
     await user.click(screen.getByRole("button", { name: "Start" }));
 
     await waitFor(() => expect(screen.getByRole("button", { name: "Stop" })).toBeInTheDocument());
@@ -880,10 +890,11 @@ describe("Desktop app tools tuner", () => {
       video: false,
     });
     expect(screen.getByLabelText("Microphone source")).toHaveValue("");
-    expect(screen.queryByRole("option", { name: "Built-in Microphone" })).not.toBeInTheDocument();
-    expect(window.localStorage.getItem("tuneforge.tuner-native-capture-error")).toBe(
-      "Selected microphone requires native input capture, but native capture is unavailable.",
-    );
+    expect(screen.getByRole("option", { name: "Built-in Microphone" })).toBeDisabled();
+    expect(getMockInvoke()).not.toHaveBeenCalledWith("audio_get_capabilities");
+    expect(getMockInvoke()).not.toHaveBeenCalledWith("audio_list_input_devices");
+    expect(getMockInvoke()).not.toHaveBeenCalledWith("audio_start_input", expect.anything());
+    expect(window.localStorage.getItem("tuneforge.tuner-native-capture-error")).toBeNull();
     expect(window.localStorage.getItem("tuneforge.tuner-input-capture-backend")).toContain(
       '"web"',
     );
@@ -898,7 +909,7 @@ describe("Desktop app tools tuner", () => {
     renderApp(["/tools"]);
 
     expect(await screen.findByRole("heading", { name: "Tools" })).toBeInTheDocument();
-    expect(await screen.findByRole("option", { name: "USB Interface" })).toBeDisabled();
+    expect(await screen.findByRole("option", { name: "USB Interface" })).toBeEnabled();
     expect(getMockMediaDevices().getUserMedia).not.toHaveBeenCalled();
   });
 

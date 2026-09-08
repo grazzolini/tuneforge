@@ -116,15 +116,77 @@ pub fn record_callback_safe_code(generation: u64, code: DiagnosticSafeCode) {
     }
 }
 
+pub fn record_callback_output_stream_error_kind(
+    generation: u64,
+    kind: DiagnosticOutputStreamErrorKind,
+) {
+    if generation == 0 {
+        return;
+    }
+    if let Some(recorder) = DIAGNOSTICS.get() {
+        recorder.record_output_stream_error_kind(generation, kind);
+    }
+}
+
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DiagnosticOperationKind {
     Prepare,
     Play,
+    Pause,
+    Stop,
     Seek,
     Tempo,
     LaneUpdate,
     LaneRoute,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[repr(u64)]
+#[serde(rename_all = "snake_case")]
+pub enum DiagnosticOutputStreamErrorKind {
+    DeviceBusy = 1,
+    DeviceChanged = 2,
+    DeviceNotAvailable = 3,
+    HostUnavailable = 4,
+    InvalidInput = 5,
+    PermissionDenied = 6,
+    RealtimeDenied = 7,
+    ResourceExhausted = 8,
+    StreamInvalidated = 9,
+    UnsupportedConfig = 10,
+    UnsupportedOperation = 11,
+    Xrun = 12,
+    BackendError = 13,
+    Other = 14,
+    Unknown = 15,
+}
+
+impl DiagnosticOutputStreamErrorKind {
+    const fn code(self) -> u64 {
+        self as u64
+    }
+
+    const fn from_code(code: u64) -> Option<Self> {
+        match code {
+            1 => Some(Self::DeviceBusy),
+            2 => Some(Self::DeviceChanged),
+            3 => Some(Self::DeviceNotAvailable),
+            4 => Some(Self::HostUnavailable),
+            5 => Some(Self::InvalidInput),
+            6 => Some(Self::PermissionDenied),
+            7 => Some(Self::RealtimeDenied),
+            8 => Some(Self::ResourceExhausted),
+            9 => Some(Self::StreamInvalidated),
+            10 => Some(Self::UnsupportedConfig),
+            11 => Some(Self::UnsupportedOperation),
+            12 => Some(Self::Xrun),
+            13 => Some(Self::BackendError),
+            14 => Some(Self::Other),
+            15 => Some(Self::Unknown),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -232,6 +294,7 @@ pub struct NativeAudioOperationExportV1 {
     pub ring_capacity_samples: Option<usize>,
     pub scratch_capacity_samples: Option<usize>,
     pub rss_kib_at_begin: Option<u64>,
+    pub first_output_stream_error_kind: Option<DiagnosticOutputStreamErrorKind>,
     pub safe_codes: Vec<DiagnosticSafeCodeCount>,
 }
 
@@ -335,6 +398,7 @@ struct CallbackSlot {
     first_gain_ramp_complete_us: AtomicU64,
     underrun_count: AtomicU64,
     first_underrun_us: AtomicU64,
+    first_output_stream_error_kind: AtomicU64,
     safe_code_counts: [AtomicU64; SAFE_CODE_COUNT],
 }
 
@@ -348,6 +412,7 @@ impl CallbackSlot {
             first_gain_ramp_complete_us: AtomicU64::new(0),
             underrun_count: AtomicU64::new(0),
             first_underrun_us: AtomicU64::new(0),
+            first_output_stream_error_kind: AtomicU64::new(0),
             safe_code_counts: std::array::from_fn(|_| AtomicU64::new(0)),
         }
     }
@@ -359,6 +424,8 @@ impl CallbackSlot {
         self.first_gain_ramp_complete_us.store(0, Ordering::Relaxed);
         self.underrun_count.store(0, Ordering::Relaxed);
         self.first_underrun_us.store(0, Ordering::Relaxed);
+        self.first_output_stream_error_kind
+            .store(0, Ordering::Relaxed);
         for count in &self.safe_code_counts {
             count.store(0, Ordering::Relaxed);
         }
@@ -618,6 +685,25 @@ impl DiagnosticsRecorder {
         }
     }
 
+    fn record_output_stream_error_kind(
+        &self,
+        generation: u64,
+        kind: DiagnosticOutputStreamErrorKind,
+    ) {
+        if !self.accepts_generation(generation) {
+            return;
+        }
+        let slot = self.callback_slot(generation);
+        if slot.generation.load(Ordering::Acquire) == generation {
+            let _ = slot.first_output_stream_error_kind.compare_exchange(
+                0,
+                kind.code(),
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            );
+        }
+    }
+
     fn callback_slot(&self, generation: u64) -> &CallbackSlot {
         &self.callback_slots[(generation as usize) % MAX_OPERATIONS]
     }
@@ -706,6 +792,13 @@ impl DiagnosticsRecorder {
                     ring_capacity_samples: operation.ring_capacity_samples,
                     scratch_capacity_samples: operation.scratch_capacity_samples,
                     rss_kib_at_begin: operation.rss_kib_at_begin,
+                    first_output_stream_error_kind: slot_matches
+                        .then(|| {
+                            DiagnosticOutputStreamErrorKind::from_code(
+                                slot.first_output_stream_error_kind.load(Ordering::Acquire),
+                            )
+                        })
+                        .flatten(),
                     safe_codes: slot_matches
                         .then(|| safe_code_counts(&slot.safe_code_counts))
                         .unwrap_or_default(),

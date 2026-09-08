@@ -19,6 +19,78 @@ const releaseMediaNativeAudioMetadata = Object.freeze({
   timelineRevision: 1,
   nativeTimeUs: 1,
 });
+const releaseMediaNativeAudioCapabilities = Object.freeze({
+  platform: "release-media",
+  backend: "release-media-fixture",
+  nativePlaybackSupported: true,
+  micCaptureSupported: true,
+  micMonitoringSupported: false,
+  systemInputVolumeSupported: false,
+  emitsEvents: ["audio://position", "audio://ended", "audio://error", "audio://input-frame"],
+  availabilityReason: null,
+});
+const releaseMediaNativeAudioCaptureMetadata = Object.freeze({
+  leaseId: "tuner-capture",
+  generation: 1,
+  captureGeneration: 1,
+  nativeTimeUs: 1,
+  capturePath: "desktop-cpal",
+  permissionState: "granted",
+  error: null,
+});
+
+function createReleaseMediaTunerFixture(metadata) {
+  let active = false;
+  let captureGeneration = Math.max(0, metadata.captureGeneration - 1);
+  let monitorEnabled = false;
+  let monitorGain = 0;
+  let sessionGeneration = Math.max(0, metadata.generation - 1);
+
+  function state(overrides = {}) {
+    return {
+      active,
+      deviceId: active ? "release-media-default-input" : null,
+      inputLevel: active ? 0.28 : 0,
+      monitorEnabled,
+      monitorGain,
+      sampleRate: active ? 48_000 : null,
+      captureGeneration,
+      capturePath: active ? metadata.capturePath : "none",
+      permissionState: metadata.permissionState,
+      error: metadata.error,
+      leaseId: active ? metadata.leaseId : null,
+      generation: sessionGeneration,
+      nativeTimeUs: metadata.nativeTimeUs,
+      ...overrides,
+    };
+  }
+
+  return {
+    acceptsFrame: (frame) => active && frame.captureGeneration === captureGeneration,
+    captureGeneration: () => captureGeneration,
+    setMonitor: (enabled, gain) => {
+      monitorEnabled = enabled;
+      monitorGain = gain;
+      return state();
+    },
+    start: () => {
+      if (!active) {
+        active = true;
+        sessionGeneration += 1;
+        captureGeneration += 1;
+      }
+      return state();
+    },
+    state,
+    stop: () => {
+      if (active) {
+        active = false;
+        captureGeneration += 1;
+      }
+      return state();
+    },
+  };
+}
 const childTailLines = 40;
 const releaseMediaCaptureCatalog = [
   {
@@ -552,13 +624,25 @@ async function installPageStabilizers(
   const mobileFixture = entry?.runtime === "mobile"
     ? mobilePlaybackFixture(mobileFixtureOptions)
     : null;
-  await page.addInitScript(({ animatePlayback, mobileFixture, nativeAudioMetadata, theme }) => {
+  await page.addInitScript(({
+    animatePlayback,
+    mobileFixture,
+    nativeAudioCapabilities,
+    nativeAudioCaptureMetadata,
+    nativeAudioMetadata,
+    theme,
+    tunerFixtureFactorySource,
+  }) => {
     const fixedNow = Date.parse("2026-04-18T13:16:00.000Z");
     let callbackId = 1;
     const callbacks = new Map();
     const eventListeners = new Map();
     const powerInhibitionReasons = new Set();
     let tunerFrameTimer = null;
+    const createTunerFixture = Function(`return (${tunerFixtureFactorySource});`)();
+    const tunerFixture = createTunerFixture(
+      nativeAudioCaptureMetadata,
+    );
     let playbackPositionTimer = null;
     let playbackSnapshot = {
       sessionId: null,
@@ -567,7 +651,7 @@ async function installPageStabilizers(
       durationSeconds: 182,
       playbackRate: 1,
       nativePlaybackSupported: true,
-      fallbackReason: null,
+      availabilityReason: null,
       ...nativeAudioMetadata,
       lanes: [],
       bufferHealth: [],
@@ -617,6 +701,7 @@ async function installPageStabilizers(
         sampleRate,
         samples,
         timestampMs: fixedNow + index * 24,
+        captureGeneration: tunerFixture.captureGeneration(),
       };
     }
 
@@ -639,6 +724,9 @@ async function installPageStabilizers(
     }
 
     function startTunerFrames() {
+      if (!tunerFrameTimer) {
+        tunerFixture.start();
+      }
       if (tunerFrameTimer) {
         window.clearInterval(tunerFrameTimer);
       }
@@ -656,6 +744,11 @@ async function installPageStabilizers(
         window.clearInterval(tunerFrameTimer);
         tunerFrameTimer = null;
       }
+      tunerFixture.stop();
+    }
+
+    function tunerInputState(overrides = {}) {
+      return tunerFixture.state(overrides);
     }
 
     function playbackLanesFromRequests(lanes) {
@@ -698,6 +791,9 @@ async function installPageStabilizers(
         positionSeconds: playbackSnapshot.positionSeconds,
         durationSeconds: playbackSnapshot.durationSeconds,
         state: playbackSnapshot.state,
+        generation: playbackSnapshot.generation,
+        timelineRevision: playbackSnapshot.timelineRevision,
+        nativeTimeUs: playbackSnapshot.nativeTimeUs,
       });
     }
 
@@ -827,17 +923,7 @@ async function installPageStabilizers(
         };
       }
       if (command === "audio_get_capabilities") {
-        return {
-          platform: "release-media",
-          backend: "release-media-fixture",
-          nativePlaybackSupported: true,
-          micCaptureSupported: true,
-          micMonitoringSupported: false,
-          systemInputVolumeSupported: false,
-          emitsEvents: ["audio://position", "audio://ended", "audio://error", "audio://input-frame"],
-          fallbackRequired: false,
-          fallbackReason: null,
-        };
+        return { ...nativeAudioCapabilities };
       }
       if (command === "audio_list_input_devices") {
         return {
@@ -859,13 +945,14 @@ async function installPageStabilizers(
           durationSeconds: payload.durationSeconds ?? 182,
           playbackRate: payload.playbackRate ?? 1,
           nativePlaybackSupported: true,
-          fallbackReason: null,
+          availabilityReason: null,
           lanes,
         });
         return {
           id: playbackSnapshot.sessionId,
+          leaseId: playbackSnapshot.leaseId,
           nativePlaybackSupported: true,
-          fallbackReason: null,
+          availabilityReason: null,
           laneCount: lanes.length,
           generation: playbackSnapshot.generation,
           timelineRevision: playbackSnapshot.timelineRevision,
@@ -883,7 +970,7 @@ async function installPageStabilizers(
           state: "playing",
           positionSeconds: startTimeSeconds,
           nativePlaybackSupported: true,
-          fallbackReason: null,
+          availabilityReason: null,
         });
         startPlaybackPosition();
         return snapshot;
@@ -913,50 +1000,25 @@ async function installPageStabilizers(
           lanes: playbackLanesFromRequests(payload.lanes ?? []),
         });
       }
-      if (command === "audio_set_click" || command === "audio_get_snapshot") {
+      if (command === "audio_get_snapshot") {
         return updatePlaybackSnapshot();
       }
       if (command === "audio_get_input_state") {
-        return {
-          active: Boolean(tunerFrameTimer),
-          deviceId: tunerFrameTimer ? "release-media-default-input" : null,
-          inputLevel: tunerFrameTimer ? 0.28 : 0,
-          monitorEnabled: false,
-          monitorGain: 0,
-          sampleRate: tunerFrameTimer ? 48_000 : null,
-        };
+        return tunerInputState();
       }
       if (command === "audio_start_input") {
         startTunerFrames();
-        return {
-          active: true,
-          deviceId: "release-media-default-input",
-          inputLevel: 0.28,
-          monitorEnabled: false,
-          monitorGain: 0,
-          sampleRate: 48_000,
-        };
+        return tunerInputState();
       }
       if (command === "audio_stop_input") {
         stopTunerFrames();
-        return {
-          active: false,
-          deviceId: null,
-          inputLevel: 0,
-          monitorEnabled: false,
-          monitorGain: 0,
-          sampleRate: null,
-        };
+        return tunerInputState();
       }
       if (command === "audio_set_monitor") {
-        return {
-          active: Boolean(tunerFrameTimer),
-          deviceId: tunerFrameTimer ? "release-media-default-input" : null,
-          inputLevel: tunerFrameTimer ? 0.28 : 0,
-          monitorEnabled: Boolean(args?.payload?.enabled),
-          monitorGain: Number(args?.payload?.gain ?? 0),
-          sampleRate: tunerFrameTimer ? 48_000 : null,
-        };
+        return tunerFixture.setMonitor(
+          Boolean(args?.payload?.enabled),
+          Number(args?.payload?.gain ?? 0),
+        );
       }
       if (command === "get_system_default_input_volume" || command === "set_system_default_input_volume") {
         return {
@@ -1069,8 +1131,11 @@ async function installPageStabilizers(
   }, {
     animatePlayback: motionPolicy.animatePlayback,
     mobileFixture,
+    nativeAudioCapabilities: releaseMediaNativeAudioCapabilities,
+    nativeAudioCaptureMetadata: releaseMediaNativeAudioCaptureMetadata,
     nativeAudioMetadata: releaseMediaNativeAudioMetadata,
     theme: options.theme,
+    tunerFixtureFactorySource: createReleaseMediaTunerFixture.toString(),
   });
 }
 
@@ -2412,12 +2477,15 @@ export {
   captureMotionPolicy,
   chords,
   chordBackends,
+  createReleaseMediaTunerFixture,
   expectedCatalogEntries,
   manifestItemForCatalogEntry,
   measureMobilePlaybackFollowLayouts,
   overflowToScrollDelta,
   parseOptions,
   releaseMediaCaptureCatalog,
+  releaseMediaNativeAudioCapabilities,
+  releaseMediaNativeAudioCaptureMetadata,
   releaseMediaNativeAudioMetadata,
   validateReleaseMediaCatalog,
 };

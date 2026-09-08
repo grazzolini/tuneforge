@@ -16,6 +16,7 @@ import {
   getWebAudioContextConstructor,
 } from "../../lib/webAudio";
 import { usePlayback, type PlaybackSnapshot } from "../projects/playback-context";
+import { playbackRateForSession } from "../projects/playbackUtils";
 import { MetronomeContext, type MetronomeLaunchOptions } from "./metronome-context";
 import { DEFAULT_METRONOME_SOUND, scheduleMetronomeClick } from "./metronomeSound";
 import {
@@ -35,6 +36,11 @@ import {
 const SCHEDULE_AHEAD_SECONDS = 0.12;
 const SCHEDULER_INTERVAL_MS = 25;
 const START_DELAY_SECONDS = 0.035;
+
+function playbackRateForSnapshot(snapshot: PlaybackSnapshot) {
+  const playbackRate = playbackRateForSession(snapshot.session);
+  return Number.isFinite(playbackRate) && playbackRate > 0 ? playbackRate : 1;
+}
 
 type NativeMetronomeCommand = {
   enabled: boolean;
@@ -220,13 +226,15 @@ export function MetronomeProvider({ children }: { children: ReactNode }) {
       return;
     }
     const playbackTimeSeconds = Math.max(0, snapshot.playbackTimeSeconds);
+    const playbackRate = playbackRateForSnapshot(snapshot);
     let beatIndex = nextTimedBeatIndex({
       lastPlaybackTimeSeconds: lastSyncedPlaybackTimeRef.current,
       lastScheduledBeatIndex: lastSyncedScheduledBeatRef.current,
       playbackTimeSeconds,
       timingGrid,
     });
-    const scheduleUntilPlaybackSeconds = playbackTimeSeconds + SCHEDULE_AHEAD_SECONDS;
+    const scheduleUntilPlaybackSeconds =
+      playbackTimeSeconds + SCHEDULE_AHEAD_SECONDS * playbackRate;
 
     while (
       beatIndex < timingGrid.beats.length &&
@@ -234,7 +242,8 @@ export function MetronomeProvider({ children }: { children: ReactNode }) {
     ) {
       const beat = timingGrid.beats[beatIndex];
       const startTimeSeconds =
-        audioContext.currentTime + Math.max(0, beat.seconds - playbackTimeSeconds);
+        audioContext.currentTime +
+        Math.max(0, beat.seconds - playbackTimeSeconds) / playbackRate;
       scheduleBeat(audioContext, beat.index, startTimeSeconds, beat);
       lastSyncedScheduledBeatRef.current = beatIndex;
       beatIndex += 1;
@@ -253,18 +262,21 @@ export function MetronomeProvider({ children }: { children: ReactNode }) {
     }
     const beatSeconds = secondsPerBeat(bpmRef.current);
     const playbackTimeSeconds = Math.max(0, snapshot.playbackTimeSeconds);
+    const playbackRate = playbackRateForSnapshot(snapshot);
     let beatIndex = nextSyncedBeatIndex({
       bpm: bpmRef.current,
       lastPlaybackTimeSeconds: lastSyncedPlaybackTimeRef.current,
       lastScheduledBeatIndex: lastSyncedScheduledBeatRef.current,
       playbackTimeSeconds,
     });
-    const scheduleUntilPlaybackSeconds = playbackTimeSeconds + SCHEDULE_AHEAD_SECONDS;
+    const scheduleUntilPlaybackSeconds =
+      playbackTimeSeconds + SCHEDULE_AHEAD_SECONDS * playbackRate;
 
     while (beatIndex * beatSeconds <= scheduleUntilPlaybackSeconds) {
       const beatPlaybackTimeSeconds = beatIndex * beatSeconds;
       const startTimeSeconds =
-        audioContext.currentTime + Math.max(0, beatPlaybackTimeSeconds - playbackTimeSeconds);
+        audioContext.currentTime +
+        Math.max(0, beatPlaybackTimeSeconds - playbackTimeSeconds) / playbackRate;
       scheduleBeat(audioContext, beatIndex, startTimeSeconds);
       lastSyncedScheduledBeatRef.current = beatIndex;
       beatIndex += 1;
@@ -294,18 +306,31 @@ export function MetronomeProvider({ children }: { children: ReactNode }) {
       if (!command.enabled && !current) {
         return null;
       }
-      const next = await setNativeStandaloneMetronome({
+      if (current && !current.leaseId) {
+        throw new Error("Native metronome ownership metadata is unavailable.");
+      }
+      const configuration = {
         enabled: command.enabled,
         bpm: bpmRef.current,
         beatsPerBar: beatsPerBarRef.current,
         accentFirstBeat: accentFirstBeatRef.current,
         gain: volumeRef.current,
         followPlayback: followPlaybackRef.current,
-        leaseId: current?.leaseId ?? "standalone-metronome",
         operationId: `standalone-metronome-${++nativeStandaloneOperationRef.current}`,
-        generation: current?.generation,
-        timelineRevision: current?.revision,
-      });
+      };
+      const next = await setNativeStandaloneMetronome(
+        current?.leaseId
+          ? {
+              ...configuration,
+              leaseId: current.leaseId,
+              generation: current.generation,
+              timelineRevision: current.revision,
+            }
+          : { ...configuration, leaseId: "standalone-metronome" },
+      );
+      if (!next.leaseId || next.generation <= 0 || next.revision <= 0) {
+        throw new Error("Native metronome ownership metadata is unavailable.");
+      }
       if (command.lifecycle === nativeStandaloneLifecycleRef.current) {
         nativeStandaloneRef.current = next;
       }
@@ -392,7 +417,9 @@ export function MetronomeProvider({ children }: { children: ReactNode }) {
     if (!enabled) {
       return;
     }
-    await startMetronome();
+    if (!isTauriRuntime() || isWebAudioBackendForced()) {
+      await startMetronome();
+    }
   });
 
   const launchMetronome = useStableCallback(async function launchMetronome(
@@ -574,7 +601,12 @@ export function MetronomeProvider({ children }: { children: ReactNode }) {
   }, [nativeSession?.generation, nativeSession?.timelineRevision]);
 
   useEffect(() => {
-    if (!isRunning || !isTauriRuntime() || isWebAudioBackendForced()) return;
+    if (
+      !isRunning ||
+      !nativeStandaloneRef.current ||
+      !isTauriRuntime() ||
+      isWebAudioBackendForced()
+    ) return;
     const epoch = nativeStandaloneCommandEpochRef.current;
     const lifecycle = nativeStandaloneLifecycleRef.current;
     void enqueueNativeMetronomeCommand({ enabled: true, epoch, lifecycle }).catch(() => {

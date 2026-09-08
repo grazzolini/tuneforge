@@ -26,6 +26,13 @@ describe("Desktop app settings theme", () => {
   beforeEach(resetAppTestHarness);
   afterEach(() => vi.unstubAllEnvs());
 
+  function mockTauriRuntime() {
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: { invoke: mockInvoke },
+    });
+  }
+
   async function openPlaybackWorkspace(user: ReturnType<typeof userEvent.setup>) {
     await user.click(screen.getByRole("tab", { name: "Playback" }));
   }
@@ -315,6 +322,7 @@ describe("Desktop app settings theme", () => {
 
   it("persists theme and visible UI preferences", async () => {
     const user = userEvent.setup();
+    mockTauriRuntime();
     setMockNativeAudioState({
       capabilities: {
         backend: "desktop-cpal",
@@ -322,7 +330,7 @@ describe("Desktop app settings theme", () => {
         nativePlaybackSupported: false,
       },
       snapshot: {
-        fallbackReason: "buffer underrun on native lane vocals",
+        availabilityReason: "buffer underrun on native lane vocals",
         bufferHealth: [
           {
             laneId: "vocals",
@@ -372,8 +380,6 @@ describe("Desktop app settings theme", () => {
     expect(screen.getByText(/^Unavailable —/)).toBeInTheDocument();
     expect(screen.getByText("Native microphone failed.")).toBeInTheDocument();
     expect(screen.getByText("Native output failed.")).toBeInTheDocument();
-    expect(screen.getByText("Latest Native Fallback Cause")).toBeInTheDocument();
-    expect(screen.getAllByText("None").length).toBeGreaterThan(0);
     expect(screen.getByText("Native Playback Buffer Health")).toBeInTheDocument();
     expect(screen.getByText("No active native lanes")).toBeInTheDocument();
     expect(screen.getByText("Not started")).toBeInTheDocument();
@@ -404,6 +410,7 @@ describe("Desktop app settings theme", () => {
 
   it("shows forced Web Audio diagnostics", async () => {
     const user = userEvent.setup();
+    mockTauriRuntime();
     vi.stubEnv("VITE_TUNEFORGE_FORCE_WEB_AUDIO", "1");
     setMockNativeAudioState({
       capabilities: {
@@ -419,14 +426,33 @@ describe("Desktop app settings theme", () => {
 
     expect(await screen.findByText("/tmp/tuneforge")).toBeInTheDocument();
     expect(screen.getByText("Web Audio forced at build time")).toBeInTheDocument();
-    expect(screen.getByText("Forced Web Audio")).toBeInTheDocument();
-    expect(screen.getByText("Available (desktop-cpal)")).toBeInTheDocument();
-    expect(screen.getByText("Native (desktop-cpal)")).toBeInTheDocument();
+    expect(screen.getAllByText("Web Audio (forced)").length).toBeGreaterThan(0);
     expect(screen.getByText("Not playing")).toBeInTheDocument();
-    expect(mockInvoke).toHaveBeenCalledWith("audio_get_capabilities");
+    expect(mockInvoke).not.toHaveBeenCalledWith("audio_get_capabilities");
+    expect(mockInvoke).not.toHaveBeenCalledWith("native_audio_diagnostics_availability");
+    expect(mockInvoke).not.toHaveBeenCalledWith("native_audio_diagnostics_read");
+    expect(mockInvoke).not.toHaveBeenCalledWith("audio_get_input_state");
+    expect(mockInvoke).not.toHaveBeenCalledWith("audio_get_input_permission_status");
+  });
+
+  it("keeps browser diagnostics in Web Audio mode when the forced flag is present", async () => {
+    const user = userEvent.setup();
+    vi.stubEnv("VITE_TUNEFORGE_FORCE_WEB_AUDIO", "1");
+    renderApp(["/settings"]);
+
+    expect(await screen.findByRole("heading", { name: "Control Room" })).toBeInTheDocument();
+    await user.click(screen.getByText("Show diagnostics"));
+
+    expect(screen.getAllByText("Web Audio").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("None").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Web Audio (forced)")).not.toBeInTheDocument();
+    expect(screen.queryByText("Web Audio forced at build time")).not.toBeInTheDocument();
+    expect(mockInvoke).not.toHaveBeenCalledWith("audio_get_capabilities");
+    expect(mockInvoke).not.toHaveBeenCalledWith("native_audio_diagnostics_availability");
   });
 
   it("hides native audio diagnostics when the diagnostic environment is disabled", async () => {
+    mockTauriRuntime();
     renderApp(["/settings"]);
 
     expect(await screen.findByRole("heading", { name: "Control Room" })).toBeInTheDocument();
@@ -438,6 +464,7 @@ describe("Desktop app settings theme", () => {
 
   it("resets and exports enabled local native audio diagnostics", async () => {
     const user = userEvent.setup();
+    mockTauriRuntime();
     const defaultInvoke = mockInvoke.getMockImplementation();
     if (!defaultInvoke) {
       throw new Error("Mock invoke implementation was not installed.");
@@ -499,6 +526,7 @@ describe("Desktop app settings theme", () => {
 
   it("keeps Android capture capability, live state, and history distinct", async () => {
     const user = userEvent.setup();
+    mockTauriRuntime();
     setMockNativeAudioState({
       capabilities: { platform: "android", backend: "android-aaudio", micCaptureSupported: true },
       inputPermission: { state: "blocked", error: null },
@@ -517,7 +545,7 @@ describe("Desktop app settings theme", () => {
     await user.click(await screen.findByText("Show diagnostics"));
 
     expect(await screen.findByText("Available (android-aaudio)")).toBeInTheDocument();
-    expect(screen.getByText("Native required")).toBeInTheDocument();
+    expect(screen.getAllByText("Native required").length).toBeGreaterThan(0);
     expect(screen.getByText("Blocked")).toBeInTheDocument();
     expect(screen.getAllByText("Inactive").length).toBeGreaterThan(0);
     expect(screen.getAllByText("None").length).toBeGreaterThan(0);

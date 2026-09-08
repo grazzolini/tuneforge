@@ -887,13 +887,13 @@ describe("Desktop app mobile capability gates", () => {
     await waitFor(() => expect(chordScrollTo).toHaveBeenCalled());
   });
 
-  it("keeps mobile fallback status beside an interactive scrubber and clocks", async () => {
+  it("keeps mobile Web Audio status beside an interactive scrubber and clocks", async () => {
     enableAndroidRuntime();
     renderApp(["/projects/proj_123"]);
 
     fireEvent.click(await screen.findByRole("tab", { name: "Playback" }));
     act(() => {
-      markPlaybackStarting("web-fallback");
+      markPlaybackStarting("web");
       updateBrowserWakeLockStatus({
         phase: "failed",
         backend: "browser-screen-wake-lock",
@@ -902,9 +902,7 @@ describe("Desktop app mobile capability gates", () => {
       });
     });
 
-    const status = await screen.findByText(
-      "Native playback unavailable. Starting Web Audio fallback…",
-    );
+    const status = await screen.findByText("Starting playback…");
     const scrubber = screen.getByRole("slider", { name: "Playback position" });
     const statusStack = status.closest<HTMLElement>(".transport__status-stack");
     const scrubberLabel = scrubber.closest("label");

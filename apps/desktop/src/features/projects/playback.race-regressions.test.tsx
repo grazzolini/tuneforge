@@ -1,4 +1,5 @@
 import {
+  advanceMockAnimationFrames,
   emitMockNativeAudioCue,
   emitMockNativePlaybackPosition,
   getMockAudioContexts,
@@ -7,12 +8,14 @@ import {
   markAudioReady,
   mockListen,
   resetAppTestHarness,
+  setMockAudioContextInitialState,
   setMockNativeAudioState,
 } from "../../test/appTestHarness";
 import { act, cleanup, render, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PlaybackProvider } from "./playback";
 import {
+  PlaybackContext,
   usePlayback,
   type PlaybackContextValue,
   type ProjectPlaybackSession,
@@ -80,6 +83,33 @@ function bufferedSession(
   });
 }
 
+function activePlaybackContextValue(
+  targetSession: ProjectPlaybackSession,
+  playbackTimeSeconds: number,
+): PlaybackContextValue {
+  const snapshot = {
+    session: targetSession,
+    playbackTimeSeconds,
+    playbackDurationSeconds: 30,
+    isPrecounting: false,
+    isPlaying: true,
+  };
+  return {
+    ...snapshot,
+    getPlaybackSnapshot: () => snapshot,
+    activateStemPlayback: async () => undefined,
+    primeWebAudioForGesture: async () => undefined,
+    registerProjectSession: () => undefined,
+    togglePlayback: async () => undefined,
+    playPlayback: async () => undefined,
+    pausePlayback: () => undefined,
+    stopPlayback: () => undefined,
+    dismissSession: () => undefined,
+    seekBy: () => undefined,
+    seekTo: () => undefined,
+  };
+}
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((nextResolve) => {
@@ -110,6 +140,22 @@ function calls(command: string) {
   return getMockInvoke().mock.calls.filter(([name]) => name === command);
 }
 
+function standaloneMetronomeResult(args: unknown) {
+  const payload = (args as { payload?: Record<string, unknown> })?.payload;
+  return {
+    enabled: payload?.enabled,
+    bpm: payload?.bpm,
+    beatsPerBar: payload?.beatsPerBar,
+    accentFirstBeat: payload?.accentFirstBeat,
+    gain: payload?.gain,
+    followPlayback: payload?.followPlayback,
+    leaseId: "standalone-metronome",
+    generation: 1,
+    revision: 1,
+    nativeTimeUs: 1,
+  };
+}
+
 beforeEach(() => {
   resetAppTestHarness();
 });
@@ -134,6 +180,40 @@ function enableNativePlayback() {
     },
   });
 }
+
+describe("stem playback activation backend selection", () => {
+  it("does not create a Web Audio context in normal Tauri", async () => {
+    enableNativePlayback();
+    await setup(bufferedSession());
+
+    expect(getMockAudioContexts()).toHaveLength(0);
+    await act(async () => playback.activateStemPlayback());
+
+    expect(getMockAudioContexts()).toHaveLength(0);
+  });
+
+  for (const runtime of ["browser", "forced Web Audio"] as const) {
+    it(`activates Web Audio in ${runtime}`, async () => {
+      setMockAudioContextInitialState("suspended");
+      if (runtime === "forced Web Audio") {
+        vi.stubEnv("VITE_TUNEFORGE_FORCE_WEB_AUDIO", "1");
+        enableNativePlayback();
+      }
+      await setup(bufferedSession());
+
+      const contextsBeforeActivation = getMockAudioContexts();
+      const contextCount = contextsBeforeActivation.length;
+      const resumeCount = contextsBeforeActivation[contextCount - 1]?.resume.mock.calls.length ?? 0;
+      await act(async () => playback.activateStemPlayback());
+
+      expect(getMockAudioContexts()).toHaveLength(Math.max(1, contextCount));
+      const contextsAfterActivation = getMockAudioContexts();
+      expect(contextsAfterActivation[contextsAfterActivation.length - 1]?.resume).toHaveBeenCalledTimes(
+        resumeCount + 1,
+      );
+    });
+  }
+});
 
 describe("native playback race regressions", () => {
   for (const action of ["stop", "pause"] as const) {
@@ -264,7 +344,7 @@ describe("native playback race regressions", () => {
     expect(playback.isPlaying).toBe(false);
   });
 
-  it("restores playing state when the current native Pause is rejected", async () => {
+  it("fails closed when the current native Pause is rejected", async () => {
     enableNativePlayback();
     await setup();
     await act(async () => playback.playPlayback());
@@ -279,8 +359,12 @@ describe("native playback race regressions", () => {
     await flush();
 
     expect(calls("audio_pause")).toHaveLength(1);
-    expect(calls("audio_stop")).toHaveLength(0);
-    expect(playback.isPlaying).toBe(true);
+    expect(calls("audio_stop")).toHaveLength(1);
+    expect((calls("audio_stop")[0]?.[1] as { payload?: object })?.payload).toMatchObject({
+      generation: 1,
+      timelineRevision: 1,
+    });
+    expect(playback.isPlaying).toBe(false);
   });
 
   it("uses each completed native revision across rapid seeks", async () => {
@@ -571,6 +655,13 @@ describe("native playback race regressions", () => {
 
   it("restarts a native EOF loop with loop count-in and followed metronome active", async () => {
     enableNativePlayback();
+    const invoke = getMockInvoke();
+    const originalInvoke = invoke.getMockImplementation()!;
+    invoke.mockImplementation(async (command, args) =>
+      command === "audio_set_standalone_metronome"
+        ? standaloneMetronomeResult(args)
+        : originalInvoke(command, args),
+    );
     render(
       <PlaybackProvider>
         <Harness />
@@ -586,7 +677,7 @@ describe("native playback race regressions", () => {
     })));
     await flush();
     await act(async () => playback.playPlayback());
-    await act(async () => metronome.setFollowPlaybackEnabled(true));
+    await act(async () => metronome.startMetronome());
     const snapshot = await getMockInvoke()("audio_get_snapshot") as Record<string, unknown>;
     const ended = { ...snapshot, state: "stopped", positionSeconds: 30 };
 
@@ -846,6 +937,70 @@ describe("buffered Web playback race regressions", () => {
     expect(getMockAudioContexts().flatMap((context) => context.createdSources)).toHaveLength(1);
   });
 
+  const schedulingCases: Array<[
+    string,
+    ProjectPlaybackSession["timingGrid"],
+    number,
+    typeof session,
+  ]> = [
+    [
+      "buffered timing-grid",
+      {
+        beats_per_bar: 4,
+        meter: "4/4",
+        source: "detected",
+        downbeat_source: null,
+        downbeat_confidence: null,
+        meter_confidence: null,
+        beats: [
+          { index: 0, seconds: 0, bar_index: 0, beat_in_bar: 1 },
+          { index: 1, seconds: 0.04, bar_index: 0, beat_in_bar: 2 },
+        ],
+        bars: [],
+      },
+      0,
+      bufferedSession,
+    ],
+    ["HTML media uniform", null, 0.56, session],
+  ];
+  for (const runtime of ["browser", "forced Web"] as const) {
+    for (const [label, timingGrid, playbackTimeSeconds, makeSession] of schedulingCases) {
+      for (const rate of [0.5, 1.5]) {
+        it(`${runtime} ${label} schedules source beats in wall time at ${rate}x`, async () => {
+          if (runtime === "forced Web") {
+            vi.stubEnv("VITE_TUNEFORGE_FORCE_WEB_AUDIO", "1");
+            enableNativePlayback();
+          }
+          const targetSession = makeSession({
+            tempoOriginalBpm: 120,
+            tempoTargetBpm: 120 * rate,
+            timingGrid,
+          });
+          render(
+            <PlaybackContext.Provider
+              value={activePlaybackContextValue(targetSession, playbackTimeSeconds)}
+            >
+              <MetronomeProvider>
+                <MetronomeHarness />
+              </MetronomeProvider>
+            </PlaybackContext.Provider>,
+          );
+          await act(async () => metronome.startMetronome());
+          act(() => advanceMockAnimationFrames(1));
+
+          const context = getMockAudioContexts()[0]!;
+          const scheduledTimes = context.createdOscillators.flatMap((candidate) =>
+            candidate.start.mock.calls.map(([time]) => Number(time)),
+          );
+          const observedDelay = timingGrid
+            ? scheduledTimes[1]! - scheduledTimes[0]!
+            : scheduledTimes[0]! - context.currentTime;
+          expect(observedDelay).toBeCloseTo(0.04 / rate, 6);
+        });
+      }
+    }
+  }
+
 });
 
 describe("followed native metronome races", () => {
@@ -858,6 +1013,9 @@ describe("followed native metronome races", () => {
     const originalInvoke = invoke.getMockImplementation()!;
     invoke.mockImplementation(async (command, args) => {
       const payload = (args as { payload?: Record<string, unknown> })?.payload;
+      if (command === "audio_set_standalone_metronome") {
+        return standaloneMetronomeResult(args);
+      }
       const result = await originalInvoke(command, args);
       if (command === "audio_schedule_cues") {
         cueCount = (payload?.cues as unknown[]).length;
@@ -883,7 +1041,7 @@ describe("followed native metronome races", () => {
     act(() => playback.registerProjectSession(session()));
     await flush();
     await act(async () => playback.playPlayback());
-    await act(async () => metronome.setFollowPlaybackEnabled(true));
+    await act(async () => metronome.startMetronome());
     await flush();
     expect(cueCount).toBeGreaterThan(0);
 

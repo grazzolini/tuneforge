@@ -12,12 +12,19 @@ download, installation, verification, signature, and publication instructions.
 - Moved project count-ins and metronome timing onto one native output runtime, including standalone
   free-run and playback-following modes, while keeping tuner capture independently concurrent.
 
+### Changed
+
+- Made native audio required in normal Tauri sessions while preserving browser and explicitly
+  forced Web Audio modes.
+
 ### Fixed
 
 - Reduced Android sync reconciliation memory use for libraries with many pending projects.
 - Preserved project playback position across native output changes, rejected stale transport
   completions, cancelled pending native and Web starts, kept native loop restarts reliable, and
-  rescheduled playback-following metronome cues after tempo changes.
+  kept playback-following native and Web metronome timing aligned through tempo changes.
+- Avoided opening Web Audio during native stem selection and kept Linux native playback alive while
+  CPAL recovers a transient output xrun.
 
 ## [1.4.0] - 2026-09-01
 

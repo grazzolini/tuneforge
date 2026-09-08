@@ -98,8 +98,7 @@ function enableNativePlayback() {
   setMockNativeAudioState({
     capabilities: {
       nativePlaybackSupported: true,
-      fallbackRequired: false,
-      fallbackReason: null,
+      availabilityReason: null,
       backend: "desktop-cpal",
     },
   });
@@ -639,7 +638,7 @@ describe("Desktop app project playback pre-count", () => {
       durationSeconds: 182,
       playbackRate: 1,
       nativePlaybackSupported: true,
-      fallbackReason: null,
+      availabilityReason: null,
       lanes: [],
       bufferHealth: [],
     });
@@ -650,7 +649,7 @@ describe("Desktop app project playback pre-count", () => {
       durationSeconds: 182,
       playbackRate: 1,
       nativePlaybackSupported: true,
-      fallbackReason: null,
+      availabilityReason: null,
       lanes: [],
       bufferHealth: [],
     });
@@ -684,7 +683,7 @@ describe("Desktop app project playback pre-count", () => {
       durationSeconds: 182,
       playbackRate: 1,
       nativePlaybackSupported: true,
-      fallbackReason: null,
+      availabilityReason: null,
       lanes: [],
       bufferHealth: [],
     });
@@ -718,7 +717,7 @@ describe("Desktop app project playback pre-count", () => {
       durationSeconds: 182,
       playbackRate: 1,
       nativePlaybackSupported: true,
-      fallbackReason: null,
+      availabilityReason: null,
       lanes: [],
       bufferHealth: [],
     });
@@ -754,7 +753,7 @@ describe("Desktop app project playback pre-count", () => {
       durationSeconds: 182,
       playbackRate: 1,
       nativePlaybackSupported: true,
-      fallbackReason: null,
+      availabilityReason: null,
       lanes: [],
       bufferHealth: [],
     });
@@ -797,7 +796,7 @@ describe("Desktop app project playback pre-count", () => {
       durationSeconds: 182,
       playbackRate: 1,
       nativePlaybackSupported: true,
-      fallbackReason: null,
+      availabilityReason: null,
       lanes: [],
       bufferHealth: [],
       timelineRevision: 2,
@@ -835,7 +834,7 @@ describe("Desktop app project playback pre-count", () => {
       durationSeconds: 182,
       playbackRate: 1,
       nativePlaybackSupported: true,
-      fallbackReason: null,
+      availabilityReason: null,
       lanes: [],
       bufferHealth: [],
     });
@@ -846,7 +845,7 @@ describe("Desktop app project playback pre-count", () => {
       durationSeconds: 182,
       playbackRate: 1,
       nativePlaybackSupported: true,
-      fallbackReason: null,
+      availabilityReason: null,
       lanes: [],
       bufferHealth: [],
     });
@@ -894,7 +893,7 @@ describe("Desktop app project playback pre-count", () => {
       durationSeconds: 182,
       playbackRate: 1,
       nativePlaybackSupported: true,
-      fallbackReason: null,
+      availabilityReason: null,
       lanes: [],
       bufferHealth: [],
       timelineRevision: 2,
@@ -910,7 +909,7 @@ describe("Desktop app project playback pre-count", () => {
       durationSeconds: 182,
       playbackRate: 1,
       nativePlaybackSupported: true,
-      fallbackReason: null,
+      availabilityReason: null,
       lanes: [],
       bufferHealth: [],
       timelineRevision: 4,
@@ -952,7 +951,7 @@ describe("Desktop app project playback pre-count", () => {
       durationSeconds: 182,
       playbackRate: 1,
       nativePlaybackSupported: true,
-      fallbackReason: null,
+      availabilityReason: null,
       lanes: [],
       bufferHealth: [],
     });
@@ -963,7 +962,7 @@ describe("Desktop app project playback pre-count", () => {
       durationSeconds: 182,
       playbackRate: 1,
       nativePlaybackSupported: true,
-      fallbackReason: null,
+      availabilityReason: null,
       lanes: [],
       bufferHealth: [],
     });
@@ -1014,7 +1013,7 @@ describe("Desktop app project playback pre-count", () => {
       durationSeconds: 182,
       playbackRate: 1,
       nativePlaybackSupported: true,
-      fallbackReason: null,
+      availabilityReason: null,
       lanes: [],
       bufferHealth: [],
       timelineRevision: 3,
@@ -1050,13 +1049,70 @@ describe("Desktop app project playback pre-count", () => {
     await user.click(screen.getByLabelText("Enable pre-count"));
     await user.click(screen.getByRole("button", { name: "Play playback" }));
     await waitFor(() => expect(readPlaybackE2ETelemetry().countIn.active).toBe(true));
+    const playCount = getMockInvoke().mock.calls.filter(([command]) => command === "audio_play").length;
     act(() => emitMockNativeAudioTerminal({
       resource: "output", source: "output_runtime", generation: 1,
-      code: "output_stream_failure", nativeTimeUs: 3_000_000,
+      positionSeconds: 1.25, code: "output_stream_failure", nativeTimeUs: 3_000_000,
     }));
     expect(readPlaybackE2ETelemetry().countIn).toMatchObject({ active: false, lastCancelled: {
       reason: "unavailable", cancelledAtContextTimeSeconds: 3,
     } });
+    expect(screen.getByRole("button", { name: "Play playback" })).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Playback stopped. Check your audio output, then press Play to retry.",
+    );
+    expect(screen.getByLabelText("Playback position")).toHaveValue("1.25");
+    expect(getMockInvoke().mock.calls.filter(([command]) => command === "audio_play")).toHaveLength(playCount);
+    expect(document.querySelector("audio[src]")).toBeNull();
+    expect(getMockAudioContexts()).toHaveLength(0);
+    restoreTauriRuntime();
+  });
+
+  it("fully cancels native pre-count after a lane update failure and retries on the next Play", async () => {
+    const restoreTauriRuntime = enableNativePlayback();
+    const user = userEvent.setup();
+    setupTempoAnalysis();
+    renderApp(["/projects/proj_123"]);
+    await screen.findByRole("heading", { name: "Demo Song" });
+    await openPlaybackWorkspace(user);
+    await user.click(screen.getByLabelText("Enable pre-count"));
+    await user.click(screen.getByRole("button", { name: "Play playback" }));
+    await waitFor(() => expect(readPlaybackE2ETelemetry().countIn.active).toBe(true));
+
+    const invoke = getMockInvoke();
+    const originalInvoke = invoke.getMockImplementation();
+    if (!originalInvoke) {
+      throw new Error("Mock invoke implementation was not installed.");
+    }
+    const laneUpdate = createDeferred<Record<string, unknown>>();
+    let deferLaneUpdate = true;
+    invoke.mockImplementation(async (command, args) => {
+      if (command === "audio_set_lanes" && deferLaneUpdate) {
+        deferLaneUpdate = false;
+        return laneUpdate.promise;
+      }
+      return originalInvoke(command, args);
+    });
+
+    const laneUpdateCount = invokeCalls("audio_set_lanes").length;
+    await user.click(screen.getByRole("button", { name: "Increase pre-count clicks" }));
+    await waitFor(() => expect(invokeCalls("audio_set_lanes")).toHaveLength(laneUpdateCount + 1));
+    expect(readPlaybackE2ETelemetry().countIn.active).toBe(true);
+    laneUpdate.reject(new Error("output_stream_failure"));
+    await waitFor(() => expect(readPlaybackE2ETelemetry().countIn.active).toBe(false));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Playback stopped. Check your audio output, then press Play to retry.",
+    );
+
+    const prepareCount = invokeCalls("audio_prepare_session").length;
+    const playCount = invokeCalls("audio_play").length;
+    await user.click(screen.getByRole("button", { name: "Play playback" }));
+    await waitFor(() => expect(invokeCalls("audio_prepare_session")).toHaveLength(prepareCount + 1));
+    await waitFor(() => expect(readPlaybackE2ETelemetry().countIn.active).toBe(true));
+    expect(invokeCalls("audio_play")).toHaveLength(playCount + 1);
+    expect(document.querySelector("audio[src]")).toBeNull();
+
+    invoke.mockImplementation(originalInvoke);
     restoreTauriRuntime();
   });
 
@@ -1077,7 +1133,7 @@ describe("Desktop app project playback pre-count", () => {
       durationSeconds: 182,
       playbackRate: 1,
       nativePlaybackSupported: true,
-      fallbackReason: null,
+      availabilityReason: null,
       lanes: [],
       bufferHealth: [],
     });
@@ -1088,7 +1144,7 @@ describe("Desktop app project playback pre-count", () => {
       durationSeconds: 182,
       playbackRate: 1,
       nativePlaybackSupported: true,
-      fallbackReason: null,
+      availabilityReason: null,
       lanes: [],
       bufferHealth: [],
     });
@@ -1136,7 +1192,7 @@ describe("Desktop app project playback pre-count", () => {
       durationSeconds: 182,
       playbackRate: 1,
       nativePlaybackSupported: true,
-      fallbackReason: null,
+      availabilityReason: null,
       lanes: [],
       bufferHealth: [],
       timelineRevision: 2,
@@ -1158,7 +1214,7 @@ describe("Desktop app project playback pre-count", () => {
       durationSeconds: 182,
       playbackRate: 1,
       nativePlaybackSupported: true,
-      fallbackReason: null,
+      availabilityReason: null,
       lanes: [],
       bufferHealth: [],
       timelineRevision: 4,
@@ -1195,7 +1251,7 @@ describe("Desktop app project playback pre-count", () => {
       durationSeconds: 182,
       playbackRate: 1,
       nativePlaybackSupported: true,
-      fallbackReason: null,
+      availabilityReason: null,
       lanes: [],
       bufferHealth: [],
     });
@@ -1206,7 +1262,7 @@ describe("Desktop app project playback pre-count", () => {
       durationSeconds: 182,
       playbackRate: 1,
       nativePlaybackSupported: true,
-      fallbackReason: null,
+      availabilityReason: null,
       lanes: [],
       bufferHealth: [],
     });
@@ -1254,7 +1310,7 @@ describe("Desktop app project playback pre-count", () => {
       durationSeconds: 182,
       playbackRate: 1,
       nativePlaybackSupported: true,
-      fallbackReason: null,
+      availabilityReason: null,
       lanes: [],
       bufferHealth: [],
       timelineRevision: 2,

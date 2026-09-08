@@ -101,6 +101,48 @@ fn later_generation_rejects_stale_worker_and_callback_events() {
 }
 
 #[test]
+fn pause_and_stop_operations_export_at_command_entry() {
+    let (recorder, _) = recorder();
+    recorder.begin_operation(DiagnosticOperationKind::Pause, 2);
+    recorder.begin_operation(DiagnosticOperationKind::Stop, 2);
+
+    let json = serde_json::to_value(recorder.export().expect("export")).expect("json");
+    assert_eq!(json["operations"][0]["kind"], "pause");
+    assert_eq!(json["operations"][1]["kind"], "stop");
+}
+
+#[test]
+fn first_output_stream_error_kind_is_bounded_and_generation_isolated() {
+    let (recorder, _) = recorder();
+    let stale_generation = recorder.begin_operation(DiagnosticOperationKind::Play, 1);
+    let active_generation = recorder.begin_operation(DiagnosticOperationKind::Play, 1);
+
+    recorder.record_output_stream_error_kind(
+        stale_generation,
+        DiagnosticOutputStreamErrorKind::BackendError,
+    );
+    recorder
+        .record_output_stream_error_kind(active_generation, DiagnosticOutputStreamErrorKind::Xrun);
+    recorder.record_safe_code(active_generation, DiagnosticSafeCode::OutputStreamFailure);
+    recorder.record_output_stream_error_kind(
+        active_generation,
+        DiagnosticOutputStreamErrorKind::DeviceBusy,
+    );
+
+    let export = recorder.export().expect("export");
+    assert_eq!(export.counters.stale_generation_event_count, 1);
+    assert_eq!(export.operations[0].first_output_stream_error_kind, None);
+    assert_eq!(
+        export.operations[1].first_output_stream_error_kind,
+        Some(DiagnosticOutputStreamErrorKind::Xrun)
+    );
+    assert_eq!(export.operations[1].safe_codes.len(), 1);
+    assert_eq!(export.operations[1].safe_codes[0].count, 1);
+    let json = serde_json::to_value(export).expect("json");
+    assert_eq!(json["operations"][1]["firstOutputStreamErrorKind"], "xrun");
+}
+
+#[test]
 fn reset_clears_diagnostics_only_and_counts_resets() {
     let (recorder, _) = recorder();
     let generation = recorder.begin_operation(DiagnosticOperationKind::Prepare, 4);
@@ -122,6 +164,7 @@ fn reset_drops_old_producer_events_until_a_new_generation_is_active() {
     recorder.record_checkpoint(old_generation, DiagnosticCheckpoint::RingClear, None);
     recorder.record_callback(old_generation, CallbackCheckpoint::FirstNonzero);
     recorder.record_safe_code(old_generation, DiagnosticSafeCode::DecoderWorkerFailure);
+    recorder.record_output_stream_error_kind(old_generation, DiagnosticOutputStreamErrorKind::Xrun);
     assert_eq!(
         recorder
             .export()
@@ -135,18 +178,22 @@ fn reset_drops_old_producer_events_until_a_new_generation_is_active() {
     recorder.record_checkpoint(old_generation, DiagnosticCheckpoint::RingClear, None);
     recorder.record_callback(old_generation, CallbackCheckpoint::FirstNonzero);
     recorder.record_safe_code(old_generation, DiagnosticSafeCode::DecoderWorkerFailure);
+    recorder.record_output_stream_error_kind(
+        old_generation,
+        DiagnosticOutputStreamErrorKind::BackendError,
+    );
     assert_eq!(
         recorder
             .export()
             .expect("active-generation export")
             .counters
             .stale_generation_event_count,
-        3
+        4
     );
 }
 
 #[test]
-fn skipped_errors_and_safe_fallback_codes_are_counted_without_raw_errors() {
+fn skipped_errors_and_safe_terminal_codes_are_counted_without_raw_errors() {
     let (recorder, _) = recorder();
     let generation = recorder.begin_operation(DiagnosticOperationKind::Play, 1);
     recorder.record_checkpoint(
@@ -238,6 +285,7 @@ fn disabled_recorder_is_a_zero_generation_no_op() {
     recorder.record_callback(generation, CallbackCheckpoint::Underrun);
     recorder.record_capacities(generation, 1, 64, 64);
     recorder.record_safe_code(generation, DiagnosticSafeCode::PrebufferTimeout);
+    recorder.record_output_stream_error_kind(generation, DiagnosticOutputStreamErrorKind::Xrun);
 
     assert_eq!(clock.read_count.load(Ordering::Relaxed), 0);
     assert_eq!(recorder.next_generation.load(Ordering::Relaxed), 0);

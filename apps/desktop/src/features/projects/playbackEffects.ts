@@ -99,7 +99,7 @@ export function useSystemPlaybackMediaControls({
   ]);
 
   useEffect(() => {
-    if (backend === "none" || !session || !isTauriRuntime()) {
+    if (!session || !isTauriRuntime()) {
       return;
     }
 

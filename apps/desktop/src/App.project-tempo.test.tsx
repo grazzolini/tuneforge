@@ -205,8 +205,7 @@ describe("Desktop app project playback tempo", () => {
     setMockNativeAudioState({
       capabilities: {
         nativePlaybackSupported: true,
-        fallbackRequired: false,
-        fallbackReason: null,
+        availabilityReason: null,
         backend: "desktop-cpal",
       },
     });
@@ -233,8 +232,7 @@ describe("Desktop app project playback tempo", () => {
     setMockNativeAudioState({
       capabilities: {
         nativePlaybackSupported: true,
-        fallbackRequired: false,
-        fallbackReason: null,
+        availabilityReason: null,
         backend: "desktop-cpal",
       },
     });
@@ -282,11 +280,10 @@ describe("Desktop app project playback tempo", () => {
     setMockNativeAudioState({
       capabilities: {
         nativePlaybackSupported: true,
-        fallbackRequired: false,
-        fallbackReason: null,
+        availabilityReason: null,
         backend: "desktop-cpal",
       },
-      playFallbackReason: "Native playback underrun persisted; falling back to Web Audio.",
+      playError: "Native playback underrun persisted.",
     });
     renderApp(["/projects/proj_123"]);
 
@@ -309,13 +306,13 @@ describe("Desktop app project playback tempo", () => {
     expect(document.querySelector("audio[data-artifact-id='art_source']")).toBeNull();
     expect(getMockAudioContexts()).toHaveLength(0);
     expect(window.localStorage.getItem("tuneforge.playback-native-error")).toBe(
-      "Native playback underrun persisted; falling back to Web Audio.",
+      "Native playback underrun persisted.",
     );
     expect(screen.getByRole("button", { name: "Play playback" })).toBeInTheDocument();
     restoreTauriRuntime();
   });
 
-  it("keeps Web Audio telemetry when delayed native stop cleanup resolves after fallback", async () => {
+  it("keeps terminal telemetry when delayed native stop cleanup resolves", async () => {
     const restoreTauriRuntime = mockTauriRuntime();
     const user = userEvent.setup();
     const mockInvoke = getMockInvoke();
@@ -348,8 +345,7 @@ describe("Desktop app project playback tempo", () => {
       setMockNativeAudioState({
         capabilities: {
           nativePlaybackSupported: true,
-          fallbackRequired: false,
-          fallbackReason: null,
+          availabilityReason: null,
           backend: "desktop-cpal",
         },
       });
@@ -365,27 +361,25 @@ describe("Desktop app project playback tempo", () => {
         }),
       );
 
-      vi.stubEnv("VITE_TUNEFORGE_FORCE_WEB_AUDIO", "1");
       emitMockNativePlaybackError({
         sessionId: latestNativeSessionId(),
         code: "output_stream_failure",
       });
       await waitFor(() => expect(nativeStopBlock.resolve).not.toBeNull());
-      const sourceAudio = findAudioByArtifactId("art_source");
-      markAudioReady(sourceAudio);
       await waitFor(() =>
         expect(readPlaybackE2ETelemetry()).toMatchObject({
-          activePath: "web-audio",
-          transportState: "playing",
+          activePath: "none",
+          transportState: "stopped",
         }),
       );
+      expect(document.querySelector("audio[src]")).toBeNull();
 
       nativeStopBlock.resolve?.();
       await nativeStopSettled;
       await Promise.resolve();
       expect(readPlaybackE2ETelemetry()).toMatchObject({
-        activePath: "web-audio",
-        transportState: "playing",
+        activePath: "none",
+        transportState: "stopped",
       });
     } finally {
       nativeStopBlock.resolve?.();
@@ -394,15 +388,14 @@ describe("Desktop app project playback tempo", () => {
     }
   });
 
-  it("stops without fallback after a runtime underrun error", async () => {
+  it("stops without Web Audio after a runtime underrun error", async () => {
     const restoreTauriRuntime = mockTauriRuntime();
     const user = userEvent.setup();
     setupTempoAnalysis(120);
     setMockNativeAudioState({
       capabilities: {
         nativePlaybackSupported: true,
-        fallbackRequired: false,
-        fallbackReason: null,
+        availabilityReason: null,
         backend: "desktop-cpal",
       },
     });
@@ -448,6 +441,7 @@ describe("Desktop app project playback tempo", () => {
       emitMockNativePlaybackError({
         sessionId,
         code: "output_stream_failure",
+        positionSeconds: 42.25,
       });
     });
 

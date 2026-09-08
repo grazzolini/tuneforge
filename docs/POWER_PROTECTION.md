@@ -19,14 +19,14 @@ TuneForge tracks power protection through counted owners:
 - `sync-transfer`: active sync transfer.
 
 Pending user intent, permission prompts, native prepare work, and failed starts do not acquire
-protection. Stop, interruption, suspension, natural end, fallback, transfer completion,
-cancellation, failure, and app shutdown release only the corresponding owner. Shared protection
-releases after the final owner exits.
+protection. Stop, interruption, suspension, natural end, transfer completion, cancellation, failure,
+and app shutdown release only the corresponding owner. Shared protection releases after the final
+owner exits.
 
-Native fallback is an explicit ownership transfer. TuneForge clears native playback ownership from
-system media state and power protection before starting Web Audio at the fallback position, then
-reacquires the browser wake lock after Web playback is confirmed. Other active owners continue to
-hold shared protection.
+Normal Tauri native failure releases only that resource's confirmed owner; it does not transfer power
+protection or playback to Web Audio. A later explicit native action may acquire a fresh owner after
+the new runtime confirms start. Browser, non-Tauri, and forced-Web Tauri builds use their Web Audio
+owners directly.
 
 ## Platform Matrix
 
@@ -108,7 +108,7 @@ all of these are true:
 - `WHY` matches TuneForge active work;
 - `MODE=block`;
 - TuneForge diagnostics report `systemd-logind` and the expected owner state;
-- the inhibitor releases after pause, stop, fallback, natural end, failure, or app exit.
+- the inhibitor releases after pause, stop, natural end, failure, or app exit.
 
 Do not add host helpers, broader DBus access, telemetry, or new services only to change the host
 diagnostic `COMM` column.

@@ -47,13 +47,83 @@ describe("timing grid helpers", () => {
     const intervals = countInIntervalsForTiming({
       clickCount: 4,
       fallbackBeatSeconds: 0.5,
+      sourceTempoBpm: 120,
       startTimeSeconds: 2.04,
+      targetTempoBpm: 120,
       timingGrid,
     });
     expect(intervals[0]).toBeCloseTo(0.48, 3);
     expect(intervals[1]).toBeCloseTo(0.53, 3);
     expect(intervals[2]).toBeCloseTo(0.49, 3);
     expect(intervals[3]).toBeCloseTo(0.54, 3);
+  });
+
+  it("rejects doubled source gaps and keeps valid local variation", () => {
+    const variedGrid: AnalysisTimingGrid = {
+      ...timingGrid,
+      beats: [
+        { index: 0, seconds: 0, bar_index: 0, beat_in_bar: 1 },
+        { index: 1, seconds: 0.48, bar_index: 0, beat_in_bar: 2 },
+        { index: 2, seconds: 1.48, bar_index: 0, beat_in_bar: 3 },
+        { index: 3, seconds: 1.99, bar_index: 0, beat_in_bar: 4 },
+        { index: 4, seconds: 2.49, bar_index: 1, beat_in_bar: 1 },
+      ],
+    };
+    const intervals = countInIntervalsForTiming({
+        clickCount: 4,
+        fallbackBeatSeconds: 0.5,
+        sourceTempoBpm: 120,
+        startTimeSeconds: 2.49,
+        targetTempoBpm: 120,
+        timingGrid: variedGrid,
+      });
+    expect(intervals[0]).toBeCloseTo(0.48, 6);
+    expect(intervals[1]).toBeCloseTo(0.5, 6);
+    expect(intervals[2]).toBeCloseTo(0.51, 6);
+    expect(intervals[3]).toBeCloseTo(0.5, 6);
+  });
+
+  it("uses source BPM for validation and scales accepted gaps to displayed tempo", () => {
+    const fastGrid: AnalysisTimingGrid = {
+      ...timingGrid,
+      beats: [
+        { index: 0, seconds: 0, bar_index: 0, beat_in_bar: 1 },
+        { index: 1, seconds: 0.24, bar_index: 0, beat_in_bar: 2 },
+        { index: 2, seconds: 0.5, bar_index: 0, beat_in_bar: 3 },
+        { index: 3, seconds: 0.75, bar_index: 0, beat_in_bar: 4 },
+      ],
+    };
+    expect(
+      countInIntervalsForTiming({
+        clickCount: 3,
+        fallbackBeatSeconds: 0.5,
+        sourceTempoBpm: 240,
+        startTimeSeconds: 0.75,
+        targetTempoBpm: 120,
+        timingGrid: fastGrid,
+      }),
+    ).toEqual([0.48, 0.52, 0.5]);
+  });
+
+  it("fills pre-song intervals from beat gaps without treating intro silence as a beat", () => {
+    const introGrid: AnalysisTimingGrid = {
+      ...timingGrid,
+      beats: [
+        { index: 0, seconds: 4, bar_index: 0, beat_in_bar: 1 },
+        { index: 1, seconds: 4.5, bar_index: 0, beat_in_bar: 2 },
+        { index: 2, seconds: 5, bar_index: 0, beat_in_bar: 3 },
+      ],
+    };
+    expect(
+      countInIntervalsForTiming({
+        clickCount: 4,
+        fallbackBeatSeconds: 0.5,
+        sourceTempoBpm: 120,
+        startTimeSeconds: 0,
+        targetTempoBpm: 120,
+        timingGrid: introGrid,
+      }),
+    ).toEqual([0.5, 0.5, 0.5, 0.5]);
   });
 
   it("finds the next timed beat without rescheduling old beats", () => {

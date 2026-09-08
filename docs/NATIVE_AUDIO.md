@@ -14,7 +14,10 @@ boundary.
   artifact has a local path. WAV uses a fast streaming reader; other common formats decode through
   Symphonia for playback only.
 - Native playback supports shared transport play/pause/seek, position events, mute/solo lane gains,
-  and generated metronome click lanes for follow-playback mode.
+  project count-ins, and generated metronome click lanes for follow-playback mode. Project count-ins
+  use a 760 Hz triangle click with a 2 ms attack, 45 ms duration, and exponential decay on both
+  native and Web Audio paths; timing-grid gaps are filtered against source BPM and scaled to the
+  displayed playback tempo.
 - Native tempo changes use `signalsmith-stretch` for pitch-preserving playback.
 - If native setup, decode, seek, or output startup fails, playback falls back to Web Audio at the
   same transport position.
@@ -50,6 +53,9 @@ cross-platform owner, backend, diagnostic, and validation rules.
 - Native playback owns the transport only after a matching native session confirms playback, and
   requests OS power protection while playing. User intent or an in-flight start does not count as
   confirmed protection.
+- Revision-dependent project playback mutations are serialized and stale responses cannot replace a
+  newer session, position, or lane state. Pause and Stop remain prompt cancellation boundaries and
+  are not held behind an unresolved Play response.
 - Web Audio/HTML media playback owns the transport only after a `playing` event or confirmed media
   progress,
   including `VITE_TUNEFORGE_FORCE_WEB_AUDIO=1` and native fallback. It uses the browser Screen Wake
@@ -207,7 +213,7 @@ BlackHole capture are release checks, not default `pnpm test` coverage.
 | Seek accuracy | scrub reflects transport position and lane audio resumes at target | same | same |
 | Stop semantics | returns transport to expected idle state | same | same |
 | Pause/Resume | no drift on resume at least for short cycle | no drift on resume at least for short cycle | no drift on resume at least for short cycle |
-| Loop | loop boundaries and loop duration stable | stable | stable |
+| Loop | loop boundaries and loop duration stable; clearing at a boundary cancels the pending wrap | same | same |
 | Song count-in | only runs from absolute song start | same | same |
 | Loop count-in | runs at loop start and on loop wrap, never on pause/resume | same | same |
 | Tempo control | tempo change applies and stays stable | tempo change applies and stays stable | tempo change applies and stays stable |

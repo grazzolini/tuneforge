@@ -38,7 +38,7 @@ describe("precount sound", () => {
     getMockAudioContexts().length = 0;
   });
 
-  it("schedules a fixed lower full-volume clave-style click", () => {
+  it("schedules the shared 760 Hz triangle count-in envelope", () => {
     const audioContext = new AudioContext() as MockAudioContext;
 
     schedulePrecountClaveClick({
@@ -52,7 +52,7 @@ describe("precount sound", () => {
       throw new Error("Expected precount click nodes to be created.");
     }
 
-    expect(oscillator.type).toBe("square");
+    expect(oscillator.type).toBe("triangle");
     const startFrequencyCall = oscillator.frequency.setValueAtTime.mock.calls[0];
     const startFrequencyHz = Number(startFrequencyCall?.[0]);
     const safeStartTimeSeconds = Number(startFrequencyCall?.[1]);

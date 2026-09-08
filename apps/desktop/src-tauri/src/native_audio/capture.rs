@@ -9,7 +9,11 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
 use tauri::{Emitter, Manager};
 
-use super::{AudioCapabilities, AUDIO_EVENT_INPUT_FRAME, AUDIO_EVENT_INPUT_STATE};
+use super::{
+    session::{RuntimeReport, RuntimeReportKind, SessionCommand, TerminalEvent},
+    timeline, AudioCapabilities, AUDIO_EVENT_INPUT_FRAME, AUDIO_EVENT_INPUT_STATE,
+    AUDIO_EVENT_TERMINAL,
+};
 #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
 use crate::power_inhibition::{PowerInhibitionReason, PowerInhibitionState};
 
@@ -56,6 +60,8 @@ pub struct AudioInputRequest {
     pub device_id: Option<String>,
     pub monitor_enabled: Option<bool>,
     pub monitor_gain: Option<f32>,
+    #[serde(default, flatten)]
+    pub control: SessionCommand,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -78,6 +84,9 @@ pub struct AudioInputState {
     pub capture_path: CapturePath,
     pub permission_state: AudioInputPermissionState,
     pub error: Option<AudioInputError>,
+    pub lease_id: Option<String>,
+    pub generation: Option<u64>,
+    pub native_time_us: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
@@ -140,6 +149,8 @@ pub struct CaptureState {
     permission_state: AudioInputPermissionState,
     error: Option<AudioInputError>,
     permission_pending: bool,
+    session_generation: u64,
+    report_sender: Option<mpsc::SyncSender<RuntimeReport>>,
     #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
     runtime: Option<CaptureRuntime>,
 }
@@ -188,6 +199,8 @@ impl Default for CaptureState {
             permission_state: initial_permission_state(),
             error: None,
             permission_pending: false,
+            session_generation: 0,
+            report_sender: None,
             #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
             runtime: None,
         }
@@ -195,6 +208,36 @@ impl Default for CaptureState {
 }
 
 impl CaptureState {
+    pub fn bind_session(
+        &mut self,
+        generation: u64,
+        report_sender: mpsc::SyncSender<RuntimeReport>,
+    ) {
+        self.session_generation = generation;
+        self.report_sender = Some(report_sender);
+    }
+
+    pub fn release_for_transfer(&mut self) -> Result<(), &'static str> {
+        #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+        if let Some(runtime) = &self.runtime {
+            let _ = runtime.stop_sender.send(CaptureControl::Stop);
+            let deadline = Instant::now() + Duration::from_millis(500);
+            while !runtime
+                .worker_thread
+                .as_ref()
+                .is_none_or(JoinHandle::is_finished)
+            {
+                if Instant::now() >= deadline {
+                    return Err("release_timeout");
+                }
+                thread::sleep(Duration::from_millis(1));
+            }
+        }
+        self.stop_runtime();
+        self.clear_live_state();
+        Ok(())
+    }
+
     pub fn list_devices(&self, capabilities: AudioCapabilities) -> AudioInputDevices {
         if !capabilities.mic_capture_supported {
             return AudioInputDevices {
@@ -264,16 +307,21 @@ impl CaptureState {
         }
 
         let generation = self.capture_generation;
-        let (device_id, sample_rate, runtime) =
-            match start_native_input(app.clone(), request.device_id, generation) {
-                Ok(startup) => startup,
-                Err(_) => {
-                    self.error = Some(startup_error());
-                    let state = self.state();
-                    let _ = app.emit(AUDIO_EVENT_INPUT_STATE, state.clone());
-                    return Ok(state);
-                }
-            };
+        let (device_id, sample_rate, runtime) = match start_native_input(
+            app.clone(),
+            request.device_id,
+            generation,
+            self.session_generation,
+            self.report_sender.clone(),
+        ) {
+            Ok(startup) => startup,
+            Err(_) => {
+                self.error = Some(startup_error());
+                let state = self.state();
+                let _ = app.emit(AUDIO_EVENT_INPUT_STATE, state.clone());
+                return Ok(state);
+            }
+        };
         self.active = true;
         self.device_id = Some(device_id);
         self.sample_rate = Some(sample_rate);
@@ -370,6 +418,9 @@ impl CaptureState {
             },
             permission_state: self.permission_state,
             error: self.current_error(),
+            lease_id: None,
+            generation: (self.session_generation != 0).then_some(self.session_generation),
+            native_time_us: Some(timeline::native_time_us()),
         }
     }
 
@@ -629,6 +680,8 @@ fn start_native_input(
     app: AppHandle,
     requested_device_id: Option<String>,
     capture_generation: u64,
+    session_generation: u64,
+    report_sender: Option<mpsc::SyncSender<RuntimeReport>>,
 ) -> Result<(String, u32, CaptureRuntime), String> {
     let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
     let (stop_sender, stop_receiver) = mpsc::channel();
@@ -642,6 +695,8 @@ fn start_native_input(
             stop_receiver,
             worker_shared,
             capture_generation,
+            session_generation,
+            report_sender,
         );
     });
 
@@ -673,6 +728,8 @@ fn run_capture_worker(
     stop_receiver: mpsc::Receiver<CaptureControl>,
     shared: Arc<Mutex<CaptureSharedState>>,
     capture_generation: u64,
+    session_generation: u64,
+    report_sender: Option<mpsc::SyncSender<RuntimeReport>>,
 ) {
     let startup =
         start_capture_stream(requested_device_id, Arc::clone(&shared), capture_generation);
@@ -691,6 +748,8 @@ fn run_capture_worker(
                 startup.stream,
                 shared,
                 capture_generation,
+                session_generation,
+                report_sender,
             );
         }
         Err(error) => {
@@ -862,6 +921,8 @@ fn start_native_input(
     _app: AppHandle,
     _requested_device_id: Option<String>,
     _capture_generation: u64,
+    _session_generation: u64,
+    _report_sender: Option<mpsc::SyncSender<RuntimeReport>>,
 ) -> Result<(String, u32, CaptureRuntime), String> {
     Err("Native microphone capture is only available on macOS and Linux.".to_string())
 }
@@ -1016,6 +1077,8 @@ fn emit_input_frames(
     stream: cpal::Stream,
     shared: Arc<Mutex<CaptureSharedState>>,
     capture_generation: u64,
+    session_generation: u64,
+    report_sender: Option<mpsc::SyncSender<RuntimeReport>>,
 ) {
     let mut last_emit_at = Instant::now() - INPUT_FRAME_EVENT_INTERVAL;
     #[cfg(target_os = "android")]
@@ -1035,6 +1098,8 @@ fn emit_input_frames(
                     capture_generation,
                     permission,
                     permission_error(permission).unwrap_or_else(interruption_error),
+                    session_generation,
+                    report_sender.as_ref(),
                 );
                 break;
             }
@@ -1046,6 +1111,8 @@ fn emit_input_frames(
                 capture_generation,
                 current_worker_permission_state(),
                 interruption_error(),
+                session_generation,
+                report_sender.as_ref(),
             );
             break;
         }
@@ -1071,7 +1138,10 @@ fn finish_capture_with_error(
     capture_generation: u64,
     permission_state: AudioInputPermissionState,
     error: AudioInputError,
+    session_generation: u64,
+    report_sender: Option<&mpsc::SyncSender<RuntimeReport>>,
 ) {
+    let terminal_code = error.code;
     if let Ok(mut shared) = shared.lock() {
         shared.input_level = 0.0;
         shared.terminal_error = Some(error.clone());
@@ -1089,6 +1159,23 @@ fn finish_capture_with_error(
             capture_path: CapturePath::None,
             permission_state,
             error: Some(error),
+            lease_id: None,
+            generation: None,
+            native_time_us: Some(timeline::native_time_us()),
+        },
+    );
+    if let Some(sender) = report_sender {
+        let _ = sender.try_send(RuntimeReport {
+            generation: session_generation,
+            kind: RuntimeReportKind::Terminal(terminal_code),
+        });
+    }
+    let _ = app.emit(
+        AUDIO_EVENT_TERMINAL,
+        TerminalEvent {
+            generation: session_generation,
+            code: terminal_code,
+            native_time_us: timeline::native_time_us(),
         },
     );
 }
@@ -1400,6 +1487,8 @@ mod tests {
             permission_state: AudioInputPermissionState::Unavailable,
             error: None,
             permission_pending: false,
+            session_generation: 0,
+            report_sender: None,
             #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
             runtime: None,
         };

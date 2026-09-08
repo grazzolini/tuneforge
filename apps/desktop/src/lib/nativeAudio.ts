@@ -11,7 +11,45 @@ export type NativeAudioEventName =
   | "audio://input-level"
   | "audio://input-frame"
   | "audio://input-state"
-  | "audio://devices-changed";
+  | "audio://devices-changed"
+  | "audio://session"
+  | "audio://cue"
+  | "audio://terminal";
+
+export type NativeAudioSessionControl = {
+  leaseId?: string | null;
+  operationId?: string | null;
+  generation?: number | null;
+  timelineRevision?: number | null;
+};
+
+export type NativeAudioSessionSnapshot = {
+  status: "released" | "output" | "capture" | "releasing" | "terminal";
+  owner: "playback" | "cue" | "capture" | null;
+  leaseId: string | null;
+  generation: number;
+  timelineRevision: number;
+  nativeTimeUs: number;
+  positionSeconds: number;
+  playbackRate: number;
+  availabilityReason: string | null;
+  terminalDiagnostic: string | null;
+};
+
+export type NativeAudioCue = { cueIndex: number; positionSeconds: number };
+export type NativeAudioCueEvent = {
+  generation: number;
+  revision: number;
+  cueIndex: number;
+  scheduledNativeTimeUs: number;
+  actualNativeTimeUs: number;
+  insertionSequence: number;
+};
+export type NativeAudioTerminalEvent = {
+  generation: number;
+  code: string;
+  nativeTimeUs: number;
+};
 
 export type NativeAudioCapabilities = {
   platform: string;
@@ -131,10 +169,11 @@ export type NativeAudioLaneUpdate = {
   playbackRate?: number | null;
 };
 
-export type NativeAudioSessionRequest = {
+export type NativeAudioSessionRequest = NativeAudioSessionControl & {
   sessionId: string;
   durationSeconds?: number | null;
   playbackRate?: number | null;
+  owner?: "playback" | "cue" | "capture" | null;
   lanes: NativeAudioLaneRequest[];
 };
 
@@ -143,14 +182,18 @@ export type NativeAudioSession = {
   nativePlaybackSupported: boolean;
   fallbackReason: string | null;
   laneCount: number;
+  generation?: number | null;
+  timelineRevision?: number | null;
+  nativeTimeUs?: number | null;
 };
 
-export type NativeAudioPlayRequest = {
+export type NativeAudioPlayRequest = NativeAudioSessionControl & {
   startTimeSeconds?: number | null;
   scheduledStartTimeSeconds?: number | null;
+  startAtNativeUs?: number | null;
 };
 
-export type NativeAudioSeekRequest = {
+export type NativeAudioSeekRequest = NativeAudioSessionControl & {
   timeSeconds: number;
 };
 
@@ -184,6 +227,10 @@ export type NativeAudioSnapshot = {
   fallbackReason: string | null;
   lanes: NativeAudioLane[];
   bufferHealth: NativeAudioBufferHealth[];
+  leaseId?: string | null;
+  generation?: number | null;
+  timelineRevision?: number | null;
+  nativeTimeUs?: number | null;
 };
 
 export type NativeAudioClickRequest = {
@@ -212,7 +259,7 @@ export type NativeAudioErrorEvent = {
     | "decoder_worker_failure";
 };
 
-export type NativeAudioInputRequest = {
+export type NativeAudioInputRequest = NativeAudioSessionControl & {
   deviceId?: string | null;
   monitorEnabled?: boolean | null;
   monitorGain?: number | null;
@@ -241,6 +288,9 @@ export type NativeAudioInputState = {
     | "privacy-blocked"
     | "unavailable";
   error: NativeAudioInputError | null;
+  leaseId?: string | null;
+  generation?: number | null;
+  nativeTimeUs?: number | null;
 };
 
 export type NativeAudioInputError = {
@@ -318,12 +368,14 @@ export function playNativeAudio(payload: NativeAudioPlayRequest = {}) {
   return invoke<NativeAudioSnapshot>("audio_play", { payload });
 }
 
-export function pauseNativeAudio() {
-  return invoke<NativeAudioSnapshot>("audio_pause");
+export function pauseNativeAudio(payload?: NativeAudioSessionControl) {
+  if (!payload) return invoke<NativeAudioSnapshot>("audio_pause");
+  return invoke<NativeAudioSnapshot>("audio_pause", { payload });
 }
 
-export function stopNativeAudio() {
-  return invoke<NativeAudioSnapshot>("audio_stop");
+export function stopNativeAudio(payload?: NativeAudioSessionControl) {
+  if (!payload) return invoke<NativeAudioSnapshot>("audio_stop");
+  return invoke<NativeAudioSnapshot>("audio_stop", { payload });
 }
 
 export function seekNativeAudio(payload: NativeAudioSeekRequest) {
@@ -342,6 +394,23 @@ export function getNativeAudioSnapshot() {
   return invoke<NativeAudioSnapshot>("audio_get_snapshot");
 }
 
+export function getNativeAudioSessionSnapshot() {
+  return invoke<NativeAudioSessionSnapshot>("audio_get_session_snapshot");
+}
+
+export function scheduleNativeAudioCues(
+  payload: NativeAudioSessionControl & { cues: NativeAudioCue[] },
+) {
+  return invoke<NativeAudioSessionSnapshot>("audio_schedule_cues", { payload });
+}
+
+export function cancelNativeAudioCues(payload?: NativeAudioSessionControl) {
+  return invoke<NativeAudioSessionSnapshot>(
+    "audio_cancel_cues",
+    payload ? { payload } : undefined,
+  );
+}
+
 export function getNativeAudioInputState() {
   return invoke<NativeAudioInputState>("audio_get_input_state");
 }
@@ -358,8 +427,9 @@ export function startNativeAudioInput(payload: NativeAudioInputRequest = {}) {
   return invoke<NativeAudioInputState>("audio_start_input", { payload });
 }
 
-export function stopNativeAudioInput() {
-  return invoke<NativeAudioInputState>("audio_stop_input");
+export function stopNativeAudioInput(payload?: NativeAudioSessionControl) {
+  if (!payload) return invoke<NativeAudioInputState>("audio_stop_input");
+  return invoke<NativeAudioInputState>("audio_stop_input", { payload });
 }
 
 export function setNativeAudioMonitor(payload: NativeAudioMonitorRequest) {
@@ -400,4 +470,18 @@ export function listenNativeAudioErrors(handler: (error: NativeAudioErrorEvent) 
   return listen<NativeAudioErrorEvent>("audio://error", (event) => {
     handler(event.payload);
   });
+}
+
+export function listenNativeAudioSessions(
+  handler: (session: NativeAudioSessionSnapshot) => void,
+) {
+  return listen<NativeAudioSessionSnapshot>("audio://session", (event) => handler(event.payload));
+}
+
+export function listenNativeAudioCues(handler: (cue: NativeAudioCueEvent) => void) {
+  return listen<NativeAudioCueEvent>("audio://cue", (event) => handler(event.payload));
+}
+
+export function listenNativeAudioTerminal(handler: (terminal: NativeAudioTerminalEvent) => void) {
+  return listen<NativeAudioTerminalEvent>("audio://terminal", (event) => handler(event.payload));
 }

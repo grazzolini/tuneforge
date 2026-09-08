@@ -22,25 +22,31 @@ vi.mock("@tauri-apps/api/event", () => ({
 }));
 
 import {
+  cancelNativeAudioCues,
   exportNativeAudioDiagnostics,
   getNativeAudioCapabilities,
   getNativeAudioDiagnosticsAvailability,
   getNativeAudioInputPermissionStatus,
   getNativeAudioInputState,
   getNativeAudioSnapshot,
+  getNativeAudioSessionSnapshot,
   isWebAudioBackendForced,
   listNativeAudioInputDevices,
   listNativeAudioOutputDevices,
+  listenNativeAudioCues,
   listenNativeAudioInputFrames,
   listenNativeAudioInputState,
   listenNativeAudioErrors,
   listenNativeAudioPositions,
+  listenNativeAudioSessions,
+  listenNativeAudioTerminal,
   pauseNativeAudio,
   playNativeAudio,
   prepareNativeAudioSession,
   readNativeAudioDiagnostics,
   requestNativeAudioInputPermission,
   resetNativeAudioDiagnostics,
+  scheduleNativeAudioCues,
   seekNativeAudio,
   setNativeAudioClick,
   setNativeAudioLanes,
@@ -266,6 +272,40 @@ describe("native audio adapter", () => {
     expect(mockInvoke).toHaveBeenNthCalledWith(3, "audio_get_snapshot");
   });
 
+  it("wraps the session owner and revisioned cue commands", async () => {
+    const session = {
+      status: "output",
+      owner: "playback",
+      leaseId: "practice",
+      generation: 7,
+      timelineRevision: 3,
+      nativeTimeUs: 42,
+      positionSeconds: 1.25,
+      playbackRate: 1,
+      availabilityReason: null,
+      terminalDiagnostic: null,
+    } as const;
+    mockInvoke.mockResolvedValue(session);
+
+    await getNativeAudioSessionSnapshot();
+    await scheduleNativeAudioCues({
+      leaseId: "practice",
+      generation: 7,
+      timelineRevision: 3,
+      cues: [{ cueIndex: 2, positionSeconds: 1.5 }],
+    });
+    await cancelNativeAudioCues({ leaseId: "practice", timelineRevision: 3 });
+
+    expect(mockInvoke.mock.calls).toEqual([
+      ["audio_get_session_snapshot"],
+      ["audio_schedule_cues", { payload: {
+        leaseId: "practice", generation: 7, timelineRevision: 3,
+        cues: [{ cueIndex: 2, positionSeconds: 1.5 }],
+      } }],
+      ["audio_cancel_cues", { payload: { leaseId: "practice", timelineRevision: 3 } }],
+    ]);
+  });
+
   it("wraps native input and monitor payloads", async () => {
     mockInvoke.mockResolvedValue(inputState);
 
@@ -377,6 +417,29 @@ describe("native audio adapter", () => {
     expect(handler).toHaveBeenCalledWith(error);
     stopListening();
     expect(unlisten).toHaveBeenCalled();
+  });
+
+  it("decodes safe camelCase session, cue, and terminal events", async () => {
+    const payloads = {
+      "audio://session": { status: "output", owner: "cue", generation: 2 },
+      "audio://cue": { cueIndex: 4, scheduledNativeTimeUs: 100, actualNativeTimeUs: 101 },
+      "audio://terminal": { generation: 2, code: "output_stream_failure", nativeTimeUs: 102 },
+    };
+    mockListen.mockImplementation(async (eventName, callback) => {
+      callback({ event: eventName, id: 1, payload: payloads[eventName as keyof typeof payloads] });
+      return vi.fn();
+    });
+    const session = vi.fn();
+    const cue = vi.fn();
+    const terminal = vi.fn();
+
+    await listenNativeAudioSessions(session);
+    await listenNativeAudioCues(cue);
+    await listenNativeAudioTerminal(terminal);
+
+    expect(session).toHaveBeenCalledWith(payloads["audio://session"]);
+    expect(cue).toHaveBeenCalledWith(payloads["audio://cue"]);
+    expect(terminal).toHaveBeenCalledWith(payloads["audio://terminal"]);
   });
 
   it("leaves invoke errors visible to callers", async () => {

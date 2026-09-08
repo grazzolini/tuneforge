@@ -1,7 +1,9 @@
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { readPlaybackLiveDiagnostics } from "./lib/playbackDiagnostics";
 import {
+  emitMockNativeAudioTerminal,
   emitMockNativeInputFrame,
   emitMockNativeInputState,
   getMockAudioContexts,
@@ -270,6 +272,7 @@ describe("Desktop app tools tuner", () => {
 
   it("acquires Web tuner protection only after capture is listening and releases on stop", async () => {
     const user = userEvent.setup();
+    vi.stubEnv("VITE_TUNEFORGE_FORCE_WEB_AUDIO", "1");
     const endingStream = makeEndingMediaStream();
     let resolveCapture: (stream: MediaStream) => void = () => undefined;
     getMockMediaDevices().getUserMedia.mockImplementationOnce(
@@ -340,6 +343,7 @@ describe("Desktop app tools tuner", () => {
 
   it("uses native microphone capture when available", async () => {
     const user = userEvent.setup();
+    mockTauriRuntime();
     setMockNativeAudioState({
       capabilities: {
         micCaptureSupported: true,
@@ -363,7 +367,11 @@ describe("Desktop app tools tuner", () => {
 
     await waitFor(() =>
       expect(getMockInvoke()).toHaveBeenCalledWith("audio_start_input", {
-        payload: { deviceId: "cpal:1:usb" },
+        payload: expect.objectContaining({
+          deviceId: "cpal:1:usb",
+          leaseId: "tuner-capture",
+          operationId: expect.stringMatching(/^tuner-capture-/),
+        }),
       }),
     );
     expect(window.localStorage.getItem("tuneforge.tuner-input-capture-backend")).toContain(
@@ -400,7 +408,12 @@ describe("Desktop app tools tuner", () => {
 
     await user.click(screen.getByRole("button", { name: "Stop" }));
 
-    expect(getMockInvoke()).toHaveBeenCalledWith("audio_stop_input");
+    expect(getMockInvoke()).toHaveBeenCalledWith("audio_stop_input", {
+      payload: expect.objectContaining({
+        leaseId: "tuner-capture",
+        operationId: expect.stringMatching(/^tuner-capture-/),
+      }),
+    });
     act(() => {
       emitMockNativeInputFrame({
         deviceId: "cpal:1:usb",
@@ -428,8 +441,58 @@ describe("Desktop app tools tuner", () => {
     expect(screen.getByRole("meter", { name: "Input signal level" })).toHaveAttribute("aria-valuenow", "0");
   });
 
+  it("keeps native project playback owned when tuner capture terminates", async () => {
+    const user = userEvent.setup();
+    mockTauriRuntime();
+    setMockNativeAudioState({
+      capabilities: {
+        nativePlaybackSupported: true,
+        micCaptureSupported: true,
+        fallbackRequired: false,
+        fallbackReason: null,
+        backend: "desktop-cpal",
+      },
+    });
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: "Playback" }));
+    await user.click(screen.getByRole("button", { name: "Play playback" }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument(),
+    );
+    await user.click(screen.getByRole("link", { name: "Tools" }));
+    await user.click(await screen.findByRole("button", { name: "Start" }));
+    await waitFor(() =>
+      expect(getMockInvoke().mock.calls.some(([command]) => command === "audio_start_input")).toBe(true),
+    );
+    const outputStopCount = getMockInvoke().mock.calls.filter(
+      ([command]) => command === "audio_stop",
+    ).length;
+
+    act(() => emitMockNativeAudioTerminal({
+      resource: "capture",
+      source: "tuner_capture",
+      generation: 1,
+      code: "capture_stream_failure",
+      nativeTimeUs: 10,
+    }));
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Pause background playback" })).toBeInTheDocument(),
+    );
+    expect(getMockInvoke().mock.calls.filter(([command]) => command === "audio_stop")).toHaveLength(
+      outputStopCount,
+    );
+    expect(readPlaybackLiveDiagnostics()).toMatchObject({
+      currentState: "playing",
+      currentPath: "native",
+    });
+  });
+
   it("stops native capture when the tuner unmounts", async () => {
     const user = userEvent.setup();
+    mockTauriRuntime();
     setMockNativeAudioState({ capabilities: { micCaptureSupported: true, backend: "desktop-cpal" } });
     renderApp(["/tools"]);
 
@@ -437,7 +500,10 @@ describe("Desktop app tools tuner", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: "Stop" })).toBeInTheDocument());
     await user.click(screen.getByRole("tab", { name: "Metronome" }));
 
-    await waitFor(() => expect(getMockInvoke()).toHaveBeenCalledWith("audio_stop_input"));
+    await waitFor(() => expect(getMockInvoke()).toHaveBeenCalledWith(
+      "audio_stop_input",
+      { payload: expect.objectContaining({ leaseId: "tuner-capture" }) },
+    ));
   });
 
   it("does not query native microphone devices while the tuner is idle until the picker is opened", async () => {
@@ -585,8 +651,9 @@ describe("Desktop app tools tuner", () => {
     expect(screen.getByRole("button", { name: "Stop" })).toBeEnabled();
   });
 
-  it("falls back to Web Audio when native capture fails", async () => {
+  it("does not fall back to Web Audio when normal Tauri native capture fails", async () => {
     const user = userEvent.setup();
+    mockTauriRuntime();
     getMockMediaDevices().revealLabels();
     setMockNativeAudioState({
       capabilities: {
@@ -605,24 +672,14 @@ describe("Desktop app tools tuner", () => {
     expect(await screen.findByRole("heading", { name: "Tools" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Start" }));
 
-    await waitFor(() =>
-      expect(getMockMediaDevices().getUserMedia).toHaveBeenCalledWith({
-        audio: {
-          autoGainControl: false,
-          echoCancellation: false,
-          noiseSuppression: false,
-        },
-        video: false,
-      }),
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Native microphone capture could not start",
     );
-    expect(screen.queryByText("Native microphone failed.")).not.toBeInTheDocument();
+    expect(getMockMediaDevices().getUserMedia).not.toHaveBeenCalled();
     expect(window.localStorage.getItem("tuneforge.tuner-native-capture-error")).toBe(
-      "Native microphone failed.",
+      "Native microphone capture could not start. Check the microphone and choose Retry.",
     );
-    expect(window.localStorage.getItem("tuneforge.tuner-input-capture-backend")).toContain(
-      '"web"',
-    );
-    expect(screen.getByRole("button", { name: "Stop" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
   });
 
   it("never falls back to Web Audio when packaged Android native capture fails", async () => {
@@ -678,7 +735,11 @@ describe("Desktop app tools tuner", () => {
 
     await waitFor(() =>
       expect(mockInvoke).toHaveBeenCalledWith("audio_start_input", {
-        payload: { deviceId: null },
+        payload: expect.objectContaining({
+          deviceId: null,
+          leaseId: "tuner-capture",
+          operationId: expect.stringMatching(/^tuner-capture-/),
+        }),
       }),
     );
     expect(mockInvoke).toHaveBeenCalledWith("audio_request_input_permission");
@@ -821,7 +882,7 @@ describe("Desktop app tools tuner", () => {
     expect(screen.getByLabelText("Microphone source")).toHaveValue("");
     expect(screen.queryByRole("option", { name: "Built-in Microphone" })).not.toBeInTheDocument();
     expect(window.localStorage.getItem("tuneforge.tuner-native-capture-error")).toBe(
-      "Native microphone failed.",
+      "Selected microphone requires native input capture, but native capture is unavailable.",
     );
     expect(window.localStorage.getItem("tuneforge.tuner-input-capture-backend")).toContain(
       '"web"',

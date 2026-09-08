@@ -51,6 +51,7 @@ import {
   setNativeAudioClick,
   setNativeAudioLanes,
   setNativeAudioMonitor,
+  setNativeStandaloneMetronome,
   startNativeAudioInput,
   stopNativeAudio,
   stopNativeAudioInput,
@@ -327,6 +328,50 @@ describe("native audio adapter", () => {
       } }],
       ["audio_set_lanes", { payload: { lanes: [] }, control }],
     ]);
+  });
+
+  it("sends the canonical standalone metronome payload with control metadata", async () => {
+    const state = {
+      enabled: true,
+      bpm: 121.5,
+      beatsPerBar: 3,
+      accentFirstBeat: true,
+      gain: 0.42,
+      followPlayback: true,
+      leaseId: "standalone-metronome",
+      generation: 2,
+      revision: 4,
+      nativeTimeUs: 99,
+    };
+    mockInvoke.mockResolvedValue(state);
+
+    await expect(setNativeStandaloneMetronome({
+      enabled: true,
+      bpm: 121.5,
+      beatsPerBar: 3,
+      accentFirstBeat: true,
+      gain: 0.42,
+      followPlayback: true,
+      leaseId: "standalone-metronome",
+      operationId: "metronome-4",
+      generation: 2,
+      timelineRevision: 3,
+    })).resolves.toEqual(state);
+
+    expect(mockInvoke).toHaveBeenCalledWith("audio_set_standalone_metronome", {
+      payload: {
+        enabled: true,
+        bpm: 121.5,
+        beatsPerBar: 3,
+        accentFirstBeat: true,
+        gain: 0.42,
+        followPlayback: true,
+        leaseId: "standalone-metronome",
+        operationId: "metronome-4",
+        generation: 2,
+        timelineRevision: 3,
+      },
+    });
   });
 
   it("wraps native input and monitor payloads", async () => {

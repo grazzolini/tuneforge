@@ -10,7 +10,9 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use tauri::{Emitter, Manager};
 
 use super::{
-    session::{RuntimeReport, RuntimeReportKind, SessionCommand, TerminalEvent},
+    session::{
+        AudioResource, AudioSource, RuntimeReport, RuntimeReportKind, SessionCommand, TerminalEvent,
+    },
     timeline, AudioCapabilities, AUDIO_EVENT_INPUT_FRAME, AUDIO_EVENT_INPUT_STATE,
     AUDIO_EVENT_TERMINAL,
 };
@@ -1166,6 +1168,7 @@ fn finish_capture_with_error(
     );
     if let Some(sender) = report_sender {
         let _ = sender.try_send(RuntimeReport {
+            resource: AudioResource::Capture,
             generation: session_generation,
             kind: RuntimeReportKind::Terminal(terminal_code),
         });
@@ -1173,6 +1176,8 @@ fn finish_capture_with_error(
     let _ = app.emit(
         AUDIO_EVENT_TERMINAL,
         TerminalEvent {
+            resource: AudioResource::Capture,
+            source: AudioSource::CaptureRuntime,
             generation: session_generation,
             code: terminal_code,
             native_time_us: timeline::native_time_us(),

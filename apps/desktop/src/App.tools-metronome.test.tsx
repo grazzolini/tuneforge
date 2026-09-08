@@ -89,7 +89,7 @@ describe("Desktop app tools metronome", () => {
     expect(screen.getByText("Seeded from project analysis.")).toBeInTheDocument();
     expect(screen.getByLabelText("Beats per bar")).toHaveValue(4);
     expect(screen.getByLabelText("Accent first beat")).toBeChecked();
-    expect(screen.getByLabelText("Follow project playback")).not.toBeChecked();
+    expect(screen.getByLabelText("Follow project playback")).toBeChecked();
   });
 
   it("arms follow mode from query params", async () => {
@@ -99,7 +99,26 @@ describe("Desktop app tools metronome", () => {
     expect(screen.getByLabelText("Tempo BPM")).toHaveValue(121.5);
     expect(screen.getByLabelText("Follow project playback")).toBeChecked();
     expect(screen.getByRole("button", { name: "Stop" })).toBeInTheDocument();
-    expect(screen.getByText("No project playback active")).toBeInTheDocument();
+    expect(screen.getAllByText("Free-running at 121.5 BPM").length).toBeGreaterThan(0);
+  });
+
+  it("describes idle follow and free-running modes truthfully", async () => {
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await user.click(screen.getByRole("link", { name: "Tools" }));
+    await user.click(await screen.findByRole("tab", { name: "Metronome" }));
+
+    expect(screen.getAllByText("Ready at 100.0 BPM").length).toBeGreaterThan(0);
+    await user.click(screen.getByRole("button", { name: "Start" }));
+    expect(screen.getAllByText(
+      "Free-running at 100.0 BPM · follows Demo Song when playback starts",
+    ).length).toBeGreaterThan(0);
+    await user.click(screen.getByLabelText("Follow project playback"));
+    expect(screen.getAllByText("Free-running at 100.0 BPM").length).toBeGreaterThan(0);
+    await user.click(screen.getByRole("button", { name: "Stop" }));
+    expect(screen.getAllByText("Ready at 100.0 BPM").length).toBeGreaterThan(0);
   });
 
   it("updates tempo from the tap pad", async () => {
@@ -194,9 +213,9 @@ describe("Desktop app tools metronome", () => {
 
     await user.click(screen.getByRole("link", { name: "Tools" }));
     await user.click(await screen.findByRole("tab", { name: "Metronome" }));
-    await user.click(screen.getByLabelText("Follow project playback"));
+    await user.click(screen.getByRole("button", { name: "Start" }));
     await waitFor(() => expect(screen.getByRole("button", { name: "Stop" })).toBeInTheDocument());
-    await waitFor(() => expect(screen.getAllByText("Following Demo Song").length).toBeGreaterThan(0));
+    await waitFor(() => expect(screen.getAllByText("Following Demo Song playback").length).toBeGreaterThan(0));
     act(() => {
       advanceMockAnimationFrames();
     });
@@ -209,23 +228,29 @@ describe("Desktop app tools metronome", () => {
 
     await user.click(screen.getByRole("button", { name: "Pause background playback" }));
     await waitFor(() =>
-      expect(screen.getAllByText("Waiting for Demo Song playback").length).toBeGreaterThan(0),
+      expect(screen.getAllByText(
+        "Free-running at 100.0 BPM · follows Demo Song when playback starts",
+      ).length).toBeGreaterThan(0),
     );
     act(() => {
       advanceMockAnimationFrames();
     });
     expect(syncedContext?.close).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(syncedContext?.createdOscillators.length).toBeGreaterThan(scheduledBeforePause),
+    );
+    const scheduledDuringPause = syncedContext?.createdOscillators.length ?? 0;
 
     await user.click(screen.getByRole("button", { name: "Play background playback" }));
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Pause background playback" })).toBeInTheDocument(),
     );
-    await waitFor(() => expect(screen.getAllByText("Following Demo Song").length).toBeGreaterThan(0));
+    await waitFor(() => expect(screen.getAllByText("Following Demo Song playback").length).toBeGreaterThan(0));
     act(() => {
       advanceMockAnimationFrames();
     });
     await waitFor(() =>
-      expect(syncedContext?.createdOscillators.length).toBeGreaterThan(scheduledBeforePause),
+      expect(syncedContext?.createdOscillators.length).toBeGreaterThan(scheduledDuringPause),
     );
   });
 
@@ -247,9 +272,9 @@ describe("Desktop app tools metronome", () => {
     );
     await user.click(screen.getByRole("link", { name: "Tools" }));
     await user.click(await screen.findByRole("tab", { name: "Metronome" }));
-    await user.click(screen.getByLabelText("Follow project playback"));
+    await user.click(screen.getByRole("button", { name: "Start" }));
     await waitFor(() => expect(screen.getByRole("button", { name: "Stop" })).toBeInTheDocument());
-    await waitFor(() => expect(screen.getAllByText("Following Demo Song").length).toBeGreaterThan(0));
+    await waitFor(() => expect(screen.getAllByText("Following Demo Song playback").length).toBeGreaterThan(0));
     act(() => {
       advanceMockAnimationFrames();
     });
@@ -278,9 +303,8 @@ describe("Desktop app tools metronome", () => {
     await waitFor(() => expect(getMockInvoke().mock.calls.some(([name]) => name === "audio_play")).toBe(true));
     await user.click(screen.getByRole("link", { name: "Tools" }));
     await user.click(await screen.findByRole("tab", { name: "Metronome" }));
-    await user.click(screen.getByLabelText("Follow project playback"));
+    await user.click(screen.getByRole("button", { name: "Start" }));
     await waitFor(() => {
-      expect(getMockInvoke().mock.calls.some(([name]) => name === "audio_get_session_snapshot")).toBe(true);
       const call = getMockInvoke().mock.calls.find(([name]) => name === "audio_schedule_cues");
       const payload = (call?.[1] as { payload?: { cues?: unknown[] } })?.payload;
       expect(payload).toMatchObject({
@@ -347,6 +371,92 @@ describe("Desktop app tools metronome", () => {
     delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
   });
 
+  it("serializes rapid native settings and stop using the latest revision", async () => {
+    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    setMockNativeAudioState({ capabilities: {
+      nativePlaybackSupported: true, fallbackRequired: false,
+      fallbackReason: null, backend: "desktop-cpal",
+    } });
+    const firstStart = createDeferred<{
+      enabled: boolean; bpm: number; beatsPerBar: number; accentFirstBeat: boolean;
+      gain: number; followPlayback: boolean; leaseId: string; generation: number;
+      revision: number; nativeTimeUs: number;
+    }>();
+    const invoke = getMockInvoke();
+    const originalInvoke = invoke.getMockImplementation()!;
+    let standaloneInvocationCount = 0;
+    invoke.mockImplementation(async (command, args) => {
+      if (command === "audio_set_standalone_metronome" && standaloneInvocationCount++ === 0) {
+        return firstStart.promise;
+      }
+      return originalInvoke(command, args);
+    });
+    const user = userEvent.setup();
+    renderApp(["/tools?tool=metronome"]);
+    await screen.findByRole("heading", { name: "Metronome" });
+
+    await user.click(screen.getByRole("button", { name: "Start" }));
+    await waitFor(() => expect(standaloneInvocationCount).toBe(1));
+    fireEvent.change(screen.getByLabelText("Tempo BPM"), { target: { value: "140" } });
+    await user.click(screen.getByRole("button", { name: "Stop" }));
+    expect(standaloneInvocationCount).toBe(1);
+
+    await act(async () => firstStart.resolve({
+      enabled: true, bpm: 100, beatsPerBar: 4, accentFirstBeat: true,
+      gain: 0.8, followPlayback: true, leaseId: "standalone-metronome",
+      generation: 1, revision: 1, nativeTimeUs: 1,
+    }));
+    await waitFor(() => expect(standaloneInvocationCount).toBe(2));
+    const standaloneCalls = invoke.mock.calls.filter(
+      ([command]) => command === "audio_set_standalone_metronome",
+    );
+    expect(standaloneCalls).toHaveLength(2);
+    expect(standaloneCalls[1]?.[1]).toMatchObject({ payload: {
+      enabled: false,
+      bpm: 140,
+      generation: 1,
+      timelineRevision: 1,
+    } });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Start" })).toBeInTheDocument());
+    delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+  });
+
+  it("reconciles a failed native settings update by stopping the active metronome", async () => {
+    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    setMockNativeAudioState({ capabilities: {
+      nativePlaybackSupported: true, fallbackRequired: false,
+      fallbackReason: null, backend: "desktop-cpal",
+    } });
+    const invoke = getMockInvoke();
+    const originalInvoke = invoke.getMockImplementation()!;
+    const user = userEvent.setup();
+    renderApp(["/tools?tool=metronome"]);
+    await screen.findByRole("heading", { name: "Metronome" });
+    await user.click(screen.getByRole("button", { name: "Start" }));
+    await waitFor(() => expect(invoke.mock.calls.filter(
+      ([command]) => command === "audio_set_standalone_metronome",
+    ).length).toBeGreaterThanOrEqual(2));
+
+    let rejectNextUpdate = true;
+    invoke.mockImplementation(async (command, args) => {
+      const enabled = (args as { payload?: { enabled?: boolean } } | undefined)?.payload?.enabled;
+      if (command === "audio_set_standalone_metronome" && enabled && rejectNextUpdate) {
+        rejectNextUpdate = false;
+        throw new Error("stale_timeline_revision");
+      }
+      return originalInvoke(command, args);
+    });
+    fireEvent.change(screen.getByLabelText("Metronome volume"), { target: { value: "0.5" } });
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Start" })).toBeInTheDocument());
+    const lastStandaloneCall = [...invoke.mock.calls].reverse().find(
+      ([command]) => command === "audio_set_standalone_metronome",
+    );
+    expect(lastStandaloneCall?.[1]).toMatchObject({ payload: { enabled: false } });
+    expect(screen.getByText(/stopping it safely/)).toBeInTheDocument();
+    delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+  });
+
   it("replaces followed cues from the authoritative completed native seek position", async () => {
     (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
     setMockNativeAudioState({ capabilities: {
@@ -361,7 +471,7 @@ describe("Desktop app tools metronome", () => {
     await user.click(screen.getByRole("button", { name: "Play playback" }));
     await user.click(screen.getByRole("link", { name: "Tools" }));
     await user.click(await screen.findByRole("tab", { name: "Metronome" }));
-    await user.click(screen.getByLabelText("Follow project playback"));
+    await user.click(screen.getByRole("button", { name: "Start" }));
     await waitFor(() => expect(getMockInvoke().mock.calls.some(([name]) => name === "audio_schedule_cues")).toBe(true));
     await user.click(screen.getByRole("link", { name: "Open Demo Song project" }));
     await user.click(screen.getByRole("tab", { name: "Playback" }));
@@ -408,7 +518,7 @@ describe("Desktop app tools metronome", () => {
     await user.click(screen.getByRole("button", { name: "Play playback" }));
     await user.click(screen.getByRole("link", { name: "Tools" }));
     await user.click(await screen.findByRole("tab", { name: "Metronome" }));
-    await user.click(screen.getByLabelText("Follow project playback"));
+    await user.click(screen.getByRole("button", { name: "Start" }));
     await waitFor(() => expect(getMockInvoke().mock.calls.some(([name]) => name === "audio_schedule_cues")).toBe(true));
     await user.click(screen.getByRole("link", { name: "Open Demo Song project" }));
     await user.click(screen.getByRole("tab", { name: "Playback" }));
@@ -433,7 +543,7 @@ describe("Desktop app tools metronome", () => {
     delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
   });
 
-  it("ignores stale follow scheduling and cleanup snapshots across reactivation", async () => {
+  it("serializes followed cue updates behind an in-flight native seek", async () => {
     (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
     setMockNativeAudioState({ capabilities: {
       nativePlaybackSupported: true, fallbackRequired: false,
@@ -445,45 +555,56 @@ describe("Desktop app tools metronome", () => {
     await screen.findByRole("heading", { name: "Demo Song" });
     await user.click(screen.getByRole("tab", { name: "Playback" }));
     await user.click(screen.getByRole("button", { name: "Play playback" }));
-    await user.click(screen.getByRole("link", { name: "Tools" }));
-    await user.click(await screen.findByRole("tab", { name: "Metronome" }));
+    await waitFor(() => expect(getMockInvoke().mock.calls.some(([name]) => name === "audio_play")).toBe(true));
 
-    const snapshot = {
-      status: "output" as const, owner: "playback" as const, leaseId: "project-playback",
-      generation: 1, timelineRevision: 1, nativeTimeUs: 1, positionSeconds: 0,
-      playbackRate: 1, availabilityReason: null, terminalDiagnostic: null,
+    const preparedSessionId = latestNativeSessionId();
+    const seek = createDeferred<{
+      sessionId: string;
+      state: "playing";
+      positionSeconds: number;
+      durationSeconds: number;
+      playbackRate: number;
+      nativePlaybackSupported: boolean;
+      fallbackReason: null;
+      lanes: never[];
+      bufferHealth: never[];
+      leaseId: string;
+      generation: number;
+      timelineRevision: number;
+      nativeTimeUs: number;
+    }>();
+    const sessionSnapshot = {
+      resource: "output" as const, source: "project_playback" as const,
+      status: "output" as const, owner: "playback" as const,
+      leaseId: "project-playback", generation: 1, timelineRevision: 2,
+      nativeTimeUs: 1, positionSeconds: 0.48, playbackRate: 1,
+      availabilityReason: null, terminalDiagnostic: null,
     };
-    const staleSchedule = createDeferred<typeof snapshot>();
-    const staleCleanup = createDeferred<typeof snapshot>();
-    const currentSchedule = createDeferred<typeof snapshot>();
-    const snapshotPromises = [staleSchedule.promise, staleCleanup.promise, currentSchedule.promise];
-    let snapshotCallCount = 0;
     const invoke = getMockInvoke();
     const originalInvoke = invoke.getMockImplementation();
     invoke.mockImplementation(async (command, args) => {
-      if (command === "audio_get_session_snapshot" && snapshotCallCount < snapshotPromises.length) {
-        return snapshotPromises[snapshotCallCount++];
-      }
+      if (command === "audio_seek") return seek.promise;
+      if (command === "audio_schedule_cues" || command === "audio_cancel_cues") return sessionSnapshot;
       return originalInvoke!(command, args);
     });
 
-    await user.click(screen.getByLabelText("Follow project playback"));
-    await waitFor(() => expect(snapshotCallCount).toBe(1));
-    await user.click(screen.getByLabelText("Follow project playback"));
-    await waitFor(() => expect(snapshotCallCount).toBe(2));
-    await act(async () => { staleSchedule.resolve(snapshot); });
+    fireEvent.change(screen.getByLabelText("Playback position"), { target: { value: "0.2" } });
+    await waitFor(() => expect(invoke.mock.calls.filter(([name]) => name === "audio_seek")).toHaveLength(1));
+    await user.click(screen.getByRole("link", { name: "Tools" }));
+    await user.click(await screen.findByRole("tab", { name: "Metronome" }));
+    await user.click(screen.getByRole("button", { name: "Start" }));
     expect(invoke.mock.calls.filter(([name]) => name === "audio_schedule_cues")).toHaveLength(0);
 
-    await user.click(screen.getByLabelText("Follow project playback"));
-    await waitFor(() => expect(snapshotCallCount).toBe(3));
-    await act(async () => { currentSchedule.resolve(snapshot); });
-    await waitFor(() => expect(invoke.mock.calls.filter(([name]) => name === "audio_schedule_cues")).toHaveLength(1));
-    await act(async () => { staleCleanup.resolve(snapshot); });
-    expect(invoke.mock.calls.filter(([name]) => name === "audio_cancel_cues")).toHaveLength(0);
-
-    invoke.mockImplementation(originalInvoke!);
-    await user.click(screen.getByLabelText("Follow project playback"));
-    await waitFor(() => expect(invoke.mock.calls.filter(([name]) => name === "audio_cancel_cues")).toHaveLength(1));
+    await act(async () => seek.resolve({
+      sessionId: preparedSessionId, state: "playing", positionSeconds: 0.48,
+      durationSeconds: 182, playbackRate: 1, nativePlaybackSupported: true,
+      fallbackReason: null, lanes: [], bufferHealth: [], leaseId: "project-playback",
+      generation: 1, timelineRevision: 2, nativeTimeUs: 10,
+    }));
+    await waitFor(() => expect(invoke.mock.calls.some(([name]) => name === "audio_schedule_cues")).toBe(true));
+    for (const call of invoke.mock.calls.filter(([name]) => name === "audio_schedule_cues")) {
+      expect(call[1]).toMatchObject({ payload: { timelineRevision: 2 } });
+    }
     delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
   });
 
@@ -505,9 +626,9 @@ describe("Desktop app tools metronome", () => {
 
     await user.click(screen.getByRole("link", { name: "Tools" }));
     await user.click(await screen.findByRole("tab", { name: "Metronome" }));
-    await user.click(screen.getByLabelText("Follow project playback"));
+    await user.click(screen.getByRole("button", { name: "Start" }));
     await waitFor(() => expect(screen.getByRole("button", { name: "Stop" })).toBeInTheDocument());
-    await waitFor(() => expect(screen.getAllByText("Following Demo Song").length).toBeGreaterThan(0));
+    await waitFor(() => expect(screen.getAllByText("Following Demo Song playback").length).toBeGreaterThan(0));
     act(() => {
       advanceMockAnimationFrames();
     });

@@ -38,6 +38,8 @@ pub struct CueRequest {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CueEvent {
+    pub resource: &'static str,
+    pub source: &'static str,
     pub generation: u64,
     pub revision: u64,
     pub cue_index: u32,
@@ -346,6 +348,8 @@ impl Timeline {
             };
             due.push(FiredCue {
                 event: CueEvent {
+                    resource: "output",
+                    source: "project_playback",
                     generation: self.generation,
                     revision: self.revision,
                     cue_index: cue.index,

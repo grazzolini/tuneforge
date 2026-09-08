@@ -5,21 +5,25 @@ download, installation, verification, signature, and publication instructions.
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-09-08
+
 ### Added
 
 - Moved project count-ins and playback-following metronome cues onto the native audio timeline,
   with timing-grid-aware spacing and the same short triangle click on native and Web Audio paths.
-- Moved project count-ins and metronome timing onto one native output runtime, including standalone
-  free-run and playback-following modes, while keeping tuner capture independently concurrent.
+- Moved the standalone metronome onto the shared native output runtime while keeping tuner capture
+  independently concurrent.
 
 ### Changed
 
-- Made native audio required in normal Tauri sessions while preserving browser and explicitly
-  forced Web Audio modes.
+- Made native audio required in normal Tauri sessions: startup and runtime failures now stop with
+  an actionable diagnostic and require explicit recovery, while browser and explicitly forced Web
+  Audio modes remain supported.
 
 ### Fixed
 
 - Reduced Android sync reconciliation memory use for libraries with many pending projects.
+- Prevented Sync Evidence exports from hanging on macOS and Linux when a native save path is used.
 - Preserved project playback position across native output changes, rejected stale transport
   completions, cancelled pending native and Web starts, kept native loop restarts reliable, and
   kept playback-following native and Web metronome timing aligned through tempo changes.
@@ -179,7 +183,8 @@ download, installation, verification, signature, and publication instructions.
 
 - Development used `0.1.0` metadata; `v1.0.0` was the first tagged release.
 
-[Unreleased]: https://github.com/grazzolini/tuneforge/compare/v1.4.0...main
+[Unreleased]: https://github.com/grazzolini/tuneforge/compare/v1.5.0...main
+[1.5.0]: https://github.com/grazzolini/tuneforge/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/grazzolini/tuneforge/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/grazzolini/tuneforge/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/grazzolini/tuneforge/compare/v1.1.0...v1.2.0

@@ -696,7 +696,7 @@ export function ActivityView() {
               return (
                 <button
                   className="button button--ghost button--small activity-bulk-actions__button"
-                  disabled={bulkJobsMutation.isPending || conversionActive}
+                  disabled={isError || bulkJobsMutation.isPending || conversionActive}
                   key={action.jobType}
                   onClick={() => {
                     void handleBulkJobAction(action);

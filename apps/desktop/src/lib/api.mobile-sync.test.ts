@@ -129,6 +129,42 @@ describe("mobile sync API adapter", () => {
     });
   });
 
+  it("routes iOS through mobile IPC without an HTTP fallback", async () => {
+    mockInvoke.mockResolvedValueOnce({
+      ...mobileCapabilities,
+      platform: "ios",
+      mediaBackend: "cpal_coreaudio",
+      analysisAvailable: false,
+      basicChordsAvailable: false,
+    });
+    const apiModule = await import("./api");
+    await expect(apiModule.initializeApi()).resolves.toBe("mobile://embedded");
+    mockInvoke.mockClear();
+
+    await apiModule.api.getHealth();
+
+    expect(mockInvoke).toHaveBeenCalledWith("mobile_get_health", undefined);
+  });
+
+  it("fails closed when an embedded mobile runtime cannot report capabilities", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    mockInvoke.mockImplementation(async (command: string) => {
+      if (command === "mobile_capabilities") {
+        throw new Error("capabilities unavailable");
+      }
+      if (command === "backend_base_url") {
+        return "mobile://embedded";
+      }
+      return {};
+    });
+    const apiModule = await import("./api");
+
+    await expect(apiModule.initializeApi()).rejects.toThrow("could not report its capabilities");
+    expect(apiModule.getApiBaseUrl()).toBe("mobile://embedded");
+    expect(fetchSpy).not.toHaveBeenCalled();
+    fetchSpy.mockRestore();
+  });
+
   it("routes latest jobs query params to the mobile jobs command", async () => {
     const api = await loadMobileApi();
     const params: ListJobsParams = {

@@ -9,14 +9,14 @@ use std::{env, ffi::OsStr};
 
 use rusqlite::{params, Connection, Error as SqliteError, OpenFlags, OptionalExtension};
 use serde_json::Value;
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use tauri::AppHandle;
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 use tauri::{AppHandle, Manager};
 
 #[cfg(any(target_os = "linux", target_os = "macos", test))]
 const BACKEND_DATABASE_NAME: &str = "app.sqlite";
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 const MOBILE_DATABASE_NAME: &str = "mobile.sqlite3";
 const BACKEND_PROJECTS_DIR: &str = "projects";
 const PLAYBACK_SOURCE_MISSING_MESSAGE: &str = "Native playback source is missing or unavailable.";
@@ -33,7 +33,7 @@ pub(super) struct PlaybackSourceScope {
 
 impl PlaybackSourceScope {
     pub(super) fn from_app(app: &AppHandle) -> Result<Self, String> {
-        #[cfg(target_os = "android")]
+        #[cfg(any(target_os = "android", target_os = "ios"))]
         {
             let data_root = app
                 .path()
@@ -43,14 +43,14 @@ impl PlaybackSourceScope {
                 .map_err(|error| error.message().to_string());
         }
 
-        #[cfg(not(target_os = "android"))]
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
         {
             let _ = app;
             Self::from_backend_config()
         }
     }
 
-    #[cfg(not(target_os = "android"))]
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     pub(super) fn from_backend_config() -> Result<Self, String> {
         let data_root = backend_data_root()?;
         Self::from_backend_data_root(&data_root).map_err(|error| error.message().to_string())

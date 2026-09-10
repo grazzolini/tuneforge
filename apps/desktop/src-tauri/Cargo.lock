@@ -7134,6 +7134,7 @@ dependencies = [
  "objc2-foundation",
  "rand",
  "rusqlite",
+ "rustls",
  "serde",
  "serde_json",
  "sha2 0.11.0",

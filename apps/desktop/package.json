@@ -7,6 +7,8 @@
     "build": "tsc && vite build",
     "android:prepare": "node ../../scripts/package-android.mjs --prepare",
     "android:icons": "tauri icon --output src-tauri/target/android-icons src-tauri/icons/icon.png",
+    "ios:prepare": "node ../../scripts/prepare-ios.mjs",
+    "ios:build:debug": "node ../../scripts/prepare-ios.mjs --build-debug",
     "android:build": "node ../../scripts/package-android.mjs",
     "android:build:debug": "node ../../scripts/package-android.mjs --debug",
     "android:build:release": "node ../../scripts/package-android.mjs --publishable",

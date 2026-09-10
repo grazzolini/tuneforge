@@ -469,6 +469,18 @@ describe("Desktop app activity", () => {
     expect(mockListJobs.mock.calls.some(([params]) => params === undefined)).toBe(false);
   });
 
+  it("disables bulk job actions when the activity queue is unavailable", async () => {
+    mockListJobs
+      .mockRejectedValueOnce(new Error("Jobs unavailable"))
+      .mockRejectedValueOnce(new Error("Jobs unavailable"));
+    renderApp(["/activity"]);
+
+    expect(await screen.findByText("Could not load the activity queue.")).toBeInTheDocument();
+    screen.getAllByRole("group", { name: "Bulk job actions" }).forEach((group) => {
+      within(group).getAllByRole("button").forEach((button) => expect(button).toBeDisabled());
+    });
+  });
+
   it("searches activity jobs by project name", async () => {
     setProjects([
       project({ id: "proj_choir", display_name: "Choir Practice" }),
@@ -878,6 +890,20 @@ describe("Desktop app activity", () => {
 
     await waitFor(() => expect(mockStopSyncListener).toHaveBeenCalled());
     expect(await screen.findByText("Stopped")).toBeInTheDocument();
+  });
+
+  it("keeps sync actions unavailable when prerequisite queries fail", async () => {
+    const user = userEvent.setup();
+    mockGetSyncIdentity.mockRejectedValueOnce(new Error("Identity unavailable"));
+    mockGetSyncTransportStatus.mockRejectedValueOnce(new Error("Listener unavailable"));
+    mockListSyncTrustedPeers.mockRejectedValueOnce(new Error("Peers unavailable"));
+    await openSyncTab(user);
+
+    expect(await screen.findByText("Native sync transport is unavailable.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Start Listener" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Answer Offer" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Trust Response" })).toBeDisabled();
+    expect(screen.queryByText("No nearby devices.")).not.toBeInTheDocument();
   });
 
   it("shows active sync progress and polls listener status while listening", async () => {

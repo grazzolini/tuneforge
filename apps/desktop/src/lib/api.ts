@@ -4,6 +4,7 @@ import type { components, MobileCapabilities, paths } from "@tuneforge/shared-ty
 import { normalizeApiDateTime } from "./datetime";
 
 const DEFAULT_API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8765";
+const EMBEDDED_MOBILE_API_BASE_URL = "mobile://embedded";
 let apiBaseUrl = DEFAULT_API_BASE_URL;
 let runtimeInitPromise: Promise<string> | null = null;
 
@@ -2504,8 +2505,12 @@ function createMobileTuneForgeClient(capabilities: MobileCapabilities): TuneForg
     getMobileCapabilities: async () => capabilities,
     ensureWebMediaTransport,
     getHealth: () => invokeMobile("mobile_get_health"),
-    getExportCapabilities: async () => ({
-      capabilities: {
+    getExportCapabilities: async () => {
+      if (capabilities.platform === "ios") {
+        throw unsupportedRuntimeError("Export");
+      }
+      return {
+        capabilities: {
         platform: "android",
         formats: [
           { id: "wav", available: true, reason: null },
@@ -2527,8 +2532,9 @@ function createMobileTuneForgeClient(capabilities: MobileCapabilities): TuneForg
           },
         ],
         max_artifact_count: 1,
-      },
-    }),
+        },
+      };
+    },
     listProjects: (params?: ListProjectsParams) =>
       invokeMobile("mobile_list_projects", { params: params ?? null }),
     importProject: async (body: ProjectImportRequest) => {
@@ -2634,23 +2640,29 @@ export async function initializeApi() {
 
       try {
         const capabilities = await invoke<MobileCapabilities>("mobile_capabilities");
-        apiBaseUrl = "mobile://embedded";
+        apiBaseUrl = EMBEDDED_MOBILE_API_BASE_URL;
         activeClient = createMobileTuneForgeClient(capabilities);
         return apiBaseUrl;
       } catch {
         activeClient = createHttpTuneForgeClient();
       }
 
+      let resolved: string;
       try {
-        const resolved = await invoke<string>("backend_base_url");
-        apiBaseUrl = resolved;
-        client = createClient<paths>({ baseUrl: apiBaseUrl });
-        activeClient = createHttpTuneForgeClient();
+        resolved = await invoke<string>("backend_base_url");
       } catch {
         apiBaseUrl = DEFAULT_API_BASE_URL;
         client = createClient<paths>({ baseUrl: apiBaseUrl });
         activeClient = createHttpTuneForgeClient();
+        return apiBaseUrl;
       }
+      if (resolved === EMBEDDED_MOBILE_API_BASE_URL) {
+        apiBaseUrl = resolved;
+        throw new Error("The embedded mobile API bridge could not report its capabilities.");
+      }
+      apiBaseUrl = resolved;
+      client = createClient<paths>({ baseUrl: apiBaseUrl });
+      activeClient = createHttpTuneForgeClient();
 
       return apiBaseUrl;
     })();

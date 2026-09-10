@@ -467,7 +467,7 @@ export function LibraryView() {
           <button
             className="button button--primary"
             onClick={() => importMutation.mutate()}
-            disabled={importMutation.isPending}
+            disabled={importMutation.isPending || isProjectsLoading || isProjectsError}
           >
             {pendingImportCopy ? pendingImportCopy.buttonLabel : "Import Track(s)"}
             <Upload aria-hidden="true" className="button__icon" />
@@ -516,26 +516,28 @@ export function LibraryView() {
             }}
           />
         </label>
-        <div className="library-toolbar__summary" aria-live="polite">
-          {deferredSearch ? (
-            totalProjectCount ? (
+        {!showInitialError ? (
+          <div className="library-toolbar__summary" aria-live="polite">
+            {deferredSearch ? (
+              totalProjectCount ? (
+                <span>
+                  {hasLoadedAllProjects
+                    ? `${totalProjectCount} match${totalProjectCount === 1 ? "" : "es"}`
+                    : `${loadedProjectCount} of ${totalProjectCount} matches loaded`}{" "}
+                  for "{deferredSearch}"
+                </span>
+              ) : (
+                <span>No matches for "{deferredSearch}"</span>
+              )
+            ) : (
               <span>
                 {hasLoadedAllProjects
-                  ? `${totalProjectCount} match${totalProjectCount === 1 ? "" : "es"}`
-                  : `${loadedProjectCount} of ${totalProjectCount} matches loaded`}{" "}
-                for "{deferredSearch}"
+                  ? `${totalProjectCount} project${totalProjectCount === 1 ? "" : "s"} ready`
+                  : `${loadedProjectCount} of ${totalProjectCount} projects loaded`}
               </span>
-            ) : (
-              <span>No matches for "{deferredSearch}"</span>
-            )
-          ) : (
-            <span>
-              {hasLoadedAllProjects
-                ? `${totalProjectCount} project${totalProjectCount === 1 ? "" : "s"} ready`
-                : `${loadedProjectCount} of ${totalProjectCount} projects loaded`}
-            </span>
-          )}
-        </div>
+            )}
+          </div>
+        ) : null}
       </div>
 
       {showInitialLoading ? (

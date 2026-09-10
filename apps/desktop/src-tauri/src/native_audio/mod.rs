@@ -9,7 +9,12 @@ pub mod diagnostics;
 pub mod mixer;
 pub mod platform;
 pub mod session;
-#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+#[cfg(any(
+    target_os = "android",
+    target_os = "ios",
+    target_os = "linux",
+    target_os = "macos"
+))]
 mod source_scope;
 pub mod system_input;
 pub mod timeline;

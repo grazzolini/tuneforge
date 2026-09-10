@@ -2251,6 +2251,7 @@ export function ActivitySyncPanel() {
   }, [pairingInputValue]);
 	  const qrScanSupported = mobileCapabilitiesQuery.data?.platform === "android";
 	  const isAndroidRuntime = mobileCapabilitiesQuery.data?.platform === "android";
+    const pairingPrerequisitesUnavailable = identityQuery.isError || peersQuery.isError;
 
   const refreshSyncQueries = useCallback(async () => {
     await Promise.all([
@@ -2857,7 +2858,7 @@ export function ActivitySyncPanel() {
         </div>
         <button
           className="button button--ghost button--small"
-          disabled={listenerMutationPending}
+          disabled={listenerQuery.isError || listenerMutationPending}
           onClick={handleListenerToggle}
           type="button"
         >
@@ -3123,7 +3124,12 @@ export function ActivitySyncPanel() {
           <div className="activity-sync-actions">
             <button
               className="button button--primary button--small"
-              disabled={!pairingInputValue || pairingInputInvalid || pairingPayloadPending}
+              disabled={
+                pairingPrerequisitesUnavailable ||
+                !pairingInputValue ||
+                pairingInputInvalid ||
+                pairingPayloadPending
+              }
               onClick={handleAnswerPairingOffer}
               type="button"
             >
@@ -3131,7 +3137,12 @@ export function ActivitySyncPanel() {
             </button>
             <button
               className="button button--ghost button--small"
-              disabled={!pairingInputValue || pairingInputInvalid || pairingPayloadPending}
+              disabled={
+                pairingPrerequisitesUnavailable ||
+                !pairingInputValue ||
+                pairingInputInvalid ||
+                pairingPayloadPending
+              }
               onClick={handleTrustPeer}
               type="button"
             >
@@ -3263,7 +3274,7 @@ export function ActivitySyncPanel() {
           <span className="metric-label">{nearbyPeers.length} nearby</span>
         </div>
 
-        {!nearbyPeers.length ? (
+        {listenerQuery.isSuccess && !nearbyPeers.length ? (
           <p className="activity-sync-empty">No nearby devices.</p>
         ) : null}
         {nearbyPeers.length ? (

@@ -1,13 +1,13 @@
 # TuneForge Mobile Architecture
 
-TuneForge mobile is Android-first and keeps the local-only product rule: no account, no cloud backend, no telemetry, and no remote processing.
+TuneForge mobile keeps the local-only product rule: no account, no cloud backend, no telemetry, and no remote processing.
 
 ## Backend Shape
 
-The mobile app includes its backend inside the Tauri app. It does not run the desktop Python/FastAPI backend on Android.
+The mobile app includes its backend inside the Tauri app. It does not run the desktop Python/FastAPI backend on Android or iOS.
 
 - Desktop: React -> Tauri -> FastAPI -> Python engines -> platform FFmpeg runtime -> SQLite/filesystem.
-- Mobile: React -> Tauri commands -> embedded Rust/Kotlin backend -> owned FFmpeg conversion plus Android media APIs -> SQLite/filesystem.
+- Mobile: React -> Tauri commands -> embedded Rust backend -> platform services -> SQLite/filesystem. Android alone adds Kotlin, owned FFmpeg conversion, and Android media APIs.
 
 The frontend talks through a `TuneForgeClient` boundary. Desktop uses the existing generated OpenAPI HTTP client. Mobile uses Tauri commands that return the same project, job, artifact, lyrics, chord, and analysis response shapes where possible.
 
@@ -155,6 +155,39 @@ transfer, recovery, or conflict states rather than where the data originated.
 | Edits | Project updates plus lyrics, chord, section, and tab-apply edits persisted as project documents or entity revisions. | Persist mobile edits locally and sync as revisions. Desktop-synced edits stay editable documents, not flattened files. | Healthy editable local data has no badge. Local edits use normal unsynced or conflicted states, not generation failure states. |
 | Sync revisions | `entity_revisions` with revision identity, entity type, source artifact, content hash, state, author device, payload, metadata, and timestamps. | Reconcile by identity and content hash. Apply tombstones before accepting older revisions. | Healthy accepted revisions have no badge. `Missing` if referenced payload is absent. `Unreadable` if hash or schema validation fails. Conflicts use sync conflict state. |
 | Tombstones | `delete_tombstones` for deleted projects, artifacts, and entity revisions, with author, target, group/project context, and prior metadata. | Persist delete markers and suppress resurrected records from offline peers. | Deleted records stay deleted or hidden, not `Missing`. Invalid tombstones are `Unreadable`; accepted tombstones have no status badge. |
+
+## iOS Simulator Foundation
+
+The iOS target currently provides a simulator-only runtime foundation. It bundles the normal React
+frontend, reports iOS capabilities through Tauri IPC, and fails closed when the embedded API is not
+available. It never falls back to the desktop HTTP backend at `127.0.0.1:8765`. Project persistence,
+LAN sync, and playback are not available in this foundation.
+
+The debug startup smoke verifies an in-memory SQLite query, synthetic WAV decode, Signalsmith
+construction and processing, and CPAL/CoreAudio output initialization. The app uses the isolated
+debug identifier `com.tuneforge.simulator`; no Apple signing team is required for a simulator build.
+Desktop Python, model, and FFmpeg resources are excluded from the iOS bundle.
+
+Install CocoaPods and the simulator Rust target once, then prepare or build from the repository root
+with Xcode selected per command and pnpm 11.22.0 pinned for that invocation:
+
+```sh
+pod --version
+rustup target add aarch64-apple-ios-sim --toolchain stable
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  npm exec --yes --package=pnpm@11.22.0 -- \
+  pnpm --filter @tuneforge/desktop ios:prepare
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  npm exec --yes --package=pnpm@11.22.0 -- \
+  pnpm --filter @tuneforge/desktop ios:build:debug
+```
+
+Preparation uses `tauri ios init --skip-targets-install`, preserves any existing ignored scaffold
+under `apps/desktop/src-tauri/target/`, and regenerates the ignored AppIcon catalog from the existing
+TuneForge source icon. The build script creates ignored command shims so Xcode child processes keep
+the selected developer directory and stable Rust toolchain without changing global configuration.
+The unsigned simulator app is written below
+`apps/desktop/src-tauri/gen/apple/build/arm64-sim/TuneForge.app`.
 
 ## Android Setup
 

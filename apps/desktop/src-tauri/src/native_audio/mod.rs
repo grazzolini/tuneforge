@@ -6,6 +6,8 @@ pub mod android_media;
 pub mod capture;
 pub mod decode;
 pub mod diagnostics;
+#[cfg(target_os = "ios")]
+pub(crate) mod ios_session;
 pub mod mixer;
 pub mod platform;
 pub mod session;
@@ -36,6 +38,14 @@ pub const AUDIO_EVENT_TERMINAL: &str = "audio://terminal";
 pub struct NativeAudioState {
     capabilities: AudioCapabilities,
     engine: Arc<Mutex<NativeAudioEngine>>,
+    #[cfg(target_os = "ios")]
+    lifecycle: Arc<IosAudioLifecycle>,
+}
+
+#[cfg(target_os = "ios")]
+struct IosAudioLifecycle {
+    epoch: std::sync::atomic::AtomicU64,
+    inhibited: Arc<std::sync::atomic::AtomicBool>,
 }
 
 struct NativeAudioEngine {
@@ -55,11 +65,26 @@ impl NativeAudioState {
         diagnostics::initialize();
         let capabilities = AudioCapabilities::detect();
         let (report_sender, report_receiver) = mpsc::sync_channel(32);
+        #[cfg(target_os = "ios")]
+        let lifecycle = Arc::new(IosAudioLifecycle {
+            epoch: std::sync::atomic::AtomicU64::new(0),
+            inhibited: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        });
+        #[cfg(target_os = "ios")]
+        let transport = {
+            let mut transport = transport::TransportState::default();
+            transport.bind_runtime_inhibitor(lifecycle.inhibited.clone());
+            transport
+        };
+        #[cfg(not(target_os = "ios"))]
+        let transport = transport::TransportState::default();
         Self {
             capabilities: capabilities.clone(),
+            #[cfg(target_os = "ios")]
+            lifecycle,
             engine: Arc::new(Mutex::new(NativeAudioEngine {
                 mixer: mixer::MixerState::default(),
-                transport: transport::TransportState::default(),
+                transport,
                 capture: capture::CaptureState::default(),
                 output_session: session::SessionCoordinator::new_for_resource(
                     session::AudioResource::Output,
@@ -89,6 +114,13 @@ impl NativeAudioState {
         self.engine
             .lock()
             .map_err(|_| "Native audio engine is unavailable.".to_string())
+    }
+
+    #[cfg(target_os = "ios")]
+    fn lifecycle_epoch(&self) -> u64 {
+        self.lifecycle
+            .epoch
+            .load(std::sync::atomic::Ordering::Acquire)
     }
 }
 
@@ -320,13 +352,23 @@ pub async fn audio_prepare_session(
     if !state.capabilities.native_playback_supported {
         return Err("native_audio_unavailable".to_string());
     }
+    #[cfg(target_os = "ios")]
+    validate_ios_playback_rate(payload.playback_rate)?;
+    #[cfg(target_os = "ios")]
+    let lifecycle_epoch = state.lifecycle_epoch();
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let diagnostic_generation = diagnostics::begin_operation(
             diagnostics::DiagnosticOperationKind::Prepare,
             payload.lanes.len(),
         );
+        #[cfg(target_os = "ios")]
+        source_scope::validate_playback_lanes(&app, &payload.lanes)?;
         let mut engine = state.engine()?;
+        #[cfg(target_os = "ios")]
+        if state.lifecycle_epoch() != lifecycle_epoch {
+            return Err("native_audio_lifecycle_changed".to_string());
+        }
         payload
             .control
             .validate_acquisition()
@@ -376,7 +418,7 @@ pub async fn audio_prepare_session(
 }
 
 #[tauri::command]
-pub fn audio_play(
+pub async fn audio_play(
     app: AppHandle,
     state: State<'_, NativeAudioState>,
     payload: transport::AudioPlayRequest,
@@ -385,7 +427,16 @@ pub fn audio_play(
         return Err("Native audio playback is not available yet.".to_string());
     }
 
+    #[cfg(target_os = "ios")]
+    let lifecycle_epoch = state.lifecycle_epoch();
+    #[cfg(target_os = "ios")]
+    let app_active = ios_session::application_is_active(&app).await?;
+    let state = state.inner().clone();
     let mut engine = state.engine()?;
+    #[cfg(target_os = "ios")]
+    if !app_active || state.lifecycle_epoch() != lifecycle_epoch {
+        return Err("native_audio_inactive".to_string());
+    }
     engine.drain_reports();
     let previous_generation = engine.output_session.snapshot().generation;
     if !engine
@@ -439,6 +490,11 @@ pub fn audio_play(
     }) {
         return Err("invalid_cue_schedule".to_string());
     }
+    #[cfg(target_os = "ios")]
+    state
+        .lifecycle
+        .inhibited
+        .store(false, std::sync::atomic::Ordering::Release);
     if let Err(error) = engine.transport.play(payload) {
         if let Some(event) = engine
             .output_session
@@ -576,6 +632,10 @@ pub fn audio_set_lanes(
     payload: mixer::AudioLaneUpdate,
     control: session::SessionCommand,
 ) -> Result<transport::AudioSnapshot, String> {
+    #[cfg(target_os = "ios")]
+    validate_ios_playback_rate(payload.playback_rate)?;
+    #[cfg(target_os = "ios")]
+    source_scope::validate_playback_lanes(&app, &payload.lanes)?;
     let mut engine = state.engine()?;
     if !engine.authorize(session::SessionOwner::Playback, &control, false)? {
         return Ok(engine.output_snapshot());
@@ -622,6 +682,14 @@ pub fn audio_set_standalone_metronome(
 ) -> Result<transport::StandaloneMetronomeState, String> {
     if !state.capabilities.native_playback_supported {
         return Err("Native audio output is unavailable.".to_string());
+    }
+    #[cfg(target_os = "ios")]
+    if state
+        .lifecycle
+        .inhibited
+        .load(std::sync::atomic::Ordering::Acquire)
+    {
+        return Err("native_audio_inactive".to_string());
     }
     let mut engine = state.engine()?;
     engine.drain_reports();
@@ -694,6 +762,51 @@ pub fn audio_request_input_permission() -> capture::AudioInputPermissionStatus {
 pub fn stop_input_for_lifecycle(app: &AppHandle, state: &NativeAudioState) {
     if let Ok(mut engine) = state.engine() {
         engine.capture.stop_for_background(app);
+    }
+}
+
+#[cfg(target_os = "ios")]
+pub fn pause_output_for_lifecycle(app: &AppHandle, state: &NativeAudioState) {
+    let Ok(mut engine) = state.engine() else {
+        return;
+    };
+    state
+        .lifecycle
+        .inhibited
+        .store(true, std::sync::atomic::Ordering::Release);
+    state
+        .lifecycle
+        .epoch
+        .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+    let snapshot = engine.transport.pause_for_lifecycle();
+    if let Ok(mut timeline) = engine.output_session.timeline().lock() {
+        let revision = timeline.revision();
+        let _ = timeline.seek(revision, snapshot.position_seconds);
+        timeline.pause();
+    }
+    engine.emit_session(app, session::AudioResource::Output);
+    let snapshot = engine.output_snapshot();
+    let _ = app.emit(AUDIO_EVENT_STATE, snapshot.clone());
+    let _ = app.emit(
+        AUDIO_EVENT_POSITION,
+        transport::AudioPositionEvent {
+            session_id: snapshot.session_id,
+            position_seconds: snapshot.position_seconds,
+            duration_seconds: snapshot.duration_seconds,
+            state: snapshot.state,
+            generation: snapshot.generation,
+            timeline_revision: snapshot.timeline_revision,
+            native_time_us: snapshot.native_time_us,
+        },
+    );
+}
+
+#[cfg(any(target_os = "ios", test))]
+fn validate_ios_playback_rate(rate: Option<f64>) -> Result<(), String> {
+    if rate.is_none_or(|value| value.is_finite() && (value - 1.0).abs() <= 0.0001) {
+        Ok(())
+    } else {
+        Err("ios_playback_rate_unsupported".to_string())
     }
 }
 
@@ -1302,4 +1415,13 @@ mod tests {
         assert_eq!(prepared.lease_id, "project-playback");
         assert!(engine.transport.has_auxiliary_runtime());
     }
+}
+#[test]
+fn ios_playback_rate_accepts_only_native_speed() {
+    assert!(validate_ios_playback_rate(None).is_ok());
+    assert!(validate_ios_playback_rate(Some(1.0)).is_ok());
+    assert_eq!(
+        validate_ios_playback_rate(Some(1.25)).unwrap_err(),
+        "ios_playback_rate_unsupported"
+    );
 }

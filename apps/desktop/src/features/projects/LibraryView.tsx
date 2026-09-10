@@ -48,12 +48,8 @@ function formatUpdatedAt(value: string | null) {
 
 function ProjectSummaryLink({
   children,
-  isIOSRuntime,
   project,
 }: PropsWithChildren<{ isIOSRuntime: boolean; project: ProjectSchema }>) {
-  if (isIOSRuntime) {
-    return <div className="project-card__link">{children}</div>;
-  }
   return (
     <Link
       aria-label={`Open ${project.display_name} project`}

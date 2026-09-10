@@ -68,6 +68,7 @@ fn smoke_signalsmith() {
 }
 
 fn smoke_output() -> Result<(), String> {
+    let _audio_session = crate::native_audio::ios_session::PlaybackAudioSession::activate()?;
     let host = cpal::default_host();
     let device = host
         .default_output_device()

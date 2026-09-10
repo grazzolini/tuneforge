@@ -9,6 +9,8 @@ download, installation, verification, signature, and publication instructions.
 
 - Added simulator-only iOS project persistence and manual TCP sync with trusted desktop peers,
   including synced project metadata in Library.
+- Added simulator-only iOS playback for synced registered WAV sources, practice mixes, and stems,
+  with native play, pause, stop, seek, loop, mute, and solo controls at 1.0x speed.
 - Added owned, offline LGPL FFmpeg conversion for macOS arm64 and Android arm64, API 26+, with
   durable WAV, FLAC, MP3, and M4A import, preview, retune, transpose, and Android export support.
 

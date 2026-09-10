@@ -3921,15 +3921,40 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     const unlisteners = Promise.all([
       listenNativeAudioPositions((position) => {
         const activeSession = sessionRef.current;
+        const sessionSignature = nativePlaybackRef.current.sessionSignature;
+        const currentRevision = nativePlaybackRef.current.timelineRevision;
+        const newerLifecyclePause =
+          nativeBackendRef.current === "ios-coreaudio" &&
+          position.state === "paused" &&
+          currentRevision !== null &&
+          position.timelineRevision > currentRevision;
         if (
           !activeSession ||
           !nativePlaybackRef.current.active ||
           nativePrecountRef.current !== null ||
-          position.sessionId !== nativePlaybackRef.current.sessionSignature ||
+          sessionSignature === null ||
+          position.sessionId !== sessionSignature ||
           position.generation !== nativePlaybackRef.current.generation ||
-          position.timelineRevision !== nativePlaybackRef.current.timelineRevision
+          (position.timelineRevision !== currentRevision && !newerLifecyclePause)
         ) {
           return;
+        }
+        if (newerLifecyclePause) {
+          loopEpochRef.current += 1;
+          playbackIntentEpochRef.current += 1;
+          nativeControlGenerationRef.current += 1;
+          invalidateNativeOutputMutations();
+          precountSequenceRef.current += 1;
+          allowFreshPlaybackRef.current = true;
+          clearPendingTransition();
+          pendingNativePlayRef.current = null;
+          pendingNativePauseRef.current = null;
+          nativePlaybackRef.current.timelineRevision = position.timelineRevision;
+          nativeOutputAuthorityRef.current = {
+            generation: position.generation,
+            sessionSignature,
+            timelineRevision: position.timelineRevision,
+          };
         }
         if (position.state === "playing" && restartLoopIfNeeded(activeSession, position.positionSeconds)) {
           setPlaybackDurationSeconds(position.durationSeconds || activeSession.durationHintSeconds || 0);

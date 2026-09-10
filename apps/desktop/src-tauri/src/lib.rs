@@ -678,7 +678,7 @@ pub fn run() {
         .expect("error while building tuneforge");
 
     app.run(|app_handle, event| {
-        #[cfg(target_os = "android")]
+        #[cfg(any(target_os = "android", target_os = "ios"))]
         if matches!(
             event,
             tauri::RunEvent::WindowEvent {
@@ -687,7 +687,10 @@ pub fn run() {
             }
         ) {
             let native_audio = app_handle.state::<native_audio::NativeAudioState>();
+            #[cfg(target_os = "android")]
             native_audio::stop_input_for_lifecycle(app_handle, native_audio.inner());
+            #[cfg(target_os = "ios")]
+            native_audio::pause_output_for_lifecycle(app_handle, native_audio.inner());
         }
         if let tauri::RunEvent::Exit = event {
             let mobile_media =

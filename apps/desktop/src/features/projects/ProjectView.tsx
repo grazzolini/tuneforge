@@ -1,6 +1,5 @@
 import { useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Link } from "react-router-dom";
 import { api } from "../../lib/api";
 import { ProjectShell } from "./components/ProjectShell";
 import { ProjectViewModelProvider } from "./components/ProjectViewModelContext";
@@ -25,15 +24,6 @@ export function ProjectView() {
         <button className="button button--ghost" onClick={() => void mobileCapabilitiesQuery.refetch()} type="button">
           Retry
         </button>
-      </div>
-    );
-  }
-  if (mobileCapabilitiesQuery.data?.platform === "ios") {
-    return (
-      <div className="panel">
-        <h1>Project playback unavailable</h1>
-        <p>Browse synced project and artifact details from Library.</p>
-        <Link className="button button--ghost" to="/">Back to Library</Link>
       </div>
     );
   }

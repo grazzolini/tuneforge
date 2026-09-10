@@ -6,13 +6,16 @@ import { markPlaybackStarting } from "./lib/playbackDiagnostics";
 import { updateBrowserWakeLockStatus } from "./lib/powerInhibition";
 import {
   findAudioByArtifactId,
+  emitMockNativePlaybackPosition,
   markAudioReady,
   mockCreateStems,
   mockGetChords,
+  mockGetAnalysis,
   mockGetProject,
   mockGetLyrics,
   mockInvoke,
   mockListArtifacts,
+  mockListJobs,
   mockGetMobileCapabilities,
   mockStartSyncListener,
   resetAppTestHarness,
@@ -20,6 +23,8 @@ import {
   setProjectAnalysis,
   setProjectChords,
   setProjectLyrics,
+  setProjectArtifacts,
+  setMockNativeAudioState,
 } from "./test/appTestHarness";
 
 const originalUserAgent = navigator.userAgent;
@@ -148,6 +153,7 @@ function setTempoAnalysis(tempoBpm = 120) {
 describe("Desktop app mobile capability gates", () => {
   beforeEach(resetAppTestHarness);
   afterEach(() => {
+    delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
     Object.defineProperties(window.navigator, {
       userAgent: { configurable: true, value: originalUserAgent },
       platform: { configurable: true, value: originalPlatform },
@@ -163,7 +169,7 @@ describe("Desktop app mobile capability gates", () => {
     await waitFor(() =>
       expect(screen.queryByRole("button", { name: "Import Track(s)" })).not.toBeInTheDocument(),
     );
-    expect(screen.queryByRole("link", { name: "Open Demo Song project" })).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open Demo Song project" })).toBeInTheDocument();
     expect(screen.queryByText("Show file details")).not.toBeInTheDocument();
   });
 
@@ -179,16 +185,195 @@ describe("Desktop app mobile capability gates", () => {
     expect(screen.queryByRole("button", { name: "Import Track(s)" })).not.toBeInTheDocument();
   });
 
-  it("gates iOS project routes before the full project model mounts", async () => {
+  it("opens an iOS project directly in the constrained playback workspace", async () => {
     enableIOSRuntime();
     renderApp(["/projects/proj_123"]);
 
-    expect(await screen.findByRole("heading", { name: "Project playback unavailable" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Back to Library" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Processing" })).not.toBeInTheDocument();
-    expect(mockGetProject).not.toHaveBeenCalled();
-    expect(mockListArtifacts).not.toHaveBeenCalled();
-    expect(mockInvoke).not.toHaveBeenCalledWith("audio_prepare_session", expect.anything());
+    expect(screen.queryByRole("tablist", { name: "Project workspace" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "More playback actions" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Lyrics + chords" })).not.toBeInTheDocument();
+    expect(mockGetProject).toHaveBeenCalledWith("proj_123");
+    expect(mockListArtifacts).toHaveBeenCalledWith("proj_123");
+    expect(mockGetAnalysis).not.toHaveBeenCalled();
+    expect(mockGetChords).not.toHaveBeenCalled();
+    expect(mockGetLyrics).not.toHaveBeenCalled();
+    expect(mockListJobs).not.toHaveBeenCalled();
+
+    await userEvent.click(screen.getByRole("button", { name: "Open Practice Controls" }));
+    const dialog = screen.getByRole("dialog", { name: "Practice Controls" });
+    expect(within(dialog).getByRole("button", { name: /Source Track/i })).toBeInTheDocument();
+    expect(within(dialog).queryByText("Transpose / Capo")).not.toBeInTheDocument();
+    expect(within(dialog).queryByText("Count-in")).not.toBeInTheDocument();
+    expect(within(dialog).queryByText("Playback BPM")).not.toBeInTheDocument();
+  });
+
+  it("uses registered WAV proxies and omits unsupported iOS playback rows", async () => {
+    enableIOSRuntime();
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: { invoke: mockInvoke },
+    });
+    setMockNativeAudioState({ capabilities: {
+      platform: "ios", backend: "ios-coreaudio", nativePlaybackSupported: true,
+    } });
+    setProjectArtifacts("proj_123", [
+      { id: "proxy", project_id: "proj_123", type: "preview_mix", format: "mp3", path: "/private/mix.mp3", metadata: { playback_path: "/private/mix.wav", playback_format: "wav" }, created_at: "2026-04-18T13:16:00.000Z" },
+      { id: "unsupported", project_id: "proj_123", type: "source_audio", format: "mp3", path: "/private/source.mp3", metadata: {}, created_at: "2026-04-18T13:16:00.000Z" },
+    ]);
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Open Practice Controls" }));
+    const dialog = screen.getByRole("dialog", { name: "Practice Controls" });
+    expect(within(dialog).getByRole("button", { name: /Practice Mix/i })).toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: /Source Track/i })).not.toBeInTheDocument();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Close Practice Controls" }));
+    await userEvent.click(screen.getByRole("button", { name: "Play playback" }));
+    await waitFor(() => expect(mockInvoke).toHaveBeenCalledWith(
+      "audio_prepare_session",
+      expect.objectContaining({ payload: expect.objectContaining({ lanes: [expect.objectContaining({ sourcePath: "/private/mix.wav" })] }) }),
+    ));
+  });
+
+  it("resumes iOS playback with one Play after a lifecycle pause", async () => {
+    enableIOSRuntime();
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: { invoke: mockInvoke },
+    });
+    setMockNativeAudioState({ capabilities: {
+      platform: "ios", backend: "ios-coreaudio", nativePlaybackSupported: true,
+    } });
+    renderApp(["/projects/proj_123"]);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Play playback" }));
+    expect(await screen.findByRole("button", { name: "Pause playback" })).toBeInTheDocument();
+    act(() => emitMockNativePlaybackPosition({
+      sessionId: "proj_123:native:art_source",
+      state: "paused",
+      positionSeconds: 4,
+      durationSeconds: 16,
+      timelineRevision: 0,
+    }));
+    act(() => emitMockNativePlaybackPosition({
+      sessionId: "other-session",
+      state: "paused",
+      positionSeconds: 5,
+      durationSeconds: 16,
+      timelineRevision: 2,
+    }));
+    expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument();
+    act(() => emitMockNativePlaybackPosition({
+      sessionId: "proj_123:native:art_source",
+      state: "paused",
+      positionSeconds: 6.5,
+      durationSeconds: 16,
+      timelineRevision: 2,
+    }));
+    const playButton = await screen.findByRole("button", { name: "Play playback" });
+    const playCallsBeforeResume = mockInvoke.mock.calls.filter(([command]) => command === "audio_play").length;
+
+    await userEvent.click(playButton);
+
+    await waitFor(() => expect(
+      mockInvoke.mock.calls.filter(([command]) => command === "audio_play"),
+    ).toHaveLength(playCallsBeforeResume + 1));
+    const playCalls = mockInvoke.mock.calls.filter(([command]) => command === "audio_play");
+    const resumeCall = playCalls[playCalls.length - 1];
+    expect(resumeCall?.[1]).toEqual(expect.objectContaining({
+      payload: expect.objectContaining({ timelineRevision: 2 }),
+    }));
+    expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument();
+  });
+
+  it.each([
+    ["desktop", "macos", "desktop-cpal"],
+    ["Android", "android", "android-aaudio"],
+  ])("does not treat a newer %s pause as an iOS lifecycle event", async (_label, platform, backend) => {
+    enableIOSRuntime();
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: { invoke: mockInvoke },
+    });
+    setMockNativeAudioState({ capabilities: {
+      platform, backend, nativePlaybackSupported: true,
+    } });
+    renderApp(["/projects/proj_123"]);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Play playback" }));
+    expect(await screen.findByRole("button", { name: "Pause playback" })).toBeInTheDocument();
+    act(() => emitMockNativePlaybackPosition({
+      sessionId: "proj_123:native:art_source",
+      state: "paused",
+      positionSeconds: 6.5,
+      durationSeconds: 16,
+      timelineRevision: 2,
+    }));
+
+    expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Pause playback" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Play playback" }));
+    expect(await screen.findByRole("button", { name: "Pause playback" })).toBeInTheDocument();
+  });
+
+  it("keeps iOS stems in one source group and exposes mute, solo, and reset", async () => {
+    enableIOSRuntime();
+    setProjectArtifacts("proj_123", [
+      {
+        id: "group-a",
+        project_id: "proj_123",
+        type: "preview_mix",
+        format: "wav",
+        path: "/private/group-a.wav",
+        metadata: {},
+        created_at: "2026-04-18T13:16:00.000Z",
+      },
+      ...["vocals", "drums"].map((stem) => ({
+        id: `group-a-${stem}`,
+        project_id: "proj_123",
+        type: `${stem === "vocals" ? "vocal" : stem}_stem`,
+        format: "wav",
+        path: `/private/group-a-${stem}.wav`,
+        metadata: { source_artifact_id: "group-a", stem_source: stem },
+        created_at: "2026-04-18T13:16:00.000Z",
+      })),
+      ...["bass", "guitar"].map((stem) => ({
+        id: `group-b-${stem}`,
+        project_id: "proj_123",
+        type: `${stem}_stem`,
+        format: "wav",
+        path: `/private/group-b-${stem}.wav`,
+        metadata: { source_artifact_id: "group-b", stem_source: stem },
+        created_at: "2026-04-18T13:16:00.000Z",
+      })),
+    ]);
+    window.localStorage.setItem("tuneforge.project-playback-state", JSON.stringify({
+      proj_123: {
+        activeWorkspace: "playback",
+        selectedArtifactId: "group-b-bass",
+        selectedPrimaryArtifactId: "group-a",
+      },
+    }));
+    renderApp(["/projects/proj_123"]);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Open Practice Controls" }));
+    const dialog = screen.getByRole("dialog", { name: "Practice Controls" });
+    const stemList = within(dialog).getByRole("group", { name: "Playback stem list" });
+    expect(within(stemList).getByRole("button", { name: "Mute Guitar" })).toBeInTheDocument();
+    expect(within(stemList).queryByRole("button", { name: "Mute Drums" })).not.toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Full Mix" })).toBeDisabled();
+
+    await userEvent.click(within(stemList).getByRole("button", { name: "Mute Guitar" }));
+    await userEvent.click(within(stemList).getByRole("button", { name: "Solo Bass" }));
+    const reset = within(dialog).getByRole("button", { name: "Reset stem mute and solo" });
+    expect(reset).toBeEnabled();
+    await userEvent.click(reset);
+    expect(within(stemList).getByRole("button", { name: "Mute Guitar" })).toHaveAttribute(
+      "aria-pressed", "false",
+    );
   });
 
   it("fails a project route closed when runtime capabilities fail", async () => {

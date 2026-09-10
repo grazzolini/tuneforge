@@ -164,9 +164,14 @@ It never falls back to the desktop HTTP backend at `127.0.0.1:8765`.
 
 iOS stores synced projects and their artifacts in its Tauri app-private data directory. Activity
 supports manual pairing and TCP sync with a trusted desktop peer; it does not start Iroh or nearby
-device discovery. Library shows synced project metadata. Import, processing, rich project readers,
-playback, evidence export, and QR pairing remain unavailable. Local-network permission copy comes
-from the source `Info.ios.plist`; no Bonjour or
+device discovery. Library shows synced project metadata and opens a constrained playback workspace
+for registered WAV source audio, practice mixes, and stems. Playback uses the shared native mixer at
+1.0x speed with play, pause, stop, seek, loop, mute, solo, and reset controls. Non-WAV artifacts stay
+stored unchanged and remain unavailable unless sync registered an existing WAV playback proxy.
+Suspending the app pauses playback, tears down output, retains the confirmed position, and requires
+an explicit Play after the app becomes active again. Import, processing, rich project readers,
+evidence export, and QR pairing remain unavailable. Local-network permission copy comes from the
+source `Info.ios.plist`; no Bonjour or
 multicast entitlement is required for manual TCP endpoints.
 
 For same-Mac simulator validation, start only the desktop listener, pair the simulator, then initiate

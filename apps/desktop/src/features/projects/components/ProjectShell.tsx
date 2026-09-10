@@ -7,11 +7,15 @@ import { ProjectWorkspace } from "./ProjectWorkspace";
 export function ProjectShell() {
   const {
     activeWorkspace,
+    artifactsQuery,
     exportRecoveryNoticeId,
     exportRecoveryNoticeProjectId,
     handleSelectWorkspace,
+    isIOSRuntime,
     isMobileRuntime,
     projectId,
+    projectQuery,
+    selectedPlaybackArtifact,
   } = useProjectViewModelContext();
   const [practiceControlsOpen, setPracticeControlsOpen] = useState(false);
   const [showExportRecoveryNotice, setShowExportRecoveryNotice] = useState(false);
@@ -53,6 +57,31 @@ export function ProjectShell() {
     const timeoutId = window.setTimeout(() => setShowExportRecoveryNotice(false), 4000);
     return () => window.clearTimeout(timeoutId);
   }, [exportRecoveryNoticeId, exportRecoveryNoticeProjectId, projectId]);
+
+  if (isIOSRuntime && (projectQuery.isPending || artifactsQuery.isPending)) {
+    return <div className="panel" role="status">Loading synced playback...</div>;
+  }
+  if (isIOSRuntime && (projectQuery.isError || artifactsQuery.isError)) {
+    return (
+      <div className="panel panel--error" role="alert">
+        Could not load synced playback.
+        <button
+          className="button button--ghost"
+          onClick={() => void Promise.all([projectQuery.refetch(), artifactsQuery.refetch()])}
+          type="button"
+        >
+          Retry
+        </button>
+      </div>
+    );
+  }
+  if (isIOSRuntime && !selectedPlaybackArtifact) {
+    return (
+      <div className="panel" role="status">
+        No registered WAV source or playback proxy is available. Sync WAV playback artifacts from desktop.
+      </div>
+    );
+  }
 
   return (
     <section

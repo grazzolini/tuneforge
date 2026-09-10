@@ -59,6 +59,15 @@ release_license_start=${SECONDS}
 release_license_elapsed=$((SECONDS - release_license_start))
 printf '\n[tests] Release license inventory tests finished in %ss\n' "${release_license_elapsed}"
 
+printf '\n[tests] Starting release media catalog tests\n\n'
+release_media_start=${SECONDS}
+(
+  cd "${repo_root}"
+  node --test scripts/capture-release-media.test.mjs
+)
+release_media_elapsed=$((SECONDS - release_media_start))
+printf '\n[tests] Release media catalog tests finished in %ss\n' "${release_media_elapsed}"
+
 printf '\n[tests] Starting Android packaging helper tests\n\n'
 android_package_start=${SECONDS}
 (

@@ -15,6 +15,35 @@ const workspaceRoot = path.resolve(scriptDir, "..");
 const LV_CHORDIA_CHECKPOINT_BYTES = 28_730_939;
 const LV_CHORDIA_SOURCE_REVISION = "9d7de7bbf45efa6731ec8dc62d35280f141c0702";
 const flatpakGeneratedRoot = path.join(workspaceRoot, "packaging", "flatpak", "generated");
+const ffmpegSourceLockPath = path.join(workspaceRoot, "packaging", "ffmpeg", "sources.lock.json");
+
+function buildOwnedCodecPolicy() {
+  const sourceLock = JSON.parse(readFileSync(ffmpegSourceLockPath, "utf8"));
+  const sourceArchiveName =
+    `TuneForge_${sourceLock.runtimeVersion}_corresponding-sources.tar`;
+  return {
+    runtimeVersion: sourceLock.runtimeVersion,
+    ownedTargets: Object.keys(sourceLock.targets),
+    sources: Object.fromEntries(Object.entries(sourceLock.sources).map(([name, source]) => [
+      name,
+      {
+        version: source.version,
+        license: source.license,
+        url: source.url,
+        sha256: source.sha256,
+        verification: source.verification ??
+          `Detached signature verified with ${source.signingFingerprint}.`,
+      },
+    ])),
+    developmentResolution: "Host FFmpeg remains the default outside packaged applications.",
+    flatpakResolution:
+      "Flatpak ships zero owned FFmpeg/LAME payload; use only the audited GNOME runtime/extension tools.",
+    sourceLock: "packaging/ffmpeg/sources.lock.json",
+    correspondingSources: `packaging/ffmpeg/generated/${sourceArchiveName}`,
+    buildCommand: "pnpm ffmpeg:build",
+    sourceCommand: "pnpm ffmpeg:sources",
+  };
+}
 
 export const REVIEWED_FLATPAK_PYTHON_LICENSES = Object.freeze({
   alembic: "MIT", "annotated-doc": "MIT", "annotated-types": "MIT", anyio: "MIT",
@@ -293,6 +322,7 @@ export function buildReleaseLicenseInventory({
       })),
     })),
     toolStatuses,
+    ownedCodecPolicy: buildOwnedCodecPolicy(),
     modelPolicy: {
       defaultPackageOptions: {
         lvChordia: defaultOptions.lvChordia,
@@ -358,7 +388,8 @@ export function buildReleaseLicenseInventory({
       "Default release package commands must not pass --model-bundle.",
       "Advanced Chords packages must include only the exact pinned Crema ONNX model and runtime-state files.",
       "Demucs pretrained-weight redistribution is unclear/restricted upstream.",
-      "FFmpeg and ffprobe are host-installed and are not bundled.",
+      "Owned FFmpeg/LAME release payloads require matching source companion, notice, provenance, architecture, and linkage validation.",
+      "Development remains host-resolved; Flatpak ships zero owned FFmpeg/LAME payload.",
       "Python package license metadata can be incomplete; review missing fields manually.",
       "Do not commit redirected inventory reports or generated package resources.",
       "NVIDIA extension wheels require their bundled NVIDIA component license metadata review.",
@@ -421,6 +452,23 @@ export function formatReleaseLicenseInventory(checklist) {
     lines.push(`  tools: ${formatToolList(item.tools, checklist.toolStatuses)}`);
     lines.push(`  note: ${item.note}`);
   }
+
+  lines.push("");
+  lines.push("Owned codec policy:");
+  lines.push(`- runtime: ${checklist.ownedCodecPolicy.runtimeVersion}`);
+  lines.push(`- owned targets: ${checklist.ownedCodecPolicy.ownedTargets.join(", ")}`);
+  for (const [name, source] of Object.entries(checklist.ownedCodecPolicy.sources)) {
+    lines.push(
+      `- ${name} ${source.version}: ${source.license}, ${source.url}, SHA-256 ${source.sha256}`,
+    );
+    lines.push(`  verification: ${source.verification}`);
+  }
+  lines.push(`- development: ${checklist.ownedCodecPolicy.developmentResolution}`);
+  lines.push(`- Flatpak: ${checklist.ownedCodecPolicy.flatpakResolution}`);
+  lines.push(`- source lock: ${checklist.ownedCodecPolicy.sourceLock}`);
+  lines.push(`- corresponding sources: ${checklist.ownedCodecPolicy.correspondingSources}`);
+  lines.push(`- build: ${checklist.ownedCodecPolicy.buildCommand}`);
+  lines.push(`- source companion: ${checklist.ownedCodecPolicy.sourceCommand}`);
 
   lines.push("");
   lines.push("Model-weight policy:");

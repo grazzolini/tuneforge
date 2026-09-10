@@ -769,7 +769,6 @@ export function SettingsView() {
     queryFn: api.listStemModels,
   });
   const exportCapabilitiesQuery = useQuery({
-    enabled: !androidRuntime,
     queryKey: DURABLE_AUDIO_CAPABILITIES_QUERY_KEY,
     queryFn: api.getExportCapabilities,
     staleTime: Infinity,
@@ -826,9 +825,7 @@ export function SettingsView() {
     exportCapabilitiesQuery.isError,
     defaultDurableAudioFormat,
   );
-  const androidSettings =
-    androidRuntime || exportCapabilitiesQuery.data?.capabilities.platform === "android";
-  const showAudioStoragePanel = !androidSettings;
+  const showAudioStoragePanel = true;
   const chordFallbackNotice =
     "Imports may use Built-in Chords if the saved backend is unavailable; generate, refresh, and bulk actions keep the saved backend.";
 
@@ -957,8 +954,7 @@ export function SettingsView() {
 
       const snapshot = parseSettingsSnapshot(contents);
       if (
-        !androidSettings
-        && snapshot.preferences.defaultDurableAudioFormat !== defaultDurableAudioFormat
+        snapshot.preferences.defaultDurableAudioFormat !== defaultDurableAudioFormat
         && !await confirmLossyDurableAudioFormat(snapshot.preferences.defaultDurableAudioFormat)
       ) {
         return;
@@ -1034,9 +1030,7 @@ export function SettingsView() {
           <p className="eyebrow">Settings</p>
           <h1>Control Room</h1>
           <p className="screen__subtitle">
-            {androidSettings
-              ? "App-wide appearance, notation, and playback defaults."
-              : "App-wide appearance, audio storage, notation, and playback defaults."}
+            App-wide appearance, audio storage, notation, and playback defaults.
           </p>
         </div>
       </div>
@@ -1145,7 +1139,7 @@ export function SettingsView() {
             <div>
               <h2 id="audio-storage-title">Audio Storage</h2>
               <p className="subpanel__copy">
-                Choose the storage format for new audio created on this desktop.
+                Choose the storage format for new durable audio.
               </p>
             </div>
           </div>
@@ -1168,7 +1162,9 @@ export function SettingsView() {
             <>
               {!exportCapabilitiesQuery.isFetching ? (
                 <p className="settings-feedback settings-feedback--error" role="alert">
-                  Audio format availability could not be checked. Check FFmpeg, then try again.
+                  {androidRuntime
+                    ? "Audio format availability could not be checked. Try again."
+                    : "Audio format availability could not be checked. Check FFmpeg, then try again."}
                 </p>
               ) : null}
               <div className="button-row">

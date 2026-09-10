@@ -57,6 +57,36 @@ test("model policy documents default no-bundle packaging and explicit bundle com
   });
 });
 
+test("owned codec policy records audited payloads and platform ownership", () => {
+  const checklist = buildReleaseLicenseInventory();
+
+  assert.equal(checklist.ownedCodecPolicy.runtimeVersion, "ffmpeg-9.0.1-lame-4.0-1");
+  assert.deepEqual(checklist.ownedCodecPolicy.ownedTargets, [
+    "macos-arm64",
+    "android-arm64-v8a",
+  ]);
+  assert.deepEqual(
+    Object.fromEntries(Object.entries(checklist.ownedCodecPolicy.sources).map(
+      ([name, source]) => [name, source.license],
+    )),
+    { ffmpeg: "LGPL-2.1-or-later", lame: "LGPL-2.0-or-later" },
+  );
+  assert.match(checklist.ownedCodecPolicy.sources.ffmpeg.verification, /FCF986EA/);
+  assert.match(checklist.ownedCodecPolicy.sources.lame.verification, /no detached signature/);
+  assert.match(checklist.ownedCodecPolicy.developmentResolution, /Host FFmpeg/);
+  assert.match(checklist.ownedCodecPolicy.flatpakResolution, /zero owned/);
+  assert.equal(
+    checklist.ownedCodecPolicy.correspondingSources,
+    "packaging/ffmpeg/generated/" +
+      "TuneForge_ffmpeg-9.0.1-lame-4.0-1_corresponding-sources.tar",
+  );
+
+  const rendered = formatReleaseLicenseInventory(checklist);
+  assert.match(rendered, /Owned codec policy:/);
+  assert.match(rendered, /FFmpeg\/LAME release payloads require matching source companion/);
+  assert.doesNotMatch(rendered, /FFmpeg and ffprobe are host-installed and are not bundled/);
+});
+
 test("model policy output is stable when lyrics model env is overridden", () => {
   const baseline = withLyricsModelEnv(undefined, () => buildReleaseLicenseInventory().modelPolicy);
   const overridden = withLyricsModelEnv("tiny", () => buildReleaseLicenseInventory().modelPolicy);

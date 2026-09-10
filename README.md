@@ -8,7 +8,7 @@ Local-first does not mean first use is always offline: setup or first use can do
 
 ## Status
 
-The desktop workflow is the supported full TuneForge experience. The dev flow (`pnpm dev`) is the fastest way to iterate. Local macOS app/DMG and Linux Flatpak packaging are available, but generated builds are unsigned and not notarized. Development/source runs and macOS packages require `ffmpeg`/`ffprobe` on the host `PATH`; Flatpak uses `/app/bin/ffmpeg` and `/app/bin/ffprobe` wrappers backed by the Flatpak runtime sandbox.
+The desktop workflow is the supported full TuneForge experience. The dev flow (`pnpm dev`) is the fastest way to iterate. Local macOS app/DMG and Linux Flatpak packaging are available, but generated builds are unsigned and not notarized. Development/source runs use host `ffmpeg`/`ffprobe`; macOS arm64 packages own an audited LGPL runtime; Flatpak uses `/app/bin/ffmpeg` and `/app/bin/ffprobe` wrappers backed by the sandbox runtime.
 
 Current release limits:
 
@@ -63,7 +63,7 @@ Security reports follow the process in [SECURITY.md](./SECURITY.md). "There is n
 - `pnpm` (version pinned in [package.json](./package.json))
 - [`uv`](https://docs.astral.sh/uv/)
 - Python 3.14.7
-- `ffmpeg` and `ffprobe` available on `PATH` for development/source runs and macOS packages (install via `brew install ffmpeg`, `apt install ffmpeg`, etc.)
+- `ffmpeg` and `ffprobe` available on `PATH` for development/source runs (install via `brew install ffmpeg`, `apt install ffmpeg`, etc.)
 - macOS system mic volume control uses the built-in CoreAudio API.
 - Linux system mic volume control uses `wpctl` or `pactl` for the active PipeWire/PulseAudio session.
 - Linux native tempo playback builds require Clang/libclang for `bindgen` (`sudo pacman -S clang`
@@ -131,9 +131,10 @@ The built-in chord and beat backends remain available as fallbacks when advanced
 missing, unsupported, or disabled. Mobile paths do not run the desktop Python/FastAPI stack and must
 keep clear disabled/fallback states instead of requiring ONNX Runtime or beat-this.
 
-Release diagnostics distinguish host tools from local model/cache dependencies. If an import or
-metadata error names `ffmpeg` or `ffprobe`, install FFmpeg on the host or set
-`TUNEFORGE_FFMPEG_PATH` / `TUNEFORGE_FFPROBE_PATH`; TuneForge does not bundle those binaries.
+Release diagnostics distinguish host tools from local model/cache dependencies. For development,
+install FFmpeg on the host or set `TUNEFORGE_FFMPEG_PATH` / `TUNEFORGE_FFPROBE_PATH`. Packaged
+macOS builds use their owned runtime and fail clearly when that verified payload is missing or
+invalid.
 Diagnostics that name Demucs, Whisper, crema, or beat-this refer to local runtime dependencies or
 model/checkpoint caches, which are prepared by setup/model prewarm or by packages built with
 `--model-bundle`.
@@ -278,7 +279,7 @@ install flow. Pass `--cpu`, `--nvidia`, or `--legacy-nvidia` to limit a Flatpak 
 selections always include the CPU app, while no profile flags build all profiles. Source distribution is the source
 checkout/archive; the package commands do not create a separate source tarball.
 
-macOS packages require host `ffmpeg` / `ffprobe`; Flatpak routes backend lookups to sandbox wrappers at `/app/bin/ffmpeg` and `/app/bin/ffprobe`. TuneForge does not bundle FFmpeg. See [Packaging](./docs/PACKAGING.md) for output paths, package flags, local repo install commands, data-directory behavior, and size expectations.
+macOS arm64 packages include the audited LGPL FFmpeg runtime; Flatpak routes backend lookups to sandbox wrappers at `/app/bin/ffmpeg` and `/app/bin/ffprobe` and includes no owned Linux codec payload. See [Packaging](./docs/PACKAGING.md) for source verification, replacement instructions, output paths, package flags, local repo install commands, data-directory behavior, and size expectations.
 
 ## CI
 

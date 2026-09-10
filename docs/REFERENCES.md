@@ -43,7 +43,7 @@ TuneForge differences:
 - no account or cloud processing requirement
 - desktop-first complete workflow
 - Android/mobile as a local companion direction
-- host-installed FFmpeg policy on desktop
+- audited LGPL FFmpeg ownership policy and platform-specific runtime resolution
 
 ### Transcription-oriented tools
 

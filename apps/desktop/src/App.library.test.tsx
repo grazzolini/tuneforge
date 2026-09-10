@@ -412,7 +412,7 @@ describe("Desktop app library", () => {
     expect(screen.getByRole("button", { name: "Hide Inspector" })).toBeInTheDocument();
   });
 
-  it("keeps Android imports on backend-default WAV and omits the hidden desktop preference", async () => {
+  it("uses the selected durable format for Android imports", async () => {
     const user = userEvent.setup();
     window.localStorage.setItem(
       "tuneforge.ui-preferences",
@@ -421,7 +421,11 @@ describe("Desktop app library", () => {
     mockGetExportCapabilities.mockResolvedValueOnce({
       capabilities: {
         platform: "android",
-        formats: [{ id: "wav", available: true, reason: null }],
+        formats: ["wav", "flac", "mp3", "m4a"].map((id) => ({
+          id,
+          available: true,
+          reason: null,
+        })),
         destinations: [],
         max_artifact_count: 1,
       },
@@ -431,7 +435,16 @@ describe("Desktop app library", () => {
 
     await user.click(await screen.findByRole("button", { name: "Import Track(s)" }));
     await waitFor(() => expect(mockImportProject).toHaveBeenCalled());
-    expect(mockImportProject.mock.calls[0]?.[0]).not.toHaveProperty("output_format");
+    expect(mockImportProject.mock.calls[0]?.[0]).toHaveProperty("output_format", "m4a");
+    expect(mockOpen).toHaveBeenCalledWith(
+      expect.objectContaining({
+        filters: [
+          expect.objectContaining({
+            extensions: expect.arrayContaining(["m4a", "aac", "audio/mp4", "audio/aac-adts"]),
+          }),
+        ],
+      }),
+    );
   });
 
   it("imports multiple tracks in order and stays on the library", async () => {

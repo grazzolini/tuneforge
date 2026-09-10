@@ -303,21 +303,24 @@ describe("Desktop app settings theme", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: /^WAV\/PCM/ })).toBeEnabled());
   });
 
-  it("hides audio storage settings when capabilities report Android", async () => {
+  it("shows owned audio storage formats when capabilities report Android", async () => {
     mockGetExportCapabilities.mockResolvedValueOnce({
       capabilities: {
         platform: "android",
-        formats: [{ id: "wav", available: true, reason: null }],
+        formats: ["wav", "flac", "mp3", "m4a"].map((id) => ({
+          id,
+          available: true,
+          reason: null,
+        })),
         destinations: [],
         max_artifact_count: 1,
       },
     });
     renderApp(["/settings"]);
 
-    await waitFor(() => expect(screen.queryByRole("heading", { name: "Audio Storage" })).not.toBeInTheDocument());
-    expect(screen.queryByText("New audio format")).not.toBeInTheDocument();
-    expect(screen.getByText("App-wide appearance, notation, and playback defaults.")).toBeInTheDocument();
-    expect(screen.queryByText(/audio storage/i)).not.toBeInTheDocument();
+    await screen.findByRole("heading", { name: "Audio Storage" });
+    expect(screen.getByText("New audio format")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("button", { name: /^M4A/ })).toBeEnabled());
   });
 
   it("persists theme and visible UI preferences", async () => {
@@ -1142,14 +1145,18 @@ describe("Desktop app settings theme", () => {
     }
   });
 
-  it("preserves a hidden compressed snapshot preference on Android without prompting", async () => {
+  it("confirms and applies a compressed snapshot preference on Android", async () => {
     const user = userEvent.setup();
     const defaultInvoke = mockInvoke.getMockImplementation();
     if (!defaultInvoke) throw new Error("Mock invoke implementation was not installed.");
     mockGetExportCapabilities.mockResolvedValueOnce({
       capabilities: {
         platform: "android",
-        formats: [{ id: "wav", available: true, reason: null }],
+        formats: ["wav", "flac", "mp3", "m4a"].map((id) => ({
+          id,
+          available: true,
+          reason: null,
+        })),
         destinations: [],
         max_artifact_count: 1,
       },
@@ -1163,11 +1170,11 @@ describe("Desktop app settings theme", () => {
 
     try {
       renderApp(["/settings"]);
-      await waitFor(() => expect(screen.queryByRole("heading", { name: "Audio Storage" })).not.toBeInTheDocument());
+      await screen.findByRole("heading", { name: "Audio Storage" });
       await user.click(screen.getByRole("button", { name: "Import Settings" }));
 
       await screen.findByText("Settings imported.");
-      expect(mockConfirm).not.toHaveBeenCalled();
+      expect(mockConfirm).toHaveBeenCalled();
       expect(JSON.parse(window.localStorage.getItem("tuneforge.ui-preferences") ?? "{}"))
         .toMatchObject({ defaultDurableAudioFormat: "m4a" });
     } finally {

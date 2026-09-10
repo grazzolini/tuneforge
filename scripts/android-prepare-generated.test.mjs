@@ -41,7 +41,18 @@ function generatedProject(t) {
   fs.mkdirSync(path.join(icons, "values"), { recursive: true });
   fs.writeFileSync(path.join(icons, "values/ic_launcher_background.xml"), "<resources />\n");
 
-  execFileSync(script, { cwd: root });
+  const ffmpeg = path.join(root, "owned-ffmpeg");
+  fs.mkdirSync(path.join(ffmpeg, "lib"), { recursive: true });
+  fs.mkdirSync(path.join(ffmpeg, "licenses"), { recursive: true });
+  for (const library of ["libavcodec.so", "libavfilter.so", "libavformat.so", "libavutil.so",
+    "libswresample.so", "libmp3lame.so"]) {
+    fs.writeFileSync(path.join(ffmpeg, "lib", library), `fixture ${library}\n`);
+  }
+  fs.writeFileSync(path.join(ffmpeg, "provenance.json"), "{}\n");
+  fs.writeFileSync(path.join(ffmpeg, "licenses", "FFmpeg-COPYING.LGPLv2.1.txt"), "fixture\n");
+  fs.writeFileSync(path.join(ffmpeg, "licenses", "LAME-COPYING.LGPL-2.0.txt"), "fixture\n");
+
+  execFileSync(script, { cwd: root, env: { ...process.env, TUNEFORGE_ANDROID_FFMPEG_ROOT: ffmpeg } });
   return {
     activity: fs.readFileSync(path.join(java, "MainActivity.kt"), "utf8"),
     service: fs.readFileSync(path.join(java, "PowerInhibitionService.kt"), "utf8"),

@@ -1,3 +1,8 @@
+#[cfg(target_os = "android")]
+use super::storage_cleanup::{
+    capture_owned_project_file, cleanup_owned_project_files, prepare_owned_project_file,
+    OwnedProjectFile,
+};
 use super::*;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -269,10 +274,11 @@ fn parse_request(payload: Value) -> Result<MobileExportRequest, String> {
     if request.artifact_ids.len() > 1 || request.generated_document_ids.len() > 1 {
         return Err("Android export supports only one deliverable at a time.".to_string());
     }
-    if request.output_format != "wav" {
-        return Err(
-            "Android audio export supports WAV only and does not re-encode files.".to_string(),
-        );
+    if !matches!(
+        request.output_format.as_str(),
+        "wav" | "flac" | "mp3" | "m4a"
+    ) {
+        return Err("Android audio export requires WAV, FLAC, MP3, or M4A.".to_string());
     }
     if request
         .generated_document_ids
@@ -358,16 +364,13 @@ fn snapshot_export(
                 "Only project tracks, practice mixes, and stems can be exported.".to_string(),
             );
         }
-        if !artifact.format.eq_ignore_ascii_case("wav") {
-            return Err("Android can export only a locally stored WAV file.".to_string());
-        }
         let path = canonical_project_file(root, project_id, &artifact.path)?;
         if fs::metadata(&path)
             .map_err(|_| "Selected project audio is missing or unreadable.".to_string())?
             .len()
             == 0
         {
-            return Err("TuneForge refused to export an empty WAV file.".to_string());
+            return Err("TuneForge refused to export an empty audio file.".to_string());
         }
         let context = if artifact.r#type == "source_audio" {
             "Source".to_string()
@@ -376,13 +379,20 @@ fn snapshot_export(
         } else {
             stem_export_context(connection, project_id, &artifact)?
         };
+        let (extension, filter_name, format) = match request.output_format.as_str() {
+            "wav" => ("wav", "WAV Audio", "wav"),
+            "flac" => ("flac", "FLAC Audio", "flac"),
+            "mp3" => ("mp3", "MP3 Audio", "mp3"),
+            "m4a" => ("m4a", "M4A Audio", "m4a"),
+            _ => unreachable!("validated output format"),
+        };
         return Ok(ExportSnapshot {
             source_artifact_id: Some(artifact.id),
             generated_document_id: None,
-            output_name: format!("{filename_base} - {context}.wav"),
-            extension: "wav",
-            filter_name: "WAV Audio",
-            format: "wav",
+            output_name: format!("{filename_base} - {context}.{extension}"),
+            extension,
+            filter_name,
+            format,
             content: ExportContent::File(path),
         });
     }
@@ -1091,12 +1101,18 @@ fn update_export_job(
     completed: bool,
 ) -> Result<(), String> {
     let timestamp = now_iso();
-    let payload = json!({
-        "stage": stage,
-        "stage_label": stage_label,
-        "runtime_detail": runtime_detail,
-        "export_result": result,
-    });
+    let payload_raw = connection
+        .query_row(
+            "SELECT payload_json FROM jobs WHERE id = ?1",
+            params![job_id],
+            |row| row.get::<_, String>(0),
+        )
+        .map_err(|error| error.to_string())?;
+    let mut payload = serde_json::from_str::<Value>(&payload_raw).unwrap_or_else(|_| json!({}));
+    payload["stage"] = json!(stage);
+    payload["stage_label"] = json!(stage_label);
+    payload["runtime_detail"] = json!(runtime_detail);
+    payload["export_result"] = result;
     connection
         .execute(
             "UPDATE jobs SET status = ?1, progress = ?2, payload_json = ?3, error_message = ?4, completed_at = CASE WHEN ?5 THEN ?6 ELSE completed_at END, updated_at = ?6 WHERE id = ?7 AND status IN ('pending', 'running') AND cancel_requested = 0",
@@ -1425,6 +1441,104 @@ fn run_export_worker(
     }
 }
 
+#[cfg(target_os = "android")]
+fn export_source_still_owned(
+    connection: &Connection,
+    root: &Path,
+    project_id: &str,
+    artifact_id: &str,
+    expected_path: &Path,
+) -> Result<bool, String> {
+    let stored_path = connection
+        .query_row(
+            "SELECT path FROM artifacts WHERE id = ?1 AND project_id = ?2",
+            params![artifact_id, project_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    let Some(stored_path) = stored_path else {
+        return Ok(false);
+    };
+    canonical_project_file(root, project_id, &stored_path)
+        .map(|path| path == expected_path)
+        .or(Ok(false))
+}
+
+#[cfg(target_os = "android")]
+fn materialize_audio_export(
+    connection: &Connection,
+    root: &Path,
+    project_id: &str,
+    snapshot: &mut ExportSnapshot,
+    job_id: &str,
+) -> Result<Option<OwnedProjectFile>, String> {
+    let Some(source_artifact_id) = snapshot.source_artifact_id.clone() else {
+        return Ok(None);
+    };
+    let source_path = match &snapshot.content {
+        ExportContent::File(path) => path.clone(),
+        ExportContent::Memory(_) => return Err("Audio export source was not a file.".to_string()),
+    };
+    if !export_source_still_owned(
+        connection,
+        root,
+        project_id,
+        &source_artifact_id,
+        &source_path,
+    )? {
+        return Err("Export source changed before conversion.".to_string());
+    }
+    let project_root = project_root_path(root, project_id)?;
+    let temporary_path = project_root
+        .join("export-staging")
+        .join(format!(".{job_id}.{}", snapshot.extension));
+    let temporary_path = prepare_owned_project_file(root, &project_root, &temporary_path)?;
+    let format = AudioOutputFormat::parse(snapshot.format)?;
+    let result = render_audio(
+        &source_path,
+        &temporary_path,
+        format,
+        0.0,
+        &mut || export_cancel_requested(connection, job_id).unwrap_or(true),
+        &mut |progress| {
+            let mapped = 5 + i64::from(progress.clamp(0, 100)) / 4;
+            let _ = connection.execute(
+                "UPDATE jobs SET progress = ?1, updated_at = ?2 WHERE id = ?3 AND status = 'running' AND cancel_requested = 0",
+                params![mapped, now_iso(), job_id],
+            );
+        },
+    )
+    .and_then(|_| probe_mobile_durable_audio(&temporary_path, snapshot.format));
+    if let Err(message) = result {
+        let _ = fs::remove_file(&temporary_path);
+        if export_cancel_requested(connection, job_id)? {
+            return Err("EXPORT_CANCELLED".to_string());
+        }
+        return Err(message);
+    }
+    if export_cancel_requested(connection, job_id)?
+        || !export_source_still_owned(
+            connection,
+            root,
+            project_id,
+            &source_artifact_id,
+            &source_path,
+        )?
+    {
+        let _ = fs::remove_file(&temporary_path);
+        return if export_cancel_requested(connection, job_id)? {
+            Err("EXPORT_CANCELLED".to_string())
+        } else {
+            Err("Export source changed before delivery.".to_string())
+        };
+    }
+    let temporary = capture_owned_project_file(root, &project_root, &temporary_path)?;
+    snapshot.content = ExportContent::File(temporary.path.clone());
+    Ok(Some(temporary))
+}
+
+#[cfg(test)]
 fn submit_export_with_provider(
     connection: &Connection,
     root: &Path,
@@ -1444,11 +1558,32 @@ pub fn mobile_submit_export(
 ) -> Result<JobResponse, String> {
     let connection = db(&app)?;
     let root = app_data_root(&app)?;
-    let (snapshot, job) = prepare_export(&connection, &root, &project_id, payload)?;
+    let (mut snapshot, job) = prepare_export(&connection, &root, &project_id, payload)?;
+    if snapshot.source_artifact_id.is_some() {
+        let staging_path = project_root_path(&root, &project_id)?
+            .join("export-staging")
+            .join(format!(".{}.{}", job.id, snapshot.extension));
+        register_job_staging_path(&connection, &job.id, &staging_path)?;
+    }
     let job_id = job.id.clone();
     thread::spawn(move || {
         let provider = AndroidExportProvider { app: &app };
-        let _ = run_export_worker(&connection, &project_id, &snapshot, &job_id, &provider);
+        let materialized =
+            materialize_audio_export(&connection, &root, &project_id, &mut snapshot, &job_id);
+        match materialized {
+            Ok(temporary) => {
+                let _ = run_export_worker(&connection, &project_id, &snapshot, &job_id, &provider);
+                if let Some(temporary) = temporary.as_ref() {
+                    cleanup_owned_project_files(std::slice::from_ref(temporary));
+                }
+            }
+            Err(message) if message == "EXPORT_CANCELLED" => {
+                let _ = cancel_export_job(&connection, &job_id, &snapshot);
+            }
+            Err(message) => {
+                let _ = fail_export_job(&connection, &job_id, &snapshot, &message);
+            }
+        }
     });
     Ok(JobResponse { job })
 }
@@ -1637,7 +1772,7 @@ mod tests {
     }
 
     #[test]
-    fn request_rejects_destinations_multiple_items_and_non_wav_audio() {
+    fn request_rejects_destinations_and_multiple_items_but_accepts_all_audio_formats() {
         assert!(parse_request(json!({
             "artifact_ids": ["art"],
             "output_format": "wav",
@@ -1665,7 +1800,7 @@ mod tests {
             "artifact_ids": ["art"],
             "output_format": "m4a"
         }))
-        .is_err());
+        .is_ok());
     }
 
     #[test]

@@ -52,7 +52,8 @@ Desktop uses:
 - FastAPI backend bound to `127.0.0.1`.
 - SQLite database and local filesystem artifacts.
 - Python engines for audio analysis, lyrics, stems, and transforms.
-- Host-installed `ffmpeg` and `ffprobe` for desktop transform/export work.
+- FFmpeg conversion through host tools in development, an owned LGPL runtime in packaged macOS,
+  and Flatpak runtime wrappers on Linux.
 
 Development normally runs two local processes:
 
@@ -60,7 +61,8 @@ Development normally runs two local processes:
 React/Tauri frontend -> http://127.0.0.1:8765/api/v1 -> FastAPI backend
 ```
 
-Packaged desktop builds launch the bundled backend process from the Tauri shell and still require host FFmpeg/FFprobe.
+Packaged desktop builds launch the bundled backend process from the Tauri shell. macOS arm64 resolves
+absolute executables from its owned runtime and supplies its library path to child processes.
 
 ## Mobile Runtime
 
@@ -216,19 +218,22 @@ Validation failures return `INVALID_REQUEST` with serialized validation details.
 
 ## Packaging Constraints
 
-- FFmpeg is a host dependency and is not bundled.
+- Development keeps host FFmpeg resolution and explicit overrides. Packaged macOS arm64 owns its
+  verified LGPL runtime; Flatpak owns no Linux payload and resolves only inside its runtime.
 - Normal Tauri project playback, metronome output, and tuner microphone capture use the native
   audio control plane. Native failure remains terminal until a later explicit action; it does not
   fall back to Web Audio. Browser, non-Tauri, and forced-Web Tauri builds use Web Audio.
 - Native desktop tempo playback uses `signalsmith-stretch` for pitch preservation.
-- Native desktop playback decodes local files through a WAV fast path or Symphonia. FFmpeg remains a host dependency for transform/export work.
+- Native desktop playback decodes local files through a WAV fast path or Symphonia. FFmpeg remains
+  separate conversion infrastructure and does not replace realtime playback.
 - Native audio development notes live in [NATIVE_AUDIO.md](NATIVE_AUDIO.md).
 - Cross-platform wake, sleep, and power-inhibition behavior lives in [POWER_PROTECTION.md](POWER_PROTECTION.md).
 - Desktop system microphone volume control uses CoreAudio on macOS, or host `wpctl`/`pactl` tools on Linux with an active PipeWire/PulseAudio session.
 - Advanced Chords and Advanced Beat Analysis are default desktop/dev/package engines. Advanced Chords uses ONNX Runtime and packages the exact pinned converted Crema model/state; the Crema Python package, TensorFlow, and Keras are absent. Packaged builds must treat ONNX Runtime, model provenance, beat-this, and their runtime dependencies as default-runtime notice scope. Built-in chord and beat engines remain fallback paths when advanced dependencies are unavailable, unsupported, or explicitly excluded.
 - Demucs and lyrics models follow first-use local download/cache behavior.
 - The Linux legacy NVIDIA profile is an opt-in local backend environment override; it does not change the default lockfile, CI setup, or packaged dependency baseline.
-- Mobile avoids FFmpeg and uses platform media APIs where possible.
+- Android arm64 uses a narrow in-process FFmpeg bridge for durable conversion and keeps platform
+  media APIs plus Symphonia/Signalsmith for existing playback and validation paths.
 - Mobile does not run the desktop Python/FastAPI backend today.
 
 ## Extensibility Rules

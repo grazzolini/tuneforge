@@ -60,6 +60,8 @@ def run_ffmpeg_transform(
         "-y",
         "-i",
         str(source_path),
+        "-map",
+        "0:a:0",
         "-vn",
         "-af",
         filter_graph,

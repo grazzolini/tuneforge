@@ -206,9 +206,15 @@ pub struct LyricsResponse {
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub struct ProjectImportRequest {
     source_path: String,
-    #[serde(default = "default_true")]
-    copy_into_project: bool,
+    #[serde(default = "default_true", rename = "copy_into_project")]
+    _copy_into_project: bool,
     display_name: Option<String>,
+    #[serde(default = "default_wav_format")]
+    output_format: String,
+}
+
+fn default_wav_format() -> String {
+    "wav".to_string()
 }
 
 #[derive(Deserialize)]
@@ -735,6 +741,6 @@ mod tests {
         let request: ProjectImportRequest =
             serde_json::from_str(r#"{"source_path":"/music/song.wav"}"#).unwrap();
 
-        assert!(request.copy_into_project);
+        assert!(request._copy_into_project);
     }
 }

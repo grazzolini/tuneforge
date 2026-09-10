@@ -64,11 +64,8 @@ function availableOptionIds(
 }
 
 export function androidAudioExportUnavailableReason(artifact: ArtifactSchema) {
-  if (artifact.format.toLowerCase() !== "wav") {
-    return "Android can export only locally stored WAV audio without re-encoding.";
-  }
   if (!artifact.path.trim() || /^(?:content|https?):/i.test(artifact.path)) {
-    return "This WAV is not available as a locally readable project file.";
+    return "This audio artifact is not available as a locally readable project file.";
   }
   return null;
 }

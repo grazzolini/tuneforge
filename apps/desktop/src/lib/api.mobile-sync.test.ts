@@ -238,9 +238,9 @@ describe("mobile sync API adapter", () => {
       max_artifact_count: 1,
       formats: [
         { id: "wav", available: true },
-        { id: "flac", available: false },
-        { id: "mp3", available: false },
-        { id: "m4a", available: false },
+        { id: "flac", available: true },
+        { id: "mp3", available: true },
+        { id: "m4a", available: true },
       ],
       destinations: [
         { id: "single_file", available: true },
@@ -289,22 +289,19 @@ describe("mobile sync API adapter", () => {
   });
 
   it.each(["flac", "mp3", "m4a"] as const)(
-    "rejects %s durable import format on mobile before native invoke",
+    "forwards %s durable import format to the owned mobile converter",
     async (outputFormat) => {
       const api = await loadMobileApi();
 
-      await expect(
-        api.importProject({
-          source_path: "/music/song.wav",
-          copy_into_project: true,
-          output_format: outputFormat,
-        }),
-      ).rejects.toMatchObject({
-        code: "UNSUPPORTED_RUNTIME",
-        details: { output_format: outputFormat },
+      const request = {
+        source_path: "/music/song.wav",
+        copy_into_project: true,
+        output_format: outputFormat,
+      } as const;
+      await api.importProject(request);
+      expect(mockInvoke).toHaveBeenCalledWith("mobile_import_project", {
+        payload: request,
       });
-
-      expect(mockInvoke).not.toHaveBeenCalled();
     },
   );
 

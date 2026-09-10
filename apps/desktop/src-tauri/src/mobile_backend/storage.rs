@@ -365,15 +365,12 @@ pub(super) fn db_at_root(root: &Path) -> Result<Connection, String> {
     let connection =
         Connection::open(root.join("mobile.sqlite3")).map_err(|error| error.to_string())?;
     migrate_mobile_db(&connection)?;
-    mark_interrupted_exports_on_first_open(root, &connection)?;
+    mark_interrupted_jobs_on_first_open(root, &connection)?;
     ensure_local_identity(&connection)?;
     Ok(connection)
 }
 
-fn mark_interrupted_exports_on_first_open(
-    root: &Path,
-    connection: &Connection,
-) -> Result<(), String> {
+fn mark_interrupted_jobs_on_first_open(root: &Path, connection: &Connection) -> Result<(), String> {
     use std::sync::{Mutex, OnceLock};
 
     static OPENED_DATABASES: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
@@ -383,8 +380,33 @@ fn mark_interrupted_exports_on_first_open(
         .lock()
         .map_err(|_| "Mobile database open-state lock was poisoned.".to_string())?;
     if opened.insert(database_path) {
+        let mut statement = connection
+            .prepare(
+                "SELECT DISTINCT project_id FROM jobs WHERE project_id IS NOT NULL AND status IN ('pending', 'running') AND type IN ('export', 'preview', 'retune', 'transpose')",
+            )
+            .map_err(|error| error.to_string())?;
+        let project_ids = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|error| error.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?;
         super::export::fail_interrupted_exports(connection)?;
+        fail_interrupted_audio_transforms(connection)?;
+        for project_id in project_ids {
+            reconcile_project_storage_after_commit(connection, root, &project_id);
+        }
     }
+    Ok(())
+}
+
+fn fail_interrupted_audio_transforms(connection: &Connection) -> Result<(), String> {
+    let timestamp = now_iso();
+    connection
+        .execute(
+            "UPDATE jobs SET status = 'failed', progress = 0, error_message = 'Audio conversion was interrupted when TuneForge restarted. Retry the operation.', completed_at = ?1, updated_at = ?1 WHERE status IN ('pending', 'running') AND type IN ('preview', 'retune', 'transpose')",
+            params![timestamp],
+        )
+        .map_err(|error| error.to_string())?;
     Ok(())
 }
 
@@ -937,6 +959,30 @@ pub(super) fn create_running_job(
         )
         .map_err(|error| error.to_string())?;
     Ok(job)
+}
+
+pub(super) fn register_job_staging_path(
+    connection: &Connection,
+    job_id: &str,
+    staging_path: &Path,
+) -> Result<(), String> {
+    let _storage_guard = super::storage_cleanup::project_storage_mutation_guard();
+    let payload_raw = connection
+        .query_row(
+            "SELECT payload_json FROM jobs WHERE id = ?1 AND status IN ('pending', 'running')",
+            params![job_id],
+            |row| row.get::<_, String>(0),
+        )
+        .map_err(|error| error.to_string())?;
+    let mut payload = serde_json::from_str::<Value>(&payload_raw).unwrap_or_else(|_| json!({}));
+    payload["staging_path"] = json!(staging_path.to_string_lossy());
+    connection
+        .execute(
+            "UPDATE jobs SET payload_json = ?1, updated_at = ?2 WHERE id = ?3 AND status IN ('pending', 'running')",
+            params![payload.to_string(), now_iso(), job_id],
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(())
 }
 
 pub(super) fn update_job_progress(
@@ -1717,7 +1763,8 @@ pub fn mobile_import_project(
     }
 
     let source_file_name = source_filename(&app, &payload.source_path);
-    let needs_copy = payload.copy_into_project || source_is_uri;
+    let output_extension = payload.output_format.clone();
+    let needs_copy = true;
     let temporary_import_path = if needs_copy {
         let temp_dir = root.join("sync").join("imports").join(new_id("import"));
         fs::create_dir_all(&temp_dir).map_err(|error| error.to_string())?;
@@ -1752,20 +1799,30 @@ pub fn mobile_import_project(
     let project_root = project_root_path(&root, &project_id)?;
     let source_dir = project_root.join("source");
     fs::create_dir_all(&source_dir).map_err(|error| error.to_string())?;
-    let imported_path = if let Some(temp_path) = temporary_import_path {
-        let target = source_dir.join(&source_file_name);
-        fs::rename(&temp_path, &target)
-            .or_else(|_| {
-                fs::copy(&temp_path, &target)?;
-                fs::remove_file(&temp_path)
-            })
-            .map_err(|error| error.to_string())?;
+    let conversion_source = temporary_import_path.as_ref().unwrap_or(&source);
+    let staged_import = source_dir.join(format!(".{}.{}", new_id("import"), output_extension));
+    let imported_path = source_dir.join(format!("imported.{output_extension}"));
+    let conversion_result =
+        convert_mobile_import(conversion_source, &staged_import, &output_extension).and_then(
+            |rendered| {
+                fs::rename(&staged_import, &imported_path)
+                    .map(|()| rendered)
+                    .map_err(|error| error.to_string())
+            },
+        );
+    if let Some(temp_path) = temporary_import_path {
         if let Some(parent) = temp_path.parent() {
             let _ = fs::remove_dir_all(parent);
         }
-        target
-    } else {
-        source.clone()
+    }
+    let rendered = match conversion_result {
+        Ok(rendered) => rendered,
+        Err(message) => {
+            let _ = fs::remove_file(&staged_import);
+            return Err(format!(
+                "Android could not create durable {output_extension} audio: {message}"
+            ));
+        }
     };
     let timestamp = now_iso();
     let display_name = payload
@@ -1779,9 +1836,9 @@ pub fn mobile_import_project(
         source_sha256: Some(source_sha256.clone()),
         source_path: payload.source_path.clone(),
         imported_path: imported_path.to_string_lossy().into_owned(),
-        duration_seconds: None,
-        sample_rate: None,
-        channels: None,
+        duration_seconds: Some(rendered.duration_seconds),
+        sample_rate: Some(i64::from(rendered.sample_rate)),
+        channels: Some(i64::from(rendered.channels)),
         sync_status: DEFAULT_SYNC_STATUS.to_string(),
         sync_status_reason: None,
         sync_editable: true,
@@ -1791,9 +1848,19 @@ pub fn mobile_import_project(
         created_at: timestamp.clone(),
         updated_at: timestamp.clone(),
     };
-    if upgrading_placeholder {
-        connection
-            .execute(
+    let size_bytes = fs::metadata(&imported_path)
+        .map_err(|error| error.to_string())?
+        .len() as i64;
+    let imported_sha256 = file_sha256(&imported_path)?;
+    let source_artifact_id = new_artifact_id()?;
+    let artifact_metadata = json!({ "source_path": payload.source_path });
+
+    connection
+        .execute_batch("BEGIN IMMEDIATE")
+        .map_err(|error| error.to_string())?;
+    let persist_result = (|| -> Result<(), String> {
+        if upgrading_placeholder {
+            connection.execute(
                 "UPDATE projects SET display_name = ?1, source_key_override = ?2, source_sha256 = ?3, source_path = ?4, imported_path = ?5, duration_seconds = ?6, sample_rate = ?7, channels = ?8, sync_status = 'local', sync_status_reason = NULL, sync_required_artifact_ids_json = ?9, sync_provider_device_ids_json = ?9, sync_conflict_count = 0, sync_status_updated_at = ?10, updated_at = ?10 WHERE id = ?11",
                 params![
                     project.display_name,
@@ -1810,9 +1877,8 @@ pub fn mobile_import_project(
                 ],
             )
             .map_err(|error| error.to_string())?;
-    } else {
-        connection
-            .execute(
+        } else {
+            connection.execute(
                 "INSERT INTO projects (id, display_name, source_key_override, source_sha256, source_path, imported_path, duration_seconds, sample_rate, channels, sync_status, sync_status_reason, sync_required_artifact_ids_json, sync_provider_device_ids_json, sync_conflict_count, sync_status_updated_at, created_at, updated_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
                 params![
@@ -1836,35 +1902,86 @@ pub fn mobile_import_project(
                 ],
             )
             .map_err(|error| error.to_string())?;
-    }
+        }
 
-    let size_bytes = fs::metadata(&imported_path)
-        .map(|metadata| metadata.len() as i64)
-        .unwrap_or(0);
-    let source_artifact_id = new_artifact_id()?;
-    let artifact_metadata = json!({ "source_path": payload.source_path });
-
-    connection
-        .execute(
+        connection.execute(
             "INSERT INTO artifacts (id, project_id, type, format, path, content_sha256, size_bytes, generated_by, can_delete, can_regenerate, metadata_json, cache_key, created_at)
              VALUES (?1, ?2, 'source_audio', ?3, ?4, ?5, ?6, 'import', 0, 0, ?7, NULL, ?8)",
             params![
                 &source_artifact_id,
                 &project_id,
-                source_format(&imported_path),
+                &output_extension,
                 imported_path.to_string_lossy().into_owned(),
-                source_sha256,
+                imported_sha256,
                 size_bytes,
                 artifact_metadata.to_string(),
                 timestamp,
             ],
         )
         .map_err(|error| error.to_string())?;
+        Ok(())
+    })();
+    if let Err(message) = persist_result {
+        let _ = connection.execute_batch("ROLLBACK");
+        let _ = fs::remove_file(&imported_path);
+        return Err(message);
+    }
+    if let Err(error) = connection.execute_batch("COMMIT") {
+        let _ = connection.execute_batch("ROLLBACK");
+        let _ = fs::remove_file(&imported_path);
+        return Err(error.to_string());
+    }
 
     reconcile_project_storage_after_commit(&connection, &root, &project_id);
     spawn_playback_proxy_generation(root, project_root, imported_path, source_artifact_id);
 
     Ok(ProjectResponse { project })
+}
+
+struct ImportAudioProperties {
+    duration_seconds: f64,
+    sample_rate: u32,
+    channels: u32,
+}
+
+#[cfg(target_os = "android")]
+fn convert_mobile_import(
+    source: &Path,
+    destination: &Path,
+    format: &str,
+) -> Result<ImportAudioProperties, String> {
+    let output_format = AudioOutputFormat::parse(format)?;
+    let rendered = render_audio(
+        source,
+        destination,
+        output_format,
+        0.0,
+        &mut || false,
+        &mut |_| {},
+    )?;
+    probe_mobile_durable_audio(destination, format).map(|()| ImportAudioProperties {
+        duration_seconds: rendered.duration_seconds,
+        sample_rate: rendered.sample_rate,
+        channels: rendered.channels,
+    })
+}
+
+#[cfg(all(test, not(target_os = "android")))]
+fn convert_mobile_import(
+    source: &Path,
+    destination: &Path,
+    format: &str,
+) -> Result<ImportAudioProperties, String> {
+    if format != "wav" {
+        return Err("Owned Android FFmpeg conversion is unavailable in host tests.".to_string());
+    }
+    let decoded = read_mobile_audio(source)?;
+    fs::copy(source, destination).map_err(|error| error.to_string())?;
+    Ok(ImportAudioProperties {
+        duration_seconds: decoded.samples.len() as f64 / decoded.sample_rate as f64,
+        sample_rate: decoded.sample_rate,
+        channels: decoded.channels,
+    })
 }
 
 pub fn mobile_get_project(app: AppHandle, project_id: String) -> Result<ProjectResponse, String> {
@@ -2211,6 +2328,86 @@ mod mobile_media_tests {
 
     const ARTIFACT_ID: &str = "art_0123456789ab";
     const MANIFEST_ARTIFACT_ID: &str = "manifest/source v1";
+
+    #[test]
+    fn mobile_import_conversion_reports_audio_duration() {
+        let root = std::env::temp_dir().join(format!(
+            "tuneforge-mobile-import-duration-{}",
+            new_id("test")
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let source = root.join("source.wav");
+        let destination = root.join("imported.wav");
+        let sample_rate = 48_000;
+        let duration_seconds = 24;
+        write_mono_pcm_wav(
+            &source,
+            &crate::native_audio::decode::DecodedAudio {
+                samples: vec![0.0; sample_rate as usize * duration_seconds],
+                sample_rate,
+                channels: 1,
+            },
+        )
+        .unwrap();
+
+        let properties = convert_mobile_import(&source, &destination, "wav").unwrap();
+
+        assert_eq!(properties.duration_seconds, duration_seconds as f64);
+        assert_eq!(properties.sample_rate, sample_rate);
+        assert_eq!(properties.channels, 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn restart_recovery_fails_transform_jobs_and_reconciles_staging() {
+        let root = std::env::temp_dir().join(format!(
+            "tuneforge-mobile-transform-restart-{}",
+            new_id("test")
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let connection = db_at_root(&root).unwrap();
+        let project_id = source_hash_to_project_id(&"f".repeat(64)).unwrap();
+        let project_root = project_root_path(&root, &project_id).unwrap();
+        let source = project_root.join("source/source.wav");
+        let staging = project_root.join("previews/.interrupted.wav");
+        fs::create_dir_all(source.parent().unwrap()).unwrap();
+        fs::create_dir_all(staging.parent().unwrap()).unwrap();
+        fs::write(&source, b"source").unwrap();
+        fs::write(&staging, b"partial").unwrap();
+        let timestamp = now_iso();
+        connection.execute(
+            "INSERT INTO projects (id, display_name, source_path, imported_path, sync_status, created_at, updated_at) VALUES (?1, 'Restart', ?2, ?2, 'local', ?3, ?3)",
+            params![project_id, source.to_string_lossy(), timestamp],
+        ).unwrap();
+        connection.execute(
+            "INSERT INTO artifacts (id, project_id, type, format, path, size_bytes, generated_by, can_delete, can_regenerate, metadata_json, created_at) VALUES ('source-restart', ?1, 'source_audio', 'wav', ?2, 6, 'import', 0, 0, '{}', ?3)",
+            params![project_id, source.to_string_lossy(), timestamp],
+        ).unwrap();
+        let job = create_running_job(
+            &connection,
+            &project_id,
+            "preview",
+            Some("source-restart".to_string()),
+        )
+        .unwrap();
+        register_job_staging_path(&connection, &job.id, &staging).unwrap();
+        reconcile_project_storage_after_commit(&connection, &root, &project_id);
+        assert!(staging.exists());
+
+        fail_interrupted_audio_transforms(&connection).unwrap();
+        reconcile_project_storage_after_commit(&connection, &root, &project_id);
+        let status: String = connection
+            .query_row(
+                "SELECT status FROM jobs WHERE id = ?1",
+                params![job.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, "failed");
+        assert!(!staging.exists());
+        assert!(source.exists());
+        let _ = fs::remove_dir_all(root);
+    }
 
     #[test]
     fn media_resolution_rejects_invalid_stale_unauthorized_and_changed_artifacts() {

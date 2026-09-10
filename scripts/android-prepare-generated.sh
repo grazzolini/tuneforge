@@ -10,6 +10,9 @@ MAIN_ACTIVITY="$ANDROID_MAIN/java/com/tuneforge/desktop/MainActivity.kt"
 POWER_SERVICE="$ANDROID_MAIN/java/com/tuneforge/desktop/PowerInhibitionService.kt"
 PROGUARD_RULES="$ROOT_DIR/apps/desktop/src-tauri/proguard-tuneforge.pro"
 PROGUARD_DEST="$ROOT_DIR/apps/desktop/src-tauri/gen/android/app/proguard-tuneforge.pro"
+FFMPEG_ROOT="${TUNEFORGE_ANDROID_FFMPEG_ROOT:?TUNEFORGE_ANDROID_FFMPEG_ROOT is required}"
+FFMPEG_JNI_DIR="$ANDROID_MAIN/jniLibs/arm64-v8a"
+FFMPEG_ASSET_DIR="$ANDROID_MAIN/assets/ffmpeg"
 
 if [[ ! -f "$MANIFEST" || ! -f "$MAIN_ACTIVITY" || ! -d "$ANDROID_RES" ]]; then
   echo "Android project is not initialized. Run pnpm --filter @tuneforge/desktop tauri android init first." >&2
@@ -22,6 +25,24 @@ if [[ ! -f "$PROGUARD_RULES" ]]; then
 fi
 
 cp "$PROGUARD_RULES" "$PROGUARD_DEST"
+
+copy_owned_ffmpeg_runtime() {
+  local required=(libavcodec.so libavfilter.so libavformat.so libavutil.so libswresample.so libmp3lame.so)
+  mkdir -p "$FFMPEG_JNI_DIR" "$FFMPEG_ASSET_DIR/licenses"
+  find "$FFMPEG_JNI_DIR" -maxdepth 1 -type f \( -name 'libav*.so' -o -name 'libswresample.so' -o -name 'libmp3lame.so' \) -delete
+  local library
+  for library in "${required[@]}"; do
+    if [[ ! -f "$FFMPEG_ROOT/lib/$library" ]]; then
+      echo "Verified Android FFmpeg library missing: $FFMPEG_ROOT/lib/$library" >&2
+      exit 1
+    fi
+    cp "$FFMPEG_ROOT/lib/$library" "$FFMPEG_JNI_DIR/$library"
+  done
+  cp "$FFMPEG_ROOT/provenance.json" "$FFMPEG_ASSET_DIR/provenance.json"
+  cp "$FFMPEG_ROOT/licenses/"*.txt "$FFMPEG_ASSET_DIR/licenses/"
+}
+
+copy_owned_ffmpeg_runtime
 
 copy_android_icons() {
   if [[ ! -d "$ANDROID_ICONS" ]]; then

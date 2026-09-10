@@ -9,7 +9,7 @@ This document is an engineering notice and distribution checklist, not legal adv
 This file is the source of truth for dependency and model-weight distribution policy:
 
 - Default release package commands (`pnpm package:mac`, `pnpm package:linux:flatpak`) do not pass `--model-bundle`. They include Advanced Chords, Advanced Beat Analysis, and LV Chordia. LV Chordia's five dependency-owned checkpoints are included; external Demucs, Whisper, and beat-this weights are not.
-- FFmpeg and ffprobe are not bundled by Tuneforge. macOS and source runs use host-installed binaries on `PATH` or explicit `TUNEFORGE_FFMPEG_PATH` / `TUNEFORGE_FFPROBE_PATH` overrides. Flatpak builds use `/app/bin/ffmpeg` and `/app/bin/ffprobe` wrappers backed by the Flatpak runtime or extensions.
+- Packaged macOS arm64 and Android arm64 include the LGPL FFmpeg/LAME distribution pinned by [`packaging/ffmpeg/sources.lock.json`](./packaging/ffmpeg/sources.lock.json). Development/source runs keep host lookup and explicit overrides. Flatpak includes no owned FFmpeg payload and uses runtime/extension wrappers.
 - Demucs, Whisper, and beat-this weights are local cache assets by default. Setup/model-prewarm can prepare them ahead of time, and the app may download them on first use if they are missing. Fully offline use requires the relevant caches/assets to already exist.
 - `--model-bundle` is an explicit local/dev packaging option, not part of default release packaging. It stages Demucs and Whisper weights and, when selected, the beat-this `small0` checkpoint; redistribution needs separate review before publishable artifacts use it.
 - Default Advanced Chords packages use ONNX Runtime and always include the exact pinned 2.2 MB converted model and runtime state so startup can seed the verified TuneForge data cache. The Crema Python package, TensorFlow, and Keras are not included.
@@ -120,9 +120,17 @@ This file is the source of truth for dependency and model-weight distribution po
 
 ### FFmpeg / ffprobe
 
-- **License:** LGPL-2.1+ or GPL-2.0+ depending on the build
+- **Version:** See [`packaging/ffmpeg/sources.lock.json`](./packaging/ffmpeg/sources.lock.json).
+- **License:** LGPL-2.1-or-later for TuneForge's owned configuration
 - **Source:** <https://ffmpeg.org/>
-- **Notes:** **Tuneforge does not bundle FFmpeg.** macOS and source runs use a user-installed build (for example via Homebrew, apt, or winget) discoverable on `PATH` or through explicit binary path settings. Flatpak packages use sandbox wrapper paths backed by the Flatpak runtime or extensions. Users are responsible for the licensing terms of the FFmpeg build they install or provide.
+- **Notes:** Packaged macOS arm64 and Android arm64 use the repository recipe and source lock in `packaging/ffmpeg/`. The build disables GPL, nonfree, version3, network, device, and unused libraries/features. macOS also includes `ffmpeg` and `ffprobe`; Android links the five selected libav libraries through a narrow C bridge. The detached source signature is verified against the signing key pinned by the source lock. Each build emits a hash-bound corresponding-source companion containing the full upstream archives, signature/key, patch, recipe, lock, validator, and notices. Development/source runs keep host lookup. Flatpak uses only sandbox runtime/extension wrappers.
+
+### LAME
+
+- **Version:** See [`packaging/ffmpeg/sources.lock.json`](./packaging/ffmpeg/sources.lock.json).
+- **License:** LGPL-2.0-or-later
+- **Source:** <https://sourceforge.net/projects/lame/>
+- **Notes:** Dynamically linked only for the owned MP3 encoder. Upstream publishes the release archive over HTTPS but no detached signature or checksum sidecar; TuneForge pins and verifies the reviewed archive SHA-256 in `packaging/ffmpeg/sources.lock.json`. The package includes LAME's COPYING and LICENSE texts.
 
 ### PulseAudio pactl
 
@@ -178,7 +186,7 @@ This file is the source of truth for dependency and model-weight distribution po
 
 - **License:** MPL-2.0
 - **Source:** <https://github.com/pdeljanov/Symphonia>
-- **Notes:** Used only by the native macOS, Linux, and Android playback engine for streaming demux/decode of local playback files. FFmpeg remains the desktop host dependency for transform/export work and is not bundled on Android.
+- **Notes:** Used by the native macOS, Linux, and Android playback engine and by Android durable-artifact validation. FFmpeg conversion remains separate from realtime playback.
 
 ### ndk-context
 

@@ -38,7 +38,7 @@ struct ProjectStoragePlan {
 pub(super) struct OwnedProjectFile {
     data_root: PathBuf,
     project_root: PathBuf,
-    path: PathBuf,
+    pub(super) path: PathBuf,
     identity: EntryIdentity,
 }
 
@@ -193,6 +193,10 @@ pub(super) fn reconcile_project_storage(
     project_id: &str,
 ) -> Result<(), String> {
     let plan = build_project_storage_plan(connection, root, project_id)?;
+    apply_project_storage_plan(plan)
+}
+
+fn apply_project_storage_plan(plan: ProjectStoragePlan) -> Result<(), String> {
     let Some(projects_identity) = validate_storage_roots(&plan)? else {
         return Ok(());
     };
@@ -294,6 +298,24 @@ fn build_project_storage_plan(
             "Mobile artifact storage metadata is unreadable; cleanup deferred.".to_string()
         })?;
         protect_metadata_paths(&mut protected_paths, &project_root, &metadata)?;
+    }
+
+    let mut jobs = connection
+        .prepare(
+            "SELECT payload_json FROM jobs WHERE project_id = ?1 AND status IN ('pending', 'running')",
+        )
+        .map_err(|error| error.to_string())?;
+    let job_rows = jobs
+        .query_map(params![project_id], |row| row.get::<_, String>(0))
+        .map_err(|error| error.to_string())?;
+    for row in job_rows {
+        let payload = serde_json::from_str::<Value>(&row.map_err(|error| error.to_string())?)
+            .map_err(|_| {
+                "Mobile job storage metadata is unreadable; cleanup deferred.".to_string()
+            })?;
+        if let Some(staging_path) = payload.get("staging_path").and_then(Value::as_str) {
+            protect_owned_path(&mut protected_paths, &project_root, Path::new(staging_path))?;
+        }
     }
 
     if !delete_project_root {
@@ -537,6 +559,8 @@ pub(super) fn lexical_absolute(path: &Path) -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::mpsc;
+    use std::time::Duration;
 
     struct TestRoot {
         parent: PathBuf,
@@ -799,5 +823,157 @@ mod tests {
         connection.execute_batch("COMMIT").unwrap();
         reconcile_project_storage_after_commit(&connection, &temp.data, &delete_id);
         assert!(!delete_root.exists());
+    }
+
+    #[test]
+    fn reconciliation_preserves_only_staging_owned_by_an_active_job() {
+        let temp = TestRoot::new("active-job-staging");
+        let connection = db_at_root(&temp.data).unwrap();
+        let target_id = project_id('e');
+        let target_root = project_root_path(&temp.data, &target_id).unwrap();
+        let source = target_root.join("source/source.wav");
+        let staging = target_root.join("previews/.job_active.wav");
+        write(&source, b"source");
+        write(&staging, b"partial output");
+        insert_project(&connection, &target_id, &source);
+        insert_artifact(&connection, "source-active", &target_id, &source, json!({}));
+        let job = create_running_job(
+            &connection,
+            &target_id,
+            "preview",
+            Some("source-active".to_string()),
+        )
+        .unwrap();
+        register_job_staging_path(&connection, &job.id, &staging).unwrap();
+
+        reconcile_project_storage(&connection, &temp.data, &target_id).unwrap();
+        assert!(staging.exists());
+        connection
+            .execute(
+                "UPDATE jobs SET status = 'failed', completed_at = ?1 WHERE id = ?2",
+                params![now_iso(), job.id],
+            )
+            .unwrap();
+        reconcile_project_storage(&connection, &temp.data, &target_id).unwrap();
+        assert!(!staging.exists());
+        assert!(source.exists());
+    }
+
+    #[test]
+    fn staging_registration_cannot_cross_a_cleanup_plan_apply_window() {
+        let temp = TestRoot::new("staging-registration-race");
+        let connection = db_at_root(&temp.data).unwrap();
+        let target_id = project_id('f');
+        let target_root = project_root_path(&temp.data, &target_id).unwrap();
+        let source = target_root.join("source/source.wav");
+        let staging = target_root.join("export-staging/.job_race.m4a");
+        write(&source, b"source");
+        insert_project(&connection, &target_id, &source);
+        insert_artifact(&connection, "source-race", &target_id, &source, json!({}));
+        let job = create_running_job(
+            &connection,
+            &target_id,
+            "export",
+            Some("source-race".to_string()),
+        )
+        .unwrap();
+
+        let guard = project_storage_mutation_guard();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let database_path = temp.data.join("mobile.sqlite3");
+        let worker_staging = staging.clone();
+        let worker_job_id = job.id.clone();
+        let worker = std::thread::spawn(move || {
+            let worker_connection = Connection::open(database_path).unwrap();
+            started_tx.send(()).unwrap();
+            register_job_staging_path(&worker_connection, &worker_job_id, &worker_staging).unwrap();
+            write(&worker_staging, b"partial after registration");
+            done_tx.send(()).unwrap();
+        });
+        started_rx.recv().unwrap();
+        assert!(done_rx.recv_timeout(Duration::from_millis(50)).is_err());
+        assert!(!staging.exists());
+        drop(guard);
+        done_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        worker.join().unwrap();
+
+        reconcile_project_storage_after_commit(&connection, &temp.data, &target_id);
+        assert!(staging.exists());
+    }
+
+    #[test]
+    fn promotion_and_commit_cannot_cross_a_cleanup_plan_apply_window() {
+        let temp = TestRoot::new("promotion-cleanup-race");
+        let connection = db_at_root(&temp.data).unwrap();
+        let target_id = project_id('1');
+        let target_root = project_root_path(&temp.data, &target_id).unwrap();
+        let source = target_root.join("source/source.wav");
+        let staging = target_root.join("previews/.job_publish.wav");
+        let published = target_root.join("previews/job_publish.wav");
+        write(&source, b"source");
+        write(&staging, b"completed render");
+        insert_project(&connection, &target_id, &source);
+        insert_artifact(
+            &connection,
+            "source-publish",
+            &target_id,
+            &source,
+            json!({}),
+        );
+        let job = create_running_job(
+            &connection,
+            &target_id,
+            "preview",
+            Some("source-publish".to_string()),
+        )
+        .unwrap();
+        register_job_staging_path(&connection, &job.id, &staging).unwrap();
+
+        let guard = project_storage_mutation_guard();
+        let plan = build_project_storage_plan(&connection, &temp.data, &target_id).unwrap();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let database_path = temp.data.join("mobile.sqlite3");
+        let worker_root = temp.data.clone();
+        let worker_project_root = target_root.clone();
+        let worker_staging = staging.clone();
+        let worker_published = published.clone();
+        let worker_project_id = target_id.clone();
+        let worker_job_id = job.id.clone();
+        let worker = std::thread::spawn(move || {
+            let worker_connection = Connection::open(database_path).unwrap();
+            started_tx.send(()).unwrap();
+            let _guard = project_storage_mutation_guard();
+            worker_connection.execute_batch("BEGIN IMMEDIATE").unwrap();
+            let staged =
+                capture_owned_project_file(&worker_root, &worker_project_root, &worker_staging)
+                    .unwrap();
+            let published_file = move_owned_project_file(&staged, &worker_published).unwrap();
+            worker_connection.execute(
+                "INSERT INTO artifacts (id, project_id, type, format, path, size_bytes, generated_by, can_delete, can_regenerate, metadata_json, created_at) VALUES ('published-race', ?1, 'preview_mix', 'wav', ?2, 16, 'ffmpeg', 1, 1, '{}', ?3)",
+                params![worker_project_id, published_file.path.to_string_lossy(), now_iso()],
+            ).unwrap();
+            worker_connection
+                .execute(
+                    "UPDATE jobs SET status = 'completed', completed_at = ?1 WHERE id = ?2",
+                    params![now_iso(), worker_job_id],
+                )
+                .unwrap();
+            worker_connection.execute_batch("COMMIT").unwrap();
+            done_tx.send(()).unwrap();
+        });
+        started_rx.recv().unwrap();
+        assert!(done_rx.recv_timeout(Duration::from_millis(50)).is_err());
+        apply_project_storage_plan(plan).unwrap();
+        assert!(staging.exists());
+        assert!(!published.exists());
+        drop(guard);
+        done_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        worker.join().unwrap();
+
+        reconcile_project_storage_after_commit(&connection, &temp.data, &target_id);
+        assert!(!staging.exists());
+        assert!(published.exists());
     }
 }

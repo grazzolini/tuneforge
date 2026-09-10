@@ -17,6 +17,8 @@ import { useChordBackendActionSelection } from "./hooks/useChordBackendActionSel
 
 const MAX_IMPORT_SELECTION = 25;
 const LIBRARY_PROJECTS_PAGE_SIZE = 50;
+const IMPORT_FILE_EXTENSIONS = ["mp3", "wav", "flac", "m4a", "aac", "ogg", "mp4", "webm"];
+const ANDROID_IMPORT_MIME_ALIASES = ["audio/mp4", "audio/aac-adts"];
 
 function formatDuration(durationSeconds: number | null | undefined) {
   if (!durationSeconds) return "Unknown length";
@@ -323,7 +325,10 @@ export function LibraryView() {
         filters: [
           {
             name: "Audio / Video",
-            extensions: ["mp3", "wav", "flac", "m4a", "aac", "ogg", "mp4", "webm"],
+            extensions:
+              capabilities.platform === "android"
+                ? [...IMPORT_FILE_EXTENSIONS, ...ANDROID_IMPORT_MIME_ALIASES]
+                : IMPORT_FILE_EXTENSIONS,
           },
         ],
       });

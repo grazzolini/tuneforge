@@ -13,7 +13,8 @@ TuneForge is not a SaaS product, web service, or multi-user system. It has no ac
 - Desktop is the complete supported workflow for import, local analysis/generation, playback practice, and export.
 - Android/mobile remains an in-progress local companion path, not a replacement for desktop processing.
 - macOS and Linux packages are local unsigned build artifacts until release signing/notarization work exists.
-- Host-installed `ffmpeg` and `ffprobe` remain required; TuneForge does not bundle FFmpeg.
+- Development uses host-installed `ffmpeg` and `ffprobe`; packaged macOS arm64 and Android arm64
+  ship an audited LGPL conversion runtime, while Flatpak owns no Linux codec payload.
 - Advanced Chords, Advanced Beat Analysis, GPU acceleration, loopback/browser playback, BlackHole capture, and virtual-output capture require manual or special validation unless a CI workflow explicitly covers them.
 
 ## Product Goals
@@ -31,7 +32,7 @@ TuneForge is not a SaaS product, web service, or multi-user system. It has no ac
 - Cloud processing, remote storage, user accounts, telemetry, or hosted collaboration.
 - Network-exposed backend deployment, public API hosting, reverse-proxy usage, or multi-user authorization.
 - Full DAW, production, mastering, or generic audio-editor workflows.
-- Bundling FFmpeg. Desktop builds rely on host-installed `ffmpeg` and `ffprobe`.
+- General-purpose FFmpeg distributions. Owned packages use the pinned, audited LGPL feature set.
 - Guaranteeing generated chords, lyrics, tempo, or stems as ground truth. Outputs are editable practice aids.
 
 ## Users and Workflows
@@ -122,11 +123,11 @@ Capo-relative display is a harmonic presentation feature. It should not alter au
 - Generate cached previews for practice before export.
 - Use the dedicated project Export workspace to target one Source Track or Practice Mix at a time.
 - Export the track, selected stems, all stems, or the track with all stems. Desktop multi-file exports
-  can target a folder or ZIP. Android exports exactly one locally readable WAV through the native
+  can target a folder or ZIP. Android exports exactly one locally readable audio artifact through the native
   create-document picker and does not expose an encoder, folder, or ZIP workflow.
 - Export saved Lyrics or Lyrics + chords as UTF-8 TXT. Desktop can export them alone or in the same ordered
   folder or ZIP batch as audio. Missing lyrics or chords remain visible with a Studio-directed reason.
-- Android offers one WAV, Lyrics TXT, or Lyrics + chords TXT in one unified choice. The selected Source
+- Android offers one WAV, FLAC, MP3, M4A, Lyrics TXT, or Lyrics + chords TXT in one unified choice. The selected Source
   Track or Practice Mix remains a separate chord context for document-only export.
 - Keep plain Lyrics TXT source-faithful. Spell and transpose Lyrics + chords TXT for the selected
   Source Track or Practice Mix, using the current enharmonic display setting and any corrected
@@ -141,7 +142,8 @@ Capo-relative display is a harmonic presentation feature. It should not alter au
   written size and SHA-256. Unsupported readback completes as unverified without a receipt; mismatch,
   cancellation, or restart fails or cancels without a receipt, retry, provider deletion, or stale URI.
 - Preserve deterministic, friendly output names based on the project, audio set, and stem label.
-- Desktop transform/export paths use host-installed FFmpeg.
+- Desktop transform/export paths use host FFmpeg in development, the owned runtime in packaged
+  macOS, and runtime-owned wrappers in Flatpak.
 
 ### Playback and Practice UX
 

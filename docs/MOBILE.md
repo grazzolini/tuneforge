@@ -6,8 +6,8 @@ TuneForge mobile is Android-first and keeps the local-only product rule: no acco
 
 The mobile app includes its backend inside the Tauri app. It does not run the desktop Python/FastAPI backend on Android.
 
-- Desktop: React -> Tauri -> FastAPI -> Python engines -> host FFmpeg -> SQLite/filesystem.
-- Mobile: React -> Tauri commands -> embedded Rust/Kotlin backend -> Android media APIs -> SQLite/filesystem.
+- Desktop: React -> Tauri -> FastAPI -> Python engines -> platform FFmpeg runtime -> SQLite/filesystem.
+- Mobile: React -> Tauri commands -> embedded Rust/Kotlin backend -> owned FFmpeg conversion plus Android media APIs -> SQLite/filesystem.
 
 The frontend talks through a `TuneForgeClient` boundary. Desktop uses the existing generated OpenAPI HTTP client. Mobile uses Tauri commands that return the same project, job, artifact, lyrics, chord, and analysis response shapes where possible.
 
@@ -79,31 +79,32 @@ The supported lookup priority is `ggml-base.bin`, `ggml-base.en.bin`, `ggml-tiny
 
 ## FFmpeg Policy
 
-Mobile does not bundle FFmpeg. Android uses platform media APIs instead.
+Android arm64, API 26+, packages the audited LGPL FFmpeg/LAME runtime. Rust owns operation lifetime,
+cancellation, staging, validation, and persistence; a narrow C shim owns opaque libav contexts.
 
-- Import keeps the original file inside app storage.
-- WAV/PCM can be read directly for CPU analysis and basic chord detection.
-- Compressed audio should decode through Android media APIs before waveform or ML processing.
-- Android receives and preserves app-owned PCM16 WAV, FLAC, MP3, and AAC-LC M4A audio. Platform
-  decoding remains a runtime capability; mobile does not expose the desktop storage preference or
-  add an encoder.
-- Desktop currently keeps WAV intermediates and `wav`/`mp3`/`flac` exports through host-installed FFmpeg.
-- Unsupported mobile export formats stay unavailable until a native encoder path exists.
+- Import decodes the selected first audio stream and creates the requested durable WAV/PCM16,
+  FLAC level 5, MP3 192 kbps, or AAC-LC M4A 192 kbps artifact in app storage.
+- Analysis and realtime playback keep their existing WAV, Android media, Symphonia, and
+  Signalsmith paths. The conversion engine does not replace them.
+- Preview, retune, and transpose use bounded in-process conversion on background workers, validate
+  before promotion, and compensate failed or interrupted filesystem/database work.
+- Source hashes identify the selected input; artifact hashes always describe the converted bytes.
+- Network, GPL, nonfree, version3, and unused FFmpeg features are disabled.
 
 ## Android Export
 
 The project Export workspace uses Android's native create-document picker for exactly one
-deliverable at a time. The available choices are a locally readable WAV artifact, saved Lyrics as
-UTF-8 TXT, or saved Lyrics + chords as UTF-8 TXT. FLAC, MP3, M4A, folder, and ZIP export remain
-unavailable because this path does not encode audio or assemble multi-file packages.
+deliverable at a time. Existing local audio artifacts can be serialized as WAV, FLAC, MP3, or M4A;
+saved Lyrics and Lyrics + chords remain UTF-8 TXT. Folder and ZIP export remain unavailable.
 
 The renderer sends only the selected artifact or document, a suggested file-name base, and document
 chord context. It never supplies a destination or URI. The native picker owns the fresh provider
 grant, final name, location, and collision behavior. TuneForge does not retain `content://` state in
 the Export draft and does not delete provider-owned output.
 
-WAV bytes stream directly from app-local project storage without decoding or re-encoding. TXT is
-rendered from a snapshot of the current saved lyrics and chords in memory and is never staged under
+Audio is converted from the selected saved artifact only. Export does not create a practice mix or
+apply current playback tempo, tuning, pitch, gains, or mutes. TXT is rendered from a snapshot of the
+current saved lyrics and chords in memory and is never staged under
 project storage. Lyrics + chords uses the selected Source Track or Practice Mix as its chord context,
 including corrected source key, mix transpose, and the current enharmonic display mode. Retune-only
 mixes do not transpose chord labels.

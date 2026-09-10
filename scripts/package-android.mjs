@@ -12,6 +12,7 @@ const androidDir = path.join(desktopDir, "src-tauri/gen/android");
 const tauriCli = path.join(desktopDir, "node_modules/.bin/tauri");
 const androidEnv = path.join(scriptDir, "android-arm64-env.sh");
 const prepareGenerated = path.join(scriptDir, "android-prepare-generated.sh");
+const defaultFfmpegRoot = path.join(repoRoot, "packaging/ffmpeg/generated/android-arm64-v8a");
 const packageLock = path.join(desktopDir, "src-tauri/target/.tuneforge-android-package.lock");
 const publishableVariables = [
   "TUNEFORGE_ANDROID_RELEASE_KEYSTORE_PATH", "TUNEFORGE_ANDROID_RELEASE_KEY_ALIAS",
@@ -236,7 +237,14 @@ export function generatedState(baseDir = androidDir) {
 }
 export function preparedState(baseDir = androidDir) {
   const required = ["app/proguard-tuneforge.pro", "app/src/main/java/com/tuneforge/desktop/PowerInhibitionService.kt",
-    "app/src/main/res/values/ic_launcher_background.xml"];
+    "app/src/main/res/values/ic_launcher_background.xml",
+    "app/src/main/jniLibs/arm64-v8a/libavcodec.so",
+    "app/src/main/jniLibs/arm64-v8a/libavfilter.so",
+    "app/src/main/jniLibs/arm64-v8a/libavformat.so",
+    "app/src/main/jniLibs/arm64-v8a/libavutil.so",
+    "app/src/main/jniLibs/arm64-v8a/libswresample.so",
+    "app/src/main/jniLibs/arm64-v8a/libmp3lame.so",
+    "app/src/main/assets/ffmpeg/provenance.json"];
   const missing = required.filter((relative) => !fs.statSync(path.join(baseDir, relative),
     { throwIfNoEntry: false })?.isFile());
   return { ready: missing.length === 0, missing };
@@ -394,7 +402,19 @@ export function main(argv = process.argv.slice(2)) {
     if (config) validatePublishableCredentials(java, config, { env: sourceEnv });
     const tools = requireTools(sdk, capture, cleanEnv);
     isolatedHome = fs.mkdtempSync(path.join(os.tmpdir(), "tuneforge-android-home-"));
-    const env = pinnedEnv(java, sdk, ndk, { env: cleanEnv, homeDir: isolatedHome });
+    const ffmpegRoot = path.resolve(sourceEnv.TUNEFORGE_ANDROID_FFMPEG_ROOT ?? defaultFfmpegRoot);
+    const ndkHost = process.platform === "darwin" ? "darwin-x86_64" : "linux-x86_64";
+    const llvmReadelf = path.join(ndk.path, "toolchains/llvm/prebuilt", ndkHost, "bin/llvm-readelf");
+    const env = {
+      ...pinnedEnv(java, sdk, ndk, { env: cleanEnv, homeDir: isolatedHome }),
+      TUNEFORGE_ANDROID_FFMPEG_ROOT: ffmpegRoot,
+      LLVM_READELF: llvmReadelf,
+    };
+    run(process.execPath, [
+      path.join(scriptDir, "validate-packaged-ffmpeg.mjs"),
+      "--target", "android-arm64-v8a",
+      "--root", ffmpegRoot,
+    ], { env, label: "Android FFmpeg runtime validation" });
     const buildEnv = publishable ? publishableBuildEnv(env, sourceEnv) : env;
     console.log(`[android package] JDK ${java.version}; SDK ${sdk}; NDK ${ndk.version} (${ndk.path})`);
     if (mode === "prepare") {

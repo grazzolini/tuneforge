@@ -359,10 +359,9 @@ mod android {
                         ndk_sys::AMEDIAFORMAT_KEY_CHANNEL_COUNT
                     })
                     .unwrap_or(output_channels);
-                    output_encoding = media_format_i32(output_format, unsafe {
-                        ndk_sys::AMEDIAFORMAT_KEY_PCM_ENCODING
-                    })
-                    .unwrap_or(PCM_ENCODING_16BIT);
+                    output_encoding =
+                        media_format_i32(output_format, b"pcm-encoding\0".as_ptr().cast())
+                            .unwrap_or(PCM_ENCODING_16BIT);
                     unsafe {
                         let _ = ndk_sys::AMediaFormat_delete(output_format);
                     }

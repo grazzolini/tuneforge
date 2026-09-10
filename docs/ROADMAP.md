@@ -49,8 +49,9 @@ a file, folder, or ZIP as appropriate; and supports WAV, FLAC, MP3, and M4A/AAC.
 
 Desktop and Android must expose their real encoder and destination capabilities.
 An unavailable combination is disabled or explained, never presented as a
-working action. TuneForge remains local-only and continues to rely on
-host-installed FFmpeg on desktop rather than bundling it.
+working action. TuneForge remains local-only. Development uses host-installed
+FFmpeg; packaged macOS and Android use the audited owned LGPL runtime; Flatpak
+uses only the pinned sandbox runtime or extension.
 
 Desktop lyrics and lyrics-with-chords TXT export from
 [#387](https://github.com/grazzolini/tuneforge/issues/387) and

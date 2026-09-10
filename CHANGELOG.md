@@ -5,6 +5,16 @@ download, installation, verification, signature, and publication instructions.
 
 ## [Unreleased]
 
+### Added
+
+- Added owned, offline LGPL FFmpeg conversion for macOS arm64 and Android arm64, API 26+, with
+  durable WAV, FLAC, MP3, and M4A import, preview, retune, transpose, and Android export support.
+
+### Changed
+
+- Android Settings and Export now expose the same four durable audio formats while keeping export
+  limited to existing saved artifacts and leaving playback tempo/tuning out of export.
+
 ## [1.5.0] - 2026-09-08
 
 ### Added

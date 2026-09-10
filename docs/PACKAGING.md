@@ -1,6 +1,6 @@
 # Packaging
 
-TuneForge packaging creates local unsigned desktop builds. Packaged builds launch the bundled backend locally and include Advanced Chords, Advanced Beat Analysis, and LV Chordia by default. LV Chordia includes five dependency-owned MIT checkpoints (28,730,939 bytes); other external model weights remain excluded by default. TuneForge does not bundle FFmpeg: macOS packages use host-installed `ffmpeg` and `ffprobe`, while Flatpak routes backend lookups through sandbox wrappers at `/app/bin/ffmpeg` and `/app/bin/ffprobe`.
+TuneForge packaging creates local unsigned desktop builds. Packaged builds launch the bundled backend locally and include Advanced Chords, Advanced Beat Analysis, and LV Chordia by default. LV Chordia includes five dependency-owned MIT checkpoints (28,730,939 bytes); other external model weights remain excluded by default. macOS arm64 and Android arm64 own the pinned LGPL FFmpeg/LAME runtime. Flatpak owns no codec payload and routes lookup through sandbox wrappers.
 
 See [Third-party notices](../THIRD_PARTY_NOTICES.md) for the dependency and model-weight distribution policy.
 
@@ -12,7 +12,7 @@ See [Third-party notices](../THIRD_PARTY_NOTICES.md) for the dependency and mode
 - Source distribution is the repository checkout or source archive from version control. These package commands do not create a separate source tarball.
 - Packaging, model-bundle review, ONNX Advanced Chords, beat-this, CUDA/MPS/legacy NVIDIA GPU behavior, and install smoke checks are manual or special coverage unless a CI workflow explicitly runs them.
 - Release/default package commands do not use `--model-bundle`. Publishable model-bundled artifacts require an explicit review of the selected weights and package distribution evidence.
-- Default packages may still download Demucs, Whisper, or beat-this weights on first use when caches are missing. Fully offline operation requires host/sandbox FFmpeg access plus the relevant local caches or package assets to already exist.
+- Default packages may still download Demucs, Whisper, or beat-this weights on first use when caches are missing. Fully offline operation requires the packaged/platform FFmpeg runtime plus the relevant local caches or package assets to already exist.
 - Advanced Chords uses ONNX Runtime. Every package that enables it includes the exact pinned 2.2 MB converted model, runtime state, and Brian McFee BSD-2-Clause notice; startup verifies and seeds the normal cache. This is independent of the broader `--model-bundle` option.
 - LV Chordia checkpoints ship inside its pinned dependency for offline first use. `--no-lv-chordia` excludes both the runtime and checkpoints; damaged assets fail closed and are repaired by reinstalling.
 
@@ -102,7 +102,7 @@ For the macOS DMG, install or open the packaged app and confirm:
 - the UI loads and core navigation is usable;
 - Settings/About release identity is visible;
 - observed behavior matches the package policy above: unsigned/not-notarized local builds, no
-  bundled FFmpeg, and no external Demucs, Whisper, or beat-this model weights unless
+  external Demucs, Whisper, or beat-this model weights unless
   `--model-bundle` was explicitly reviewed and used.
 
 For the Android APK, install it on an isolated emulator or device and confirm:
@@ -155,6 +155,37 @@ signing, notarization, checksums, or GitHub Release upload.
 
 ## macOS
 
+### Owned FFmpeg sources and rebuild
+
+[`packaging/ffmpeg/sources.lock.json`](../packaging/ffmpeg/sources.lock.json) pins the FFmpeg and LAME
+versions, archive hashes, FFmpeg signing key, local patch hash, configure policy, targets, libraries,
+and codec profiles. Build and validate a target with:
+
+```sh
+pnpm ffmpeg:sources
+pnpm ffmpeg:build -- --target macos-arm64
+pnpm ffmpeg:validate -- --target macos-arm64 --root packaging/ffmpeg/generated/macos-arm64
+ANDROID_NDK_HOME=/path/to/android-ndk pnpm ffmpeg:build -- --target android-arm64-v8a
+LLVM_READELF=/path/to/android-ndk/toolchains/llvm/prebuilt/darwin-x86_64/bin/llvm-readelf \
+  pnpm ffmpeg:validate -- --target android-arm64-v8a \
+  --root packaging/ffmpeg/generated/android-arm64-v8a
+```
+
+The recipe verifies every archive before extraction and verifies FFmpeg's detached signature in an
+isolated keyring against the signing key pinned by the source lock. LAME publishes no
+signature/checksum sidecar; its official HTTPS archive is pinned by reviewed SHA-256. Generated
+payload provenance records exact sources, flags, file hashes, sizes, architecture, and linkage.
+Validators reject symlinks, unrecorded files, GPL/nonfree/version3/network flags, extra libraries,
+and dependencies outside the owned/system closure.
+
+Every target build also writes the corresponding-sources archive and its SHA-256 sidecar under
+`packaging/ffmpeg/generated/`. The deterministic companion contains the complete pinned upstream archives,
+FFmpeg signature and key, TuneForge patch, exact recipe, source lock, validation code, notices, and
+an internal file manifest. Its hash is bound into each target's provenance. Distribute this
+companion with owned-runtime binaries and retain it for the LGPL offer period required by the
+license. Recipients can extract it over the matching TuneForge source release, rebuild either
+target, replace `packaging/ffmpeg/generated/<target>`, re-run validation, and package normally.
+
 Build the app bundle and DMG with:
 
 ```sh
@@ -192,7 +223,10 @@ The generated artifacts are written under `apps/desktop/src-tauri/target/release
 
 Run packaging from a normal macOS shell so `hdiutil` can create the disk image. The generated app is unsigned and not notarized.
 
-The packaged backend checks the inherited `PATH` plus common Homebrew and MacPorts install locations when looking for `ffmpeg` and `ffprobe`. System microphone volume control uses the built-in CoreAudio API on macOS.
+The packaged backend resolves absolute `ffmpeg`/`ffprobe` paths inside the app and prepends the
+owned `bin`/`lib` directories for Demucs child processes. Missing or invalid payloads fail package
+preparation or launch clearly; validators reject Homebrew/MacPorts linkage. Development keeps host
+lookup and explicit overrides. System microphone volume control uses CoreAudio.
 
 By default, Demucs, Whisper, and beat-this weights are read from their normal caches and downloaded on first use if missing. Demucs uses immutable Hugging Face YAML+safetensors in the standard Hub cache: `HF_HUB_CACHE`, legacy `HUGGINGFACE_HUB_CACHE`, `HF_HOME/hub`, `XDG_CACHE_HOME/huggingface/hub`, then `~/.cache/huggingface/hub`. `TUNEFORGE_DATA_DIR` does not control the upstream Demucs, Whisper, or beat-this caches. Advanced Chords always stages the exact verified ONNX model and runtime state so packaged startup can seed `TUNEFORGE_DATA_DIR/cache/models/crema/` offline. It excludes the Crema Python package, TensorFlow, Keras, and their HDF5 model-loading closure; preserved LV Chordia support still brings its declared `h5py` dependency. LV Chordia ships exactly five validated checkpoints. `--model-bundle` independently stages required Demucs and Whisper weights, plus beat-this `small0` when included; Demucs is validated and loaded directly from its pinned bundle path without copying into the Hugging Face cache.
 
@@ -209,7 +243,14 @@ pnpm package:android:release
 ```
 
 Preparation owns toolchain validation, conditional Tauri Android initialization, icon generation,
-and generated-project preparation. All three build commands require this state and never prepare it.
+generated-project preparation, and staging the six audited shared libraries plus notices and
+provenance. All three build commands require this state and never prepare it. The owned target is
+arm64-v8a, API 26+, and every ELF LOAD segment must be aligned to at least 16 KB.
+
+Release validation checks the APK's single arm64-v8a payload, every shipped native dependency,
+owned-library closure, DEX/JNI entry points, notices/provenance, and `zipalign -P 16`. AAB release
+evidence must also use bundletool to generate APKs and repeat the same checks on the generated APK;
+the publication shape remains the existing single APK.
 
 The release command creates a direct GitHub Release APK. Its dedicated long-lived key provides a
 stable signing/update identity for sideloaded APKs. PKCS12 is the only supported release-key
@@ -351,7 +392,7 @@ with `node scripts/refresh-flatpak-torch-locks.mjs --cpu` or `--legacy-nvidia`, 
 closure, license inventory, and synchronized Node/Rust profile pair ID. NVIDIA derives from the
 committed backend `uv.lock` and is verified against its reviewed profile pair during source generation.
 
-Flatpak runtime lookups are not host `PATH` lookups. The manifest sets `TUNEFORGE_FFMPEG_PATH=/app/bin/ffmpeg` and `TUNEFORGE_FFPROBE_PATH=/app/bin/ffprobe`; those files are wrappers that search for `ffmpeg` and `ffprobe` inside the sandbox runtime/extension paths. If the runtime does not provide them, the Flatpak build or app reports the missing sandbox binary rather than falling back to the host shell.
+Flatpak runtime lookups are not host `PATH` lookups. The manifest sets `TUNEFORGE_FFMPEG_PATH=/app/bin/ffmpeg` and `TUNEFORGE_FFPROBE_PATH=/app/bin/ffprobe`; those files are wrappers that search for `ffmpeg` and `ffprobe` inside the sandbox runtime/extension paths. Flatpak ships zero owned FFmpeg/LAME payload and never falls back to host tools. Before release, audit the resolved GNOME 50 runtime/extension revision, binaries, licenses, linkage, and the full conversion matrix inside that exact sandbox.
 
 Plain Linux packages include ONNX Advanced Chords, beat-this Advanced Beat Analysis, and LV
 Chordia dependency stacks by default. Feature flags are independent:

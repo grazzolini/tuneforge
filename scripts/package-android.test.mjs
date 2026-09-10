@@ -109,7 +109,14 @@ test("prepared state requires outputs owned by the explicit preparation command"
   assert.throws(() => requirePrepared(root), /Run pnpm package:android:prepare/);
   for (const relative of ["app/proguard-tuneforge.pro",
     "app/src/main/java/com/tuneforge/desktop/PowerInhibitionService.kt",
-    "app/src/main/res/values/ic_launcher_background.xml"]) {
+    "app/src/main/res/values/ic_launcher_background.xml",
+    "app/src/main/jniLibs/arm64-v8a/libavcodec.so",
+    "app/src/main/jniLibs/arm64-v8a/libavfilter.so",
+    "app/src/main/jniLibs/arm64-v8a/libavformat.so",
+    "app/src/main/jniLibs/arm64-v8a/libavutil.so",
+    "app/src/main/jniLibs/arm64-v8a/libswresample.so",
+    "app/src/main/jniLibs/arm64-v8a/libmp3lame.so",
+    "app/src/main/assets/ffmpeg/provenance.json"]) {
     const candidate = path.join(root, relative); fs.mkdirSync(path.dirname(candidate), { recursive: true });
     fs.writeFileSync(candidate, "prepared");
   }

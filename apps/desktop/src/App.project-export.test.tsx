@@ -6,6 +6,7 @@ import {
   mockCreateExport,
   mockCancelJob,
   mockDeleteProject,
+  mockCreatePreview,
   mockGetExportCapabilities,
   mockGetHealth,
   mockGetChords,
@@ -832,8 +833,9 @@ describe("project export workspace", () => {
     await user.click(screen.getByRole("checkbox", { name: /Lyrics$/i }));
 
     expect(screen.getByText("1 selected")).toBeVisible();
-    expect(screen.getByLabelText("File format")).toBeDisabled();
-    expect(screen.getByText(/Documents use TXT/)).toBeVisible();
+    expect(screen.queryByLabelText("File format")).not.toBeInTheDocument();
+    expect(screen.getAllByText("TXT · UTF-8")).not.toHaveLength(0);
+    expect(screen.getByText(/Audio format does not apply/)).toBeVisible();
     expect(screen.getByText("Demo Song - Lyrics.txt")).toBeVisible();
     await user.click(screen.getByRole("button", { name: "Export 1 file" }));
 
@@ -917,6 +919,53 @@ describe("project export workspace", () => {
     expect(screen.getByText("1 selected")).toBeVisible();
   });
 
+  it("exports an existing Android artifact without applying current playback or mix settings", async () => {
+    const user = userEvent.setup();
+    installExportArtifacts();
+    localStorage.setItem("tuneforge.project-playback-state", JSON.stringify({
+      proj_123: {
+        tempoTargetBpm: 87,
+        capoTransposeSemitones: 5,
+      },
+    }));
+    mockGetHealth.mockResolvedValueOnce(health("wav"));
+    mockGetMobileCapabilities.mockResolvedValue({ platform: "android" });
+    mockGetExportCapabilities.mockResolvedValue({
+      capabilities: {
+        platform: "android",
+        formats: ["wav", "flac", "mp3", "m4a"].map((id) => ({
+          id,
+          available: true,
+          reason: null,
+        })),
+        destinations: [
+          { id: "single_file", available: true, reason: null },
+          { id: "folder", available: false, reason: "Android exports one file." },
+          { id: "zip", available: false, reason: "Android exports one file." },
+        ],
+        max_artifact_count: 1,
+      },
+    });
+    renderApp(["/projects/proj_123"]);
+    await screen.findByRole("heading", { name: "Demo Song" });
+    await user.click(screen.getByRole("button", { name: "Reference Hz" }));
+    await user.clear(screen.getByLabelText("Target Reference Hz"));
+    await user.type(screen.getByLabelText("Target Reference Hz"), "432");
+    await openExportPanel(user);
+
+    await user.click(screen.getByRole("radio", { name: /Practice Mix 1/i }));
+    await user.selectOptions(screen.getByLabelText("File format"), "m4a");
+    expect(screen.getByText("Demo Song - Practice Mix 1.m4a")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Export Practice Mix 1" }));
+
+    expect(mockCreateExport).toHaveBeenCalledWith("proj_123", {
+      artifact_ids: ["art_mix"],
+      output_format: "m4a",
+      filename_base: "Demo Song",
+    });
+    expect(mockCreatePreview).not.toHaveBeenCalled();
+  });
+
   it("uses one Android file choice, keeps chord context separate, and submits without a destination", async () => {
     const user = userEvent.setup();
     installExportArtifacts();
@@ -927,9 +976,9 @@ describe("project export workspace", () => {
         platform: "android",
         formats: [
           { id: "wav", available: true, reason: null },
-          { id: "flac", available: false, reason: "No Android FLAC encoder." },
-          { id: "mp3", available: false, reason: "No Android MP3 encoder." },
-          { id: "m4a", available: false, reason: "No Android M4A encoder." },
+          { id: "flac", available: true, reason: null },
+          { id: "mp3", available: true, reason: null },
+          { id: "m4a", available: true, reason: null },
         ],
         destinations: [
           { id: "single_file", available: true, reason: null },
@@ -968,7 +1017,7 @@ describe("project export workspace", () => {
     await screen.findByRole("heading", { name: "Demo Song" });
     await openExportPanel(user);
 
-    expect(screen.getByText(/Android exports one WAV, Lyrics TXT, or Lyrics \+ chords TXT/)).toBeVisible();
+    expect(screen.getByText(/Android exports one existing audio artifact/)).toBeVisible();
     await user.click(screen.getByRole("radio", { name: /Practice Mix 1/i }));
     const fileGroup = screen.getByRole("group", { name: "File to export" });
     expect(within(fileGroup).getAllByRole("radio")).toHaveLength(7);
@@ -977,7 +1026,9 @@ describe("project export workspace", () => {
     expect(screen.getByRole("button", { name: "Folder" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "ZIP" })).toBeDisabled();
     expect(screen.queryByRole("button", { name: "Choose destination" })).not.toBeInTheDocument();
-    expect(screen.getByText(/FLAC, MP3, and M4A are unavailable/)).toBeVisible();
+    expect(screen.getByLabelText("File format")).toHaveValue("wav");
+    await user.selectOptions(screen.getByLabelText("File format"), "m4a");
+    expect(screen.getByLabelText("Suggested file name")).toHaveValue("Demo Song");
     expect(screen.getByLabelText("Suggested file name")).toHaveValue("Demo Song");
     expect(screen.getByText(/picker was closed/i).closest("[role='status']")).toHaveTextContent(
       /cancelled/i,
@@ -988,7 +1039,7 @@ describe("project export workspace", () => {
     expect(within(fileGroup).getByRole("radio", { name: /Practice Mix 1/i })).not.toBeChecked();
     expect(screen.getByText(/Matches Practice Mix 1 \(-2 semitones\)/)).toBeVisible();
     expect(screen.getByText(/Suggested name: Demo Song - Lyrics and Chords.txt/)).toBeVisible();
-    expect(screen.queryByText(/FLAC, MP3, and M4A are unavailable/)).not.toBeInTheDocument();
+    expect(screen.getByText(/Audio format does not apply/)).toBeVisible();
     expect(screen.getByText(/UTF-8 plain text with Unix line endings/)).toBeVisible();
 
     await user.click(screen.getByRole("button", { name: "Export Lyrics + chords" }));

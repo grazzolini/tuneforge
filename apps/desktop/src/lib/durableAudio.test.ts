@@ -32,7 +32,8 @@ describe("durable audio capability guard", () => {
 
   it("keeps Android actions on omitted-field WAV despite a hidden compressed preference", () => {
     expect(requireDurableAudioActionFormat(capabilities("android"), "m4a")).toEqual({
-      format: "wav",
+      format: "m4a",
+      outputFormat: "m4a",
     });
   });
 });

@@ -59,14 +59,6 @@ export function requireDurableAudioActionFormat(
   capabilities: ExportCapabilities,
   preferredFormat: DurableAudioFormat,
 ): DurableAudioActionFormat {
-  if (capabilities.platform === "android") {
-    const wav = capabilities.formats.find((format) => format.id === "wav");
-    if (!wav?.available) {
-      throw new Error(wav?.reason || "WAV durable audio is unavailable on this device.");
-    }
-    return { format: "wav" };
-  }
-
   const capability = capabilities.formats.find((format) => format.id === preferredFormat);
   if (!capability?.available) {
     const label = durableAudioFormatLabel(preferredFormat);

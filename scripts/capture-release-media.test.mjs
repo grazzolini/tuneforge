@@ -137,8 +137,8 @@ test("settings scroll delta rounds bottom overflow up to whole pixels", () => {
 
 test("release-media catalog has unique identifiers, files, and required callbacks", () => {
   assert.equal(validateReleaseMediaCatalog(releaseMediaCaptureCatalog), releaseMediaCaptureCatalog);
-  assert.equal(releaseMediaCaptureCatalog.length, 9);
-  assert.equal(releaseMediaCaptureCatalog.filter((entry) => entry.kind === "screenshot").length, 8);
+  assert.equal(releaseMediaCaptureCatalog.length, 10);
+  assert.equal(releaseMediaCaptureCatalog.filter((entry) => entry.kind === "screenshot").length, 9);
   assert.equal(releaseMediaCaptureCatalog.filter((entry) => entry.kind === "video").length, 1);
 
   const ids = releaseMediaCaptureCatalog.map((entry) => entry.id);
@@ -316,16 +316,94 @@ test("Playback fixture anchors an explicit Am-Bb-F gap chord to the following wo
   }]);
 });
 
-test("mobile Playback is one deterministic compact screenshot fixture", () => {
+test("mobile screenshots provide deterministic Playback and Android Export fixtures", () => {
   const mobileScreenshots = releaseMediaCaptureCatalog.filter(
     (entry) => entry.kind === "screenshot" && entry.runtime === "mobile",
   );
 
-  assert.equal(mobileScreenshots.length, 1);
-  assert.equal(mobileScreenshots[0].id, "mobile-playback");
-  assert.equal(mobileScreenshots[0].fixture, "release-showcase-mobile-playback-v1");
-  assert.deepEqual(mobileScreenshots[0].viewport, { width: 411, height: 891 });
-  assert.equal(mobileScreenshots[0].route, "/projects/proj_release_showcase");
+  assert.deepEqual(mobileScreenshots.map((entry) => ({
+    fixture: entry.fixture,
+    id: entry.id,
+    mobileFixtureOptions: entry.mobileFixtureOptions,
+    route: entry.route,
+    viewport: entry.viewport,
+  })), [
+    {
+      fixture: "release-showcase-mobile-playback-v1",
+      id: "mobile-playback",
+      mobileFixtureOptions: undefined,
+      route: "/projects/proj_release_showcase",
+      viewport: { width: 411, height: 891 },
+    },
+    {
+      fixture: "release-showcase-mobile-export-v1",
+      id: "mobile-export",
+      mobileFixtureOptions: { exportFocused: true },
+      route: "/projects/proj_release_showcase",
+      viewport: { width: 411, height: 2000 },
+    },
+  ]);
+});
+
+test("Android Export preparation selects one saved mix and M4A", async () => {
+  const mobileExport = releaseMediaCaptureCatalog.find((entry) => entry.id === "mobile-export");
+  const actions = [];
+  const radio = (name) => ({
+    click: async () => actions.push(`click:${name}`),
+    locator: (selector) => {
+      assert.equal(selector, "..");
+      return {
+        evaluate: async (callback) => {
+          const element = {
+            scrollIntoView: (options) => actions.push({ options, type: "scrollIntoView" }),
+          };
+          callback(element);
+        },
+      };
+    },
+    waitFor: async (options) => actions.push({ name, options, type: "waitFor" }),
+  });
+  const practiceSet = radio("Practice Mix 1 Shift +2");
+  const practiceMix = radio("Practice Mix 1");
+  const page = {
+    getByLabel: (label) => {
+      assert.equal(label, "File format");
+      return { selectOption: async (format) => actions.push(`format:${format}`) };
+    },
+    getByRole: (role, options) => {
+      assert.equal(role, "radio");
+      return options.name instanceof RegExp ? practiceSet : practiceMix;
+    },
+    locator: (selector) => {
+      assert.equal(selector, ".main-content");
+      return {
+        evaluate: async (callback) => {
+          const element = { scrollTop: 0 };
+          callback(element);
+          actions.push(`scrollTop:${element.scrollTop}`);
+        },
+      };
+    },
+  };
+
+  await mobileExport.prepare({ page, timeoutMs: 321 });
+  assert.deepEqual(actions, [
+    {
+      name: "Practice Mix 1 Shift +2",
+      options: { state: "visible", timeout: 321 },
+      type: "waitFor",
+    },
+    "click:Practice Mix 1 Shift +2",
+    { options: { block: "nearest", inline: "end" }, type: "scrollIntoView" },
+    {
+      name: "Practice Mix 1",
+      options: { state: "visible", timeout: 321 },
+      type: "waitFor",
+    },
+    "click:Practice Mix 1",
+    "format:m4a",
+    "scrollTop:235",
+  ]);
 });
 
 test("catalog validation rejects duplicate identifiers and output files", () => {

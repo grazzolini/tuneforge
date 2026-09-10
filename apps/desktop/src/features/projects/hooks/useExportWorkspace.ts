@@ -434,7 +434,7 @@ export function useExportWorkspace() {
               ...(selectedDocumentIds.includes("lyrics")
                 ? { generated_document_ids: ["lyrics"] as const }
                 : {}),
-              output_format: "wav",
+              output_format: selectedArtifacts.length ? outputFormat : "wav",
               filename_base: filenameBase.trim(),
               ...(selectedDocumentIds.length && audioSet ? {
                 document_audio_set_artifact_id: audioSet.artifact.id,

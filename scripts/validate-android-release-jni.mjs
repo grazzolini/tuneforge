@@ -60,10 +60,10 @@ export function selectAndroidTools(sdkRoot) {
   const versions = readdirSync(buildTools).sort(compareVersions).reverse();
   for (const version of versions) {
     const root = path.join(buildTools, version);
-    const tools = Object.fromEntries(["aapt2", "apksigner", "dexdump"].map((name) => [name, path.join(root, name)]));
+    const tools = Object.fromEntries(["aapt2", "apksigner", "dexdump", "zipalign"].map((name) => [name, path.join(root, name)]));
     if (Object.values(tools).every(existsSync)) return { ...tools, version };
   }
-  throw new Error("No Android build-tools version contains aapt2, apksigner, and dexdump.");
+  throw new Error("No Android build-tools version contains aapt2, apksigner, dexdump, and zipalign.");
 }
 
 export function assertDexMethods(xmlDocuments, methods) {
@@ -142,14 +142,55 @@ export function validateReleaseJni({ root = workspaceRoot, run = runCommand, apk
     throw new Error("Release APK must be non-debuggable and contain arm64-v8a native code.");
   }
   run(tools.apksigner, ["verify", "--verbose", artifact]);
+  run(tools.zipalign, ["-c", "-P", "16", "4", artifact]);
   let tempDir;
   try {
-    const dexFiles = run("unzip", ["-Z1", artifact]).split("\n").filter((file) => /^classes\d*\.dex$/.test(file)).sort(compareDexNames);
+    const entries = run("unzip", ["-Z1", artifact]).split("\n").filter(Boolean);
+    const dexFiles = entries.filter((file) => /^classes\d*\.dex$/.test(file)).sort(compareDexNames);
     if (!dexFiles.length) throw new Error("Release APK contains no classes*.dex files.");
+    const requiredLibraries = [
+      "libavcodec.so", "libavfilter.so", "libavformat.so", "libavutil.so",
+      "libswresample.so", "libmp3lame.so",
+    ];
+    const nativeEntries = entries.filter((file) => file.startsWith("lib/"));
+    if (nativeEntries.some((file) => !file.startsWith("lib/arm64-v8a/"))) {
+      throw new Error("Release APK contains a native ABI other than arm64-v8a.");
+    }
+    for (const library of requiredLibraries) {
+      if (!nativeEntries.includes(`lib/arm64-v8a/${library}`)) {
+        throw new Error(`Release APK is missing owned codec library ${library}.`);
+      }
+    }
+    if (!entries.includes("assets/ffmpeg/provenance.json") ||
+        !entries.includes("assets/ffmpeg/licenses/FFmpeg-COPYING.LGPLv2.1.txt") ||
+        !entries.includes("assets/ffmpeg/licenses/LAME-COPYING.LGPL-2.0.txt")) {
+      throw new Error("Release APK is missing owned codec provenance or LGPL notices.");
+    }
     tempDir = mkdtempSync(path.join(os.tmpdir(), "tuneforge-jni-dex-"));
-    run("unzip", ["-qq", artifact, ...dexFiles, "-d", tempDir]);
+    run("unzip", ["-qq", artifact, ...dexFiles, ...nativeEntries, "-d", tempDir]);
     const xmlDocuments = dexFiles.map((file) => run(tools.dexdump, ["-l", "xml", path.join(tempDir, file)]));
     assertDexMethods(xmlDocuments, rules);
+    const readelf = env.LLVM_READELF;
+    if (!readelf || !existsSync(readelf)) {
+      throw new Error("LLVM_READELF from the pinned Android NDK is required for native payload validation.");
+    }
+    const ownedNames = new Set(requiredLibraries);
+    for (const entry of nativeEntries) {
+      const file = path.join(tempDir, entry);
+      const elf = run(readelf, ["-h", "-l", "-d", file]);
+      if (!/Machine:\s+AArch64/.test(elf)) throw new Error(`APK native library is not AArch64: ${entry}`);
+      const alignments = [...elf.matchAll(/LOAD\s+[^\n]*\s0x([0-9a-f]+)\s*$/gim)]
+        .map((match) => Number.parseInt(match[1], 16));
+      if (!alignments.length || alignments.some((alignment) => alignment < 0x4000)) {
+        throw new Error(`APK native library lacks 16 KB LOAD alignment: ${entry}`);
+      }
+      for (const match of elf.matchAll(/Shared library: \[([^\]]+)\]/g)) {
+        const dependency = match[1];
+        if (/^(?:libav|libswresample|libmp3lame)/.test(dependency) && !ownedNames.has(dependency)) {
+          throw new Error(`APK native dependency is outside owned codec closure: ${dependency}`);
+        }
+      }
+    }
   } finally {
     if (tempDir) rmSync(tempDir, { recursive: true, force: true });
   }

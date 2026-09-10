@@ -138,6 +138,23 @@ const releaseMediaCaptureCatalog = [
     capture: captureScreenshotEntry,
   },
   {
+    id: "mobile-export",
+    enabled: true,
+    kind: "screenshot",
+    fileName: "mobile-export.png",
+    title: "Android export with owned audio formats",
+    caption: "Android saves one existing audio artifact through the system picker in WAV, FLAC, MP3, or M4A.",
+    alt: "TuneForge Android Export showing one saved practice mix selected with M4A and the system picker guidance",
+    fixture: "release-showcase-mobile-export-v1",
+    runtime: "mobile",
+    mobileFixtureOptions: { exportFocused: true },
+    viewport: { width: 411, height: 2000 },
+    route: "/projects/proj_release_showcase",
+    prepare: prepareMobileExport,
+    ready: readyMobileExport,
+    capture: captureScreenshotEntry,
+  },
+  {
     id: "export-workspace",
     enabled: true,
     kind: "screenshot",
@@ -666,8 +683,8 @@ async function installPageStabilizers(
             selectedArtifactId: "art_source",
             selectedPrimaryArtifactId: "art_source",
             selectedStemSourceArtifactId: null,
-            activeWorkspace: "playback",
-            activeProjectPanel: "studio",
+            activeWorkspace: mobileFixture?.initialWorkspace ?? "playback",
+            activeProjectPanel: mobileFixture?.initialProjectPanel ?? "studio",
             playbackDisplayMode: "combined",
             capoTransposeSemitones: 0,
             precountEnabled: false,
@@ -1375,7 +1392,13 @@ async function captureCatalogScreenshots({ appUrl, browser, catalog, entries, no
     const context = await createCaptureContext(browser, options, { entry });
     try {
       const page = await context.newPage();
-      await installPageStabilizers(page, options, "screenshot", entry);
+      await installPageStabilizers(
+        page,
+        options,
+        "screenshot",
+        entry,
+        entry.mobileFixtureOptions ?? {},
+      );
       try {
         await entry.capture({ appUrl, entry, options, page });
         capturedItems.push(manifestItemForCatalogEntry(entry, catalog));
@@ -1454,6 +1477,20 @@ async function prepareMobilePlayback({ page, timeoutMs }) {
   if (await bothMode.getAttribute("aria-pressed") !== "true") {
     await bothMode.click();
   }
+}
+
+async function prepareMobileExport({ page, timeoutMs }) {
+  const practiceSet = page.getByRole("radio", { name: /Practice Mix 1 Shift \+2/i });
+  await practiceSet.waitFor({ state: "visible", timeout: timeoutMs });
+  await practiceSet.click();
+  await practiceSet.locator("..").evaluate((element) => {
+    element.scrollIntoView({ block: "nearest", inline: "end" });
+  });
+  const practiceMix = page.getByRole("radio", { name: "Practice Mix 1", exact: true });
+  await practiceMix.waitFor({ state: "visible", timeout: timeoutMs });
+  await practiceMix.click();
+  await page.getByLabel("File format").selectOption("m4a");
+  await page.locator(".main-content").evaluate((element) => { element.scrollTop = 235; });
 }
 
 async function prepareExportWorkspace({ page, timeoutMs }) {
@@ -1662,6 +1699,74 @@ async function readyMobilePlayback({ page, timeoutMs }) {
   const value = Number(await position.inputValue());
   if (value !== 0) {
     throw new Error(`Mobile Playback screenshot must stay stopped at 0 seconds; received ${value}.`);
+  }
+}
+
+async function readyMobileExport({ page, timeoutMs }) {
+  await page.getByRole("heading", { name: "Export files" }).waitFor({ timeout: timeoutMs });
+  const guidance = page.getByText(/Android exports one existing audio artifact/);
+  await guidance.waitFor({ state: "visible", timeout: timeoutMs });
+  const projectDelivery = page.getByText("Project delivery", { exact: true });
+  const exportPackage = page.getByRole("complementary", { name: "Export package" });
+  const activityLink = page.getByRole("link", { name: "View export history in Activity" });
+  const practiceMix = page.getByRole("radio", { name: "Practice Mix 1", exact: true });
+  if (!await practiceMix.isChecked()) throw new Error("Android Export fixture must select Practice Mix 1.");
+  const practiceSet = page.getByRole("radio", { name: /Practice Mix 1 Shift \+2/i });
+  const format = page.getByLabel("File format");
+  if (await format.inputValue() !== "m4a") throw new Error("Android Export fixture must select M4A.");
+  const options = await format.locator("option").allTextContents();
+  for (const expected of ["WAV", "FLAC", "MP3", "M4A"]) {
+    if (!options.some((option) => option.startsWith(expected))) {
+      throw new Error(`Android Export fixture is missing ${expected}.`);
+    }
+  }
+  const disabledOptions = await format.locator("option:disabled").count();
+  if (disabledOptions !== 0) {
+    throw new Error("Android Export fixture must enable all four owned audio formats.");
+  }
+  const previewName = page.getByText("Midnight Count-In - Practice Mix 1.m4a", { exact: true });
+  await previewName.waitFor({ state: "visible", timeout: timeoutMs });
+  await page.getByText("1 selected", { exact: true }).waitFor({ timeout: timeoutMs });
+  const fileDestination = page.getByRole("button", { name: "File" });
+  await fileDestination.waitFor({ state: "visible", timeout: timeoutMs });
+  if (await fileDestination.getAttribute("aria-pressed") !== "true") {
+    throw new Error("Android Export fixture must keep File selected.");
+  }
+  if (!await page.getByRole("button", { name: "Folder" }).isDisabled() ||
+      !await page.getByRole("button", { name: "ZIP" }).isDisabled()) {
+    throw new Error("Android Export fixture must preserve the one-file destination boundary.");
+  }
+  const exportButton = page.getByRole("button", { name: "Export Practice Mix 1" });
+  await exportButton.waitFor({ state: "visible", timeout: timeoutMs });
+  if (await exportButton.isDisabled()) {
+    throw new Error("Android Export fixture must enable the system-picker handoff.");
+  }
+  const viewport = page.viewportSize();
+  for (const [name, locator] of [
+    ["guidance", guidance],
+    ["Project delivery label", projectDelivery],
+    ["saved artifact", practiceMix],
+    ["format", format],
+    ["suggested name", previewName],
+    ["export action", exportButton],
+    ["export package", exportPackage],
+    ["Activity link", activityLink],
+  ]) {
+    const box = await locator.boundingBox();
+    if (!box || !viewport || box.y < 0 || box.y + box.height > viewport.height) {
+      throw new Error(
+        `Android Export ${name} must fit within the capture viewport; ` +
+          `received ${JSON.stringify(box)} in ${JSON.stringify(viewport)}.`,
+      );
+    }
+  }
+  const practiceSetBox = await practiceSet.locator("..").boundingBox();
+  if (!practiceSetBox || !viewport || practiceSetBox.x < 0 ||
+      practiceSetBox.x + practiceSetBox.width > viewport.width) {
+    throw new Error(
+      "Android Export selected audio-set card must fit horizontally; " +
+        `received ${JSON.stringify(practiceSetBox)} in ${JSON.stringify(viewport)}.`,
+    );
   }
 }
 
@@ -2068,7 +2173,7 @@ function project(id, displayName, sourcePath, durationSeconds, extra = {}) {
   };
 }
 
-function mobilePlaybackFixture({ timedLyrics = true } = {}) {
+function mobilePlaybackFixture({ timedLyrics = true, exportFocused = false } = {}) {
   const projectId = "proj_release_showcase";
   const fixtureProject = projects().find((candidate) => candidate.id === projectId);
   if (!fixtureProject) {
@@ -2082,6 +2187,8 @@ function mobilePlaybackFixture({ timedLyrics = true } = {}) {
     words: [],
   }));
   return {
+    initialWorkspace: exportFocused ? "project" : "playback",
+    initialProjectPanel: exportFocused ? "export" : "studio",
     capabilities: {
       platform: "android",
       mediaBackend: "android_media_codec",
@@ -2102,7 +2209,10 @@ function mobilePlaybackFixture({ timedLyrics = true } = {}) {
     lyrics: timedLyrics
       ? fixtureLyrics
       : { ...fixtureLyrics, source_segments: untimedSegments, segments: untimedSegments },
-    artifacts: { artifacts: artifacts(projectId) },
+    artifacts: {
+      artifacts: artifacts(projectId).filter((artifact) =>
+        !exportFocused || ["art_source", "art_preview"].includes(artifact.id)),
+    },
     jobs: jobs().filter((job) => job.project_id === projectId),
   };
 }

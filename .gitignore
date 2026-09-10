@@ -80,3 +80,6 @@ data/
 *.keystore
 *.cer
 *.crt
+# Verified local FFmpeg source/build cache and generated platform payloads.
+packaging/ffmpeg/cache/
+packaging/ffmpeg/generated/

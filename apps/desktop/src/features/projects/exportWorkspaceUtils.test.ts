@@ -340,13 +340,13 @@ describe("export workspace utilities", () => {
     };
     const androidCapabilities = capabilities({
       platform: "android",
-      formats: ["wav"],
+      formats: ["wav", "flac", "mp3", "m4a"],
       destinations: ["single_file"],
       maxArtifactCount: 1,
     });
 
     expect(androidAudioExportUnavailableReason(source)).toBeNull();
-    expect(androidAudioExportUnavailableReason(mp3Mix)).toMatch(/locally stored WAV/);
+    expect(androidAudioExportUnavailableReason(mp3Mix)).toBeNull();
     expect(reconcileExportWorkspaceState({
       storedState: {
         audioSetId: "source",
@@ -368,7 +368,7 @@ describe("export workspace utilities", () => {
       state: {
         selectedArtifactIds: ["source"],
         selectedGeneratedDocumentIds: [],
-        outputFormat: "wav",
+        outputFormat: "m4a",
         destinationType: "single_file",
         desktopDestinationTarget: null,
       },
@@ -379,6 +379,6 @@ describe("export workspace utilities", () => {
       filenameBase: "Demo Song",
       capabilities: androidCapabilities,
       defaultOutputFormat: "m4a",
-    })?.selectedArtifactIds).toEqual([]);
+    })?.selectedArtifactIds).toEqual(["mix"]);
   });
 });

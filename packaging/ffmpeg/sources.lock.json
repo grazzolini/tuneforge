@@ -1,0 +1,77 @@
+{
+  "schemaVersion": 1,
+  "runtimeVersion": "ffmpeg-9.0.1-lame-4.0-1",
+  "targets": {
+    "macos-arm64": {
+      "minimumOsVersion": "13.0",
+      "architecture": "arm64",
+      "programs": ["ffmpeg", "ffprobe"],
+      "libraries": [
+        "libavcodec",
+        "libavfilter",
+        "libavformat",
+        "libavutil",
+        "libswresample",
+        "libmp3lame"
+      ]
+    },
+    "android-arm64-v8a": {
+      "apiLevel": 26,
+      "architecture": "aarch64",
+      "abi": "arm64-v8a",
+      "programs": [],
+      "libraries": [
+        "libavcodec",
+        "libavfilter",
+        "libavformat",
+        "libavutil",
+        "libswresample",
+        "libmp3lame"
+      ]
+    }
+  },
+  "sources": {
+    "ffmpeg": {
+      "version": "9.0.1",
+      "url": "https://ffmpeg.org/releases/ffmpeg-9.0.1.tar.xz",
+      "sha256": "cf38e0e28c7e5605942c4a77755349b0145804a397af37eb1fb4c77cb237f635",
+      "signatureUrl": "https://ffmpeg.org/releases/ffmpeg-9.0.1.tar.xz.asc",
+      "signatureSha256": "b613a00005232a1245ace7080088781ac23a916119d3e5b0d6c042368eee0177",
+      "signingKeyUrl": "https://ffmpeg.org/ffmpeg-devel.asc",
+      "signingKeySha256": "397b3becedcd5a98769967ff1ff8501ddc89f8368b8f766e4701377d7dbaabe5",
+      "signingFingerprint": "FCF986EA15E6E293A5644F10B4322F04D67658D8",
+      "license": "LGPL-2.1-or-later",
+      "sourceDirectory": "ffmpeg-9.0.1"
+    },
+    "lame": {
+      "version": "4.0",
+      "url": "https://downloads.sourceforge.net/project/lame/lame/4.0/lame-4.0.tar.gz",
+      "sha256": "3df5124d5ad3a98312ffd7ba6a9b36230e4f8a3e66d3ce0f425e336c32d216eb",
+      "license": "LGPL-2.0-or-later",
+      "sourceDirectory": "lame-4.0",
+      "verification": "HTTPS upstream archive pinned after local review; upstream publishes no detached signature or checksum sidecar."
+    }
+  },
+  "patches": [
+    {
+      "path": "packaging/ffmpeg/patches/lame-unversioned-shared.patch",
+      "sha256": "c8c5176924a3a3d6af6159c9f9295aaab88a6325352b99eb5637aabe811ae676",
+      "appliesTo": "lame-4.0",
+      "purpose": "Use an unversioned dynamic-library SONAME accepted by Android jniLibs and relocatable macOS packaging."
+    }
+  ],
+  "policy": {
+    "licenseFlagsRequired": ["--disable-gpl", "--disable-nonfree", "--disable-version3"],
+    "networkFlagsRequired": ["--disable-network"],
+    "forbiddenLibraries": ["libavdevice", "libpostproc", "libswscale"],
+    "inputContainers": ["aac", "flac", "matroska", "mov", "mp3", "ogg", "wav"],
+    "inputAudioCodecs": ["aac", "alac", "flac", "mp3", "opus", "pcm", "vorbis"],
+    "outputProfiles": {
+      "wav": "PCM signed 16-bit little-endian",
+      "flac": "FLAC compression level 5",
+      "mp3": "LAME 192 kbps",
+      "m4a": "AAC-LC 192 kbps in ISO BMFF"
+    },
+    "filters": ["amix", "aresample", "asetrate", "atempo", "aformat", "anull"]
+  }
+}

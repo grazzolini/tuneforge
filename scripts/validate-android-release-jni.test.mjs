@@ -45,21 +45,41 @@ test("validates an explicit APK, falls through empty SDK values, and rejects inv
   mkdirSync(path.dirname(rulesPath), { recursive: true }); writeFileSync(rulesPath, rules);
   const apk = path.join(root, "staged.apk"); writeFileSync(apk, "apk");
   const sdkRoot = path.join(root, "sdk");
-  for (const tool of ["aapt2", "apksigner", "dexdump"]) {
+  for (const tool of ["aapt2", "apksigner", "dexdump", "zipalign"]) {
     const candidate = path.join(sdkRoot, "build-tools/36.0.0", tool);
     mkdirSync(path.dirname(candidate), { recursive: true }); writeFileSync(candidate, "");
   }
+  const readelf = path.join(root, "llvm-readelf"); writeFileSync(readelf, "");
+  const archiveEntries = [
+    "classes.dex", "lib/arm64-v8a/libtuneforge.so",
+    ...["libavcodec.so", "libavfilter.so", "libavformat.so", "libavutil.so",
+      "libswresample.so", "libmp3lame.so"].map((name) => `lib/arm64-v8a/${name}`),
+    "assets/ffmpeg/provenance.json",
+    "assets/ffmpeg/licenses/FFmpeg-COPYING.LGPLv2.1.txt",
+    "assets/ffmpeg/licenses/LAME-COPYING.LGPL-2.0.txt",
+  ];
   const calls = [];
-  validateReleaseJni({ root, apk, sdkRoot: "", env: { ANDROID_HOME: "", ANDROID_SDK_ROOT: sdkRoot },
+  validateReleaseJni({ root, apk, sdkRoot: "", env: {
+    ANDROID_HOME: "", ANDROID_SDK_ROOT: sdkRoot, LLVM_READELF: readelf,
+  },
     run: (command, args) => {
       calls.push([command, args]);
       if (command.endsWith("aapt2")) return "native-code: 'arm64-v8a'";
-      if (command === "unzip" && args[0] === "-Z1") return "classes.dex";
+      if (command === "unzip" && args[0] === "-Z1") return archiveEntries.join("\n");
+      if (command === "unzip" && args[0] === "-qq") {
+        const destination = args.at(-1);
+        for (const entry of args.slice(2, -2)) {
+          const candidate = path.join(destination, entry);
+          mkdirSync(path.dirname(candidate), { recursive: true }); writeFileSync(candidate, "fixture");
+        }
+        return "";
+      }
       if (command.endsWith("dexdump")) return dexXml(parseJniRules(rules));
+      if (command === readelf) return "Machine: AArch64\nLOAD 0x000000 0x000000 0x000000 0x1000 0x1000 R E 0x4000\nShared library: [libc.so]";
       return "";
     },
   });
-  assert.equal(calls.filter(([, args]) => args.includes(apk)).length, 4);
+  assert.equal(calls.filter(([, args]) => args.includes(apk)).length, 5);
   assert.deepEqual(parseCli(["--apk", apk]), { apk });
   for (const argv of [["--apk"], ["--other", apk], ["--apk", apk, "extra"]]) assert.throws(() => parseCli(argv), /Usage/);
   assert.throws(() => validateReleaseJni({ root, apk: path.join(root, "missing.apk"), sdkRoot }), /missing/);
@@ -70,7 +90,7 @@ test("selects highest complete Android build-tools version", () => {
   for (const version of ["35.0.0", "36.0.0"]) {
     const dir = path.join(root, "build-tools", version);
     mkdirSync(dir, { recursive: true });
-    for (const tool of ["aapt2", "apksigner", "dexdump"]) writeFileSync(path.join(dir, tool), "");
+    for (const tool of ["aapt2", "apksigner", "dexdump", "zipalign"]) writeFileSync(path.join(dir, tool), "");
   }
   assert.equal(selectAndroidTools(root).version, "36.0.0");
 });

@@ -40,6 +40,13 @@ function main() {
     printModelBundleWarning();
   }
 
+  run(process.execPath, [
+    path.join("scripts", "validate-packaged-ffmpeg.mjs"),
+    "--target", "macos-arm64",
+    "--root", process.env.TUNEFORGE_FFMPEG_RUNTIME_DIR
+      ?? path.join("packaging", "ffmpeg", "generated", "macos-arm64"),
+  ]);
+
   run("uv", backendSyncArgs(options), { cwd: backendRoot });
   run("pnpm", ["--filter", "@tuneforge/desktop", "tauri", "build", "--bundles", "app"], {
     env: packageOptionsEnvironment(options),

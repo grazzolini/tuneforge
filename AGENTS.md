@@ -25,12 +25,18 @@ These are non-negotiable. If a task seems to require breaking one, stop and ask.
 
 1. **Local-only stays local.** The backend binds `127.0.0.1`. Do not introduce network exposure, public binds, reverse-proxy assumptions, multi-user concepts, auth/session systems, telemetry, analytics, or external API calls (other than the Demucs model download that already exists).
 2. **No cloud, no accounts.** The app must keep working with no internet after first run.
-3. **Don't bundle FFmpeg.** It is a host-installed dependency by design. See [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md) for the licensing reason.
+3. **Bundle only audited LGPL FFmpeg builds.** Packaged macOS arm64 and Android arm64-v8a use
+   the repository-pinned owned runtime; development uses host tools, and Flatpak uses only its
+   runtime/extension. Keep source, notices, provenance, linkage checks, and replacement steps with
+   every distribution. See [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md).
 4. **Respect the layering.** `routes/` → `services/` → `engines/`. Routes are thin; business logic lives in services; raw audio/ML work lives in engines. Don't bypass layers.
 5. **Don't commit generated files by hand.** Run the generator (see "Generated artifacts" below).
 6. **Don't disable lint/type/test rules to make CI pass.** Fix the underlying issue.
 7. **Don't bypass safety flags.** No `--no-verify`, no `git push --force` on shared branches, no destructive shell shortcuts.
-8. **MIT-compatible deps only.** Avoid GPL/AGPL/SSPL runtime dependencies. Note any new dep's license in [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md).
+8. **MIT-compatible deps only, except the audited owned FFmpeg runtime.** Avoid GPL/AGPL/SSPL
+   runtime dependencies. The pinned dynamically linked FFmpeg/LAME distribution is the explicit
+   LGPL exception; future unrelated LGPL additions still require separate approval. Note any new
+   dependency's license in [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md).
 
 ## Repository Layout
 

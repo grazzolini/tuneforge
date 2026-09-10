@@ -174,9 +174,9 @@ ci: pin commitlint action to v6.2.1
 
 Use the same action version across branch and pull request checks.
 
-docs: clarify ffmpeg prerequisite
+docs: clarify ffmpeg runtime ownership
 
-Explain that FFmpeg is host-installed instead of bundled with Tuneforge.
+Explain the development, packaged macOS and Android, and Flatpak FFmpeg sources.
 ```
 
 Rules:

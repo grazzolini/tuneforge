@@ -2500,16 +2500,6 @@ function createMobileTuneForgeClient(capabilities: MobileCapabilities): TuneForg
       });
     }
   };
-  const requireSupportedMobileImportFormat = (request: ProjectImportRequest) => {
-    if (request.output_format !== undefined && request.output_format !== "wav") {
-      throw new ApiError({
-        code: "UNSUPPORTED_RUNTIME",
-        message: "Selecting a compressed durable audio format is not available on mobile yet.",
-        details: { output_format: request.output_format },
-      });
-    }
-  };
-
   return {
     getMobileCapabilities: async () => capabilities,
     ensureWebMediaTransport,
@@ -2519,21 +2509,9 @@ function createMobileTuneForgeClient(capabilities: MobileCapabilities): TuneForg
         platform: "android",
         formats: [
           { id: "wav", available: true, reason: null },
-          {
-            id: "flac",
-            available: false,
-            reason: "Android exports existing WAV bytes and does not encode FLAC yet.",
-          },
-          {
-            id: "mp3",
-            available: false,
-            reason: "Android exports existing WAV bytes and does not encode MP3 yet.",
-          },
-          {
-            id: "m4a",
-            available: false,
-            reason: "Android exports existing WAV bytes and does not encode M4A yet.",
-          },
+          { id: "flac", available: true, reason: null },
+          { id: "mp3", available: true, reason: null },
+          { id: "m4a", available: true, reason: null },
         ],
         destinations: [
           { id: "single_file", available: true, reason: null },
@@ -2556,7 +2534,6 @@ function createMobileTuneForgeClient(capabilities: MobileCapabilities): TuneForg
     importProject: async (body: ProjectImportRequest) => {
       requireSupportedMobileAnalysisBackend(body);
       requireSupportedMobileChordBackend(body);
-      requireSupportedMobileImportFormat(body);
       return invokeMobile("mobile_import_project", { payload: body });
     },
     getProject: (projectId: string) => invokeMobile("mobile_get_project", { projectId }),

@@ -14,6 +14,7 @@ import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveBuildInfo, writeResolvedBuildInfoFile } from "./build-info.mjs";
+import { validateOwnedFfmpeg } from "./validate-packaged-ffmpeg.mjs";
 import {
   packageOptionsFromEnvironmentOrArgv,
   printModelBundleWarning,
@@ -30,6 +31,7 @@ const stagedBackendSourceRoot = path.join(stagedBackendRoot, "src");
 const stagedPythonRoot = path.join(stagedBackendRoot, "python");
 const stagedSitePackagesRoot = path.join(stagedBackendRoot, "site-packages");
 const stagedModelBundleRoot = path.join(stagedBackendRoot, "models", "bundle");
+const stagedFfmpegRoot = path.join(stagedBackendRoot, "ffmpeg");
 const sourceDemucsManifestPath = path.join(workspaceRoot, "packaging", "demucs", "models.json");
 const stagedLvChordiaRoot = path.join(stagedPythonRoot, "share", "lv-chordia", "cache_data");
 const sourceLvChordiaRoot = path.join(backendRoot, ".venv", "share", "lv-chordia", "cache_data");
@@ -262,6 +264,31 @@ function stageLvChordiaAssets(options) {
   assertLvChordiaBundleLayout(stagedBackendRoot, options.lvChordia);
 }
 
+export function stageOwnedFfmpegRuntime() {
+  const source = path.resolve(
+    process.env.TUNEFORGE_FFMPEG_RUNTIME_DIR
+      ?? path.join(workspaceRoot, "packaging", "ffmpeg", "generated", "macos-arm64"),
+  );
+  validateOwnedFfmpeg({ root: source, target: "macos-arm64", requireCorrespondingSources: true });
+  rmSync(stagedFfmpegRoot, { recursive: true, force: true });
+  for (const directory of ["bin", "lib", "licenses"]) {
+    copyInto(path.join(source, directory), path.join(stagedFfmpegRoot, directory));
+  }
+  const provenance = JSON.parse(readFileSync(path.join(source, "provenance.json"), "utf8"));
+  delete provenance.correspondingSources;
+  provenance.files = provenance.files.filter(({ path: file }) =>
+    ["bin/", "lib/", "licenses/"].some((prefix) => file.startsWith(prefix)));
+  writeFileSync(
+    path.join(stagedFfmpegRoot, "provenance.json"),
+    `${JSON.stringify(provenance, null, 2)}\n`,
+  );
+  return validateOwnedFfmpeg({
+    root: stagedFfmpegRoot,
+    target: "macos-arm64",
+    requireCorrespondingSources: false,
+  });
+}
+
 function verifyStagedPython(options) {
   const stagedPython = path.join(stagedPythonRoot, "bin", "python3.14");
   const libraryPaths = [
@@ -331,6 +358,7 @@ async function main() {
   assertBundledPythonLayout(stagedPythonRoot);
   copyInto(sitePackagesRoot, stagedSitePackagesRoot, { filter: shouldIncludeBundledSitePackage });
   stageLvChordiaAssets(packageOptions);
+  const ownedFfmpeg = stageOwnedFfmpegRuntime();
   verifyStagedPython(packageOptions);
   prepareModelBundle(packageOptions);
   assertCremaOnnxBundleLayout(
@@ -345,6 +373,11 @@ async function main() {
     site_packages: path.relative(resourcesRoot, stagedSitePackagesRoot),
     backend_source: path.relative(resourcesRoot, stagedBackendSourceRoot),
     version_info: path.relative(resourcesRoot, path.join(stagedBackendRoot, "version.json")),
+    ffmpeg_runtime: path.relative(resourcesRoot, stagedFfmpegRoot),
+    ffmpeg_runtime_version: JSON.parse(
+      readFileSync(path.join(stagedFfmpegRoot, "provenance.json"), "utf8"),
+    ).runtimeVersion,
+    ffmpeg_runtime_bytes: ownedFfmpeg.bytes,
   };
   if (packageOptions.modelBundle || packageOptions.crema === "onnx") {
     manifest.model_bundle = path.relative(resourcesRoot, stagedModelBundleRoot);

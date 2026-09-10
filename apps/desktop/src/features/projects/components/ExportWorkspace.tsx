@@ -120,7 +120,7 @@ export function ExportWorkspace() {
           <span className="eyebrow">Project delivery</span>
           <h2 id="export-workspace-title">Export files</h2>
           <p>{isMobileRuntime
-            ? "Choose one local WAV or project text file, then save it with Android’s system picker."
+            ? "Choose one existing audio artifact or project text file, then save it with Android’s system picker."
             : "Choose project audio and documents, then package local files."}</p>
         </div>
         <div className="export-workspace__header-actions">
@@ -146,7 +146,7 @@ export function ExportWorkspace() {
 
       {isMobileRuntime ? (
         <div className="notice notice--info" id="android-export-format-notice" role="status">
-          Android exports one WAV, Lyrics TXT, or Lyrics + chords TXT at a time. The system
+          Android exports one existing audio artifact, Lyrics TXT, or Lyrics + chords TXT at a time. The system
           provider chooses the location and handles name collisions.
         </div>
       ) : null}
@@ -428,7 +428,7 @@ export function ExportWorkspace() {
                   ) : null}
                 </div>
               ) : null}
-              {!isMobileRuntime ? <label className="export-field">
+              {selectedIds.size ? <label className="export-field">
                 <span>File format</span>
                 <select
                   aria-describedby={isMobileRuntime ? "android-export-format-notice" : undefined}
@@ -444,18 +444,15 @@ export function ExportWorkspace() {
               </label> : (
                 <div className="export-field" aria-describedby="android-export-format-reasons">
                   <span>Format</span>
-                  <strong>{selectedIds.size ? "WAV" : "TXT · UTF-8"}</strong>
+                  <strong>TXT · UTF-8</strong>
                   <p className="field-reason" id="android-export-format-reasons">
-                    {selectedIds.size
-                      ? "FLAC, MP3, and M4A are unavailable because Android copies existing WAV bytes without an encoder."
-                      : "Project documents use UTF-8 plain text with Unix line endings."}
+                    Project documents use UTF-8 plain text with Unix line endings. Audio format does not apply.
                   </p>
                 </div>
               )}
-              {!isMobileRuntime && !selectedIds.size && totalSelectedCount ? (
-                <p className="field-reason">Audio format does not apply to document-only exports. Documents use TXT.</p>
-              ) : null}
-              {selectedFormatCapability?.available === false ? <p className="field-reason">{selectedFormatCapability.reason}</p> : null}
+              {selectedIds.size > 0 && selectedFormatCapability?.available === false
+                ? <p className="field-reason">{selectedFormatCapability.reason}</p>
+                : null}
               <label className="export-field">
                 <span>{isMobileRuntime ? "Suggested file name" : "File name base"}</span>
                 <input onChange={(event) => setFilenameBase(event.target.value)} value={filenameBase} />

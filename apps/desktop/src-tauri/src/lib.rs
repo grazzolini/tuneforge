@@ -21,6 +21,8 @@ use serde::{Deserialize, Serialize};
 
 mod file_dialog_scope;
 mod mobile_backend;
+#[cfg(target_os = "android")]
+mod mobile_ffmpeg;
 mod mobile_media_transport;
 mod native_audio;
 pub mod power_inhibition;
@@ -296,14 +298,15 @@ fn build_python_path(backend_root: &Path) -> Result<String, Box<dyn std::error::
 }
 
 #[cfg(not(target_os = "android"))]
-fn build_backend_library_path(python_root: &Path) -> Result<OsString, env::JoinPathsError> {
+fn build_backend_library_path(
+    python_root: &Path,
+    mut prefixes: Vec<PathBuf>,
+) -> Result<OsString, env::JoinPathsError> {
     let current_paths: Vec<PathBuf> = env::var_os("LD_LIBRARY_PATH")
         .map(|path| env::split_paths(&path).collect())
         .unwrap_or_default();
-    env::join_paths(append_unique_paths(
-        vec![python_root.join("lib")],
-        current_paths,
-    ))
+    prefixes.push(python_root.join("lib"));
+    env::join_paths(append_unique_paths(prefixes, current_paths))
 }
 
 #[cfg(not(target_os = "android"))]
@@ -354,17 +357,15 @@ fn append_unique_paths(
 }
 
 #[cfg(not(target_os = "android"))]
-fn build_backend_search_path() -> Result<OsString, env::JoinPathsError> {
-    let current_paths = env::var_os("PATH")
+fn build_backend_search_path(mut prefixes: Vec<PathBuf>) -> Result<OsString, env::JoinPathsError> {
+    let current_paths: Vec<PathBuf> = env::var_os("PATH")
         .map(|path| env::split_paths(&path).collect())
         .unwrap_or_default();
-    env::join_paths(append_unique_paths(
-        current_paths,
-        host_tool_fallback_dirs(),
-    ))
+    prefixes.extend(current_paths);
+    env::join_paths(append_unique_paths(prefixes, host_tool_fallback_dirs()))
 }
 
-#[cfg(all(not(target_os = "android"), unix))]
+#[cfg(all(not(target_os = "android"), any(not(target_os = "macos"), test), unix))]
 fn is_executable_file(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
 
@@ -373,12 +374,16 @@ fn is_executable_file(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-#[cfg(all(not(target_os = "android"), not(unix)))]
+#[cfg(all(
+    not(target_os = "android"),
+    any(not(target_os = "macos"), test),
+    not(unix)
+))]
 fn is_executable_file(path: &Path) -> bool {
     path.is_file()
 }
 
-#[cfg(not(target_os = "android"))]
+#[cfg(all(not(target_os = "android"), any(not(target_os = "macos"), test)))]
 fn find_executable_in_path(binary_name: &str, search_path: &OsString) -> Option<PathBuf> {
     env::split_paths(search_path)
         .map(|directory| directory.join(binary_name))
@@ -399,10 +404,39 @@ fn spawn_packaged_backend(app: &AppHandle) -> Result<BackendRuntime, Box<dyn std
     let port = allocate_port()?;
     let base_url = format!("http://127.0.0.1:{port}");
     let python_path = build_python_path(&bundled_backend_root)?;
-    let backend_library_path = build_backend_library_path(&bundled_python_root)?;
-    let backend_search_path = build_backend_search_path()?;
-    let ffmpeg_path = find_executable_in_path("ffmpeg", &backend_search_path);
-    let ffprobe_path = find_executable_in_path("ffprobe", &backend_search_path);
+    let owned_ffmpeg_root = bundled_backend_root.join("ffmpeg");
+    let owned_ffmpeg_bin = owned_ffmpeg_root.join("bin");
+    let owned_ffmpeg_lib = owned_ffmpeg_root.join("lib");
+    #[cfg(target_os = "macos")]
+    if !owned_ffmpeg_bin.join("ffmpeg").is_file()
+        || !owned_ffmpeg_bin.join("ffprobe").is_file()
+        || !owned_ffmpeg_lib.is_dir()
+    {
+        return Err(format!(
+            "Owned FFmpeg runtime is incomplete at {}",
+            owned_ffmpeg_root.display()
+        )
+        .into());
+    }
+    let mut library_roots = Vec::new();
+    let mut search_roots = Vec::new();
+    #[cfg(target_os = "macos")]
+    {
+        library_roots.insert(0, owned_ffmpeg_lib.clone());
+        search_roots.push(owned_ffmpeg_bin.clone());
+    }
+    let backend_library_path = build_backend_library_path(&bundled_python_root, library_roots)?;
+    let backend_search_path = build_backend_search_path(search_roots)?;
+    #[cfg(target_os = "macos")]
+    let (ffmpeg_path, ffprobe_path) = (
+        Some(owned_ffmpeg_bin.join("ffmpeg")),
+        Some(owned_ffmpeg_bin.join("ffprobe")),
+    );
+    #[cfg(not(target_os = "macos"))]
+    let (ffmpeg_path, ffprobe_path) = (
+        find_executable_in_path("ffmpeg", &backend_search_path),
+        find_executable_in_path("ffprobe", &backend_search_path),
+    );
     let model_bundle_dir = bundled_backend_root.join("models").join("bundle");
 
     let mut command = Command::new(&python);
@@ -418,6 +452,7 @@ fn spawn_packaged_backend(app: &AppHandle) -> Result<BackendRuntime, Box<dyn std
         .arg(port.to_string())
         .current_dir(&backend_source_root)
         .env("LD_LIBRARY_PATH", &backend_library_path)
+        .env("DYLD_LIBRARY_PATH", &backend_library_path)
         .env("PATH", &backend_search_path)
         .env("PYTHONHOME", &bundled_python_root)
         .env("PYTHONPATH", python_path)
@@ -869,7 +904,8 @@ mod tests {
     #[test]
     fn backend_library_path_starts_with_bundled_python_lib() {
         let python_root = PathBuf::from("/app/lib/tuneforge/backend/python");
-        let library_path = build_backend_library_path(&python_root).expect("build library path");
+        let library_path =
+            build_backend_library_path(&python_root, Vec::new()).expect("build library path");
         let paths = env::split_paths(&library_path).collect::<Vec<_>>();
 
         assert_eq!(paths.first(), Some(&python_root.join("lib")));

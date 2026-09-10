@@ -18,15 +18,11 @@ use std::{
     fs,
     io::{self, Read},
     path::{Path, PathBuf},
-    str::FromStr,
     thread,
     time::Instant,
 };
 #[cfg(all(test, not(target_os = "android")))]
 use tauri::{AppHandle, Manager};
-#[cfg(all(test, not(target_os = "android")))]
-use tauri_plugin_fs::{FilePath, FsExt, OpenOptions};
-
 include!("constants.rs");
 include!("schemas.rs");
 include!("helpers.rs");
@@ -35,6 +31,19 @@ include!("helpers.rs");
 mod android;
 #[cfg(target_os = "android")]
 pub use android::{
+    mobile_register_sync_staged_reference, mobile_sign_transport_handshake,
+    mobile_sync_transport_artifact_file, mobile_sync_transport_create_pairing_offer_value,
+    mobile_sync_transport_local_identity_value, mobile_sync_transport_metadata_value,
+    mobile_sync_transport_project_manifest_value, mobile_sync_transport_reconciliation_apply_value,
+    mobile_sync_transport_reconciliation_plan_value, mobile_sync_transport_stage_artifact_value,
+    mobile_sync_transport_staged_artifact_value, mobile_sync_transport_trusted_peers_value,
+    mobile_sync_transport_update_trusted_peer_endpoint_hints_value,
+};
+
+#[cfg(target_os = "ios")]
+mod ios;
+#[cfg(target_os = "ios")]
+pub use ios::{
     mobile_register_sync_staged_reference, mobile_sign_transport_handshake,
     mobile_sync_transport_artifact_file, mobile_sync_transport_create_pairing_offer_value,
     mobile_sync_transport_local_identity_value, mobile_sync_transport_metadata_value,
@@ -180,6 +189,16 @@ macro_rules! android_command {
     };
 }
 
+macro_rules! ios_command {
+    ($name:ident, $ret:ty $(, $arg:ident : $ty:ty)*) => {
+        #[cfg(target_os = "ios")]
+        #[tauri::command]
+        pub fn $name($($arg: $ty,)*) -> Result<$ret, String> {
+            ios::$name($($arg,)*)
+        }
+    };
+}
+
 android_command!(mobile_capabilities, MobileCapabilities, app: tauri::AppHandle);
 android_command!(mobile_get_health, HealthResponse, app: tauri::AppHandle);
 android_command!(mobile_list_projects, ProjectsResponse, app: tauri::AppHandle, params: Option<ListProjectsParams>);
@@ -218,3 +237,24 @@ android_command!(mobile_get_sync_staged_artifact, SyncStagedArtifactSchema, app:
 android_command!(mobile_import_sync_project, SyncProjectImportResponse, app: tauri::AppHandle, payload: SyncProjectStagedImportRequest);
 android_command!(mobile_plan_sync_reconciliation, SyncReconciliationPlanResponse, app: tauri::AppHandle, payload: SyncReconciliationPlanRequest);
 android_command!(mobile_apply_sync_reconciliation, SyncReconciliationApplyResponse, app: tauri::AppHandle, payload: SyncReconciliationApplyRequest);
+
+ios_command!(mobile_get_health, HealthResponse, app: tauri::AppHandle);
+ios_command!(mobile_list_projects, ProjectsResponse, app: tauri::AppHandle, params: Option<ListProjectsParams>);
+ios_command!(mobile_get_project, ProjectResponse, app: tauri::AppHandle, project_id: String);
+ios_command!(mobile_list_artifacts, ArtifactsResponse, app: tauri::AppHandle, project_id: String);
+ios_command!(mobile_list_jobs, JobsResponse, app: tauri::AppHandle, params: Option<ListJobsParams>);
+ios_command!(mobile_get_job, JobResponse, app: tauri::AppHandle, job_id: String);
+ios_command!(mobile_get_sync_identity, SyncLocalIdentityResponse, app: tauri::AppHandle);
+ios_command!(mobile_create_sync_pairing_offer, SyncPairingOfferResponse, app: tauri::AppHandle, payload: Option<SyncPairingOfferRequest>);
+ios_command!(mobile_answer_sync_pairing_offer, SyncPairingAnswerResponse, app: tauri::AppHandle, payload: SyncPairingAnswerRequest);
+ios_command!(mobile_list_sync_trusted_peers, SyncTrustedPeersResponse, app: tauri::AppHandle);
+ios_command!(mobile_trust_sync_peer, SyncTrustedPeerResponse, app: tauri::AppHandle, payload: SyncTrustedPeerCreateRequest);
+ios_command!(mobile_revoke_sync_trusted_peer, SyncTrustedPeerResponse, app: tauri::AppHandle, device_id: String);
+ios_command!(mobile_get_sync_metadata, SyncMetadataResponse, app: tauri::AppHandle);
+ios_command!(mobile_get_sync_project_manifest, SyncProjectManifestResponse, app: tauri::AppHandle, project_id: String);
+ios_command!(mobile_update_sync_project_status, SyncProjectStatusUpdateResponse, app: tauri::AppHandle, project_id: String, payload: SyncProjectStatusUpdateRequest);
+ios_command!(mobile_stage_sync_artifact, SyncStagedArtifactSchema, app: tauri::AppHandle, payload: SyncArtifactStagingRequest);
+ios_command!(mobile_get_sync_staged_artifact, SyncStagedArtifactSchema, app: tauri::AppHandle, content_sha256: String);
+ios_command!(mobile_import_sync_project, SyncProjectImportResponse, app: tauri::AppHandle, payload: SyncProjectStagedImportRequest);
+ios_command!(mobile_plan_sync_reconciliation, SyncReconciliationPlanResponse, app: tauri::AppHandle, payload: SyncReconciliationPlanRequest);
+ios_command!(mobile_apply_sync_reconciliation, SyncReconciliationApplyResponse, app: tauri::AppHandle, payload: SyncReconciliationApplyRequest);

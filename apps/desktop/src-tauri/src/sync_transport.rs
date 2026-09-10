@@ -1616,7 +1616,7 @@ mod desktop {
     use snow::{params::NoiseParams, Builder};
     #[cfg(any(test, target_os = "android"))]
     use std::collections::BTreeSet;
-    #[cfg(not(target_os = "android"))]
+    #[cfg(not(mobile))]
     use std::io::{BufRead, BufReader};
     use std::{
         collections::{BTreeMap, HashMap, HashSet, VecDeque},
@@ -1637,7 +1637,7 @@ mod desktop {
         thread::{self, JoinHandle},
         time::{Duration, Instant},
     };
-    #[cfg(target_os = "android")]
+    #[cfg(mobile)]
     use tauri::Manager;
     use tauri::{AppHandle, State};
 
@@ -1690,11 +1690,11 @@ mod desktop {
         "Restore the device state, then retry sync.";
     const LIFECYCLE_INTERRUPTION_NETWORK_GUIDANCE: &str =
         "Restore network connectivity, then retry sync.";
-    #[cfg(not(target_os = "android"))]
+    #[cfg(not(mobile))]
     const HTTP_TIMEOUT: Duration = Duration::from_secs(45);
-    #[cfg(not(target_os = "android"))]
+    #[cfg(not(mobile))]
     const MANIFEST_EXPORT_HTTP_TIMEOUT: Duration = Duration::from_secs(300);
-    #[cfg(not(target_os = "android"))]
+    #[cfg(not(mobile))]
     const BACKEND_PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(3);
 
     trait SyncInhibitionGuard: Send {}
@@ -1943,6 +1943,7 @@ mod desktop {
                 .local_addr()
                 .map_err(|error| format!("Could not inspect sync transport listener: {error}"))?;
             let tcp_endpoint_hints = endpoint_hints_for_port(bind_addr.port(), &identity.device_id);
+            #[cfg(not(target_os = "ios"))]
             let iroh_transport =
                 match create_iroh_transport(&self.backend, &identity.device_id, bind_addr.port()) {
                     Ok(transport) => Some(transport),
@@ -1955,6 +1956,8 @@ mod desktop {
                         None
                     }
                 };
+            #[cfg(target_os = "ios")]
+            let iroh_transport: Option<IrohTransport> = None;
             let mut endpoint_hints = iroh_transport
                 .as_ref()
                 .map(|transport| iroh_endpoint_hints(transport, &identity.device_id))
@@ -1980,6 +1983,7 @@ mod desktop {
                 );
                 tcp_listener_power_inhibition.release();
             });
+            #[cfg(not(target_os = "ios"))]
             let iroh_thread = iroh_transport.as_ref().map(|transport| {
                 let transport = transport.clone();
                 let backend = self.backend.clone();
@@ -1998,7 +2002,11 @@ mod desktop {
                     );
                 })
             });
+            #[cfg(target_os = "ios")]
+            let iroh_thread = None;
+            #[cfg(not(target_os = "ios"))]
             let mut discovery_error = None;
+            #[cfg(not(target_os = "ios"))]
             let discovery_thread = match start_discovery(
                 identity,
                 endpoint_hints.clone(),
@@ -2011,6 +2019,10 @@ mod desktop {
                     None
                 }
             };
+            #[cfg(target_os = "ios")]
+            let discovery_thread = None;
+            #[cfg(target_os = "ios")]
+            let discovery_error: Option<String> = None;
 
             let handle = ListenerHandle {
                 bind_addr,
@@ -2387,10 +2399,13 @@ mod desktop {
                         Vec::new(),
                     )
                 })?;
+            #[cfg(not(target_os = "ios"))]
             let preferred_transport = payload
                 .preferred_transport
                 .as_deref()
                 .and_then(normalized_transport_id);
+            #[cfg(target_os = "ios")]
+            let preferred_transport = Some(TCP_TRANSPORT_ID);
             let local_iroh = self.local_iroh_transport();
             let selection_endpoint_hints = sync_now_selection_endpoint_hints(
                 payload.endpoint_hint.as_deref(),
@@ -3054,7 +3069,7 @@ mod desktop {
     #[derive(Clone)]
     struct BackendAccess {
         base_url: String,
-        #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+        #[cfg_attr(not(mobile), allow(dead_code))]
         app: AppHandle,
     }
 
@@ -3085,7 +3100,7 @@ mod desktop {
     }
 
     impl SyncBackendPreflight {
-        #[cfg(target_os = "android")]
+        #[cfg(mobile)]
         fn ready() -> Self {
             Self {
                 ok: true,
@@ -4715,6 +4730,7 @@ mod desktop {
     }
 
     fn sync_transport_data_dir(_backend: &BackendAccess) -> Result<PathBuf, String> {
+        #[cfg(target_os = "android")]
         let transport_override = env::var("TUNEFORGE_SYNC_TRANSPORT_DATA_DIR").ok();
         #[cfg(target_os = "android")]
         {
@@ -4724,8 +4740,17 @@ mod desktop {
                 })
             });
         }
-        #[cfg(not(target_os = "android"))]
+        #[cfg(target_os = "ios")]
         {
+            return resolve_sync_transport_data_dir(None, None, || {
+                _backend.app.path().app_data_dir().map_err(|error| {
+                    format!("Could not resolve iOS sync transport data directory: {error}")
+                })
+            });
+        }
+        #[cfg(not(mobile))]
+        {
+            let transport_override = env::var("TUNEFORGE_SYNC_TRANSPORT_DATA_DIR").ok();
             let data_root_override = env::var("TUNEFORGE_DATA_DIR").ok();
             resolve_sync_transport_data_dir(
                 transport_override.as_deref(),
@@ -9581,7 +9606,7 @@ mod desktop {
         results
     }
 
-    #[cfg(target_os = "android")]
+    #[cfg(mobile)]
     fn already_staged_artifact_result(
         client: &BackendClient,
         artifact: &RemoteArtifact,
@@ -9589,7 +9614,7 @@ mod desktop {
         client.register_staged_artifact_reference(artifact)
     }
 
-    #[cfg(not(target_os = "android"))]
+    #[cfg(not(mobile))]
     fn already_staged_artifact_result(
         client: &BackendClient,
         artifact: &RemoteArtifact,
@@ -12350,13 +12375,13 @@ mod desktop {
 
     #[derive(Clone)]
     struct BackendClient {
-        #[cfg(not(target_os = "android"))]
+        #[cfg(not(mobile))]
         host: String,
-        #[cfg(not(target_os = "android"))]
+        #[cfg(not(mobile))]
         port: u16,
-        #[cfg(not(target_os = "android"))]
+        #[cfg(not(mobile))]
         sync_transport_temp_root: Arc<Mutex<Option<PathBuf>>>,
-        #[cfg(target_os = "android")]
+        #[cfg(mobile)]
         app: AppHandle,
     }
 
@@ -12365,7 +12390,7 @@ mod desktop {
             &self,
             artifact: &RemoteArtifact,
         ) -> Result<bool, String> {
-            #[cfg(target_os = "android")]
+            #[cfg(mobile)]
             {
                 return crate::mobile_backend::mobile_register_sync_staged_reference(
                     self.app.clone(),
@@ -12376,7 +12401,7 @@ mod desktop {
                 );
             }
 
-            #[cfg(not(target_os = "android"))]
+            #[cfg(not(mobile))]
             {
                 let _ = artifact;
                 Ok(true)
@@ -12384,11 +12409,11 @@ mod desktop {
         }
 
         fn new(access: &BackendAccess) -> Result<Self, String> {
-            #[cfg(target_os = "android")]
+            #[cfg(mobile)]
             {
                 if access.base_url != "mobile://embedded" {
                     return Err(
-                        "Android sync transport requires the embedded mobile backend.".to_string(),
+                        "Mobile sync transport requires the embedded mobile backend.".to_string(),
                     );
                 }
                 return Ok(Self {
@@ -12396,7 +12421,7 @@ mod desktop {
                 });
             }
 
-            #[cfg(not(target_os = "android"))]
+            #[cfg(not(mobile))]
             {
                 let base_url = &access.base_url;
                 let without_scheme = base_url.strip_prefix("http://").ok_or_else(|| {
@@ -12427,28 +12452,28 @@ mod desktop {
         }
 
         fn sync_preflight(&self) -> Result<SyncBackendPreflight, BackendError> {
-            #[cfg(target_os = "android")]
+            #[cfg(mobile)]
             {
                 return Ok(SyncBackendPreflight::ready());
             }
 
-            #[cfg(not(target_os = "android"))]
+            #[cfg(not(mobile))]
             self.get_json_with_timeout("/api/v1/sync/preflight", BACKEND_PREFLIGHT_TIMEOUT)
         }
 
         fn sync_metadata_preflight_probe(&self) -> Result<(), BackendError> {
-            #[cfg(target_os = "android")]
+            #[cfg(mobile)]
             {
                 return Ok(());
             }
 
-            #[cfg(not(target_os = "android"))]
+            #[cfg(not(mobile))]
             self.get_json_with_timeout::<Value>("/api/v1/sync/metadata", BACKEND_PREFLIGHT_TIMEOUT)
                 .map(|_| ())
         }
 
         fn local_identity(&self) -> Result<SyncLocalIdentity, BackendError> {
-            #[cfg(target_os = "android")]
+            #[cfg(mobile)]
             {
                 let value = crate::mobile_backend::mobile_sync_transport_local_identity_value(
                     self.app.clone(),
@@ -12459,13 +12484,13 @@ mod desktop {
                     .map_err(|error| BackendError::local(error.to_string()));
             }
 
-            #[cfg(not(target_os = "android"))]
+            #[cfg(not(mobile))]
             self.get_json::<SyncLocalIdentityResponse>("/api/v1/sync/identity")
                 .map(|response| response.identity)
         }
 
         fn trusted_peer(&self, device_id: &str) -> Result<Option<SyncTrustedPeer>, BackendError> {
-            #[cfg(target_os = "android")]
+            #[cfg(mobile)]
             {
                 let response = crate::mobile_backend::mobile_sync_transport_trusted_peers_value(
                     self.app.clone(),
@@ -12479,7 +12504,7 @@ mod desktop {
                     .find(|peer| peer.device_id == device_id && peer.revoked_at.is_none()));
             }
 
-            #[cfg(not(target_os = "android"))]
+            #[cfg(not(mobile))]
             {
                 let response =
                     self.get_json::<SyncTrustedPeersResponse>("/api/v1/sync/trusted-peers")?;
@@ -12495,7 +12520,7 @@ mod desktop {
             endpoint_hints: Vec<String>,
             ttl_seconds: u32,
         ) -> Result<Value, BackendError> {
-            #[cfg(target_os = "android")]
+            #[cfg(mobile)]
             {
                 return crate::mobile_backend::mobile_sync_transport_create_pairing_offer_value(
                     self.app.clone(),
@@ -12505,7 +12530,7 @@ mod desktop {
                 .map_err(BackendError::local);
             }
 
-            #[cfg(not(target_os = "android"))]
+            #[cfg(not(mobile))]
             {
                 let body = json!({
                     "endpoint_hints": endpoint_hints,
@@ -12526,7 +12551,7 @@ mod desktop {
                 return Ok(());
             }
 
-            #[cfg(target_os = "android")]
+            #[cfg(mobile)]
             {
                 crate::mobile_backend::mobile_sync_transport_update_trusted_peer_endpoint_hints_value(
                     self.app.clone(),
@@ -12537,7 +12562,7 @@ mod desktop {
                 .map_err(BackendError::local)
             }
 
-            #[cfg(not(target_os = "android"))]
+            #[cfg(not(mobile))]
             {
                 let body = json!({ "endpoint_hints": endpoint_hints });
                 let path = format!(
@@ -12557,7 +12582,7 @@ mod desktop {
             peer_device_id: &str,
             challenge: &Value,
         ) -> Result<Value, BackendError> {
-            #[cfg(target_os = "android")]
+            #[cfg(mobile)]
             {
                 return crate::mobile_backend::mobile_sign_transport_handshake(
                     self.app.clone(),
@@ -12567,7 +12592,7 @@ mod desktop {
                 .map_err(BackendError::local);
             }
 
-            #[cfg(not(target_os = "android"))]
+            #[cfg(not(mobile))]
             {
                 let body = json!({
                     "peer_device_id": peer_device_id,
@@ -12578,7 +12603,7 @@ mod desktop {
         }
 
         fn temp_artifact_root(&self) -> Result<PathBuf, String> {
-            #[cfg(target_os = "android")]
+            #[cfg(mobile)]
             {
                 if let Ok(path) = self.app.path().app_cache_dir() {
                     return Ok(path);
@@ -12587,11 +12612,11 @@ mod desktop {
                     return Ok(path);
                 }
                 return Err(
-                    "Could not resolve Android sync transport artifact temp directory.".to_string(),
+                    "Could not resolve mobile sync transport artifact temp directory.".to_string(),
                 );
             }
 
-            #[cfg(not(target_os = "android"))]
+            #[cfg(not(mobile))]
             {
                 let mut cached = self
                     .sync_transport_temp_root
@@ -12610,13 +12635,13 @@ mod desktop {
             }
         }
 
-        #[cfg(not(target_os = "android"))]
+        #[cfg(not(mobile))]
         fn get_json<T: for<'de> Deserialize<'de>>(&self, path: &str) -> Result<T, BackendError> {
             let value = self.request_json_value("GET", path, None)?;
             serde_json::from_value(value).map_err(|error| BackendError::local(error.to_string()))
         }
 
-        #[cfg(not(target_os = "android"))]
+        #[cfg(not(mobile))]
         fn get_json_with_timeout<T: for<'de> Deserialize<'de>>(
             &self,
             path: &str,
@@ -12627,7 +12652,7 @@ mod desktop {
         }
 
         fn get_json_value(&self, path: &str) -> Result<Value, BackendError> {
-            #[cfg(target_os = "android")]
+            #[cfg(mobile)]
             {
                 if path == "/api/v1/sync/metadata" {
                     return crate::mobile_backend::mobile_sync_transport_metadata_value(
@@ -12662,16 +12687,16 @@ mod desktop {
                     });
                 }
                 return Err(BackendError::local(format!(
-                    "Android mobile backend does not implement GET {path}."
+                    "Mobile embedded backend does not implement GET {path}."
                 )));
             }
 
-            #[cfg(not(target_os = "android"))]
+            #[cfg(not(mobile))]
             self.request_json_value("GET", path, None)
         }
 
         fn get_project_manifest_json_value(&self, project_id: &str) -> Result<Value, BackendError> {
-            #[cfg(target_os = "android")]
+            #[cfg(mobile)]
             {
                 return crate::mobile_backend::mobile_sync_transport_project_manifest_value(
                     self.app.clone(),
@@ -12680,7 +12705,7 @@ mod desktop {
                 .map_err(BackendError::local);
             }
 
-            #[cfg(not(target_os = "android"))]
+            #[cfg(not(mobile))]
             {
                 let path = format!(
                     "/api/v1/sync/projects/{}/manifest",
@@ -12696,7 +12721,7 @@ mod desktop {
         }
 
         fn post_json_value(&self, path: &str, body: &Value) -> Result<Value, BackendError> {
-            #[cfg(target_os = "android")]
+            #[cfg(mobile)]
             {
                 return match path {
                     "/api/v1/sync/artifacts/staging" => {
@@ -12712,13 +12737,13 @@ mod desktop {
                         )
                     }
                     _ => Err(format!(
-                        "Android mobile backend does not implement POST {path}."
+                        "Mobile embedded backend does not implement POST {path}."
                     )),
                 }
                 .map_err(BackendError::local);
             }
 
-            #[cfg(not(target_os = "android"))]
+            #[cfg(not(mobile))]
             self.request_json_value("POST", path, Some(body))
         }
 
@@ -12727,7 +12752,7 @@ mod desktop {
             body: Value,
             compact_staged_references: Vec<CompactStagedReference>,
         ) -> Result<Value, BackendError> {
-            #[cfg(target_os = "android")]
+            #[cfg(mobile)]
             {
                 return crate::mobile_backend::mobile_sync_transport_reconciliation_apply_value(
                     self.app.clone(),
@@ -12737,7 +12762,7 @@ mod desktop {
                 .map_err(BackendError::local);
             }
 
-            #[cfg(not(target_os = "android"))]
+            #[cfg(not(mobile))]
             {
                 let _ = compact_staged_references;
                 self.request_json_value("POST", "/api/v1/sync/reconciliation/apply", Some(&body))
@@ -12745,15 +12770,15 @@ mod desktop {
         }
 
         fn post_manifest_batch_json_value(&self, body: &Value) -> Result<Value, BackendError> {
-            #[cfg(target_os = "android")]
+            #[cfg(mobile)]
             {
                 Err(BackendError::local(
-                    "Android mobile backend does not implement POST /api/v1/sync/projects/manifests."
+                    "Mobile embedded backend does not implement POST /api/v1/sync/projects/manifests."
                         .to_string(),
                 ))
             }
 
-            #[cfg(not(target_os = "android"))]
+            #[cfg(not(mobile))]
             self.request_json_value_with_timeout(
                 "POST",
                 "/api/v1/sync/projects/manifests",
@@ -12766,20 +12791,20 @@ mod desktop {
             if matches!(error.status, Some(404 | 405)) {
                 return true;
             }
-            #[cfg(target_os = "android")]
+            #[cfg(mobile)]
             {
                 error.status.is_none()
                     && error
                         .message
                         .contains("does not implement POST /api/v1/sync/projects/manifests")
             }
-            #[cfg(not(target_os = "android"))]
+            #[cfg(not(mobile))]
             {
                 false
             }
         }
 
-        #[cfg(not(target_os = "android"))]
+        #[cfg(not(mobile))]
         fn request_json_value(
             &self,
             method: &str,
@@ -12789,7 +12814,7 @@ mod desktop {
             self.request_json_value_with_timeout(method, path, body, HTTP_TIMEOUT)
         }
 
-        #[cfg(not(target_os = "android"))]
+        #[cfg(not(mobile))]
         fn request_json_value_with_timeout(
             &self,
             method: &str,
@@ -12814,7 +12839,7 @@ mod desktop {
             &self,
             artifacts: &[RemoteArtifact],
         ) -> Result<ArtifactFileResolveResult, BackendError> {
-            #[cfg(target_os = "android")]
+            #[cfg(mobile)]
             {
                 let mut files = HashMap::new();
                 for artifact in artifacts {
@@ -12840,7 +12865,7 @@ mod desktop {
                 });
             }
 
-            #[cfg(not(target_os = "android"))]
+            #[cfg(not(mobile))]
             {
                 let artifact_ids: Vec<_> = artifacts
                     .iter()
@@ -12853,7 +12878,7 @@ mod desktop {
             }
         }
 
-        #[cfg(not(target_os = "android"))]
+        #[cfg(not(mobile))]
         fn request_body_with_timeout(
             &self,
             method: &str,
@@ -12927,7 +12952,7 @@ mod desktop {
             })
         }
 
-        #[cfg(not(target_os = "android"))]
+        #[cfg(not(mobile))]
         fn connect_with_timeout(&self, timeout: Duration) -> Result<TcpStream, BackendError> {
             let host = self
                 .host
@@ -12960,7 +12985,7 @@ mod desktop {
         }
     }
 
-    #[cfg(not(target_os = "android"))]
+    #[cfg(not(mobile))]
     fn backend_http_io_error(error: io::Error, timeout: Duration) -> BackendError {
         if matches!(
             error.kind(),
@@ -13342,6 +13367,16 @@ mod desktop {
                 resolved,
                 PathBuf::from("platform-data").join("sync-transport")
             );
+        }
+
+        #[test]
+        fn sync_transport_data_dir_propagates_platform_fallback_failure() {
+            let error = resolve_sync_transport_data_dir(None, None, || {
+                Err("app data directory unavailable".to_string())
+            })
+            .expect_err("missing app-private root must fail closed");
+
+            assert_eq!(error, "app data directory unavailable");
         }
 
         #[test]
@@ -15312,6 +15347,19 @@ mod desktop {
                     attempted_transports: vec![TCP_TRANSPORT_ID.to_string()],
                 }
             );
+
+            let iroh_only_hints = vec![format!(
+                "{IROH_ENDPOINT_SCHEME}iroh_peer?device_id=dev_peer&v=1&addr=127.0.0.1%3A47620"
+            )];
+            let error = select_sync_transport(
+                Some(TCP_TRANSPORT_ID),
+                None,
+                &iroh_only_hints,
+                &request.peer_device_id,
+                true,
+            )
+            .expect_err("explicit TCP must reject an Iroh-only peer");
+            assert!(error.contains("does not have a TuneForge TCP endpoint hint"));
         }
 
         #[test]

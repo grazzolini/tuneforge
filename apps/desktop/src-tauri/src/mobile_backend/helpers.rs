@@ -934,7 +934,7 @@ fn validate_remote_tombstone_identity(
     Err("Remote delete tombstone author_device_id is not an active trusted peer.".to_string())
 }
 
-#[cfg(any(test, target_os = "android"))]
+#[cfg(any(test, mobile))]
 fn validate_transport_trusted_peer(
     trusted_peer: Option<&SyncTrustedPeerSchema>,
     local_sync_group_id: &str,
@@ -950,7 +950,7 @@ fn validate_transport_trusted_peer(
     Ok(())
 }
 
-#[cfg(any(test, target_os = "android"))]
+#[cfg(any(test, mobile))]
 fn canonical_transport_handshake_challenge(
     challenge: &Value,
     local_device_id: &str,
@@ -1027,14 +1027,14 @@ fn canonical_transport_handshake_challenge(
     Ok(canonical)
 }
 
-#[cfg(any(test, target_os = "android"))]
+#[cfg(any(test, mobile))]
 fn transport_handshake_challenge_json(
     challenge: &std::collections::BTreeMap<String, Value>,
 ) -> Result<String, String> {
     serde_json::to_string(challenge).map_err(|error| error.to_string())
 }
 
-#[cfg(any(test, target_os = "android"))]
+#[cfg(any(test, mobile))]
 fn transport_handshake_proof_value(
     local_device_id: &str,
     peer_device_id: &str,
@@ -1057,7 +1057,7 @@ fn transport_handshake_proof_value(
     })
 }
 
-#[cfg(any(test, target_os = "android"))]
+#[cfg(any(test, mobile))]
 fn transport_challenge_string<'a>(
     challenge: &'a Value,
     field: &str,
@@ -1077,7 +1077,7 @@ fn transport_challenge_string<'a>(
     Ok(value)
 }
 
-#[cfg(any(test, target_os = "android"))]
+#[cfg(any(test, mobile))]
 fn transport_challenge_datetime(
     challenge: &Value,
     field: &str,
@@ -1091,7 +1091,7 @@ fn transport_challenge_datetime(
         .map_err(|_| format!("Transport handshake {field} must be an ISO-8601 timestamp."))
 }
 
-#[cfg(any(test, target_os = "android"))]
+#[cfg(any(test, mobile))]
 fn validate_transport_challenge_window(
     issued_at: chrono::DateTime<chrono::Utc>,
     expires_at: chrono::DateTime<chrono::Utc>,
@@ -1112,7 +1112,7 @@ fn validate_transport_challenge_window(
     Ok(())
 }
 
-#[cfg(any(test, target_os = "android"))]
+#[cfg(any(test, mobile))]
 fn transport_handshake_iso(value: chrono::DateTime<chrono::Utc>) -> String {
     let micros = value.timestamp_subsec_micros();
     if micros == 0 {
@@ -2118,6 +2118,304 @@ mod mobile_backend_tests {
                 ],
             )
             .unwrap();
+    }
+
+    #[cfg(not(target_os = "android"))]
+    fn insert_mobile_relocation_artifact(
+        connection: &Connection,
+        project_id: &str,
+        artifact_id: &str,
+        path: &std::path::Path,
+        bytes: &[u8],
+    ) -> (String, i64) {
+        let (sha256, size_bytes) = write_mobile_contract_file(path, bytes);
+        insert_mobile_contract_artifact(
+            connection,
+            MobileContractArtifact {
+                artifact_id,
+                project_id,
+                artifact_type: "source_audio",
+                format: "wav",
+                path,
+                content_sha256: &sha256,
+                size_bytes,
+                generated_by: "sync",
+                can_delete: false,
+                can_regenerate: false,
+                cache_key: None,
+                metadata: json!({"fixture": true}),
+            },
+        );
+        (sha256, size_bytes)
+    }
+
+    #[cfg(not(target_os = "android"))]
+    #[test]
+    fn mobile_ios_container_relocation_preserves_registered_state() {
+        let old_root = mobile_storage_contract_root("ios-relocation-old");
+        let connection = storage::db_at_root(&old_root).unwrap();
+        let bytes = b"verified iOS relocation bytes";
+        let source_sha256 = storage::hex_digest(&Sha256::digest(bytes));
+        let project_id = source_hash_to_project_id(&source_sha256).unwrap();
+        let old_path = storage::project_root_path(&old_root, &project_id)
+            .unwrap()
+            .join("source/source.wav");
+        insert_mobile_contract_project(&connection, &project_id, &source_sha256, &old_path);
+        insert_mobile_relocation_artifact(
+            &connection,
+            &project_id,
+            "art_ios_relocation",
+            &old_path,
+            bytes,
+        );
+        let mut project_before =
+            serde_json::to_value(storage::get_project_schema(&connection, &project_id).unwrap())
+                .unwrap();
+        project_before.as_object_mut().unwrap().remove("source_path");
+        project_before.as_object_mut().unwrap().remove("imported_path");
+        drop(connection);
+
+        let new_root = mobile_storage_contract_root("ios-relocation-new");
+        std::fs::remove_dir_all(&new_root).unwrap();
+        std::fs::rename(&old_root, &new_root).unwrap();
+        let connection = Connection::open(new_root.join("mobile.sqlite3")).unwrap();
+        storage::relocate_ios_paths(&connection, &new_root).unwrap();
+
+        let artifact = connection
+            .query_row(
+                &format!("SELECT {ARTIFACT_COLUMNS} FROM artifacts WHERE id = 'art_ios_relocation'"),
+                [],
+                storage::row_artifact,
+            )
+            .unwrap();
+        let expected_path = storage::project_root_path(&new_root, &project_id)
+            .unwrap()
+            .join("source/source.wav");
+        assert_eq!(artifact.path, expected_path.to_string_lossy());
+        assert_eq!(std::fs::read(&artifact.path).unwrap(), bytes);
+        let mut project_after =
+            serde_json::to_value(storage::get_project_schema(&connection, &project_id).unwrap())
+                .unwrap();
+        assert_eq!(project_after["source_path"], artifact.path);
+        assert_eq!(project_after["imported_path"], artifact.path);
+        project_after.as_object_mut().unwrap().remove("source_path");
+        project_after.as_object_mut().unwrap().remove("imported_path");
+        assert_eq!(project_after, project_before);
+        drop(connection);
+        let _ = std::fs::remove_dir_all(new_root);
+    }
+
+    #[cfg(not(target_os = "android"))]
+    #[test]
+    fn mobile_ios_container_relocation_is_fail_closed_and_transactional() {
+        let old_root = mobile_storage_contract_root("ios-relocation-rollback-old");
+        let connection = storage::db_at_root(&old_root).unwrap();
+        let source_bytes = b"source bytes";
+        let source_sha256 = storage::hex_digest(&Sha256::digest(source_bytes));
+        let project_id = source_hash_to_project_id(&source_sha256).unwrap();
+        let project_root = storage::project_root_path(&old_root, &project_id).unwrap();
+        let source_path = project_root.join("source/source.wav");
+        let corrupt_path = project_root.join("stems/corrupt.wav");
+        insert_mobile_contract_project(&connection, &project_id, &source_sha256, &source_path);
+        insert_mobile_relocation_artifact(
+            &connection,
+            &project_id,
+            "art_ios_source",
+            &source_path,
+            source_bytes,
+        );
+        insert_mobile_relocation_artifact(
+            &connection,
+            &project_id,
+            "art_ios_corrupt",
+            &corrupt_path,
+            b"expected stem bytes",
+        );
+        drop(connection);
+
+        let new_root = mobile_storage_contract_root("ios-relocation-rollback-new");
+        std::fs::remove_dir_all(&new_root).unwrap();
+        std::fs::rename(&old_root, &new_root).unwrap();
+        std::fs::write(
+            storage::project_root_path(&new_root, &project_id)
+                .unwrap()
+                .join("stems/corrupt.wav"),
+            b"corrupt",
+        )
+        .unwrap();
+        let connection = Connection::open(new_root.join("mobile.sqlite3")).unwrap();
+        assert!(storage::relocate_ios_paths(&connection, &new_root).is_err());
+        let paths = connection
+            .prepare("SELECT path FROM artifacts ORDER BY id")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(paths, vec![corrupt_path.to_string_lossy(), source_path.to_string_lossy()]);
+        drop(connection);
+        let _ = std::fs::remove_dir_all(new_root);
+    }
+
+    #[cfg(all(not(target_os = "android"), unix))]
+    #[test]
+    fn mobile_ios_container_relocation_rejects_off_root_symlink_without_side_effects() {
+        let old_root = mobile_storage_contract_root("ios-relocation-symlink-old");
+        let connection = storage::db_at_root(&old_root).unwrap();
+        let bytes = b"registered artifact bytes";
+        let source_sha256 = storage::hex_digest(&Sha256::digest(bytes));
+        let project_id = source_hash_to_project_id(&source_sha256).unwrap();
+        let old_path = storage::project_root_path(&old_root, &project_id)
+            .unwrap()
+            .join("source/source.wav");
+        insert_mobile_contract_project(&connection, &project_id, &source_sha256, &old_path);
+        insert_mobile_relocation_artifact(
+            &connection,
+            &project_id,
+            "art_ios_symlink",
+            &old_path,
+            bytes,
+        );
+        drop(connection);
+
+        let new_root = mobile_storage_contract_root("ios-relocation-symlink-new");
+        std::fs::remove_dir_all(&new_root).unwrap();
+        std::fs::rename(&old_root, &new_root).unwrap();
+        let new_path = storage::project_root_path(&new_root, &project_id)
+            .unwrap()
+            .join("source/source.wav");
+        std::fs::remove_file(&new_path).unwrap();
+        let outside = new_root.with_extension("outside.wav");
+        let _ = std::fs::remove_file(&outside);
+        std::fs::write(&outside, bytes).unwrap();
+        std::os::unix::fs::symlink(&outside, &new_path).unwrap();
+
+        let connection = Connection::open(new_root.join("mobile.sqlite3")).unwrap();
+        assert_eq!(
+            storage::relocate_ios_paths(&connection, &new_root).unwrap_err(),
+            "Relocated iOS artifact is not a regular file."
+        );
+        assert!(std::fs::symlink_metadata(&new_path)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        std::fs::remove_file(&new_path).unwrap();
+        std::fs::remove_dir(new_path.parent().unwrap()).unwrap();
+        let outside_dir = new_root.with_extension("outside-dir");
+        let _ = std::fs::remove_dir_all(&outside_dir);
+        std::fs::create_dir(&outside_dir).unwrap();
+        std::fs::write(outside_dir.join("source.wav"), b"wrong bytes").unwrap();
+        std::os::unix::fs::symlink(&outside_dir, new_path.parent().unwrap()).unwrap();
+        assert_eq!(
+            storage::relocate_ios_paths(&connection, &new_root).unwrap_err(),
+            "Mobile project directory is not safe."
+        );
+        let stored: String = connection
+            .query_row(
+                "SELECT path FROM artifacts WHERE id = 'art_ios_symlink'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored, old_path.to_string_lossy());
+        assert!(std::fs::symlink_metadata(new_path.parent().unwrap())
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(std::fs::read(&outside).unwrap(), bytes);
+        assert_eq!(std::fs::read(outside_dir.join("source.wav")).unwrap(), b"wrong bytes");
+        drop(connection);
+        let _ = std::fs::remove_dir_all(new_root);
+        let _ = std::fs::remove_file(outside);
+        let _ = std::fs::remove_dir_all(outside_dir);
+    }
+
+    #[cfg(not(target_os = "android"))]
+    #[test]
+    fn mobile_ios_container_relocation_skips_paths_that_must_not_move() {
+        let root = mobile_storage_contract_root("ios-relocation-skips");
+        let connection = storage::db_at_root(&root).unwrap();
+        let current_sha256 = "c".repeat(64);
+        let current_project_id = source_hash_to_project_id(&current_sha256).unwrap();
+        let current_missing = storage::project_root_path(&root, &current_project_id)
+            .unwrap()
+            .join("source/missing.wav");
+        insert_mobile_contract_project(
+            &connection,
+            &current_project_id,
+            &current_sha256,
+            &current_missing,
+        );
+        insert_mobile_contract_artifact(
+            &connection,
+            MobileContractArtifact {
+                artifact_id: "art_ios_current_missing",
+                project_id: &current_project_id,
+                artifact_type: "source_audio",
+                format: "wav",
+                path: &current_missing,
+                content_sha256: &current_sha256,
+                size_bytes: 1,
+                generated_by: "sync",
+                can_delete: false,
+                can_regenerate: false,
+                cache_key: None,
+                metadata: json!({}),
+            },
+        );
+
+        let placeholder_id = source_hash_to_project_id(&"d".repeat(64)).unwrap();
+        connection
+            .execute(
+                "INSERT INTO projects (id, display_name, source_path, imported_path, sync_status, created_at, updated_at) VALUES (?1, 'Placeholder', '', '', 'remote_available', ?2, ?2)",
+                params![placeholder_id, "2026-05-22T12:00:00.000Z"],
+            )
+            .unwrap();
+        let deleted_sha256 = "e".repeat(64);
+        let deleted_project_id = source_hash_to_project_id(&deleted_sha256).unwrap();
+        let deleted_path = std::path::PathBuf::from(format!(
+            "/old/container/projects/{deleted_project_id}/source/deleted.wav"
+        ));
+        insert_mobile_contract_project(
+            &connection,
+            &deleted_project_id,
+            &deleted_sha256,
+            &deleted_path,
+        );
+        connection
+            .execute(
+                "UPDATE projects SET sync_status = 'deleted' WHERE id = ?1",
+                params![deleted_project_id],
+            )
+            .unwrap();
+
+        storage::relocate_ios_paths(&connection, &root).unwrap();
+        let current_stored: String = connection
+            .query_row(
+                "SELECT path FROM artifacts WHERE id = 'art_ios_current_missing'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let placeholder_paths: (String, String) = connection
+            .query_row(
+                "SELECT source_path, imported_path FROM projects WHERE id = ?1",
+                params![placeholder_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        let deleted_stored: String = connection
+            .query_row(
+                "SELECT source_path FROM projects WHERE id = ?1",
+                params![deleted_project_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(current_stored, current_missing.to_string_lossy());
+        assert_eq!(placeholder_paths, (String::new(), String::new()));
+        assert_eq!(deleted_stored, deleted_path.to_string_lossy());
+        drop(connection);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[cfg(not(target_os = "android"))]

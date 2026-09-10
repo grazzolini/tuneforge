@@ -156,12 +156,23 @@ transfer, recovery, or conflict states rather than where the data originated.
 | Sync revisions | `entity_revisions` with revision identity, entity type, source artifact, content hash, state, author device, payload, metadata, and timestamps. | Reconcile by identity and content hash. Apply tombstones before accepting older revisions. | Healthy accepted revisions have no badge. `Missing` if referenced payload is absent. `Unreadable` if hash or schema validation fails. Conflicts use sync conflict state. |
 | Tombstones | `delete_tombstones` for deleted projects, artifacts, and entity revisions, with author, target, group/project context, and prior metadata. | Persist delete markers and suppress resurrected records from offline peers. | Deleted records stay deleted or hidden, not `Missing`. Invalid tombstones are `Unreadable`; accepted tombstones have no status badge. |
 
-## iOS Simulator Foundation
+## iOS Simulator
 
-The iOS target currently provides a simulator-only runtime foundation. It bundles the normal React
-frontend, reports iOS capabilities through Tauri IPC, and fails closed when the embedded API is not
-available. It never falls back to the desktop HTTP backend at `127.0.0.1:8765`. Project persistence,
-LAN sync, and playback are not available in this foundation.
+The iOS target currently provides a simulator-only runtime. It bundles the normal React frontend,
+reports iOS capabilities through Tauri IPC, and fails closed when the embedded API is not available.
+It never falls back to the desktop HTTP backend at `127.0.0.1:8765`.
+
+iOS stores synced projects and their artifacts in its Tauri app-private data directory. Activity
+supports manual pairing and TCP sync with a trusted desktop peer; it does not start Iroh or nearby
+device discovery. Library shows synced project metadata. Import, processing, rich project readers,
+playback, evidence export, and QR pairing remain unavailable. Local-network permission copy comes
+from the source `Info.ios.plist`; no Bonjour or
+multicast entitlement is required for manual TCP endpoints.
+
+For same-Mac simulator validation, start only the desktop listener, pair the simulator, then initiate
+Sync Now from iOS. The simulator shares the host network, so simultaneous desktop and simulator
+listeners need separate ports. Physical devices use separate network stacks, and Sync Now keeps its
+normal bidirectional semantics.
 
 The debug startup smoke verifies an in-memory SQLite query, synthetic WAV decode, Signalsmith
 construction and processing, and CPAL/CoreAudio output initialization. The app uses the isolated

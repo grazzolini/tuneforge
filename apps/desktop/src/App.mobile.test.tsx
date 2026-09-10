@@ -1,6 +1,6 @@
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LyricsResponse } from "./lib/api";
 import { markPlaybackStarting } from "./lib/playbackDiagnostics";
 import { updateBrowserWakeLockStatus } from "./lib/powerInhibition";
@@ -9,14 +9,22 @@ import {
   markAudioReady,
   mockCreateStems,
   mockGetChords,
+  mockGetProject,
   mockGetLyrics,
+  mockInvoke,
+  mockListArtifacts,
   mockGetMobileCapabilities,
+  mockStartSyncListener,
   resetAppTestHarness,
   renderApp,
   setProjectAnalysis,
   setProjectChords,
   setProjectLyrics,
 } from "./test/appTestHarness";
+
+const originalUserAgent = navigator.userAgent;
+const originalPlatform = navigator.platform;
+const originalMaxTouchPoints = navigator.maxTouchPoints;
 
 function enableAndroidRuntime() {
   mockGetMobileCapabilities.mockResolvedValue({
@@ -29,6 +37,38 @@ function enableAndroidRuntime() {
     whisperAvailable: false,
     stemSeparationAvailable: false,
     generationTestingAvailable: true,
+    maxRecommendedModel: null,
+    cpuFallbackAllowed: false,
+  });
+}
+
+function setIOSUserAgent() {
+  Object.defineProperty(window.navigator, "userAgent", {
+    configurable: true,
+    value: "Mozilla/5.0 (iPhone; CPU iPhone OS 26_5 like Mac OS X)",
+  });
+}
+
+function setIPadDesktopUserAgent() {
+  Object.defineProperties(window.navigator, {
+    userAgent: { configurable: true, value: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)" },
+    platform: { configurable: true, value: "MacIntel" },
+    maxTouchPoints: { configurable: true, value: 5 },
+  });
+}
+
+function enableIOSRuntime() {
+  setIOSUserAgent();
+  mockGetMobileCapabilities.mockResolvedValue({
+    platform: "ios",
+    mediaBackend: "cpal_coreaudio",
+    isEmulator: true,
+    gpuBackend: null,
+    analysisAvailable: false,
+    basicChordsAvailable: false,
+    whisperAvailable: false,
+    stemSeparationAvailable: false,
+    generationTestingAvailable: false,
     maxRecommendedModel: null,
     cpuFallbackAllowed: false,
   });
@@ -107,6 +147,104 @@ function setTempoAnalysis(tempoBpm = 120) {
 
 describe("Desktop app mobile capability gates", () => {
   beforeEach(resetAppTestHarness);
+  afterEach(() => {
+    Object.defineProperties(window.navigator, {
+      userAgent: { configurable: true, value: originalUserAgent },
+      platform: { configurable: true, value: originalPlatform },
+      maxTouchPoints: { configurable: true, value: originalMaxTouchPoints },
+    });
+  });
+
+  it("keeps the iOS library sync-directed", async () => {
+    enableIOSRuntime();
+    renderApp(["/"]);
+
+    expect(await screen.findByRole("heading", { name: "Practice Projects" })).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Import Track(s)" })).not.toBeInTheDocument(),
+    );
+    expect(screen.queryByRole("link", { name: "Open Demo Song project" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Show file details")).not.toBeInTheDocument();
+  });
+
+  it.each(["pending", "failed"])("keeps the iOS library closed when capabilities are %s", async (state) => {
+    setIOSUserAgent();
+    if (state === "pending") mockGetMobileCapabilities.mockReturnValue(new Promise(() => {}));
+    else mockGetMobileCapabilities.mockRejectedValue(new Error("capabilities unavailable"));
+    renderApp(["/"]);
+
+    expect(await screen.findByRole("heading", { name: "Practice Projects" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Open Demo Song project" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Show file details")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Import Track(s)" })).not.toBeInTheDocument();
+  });
+
+  it("gates iOS project routes before the full project model mounts", async () => {
+    enableIOSRuntime();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Project playback unavailable" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Back to Library" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Processing" })).not.toBeInTheDocument();
+    expect(mockGetProject).not.toHaveBeenCalled();
+    expect(mockListArtifacts).not.toHaveBeenCalled();
+    expect(mockInvoke).not.toHaveBeenCalledWith("audio_prepare_session", expect.anything());
+  });
+
+  it("fails a project route closed when runtime capabilities fail", async () => {
+    setIPadDesktopUserAgent();
+    mockGetMobileCapabilities.mockRejectedValue(new Error("capabilities unavailable"));
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not verify project support");
+    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+    expect(mockGetProject).not.toHaveBeenCalled();
+    expect(mockListArtifacts).not.toHaveBeenCalled();
+    expect(mockInvoke).not.toHaveBeenCalledWith("audio_prepare_session", expect.anything());
+  });
+
+  it("keeps an iOS project route closed while runtime capabilities are pending", () => {
+    setIOSUserAgent();
+    mockGetMobileCapabilities.mockReturnValue(new Promise(() => {}));
+    renderApp(["/projects/proj_123"]);
+
+    expect(screen.getByRole("status")).toHaveTextContent("Loading project runtime");
+    expect(mockGetProject).not.toHaveBeenCalled();
+    expect(mockListArtifacts).not.toHaveBeenCalled();
+    expect(mockInvoke).not.toHaveBeenCalledWith("audio_prepare_session", expect.anything());
+  });
+
+  it("shows only manual sync controls in iOS Activity", async () => {
+    enableIOSRuntime();
+    renderApp(["/activity"]);
+
+    expect(await screen.findByRole("heading", { name: "Sync" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Answer Offer" })).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Jobs" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Create Pairing Offer" })).toBeDisabled();
+    expect(screen.queryByRole("heading", { name: "Nearby Devices" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Copy Evidence" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Export Evidence" })).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Local Readiness" })).toBeInTheDocument();
+  });
+
+  it("keeps iOS pairing available when the listener cannot start", async () => {
+    const user = userEvent.setup();
+    enableIOSRuntime();
+    mockStartSyncListener.mockRejectedValueOnce(new Error("raw native listener detail"));
+    renderApp(["/activity"]);
+
+    const startListener = await screen.findByRole("button", { name: "Start Listener" });
+    await user.click(startListener);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Sync listener could not start. Pairing with a listening peer and Sync Now remain available.",
+    );
+    expect(startListener).toBeEnabled();
+    expect(screen.getByLabelText("Peer pairing code")).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Answer Offer" })).toBeInTheDocument();
+    expect(screen.queryByText("raw native listener detail")).not.toBeInTheDocument();
+  });
 
   it("disables generation actions when mobile acceleration is unavailable", async () => {
     mockGetMobileCapabilities.mockResolvedValue({

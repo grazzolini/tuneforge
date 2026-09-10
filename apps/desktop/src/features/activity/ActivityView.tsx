@@ -1,5 +1,5 @@
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
-import { useInfiniteQuery, useMutation, useQueries, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Activity, Layers, Mic, RefreshCw } from "lucide-react";
 import { Link } from "react-router-dom";
 import { confirm } from "@tauri-apps/plugin-dialog";
@@ -384,7 +384,7 @@ function JobRow({
 }
 
 export function ActivityView() {
-  const [activeTab, setActiveTab] = useState<ActivityTab>("jobs");
+  const [selectedTab, setActiveTab] = useState<ActivityTab>("jobs");
   const [searchDraft, setSearchDraft] = useState("");
   const [bulkJobResult, setBulkJobResult] = useState<{
     action: BulkJobAction;
@@ -397,6 +397,15 @@ export function ActivityView() {
   const { defaultDurableAudioFormat, defaultStemModel } = usePreferences();
   const { beatBackendForAction } = useBeatBackendActionSelection();
   const { chordBackendForAction } = useChordBackendActionSelection();
+  const mobileCapabilitiesQuery = useQuery({
+    queryKey: ["runtime", "mobile-capabilities"],
+    queryFn: () => api.getMobileCapabilities(),
+  });
+  const isIOSHost = /\b(iPhone|iPad|iPod)\b/i.test(navigator.userAgent)
+    || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  const isIOSRuntime = mobileCapabilitiesQuery.data?.platform === "ios";
+  const activeTab = isIOSRuntime ? "sync" : selectedTab;
+  const jobsEnabled = (!isIOSHost || mobileCapabilitiesQuery.isSuccess) && !isIOSRuntime;
   const activeJobsQueryKey = useMemo(
     () => [...ACTIVE_JOBS_QUERY_KEY, deferredSearch] as const,
     [deferredSearch],
@@ -406,6 +415,7 @@ export function ActivityView() {
     [deferredSearch],
   );
   const activeJobsQuery = useInfiniteQuery({
+    enabled: jobsEnabled,
     queryKey: activeJobsQueryKey,
     initialPageParam: 0,
     queryFn: async ({ pageParam }) => {
@@ -432,6 +442,7 @@ export function ActivityView() {
     isSuccess: isActiveJobsSuccess,
   } = activeJobsQuery;
   const terminalJobsQuery = useInfiniteQuery({
+    enabled: jobsEnabled,
     queryKey: terminalJobsQueryKey,
     initialPageParam: 0,
     queryFn: async ({ pageParam }) => {
@@ -624,18 +635,32 @@ export function ActivityView() {
     bulkJobsMutation.mutate({ ...action, durableFormat });
   }
 
+  if (isIOSHost && mobileCapabilitiesQuery.isPending) {
+    return <div className="panel" role="status">Loading Activity...</div>;
+  }
+  if (isIOSHost && mobileCapabilitiesQuery.isError) {
+    return (
+      <div className="panel panel--error" role="alert">
+        Could not verify Activity support.
+        <button onClick={() => void mobileCapabilitiesQuery.refetch()} type="button">Retry</button>
+      </div>
+    );
+  }
+
   return (
     <section className="screen activity-screen">
       <div className="screen__header">
         <div className="screen__title-block">
           <p className="eyebrow">Activity</p>
           <h1>Activity</h1>
-          <p className="screen__subtitle">Review local processing and sync lab activity.</p>
+          <p className="screen__subtitle">
+            {isIOSRuntime ? "Pair with a trusted desktop and sync projects." : "Review local processing and sync lab activity."}
+          </p>
         </div>
       </div>
 
       <div className="project-workspace-tabs" role="tablist" aria-label="Activity">
-        {ACTIVITY_TABS.map((tab) => (
+        {ACTIVITY_TABS.filter((tab) => !isIOSRuntime || tab.id === "sync").map((tab) => (
           <button
             aria-controls={`activity-${tab.id}-panel`}
             aria-selected={activeTab === tab.id}

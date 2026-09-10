@@ -60,11 +60,13 @@ pub use manifests::{
 pub use reconciliation::{mobile_apply_sync_reconciliation, mobile_plan_sync_reconciliation};
 pub use storage::{
     mobile_cancel_job, mobile_delete_artifact, mobile_delete_project, mobile_get_health,
-    mobile_get_job, mobile_get_project, mobile_get_sync_staged_artifact, mobile_import_project,
-    mobile_list_artifacts, mobile_list_jobs, mobile_list_projects,
+    mobile_get_job, mobile_get_project, mobile_get_sync_staged_artifact, mobile_list_artifacts,
+    mobile_list_jobs, mobile_list_projects,
     mobile_register_sync_staged_reference, mobile_stage_sync_artifact,
     mobile_sync_transport_artifact_file, mobile_update_project,
 };
+#[cfg(target_os = "android")]
+pub use storage::mobile_import_project;
 pub use transport_bridge::{
     mobile_sync_transport_create_pairing_offer_value, mobile_sync_transport_local_identity_value,
     mobile_sync_transport_metadata_value, mobile_sync_transport_project_manifest_value,

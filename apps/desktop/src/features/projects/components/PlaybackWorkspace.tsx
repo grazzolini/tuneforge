@@ -17,6 +17,7 @@ export function PlaybackWorkspace({
     handleResetPlaybackTempo,
     handleTogglePlaybackLoop,
     isMobileRuntime,
+    isIOSRuntime,
     isPlaying,
     loopRange,
     loopStatusMessage,
@@ -36,7 +37,7 @@ export function PlaybackWorkspace({
   return (
     <div className={`playback-workspace playback-workspace--practice${isPlaying ? " playback-workspace--focus" : ""}`}>
       {!isMobileRuntime ? <PlaybackPracticeRail /> : null}
-      <PlaybackPracticeSurface />
+      {!isIOSRuntime ? <PlaybackPracticeSurface /> : null}
       <div className="panel playback-transport-dock" ref={playbackTransportRef}>
         <PlaybackTransport
           compact

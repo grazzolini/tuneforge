@@ -59,6 +59,7 @@ export const PlaybackPracticeRail = forwardRef<
     informationDensity,
     hasActiveStemControls,
     isMobileRuntime,
+    isIOSRuntime,
     isStemPlayback,
     lowerCapoPreview,
     lowerCapoShiftOptions,
@@ -243,15 +244,15 @@ export const PlaybackPracticeRail = forwardRef<
         className="playback-practice-rail__focus-icons"
         tabIndex={0}
       >
-        <span title="Transpose / Capo">
+        {!isIOSRuntime ? <span title="Transpose / Capo">
           <ArrowUpDown aria-hidden="true" />
-        </span>
-        <span title="Pre-count">
+        </span> : null}
+        {!isIOSRuntime ? <span title="Pre-count">
           <Drumstick aria-hidden="true" />
-        </span>
-        <span title="Tempo">
+        </span> : null}
+        {!isIOSRuntime ? <span title="Tempo">
           <Gauge aria-hidden="true" />
-        </span>
+        </span> : null}
         <span title="Source and Mixes">
           <Layers aria-hidden="true" />
         </span>
@@ -278,6 +279,7 @@ export const PlaybackPracticeRail = forwardRef<
         ) : null}
       </div>
 
+      {!isIOSRuntime ? <>
       <section className="playback-capo-control">
         <TargetKeySelector
           currentKey={capoKey}
@@ -449,6 +451,7 @@ export const PlaybackPracticeRail = forwardRef<
         </div>
         <p className="artifact-meta playback-tempo-control__summary">{tempoSummary}</p>
       </section>
+      </> : null}
 
       <section className="playback-picker-group playback-picker-group--compact">
         <div className="playback-picker-group__header">
@@ -502,6 +505,7 @@ export const PlaybackPracticeRail = forwardRef<
               <button
                 aria-pressed={!isStemPlayback}
                 className={`chip${!isStemPlayback ? " chip--active" : ""}`}
+                disabled={!selectedPrimaryArtifact}
                 onClick={() => {
                   if (selectedPrimaryArtifact) {
                     handleSelectPrimaryArtifact(selectedPrimaryArtifact);

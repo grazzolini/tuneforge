@@ -173,6 +173,17 @@ function formatLyricsLanguageMetadata(lyrics: LyricsResponse | undefined) {
   return effectiveLabel ? `Language: ${effectiveLabel}` : null;
 }
 
+function iosPlaybackSource(artifact: ArtifactSchema) {
+  if (artifact.format.toLowerCase() === "wav") {
+    return { format: "wav", path: artifact.path };
+  }
+  const path = artifact.metadata?.playback_path;
+  const format = artifact.metadata?.playback_format;
+  return typeof path === "string" && typeof format === "string" && format.toLowerCase() === "wav"
+    ? { format: "wav", path }
+    : null;
+}
+
 function resolveDefaultPlaybackDisplayMode(
   defaultMode: DefaultPlaybackDisplayMode,
   hasLyricsTranscript: boolean,
@@ -392,6 +403,12 @@ export function useProjectViewModel() {
   const [chordsFollowEnabled, setChordsFollowEnabled] = useState(defaultChordsFollowEnabled);
   const showSupportingCopy = informationDensity !== "minimal";
 
+  const mobileCapabilitiesQuery = useQuery({
+    queryKey: ["runtime", "mobile-capabilities"],
+    queryFn: async () => api.getMobileCapabilities(),
+    staleTime: Infinity,
+  });
+  const isIOSRuntime = mobileCapabilitiesQuery.data?.platform === "ios";
   const projectQuery = useQuery({
     queryKey: ["project", projectId],
     queryFn: async () => (await api.getProject(projectId)).project,
@@ -402,22 +419,22 @@ export function useProjectViewModel() {
   const analysisQuery = useQuery({
     queryKey: ["analysis", projectId],
     queryFn: async () => (await api.getAnalysis(projectId)).analysis,
-    enabled: Boolean(projectId),
+    enabled: Boolean(projectId) && !isIOSRuntime,
   });
   const chordsQuery = useQuery({
     queryKey: ["chords", projectId],
     queryFn: async () => api.getChords(projectId),
-    enabled: Boolean(projectId),
+    enabled: Boolean(projectId) && !isIOSRuntime,
   });
   const lyricsQuery = useQuery({
     queryKey: ["lyrics", projectId],
     queryFn: async () => api.getLyrics(projectId),
-    enabled: Boolean(projectId),
+    enabled: Boolean(projectId) && !isIOSRuntime,
   });
   const sectionsQuery = useQuery({
     queryKey: ["sections", projectId],
     queryFn: async () => api.listSections(projectId),
-    enabled: Boolean(projectId),
+    enabled: Boolean(projectId) && !isIOSRuntime,
   });
   const artifactsQuery = useQuery({
     queryKey: ["artifacts", projectId],
@@ -434,7 +451,7 @@ export function useProjectViewModel() {
         limit: ACTIVE_PROJECT_JOBS_LIMIT,
         offset: pageParam,
       }),
-    enabled: Boolean(projectId),
+    enabled: Boolean(projectId) && !isIOSRuntime,
     getNextPageParam: getNextJobsPageOffset,
   });
   const terminalProjectJobsQuery = useInfiniteQuery({
@@ -447,13 +464,8 @@ export function useProjectViewModel() {
         limit: PROJECT_HISTORY_JOBS_PAGE_SIZE,
         offset: pageParam,
       }),
-    enabled: Boolean(projectId),
+    enabled: Boolean(projectId) && !isIOSRuntime,
     getNextPageParam: getNextJobsPageOffset,
-  });
-  const mobileCapabilitiesQuery = useQuery({
-    queryKey: ["mobile-capabilities"],
-    queryFn: async () => api.getMobileCapabilities(),
-    staleTime: Infinity,
   });
   const projectSyncSummary = useMemo(
     () => getProjectSyncSummary(projectQuery.data),
@@ -788,9 +800,11 @@ export function useProjectViewModel() {
   const primaryArtifacts = useMemo(
     () =>
       displayArtifacts.filter(
-        (artifact) => artifact.type === "preview_mix" || artifact.type === "source_audio",
+        (artifact) =>
+          (artifact.type === "preview_mix" || artifact.type === "source_audio")
+          && (!isIOSRuntime || iosPlaybackSource(artifact) !== null),
       ),
-    [displayArtifacts],
+    [displayArtifacts, isIOSRuntime],
   );
   const sourceArtifact = useMemo(
     () => primaryArtifacts.find((artifact) => artifact.type === "source_audio") ?? null,
@@ -802,10 +816,9 @@ export function useProjectViewModel() {
   );
   const stemArtifacts = useMemo(
     () =>
-      displayArtifacts.filter(
-        (artifact) => isStemArtifact(artifact),
-      ),
-    [displayArtifacts],
+      displayArtifacts.filter((artifact) =>
+        isStemArtifact(artifact) && (!isIOSRuntime || iosPlaybackSource(artifact) !== null)),
+    [displayArtifacts, isIOSRuntime],
   );
   const selectableArtifacts = useMemo(
     () => [...primaryArtifacts, ...stemArtifacts].filter((artifact) => isPlayableArtifact(artifact)),
@@ -816,20 +829,31 @@ export function useProjectViewModel() {
 
   const selectedArtifact =
     selectableArtifacts.find((artifact) => artifact.id === selectedArtifactId) ?? null;
-  const selectedPrimaryArtifact =
-    primaryArtifacts.find((artifact) => artifact.id === selectedPrimaryArtifactId) ??
-    artifactById(primaryArtifacts, sourceArtifactIdForStems(selectedArtifact)) ??
-    defaultPrimaryArtifact;
+  const selectedStemPrimaryArtifact = artifactById(
+    primaryArtifacts,
+    sourceArtifactIdForStems(selectedArtifact),
+  );
+  const selectedPrimaryArtifact = isIOSRuntime && isStemArtifact(selectedArtifact)
+    ? selectedStemPrimaryArtifact
+    : primaryArtifacts.find((artifact) => artifact.id === selectedPrimaryArtifactId) ??
+      selectedStemPrimaryArtifact ??
+      defaultPrimaryArtifact;
+  const visibleStemSourceArtifactId = sourceArtifactIdForStems(selectedArtifact)
+    ?? sourceArtifactIdForStems(stemArtifacts[0]);
   const visibleStemArtifacts = useMemo(
     () =>
       stemArtifacts.filter((artifact) => {
         const sourceArtifactId = artifact.metadata?.source_artifact_id;
         return (
-          typeof sourceArtifactId === "string" &&
-          sourceArtifactId === selectedPrimaryArtifact?.id
+          (!selectedPrimaryArtifact && isIOSRuntime
+            && (visibleStemSourceArtifactId
+              ? sourceArtifactId === visibleStemSourceArtifactId
+              : artifact.id === (selectedArtifact?.id ?? stemArtifacts[0]?.id))) ||
+          (typeof sourceArtifactId === "string" &&
+            sourceArtifactId === selectedPrimaryArtifact?.id)
         );
       }),
-    [selectedPrimaryArtifact?.id, stemArtifacts],
+    [isIOSRuntime, selectedArtifact, selectedPrimaryArtifact, stemArtifacts, visibleStemSourceArtifactId],
   );
   const stemJob = useMemo(() => {
     const selectedPrimaryId = selectedPrimaryArtifact?.id;
@@ -885,6 +909,7 @@ export function useProjectViewModel() {
   const precountDisabledReason = canUsePrecount ? null : "Waiting for BPM analysis";
   const mobileCapabilities = mobileCapabilitiesQuery.data ?? null;
   const isMobileRuntime = mobileCapabilities !== null;
+  const effectiveActiveWorkspace = isIOSRuntime ? "playback" : activeWorkspace;
   const sourceKeyOverride = useMemo(
     () => parseStoredKey(projectQuery.data?.source_key_override),
     [projectQuery.data?.source_key_override],
@@ -1246,6 +1271,9 @@ export function useProjectViewModel() {
   }
 
   function handleSelectWorkspace(workspace: "project" | "playback") {
+    if (isIOSRuntime) {
+      return;
+    }
     setActiveWorkspace(workspace);
   }
 
@@ -2036,7 +2064,7 @@ export function useProjectViewModel() {
 
     if (!defaultPrimaryArtifact) {
       setSelectedPrimaryArtifactId(null);
-      setSelectedArtifactId(null);
+      setSelectedArtifactId(isIOSRuntime ? stemArtifacts[0]?.id ?? null : null);
       return;
     }
 
@@ -2086,6 +2114,8 @@ export function useProjectViewModel() {
     selectableArtifacts,
     selectedArtifactId,
     selectedPrimaryArtifactId,
+    isIOSRuntime,
+    stemArtifacts,
   ]);
 
   useEffect(() => {
@@ -2409,22 +2439,24 @@ export function useProjectViewModel() {
       selectedPlaybackArtifactId: selectedPlaybackArtifact.id,
       isStemPlayback,
       playbackArtifactIds: nativePlaybackArtifacts.map((artifact) => artifact.id),
-      artifactPathsById: Object.fromEntries(
-        nativePlaybackArtifacts.map((artifact) => [artifact.id, artifact.path]),
-      ),
-      artifactFormatsById: Object.fromEntries(
-        nativePlaybackArtifacts.map((artifact) => [artifact.id, artifact.format]),
-      ),
+      artifactPathsById: Object.fromEntries(nativePlaybackArtifacts.map((artifact) => [
+        artifact.id,
+        isIOSRuntime ? iosPlaybackSource(artifact)?.path ?? "" : artifact.path,
+      ])),
+      artifactFormatsById: Object.fromEntries(nativePlaybackArtifacts.map((artifact) => [
+        artifact.id,
+        isIOSRuntime ? "wav" : artifact.format,
+      ])),
       visibleStemArtifactIds: visibleStemArtifacts.map((artifact) => artifact.id),
       stemControls,
       durationHintSeconds: projectQuery.data?.duration_seconds ?? 0,
-      precountEnabled,
-      precountLoopEnabled,
+      precountEnabled: isIOSRuntime ? false : precountEnabled,
+      precountLoopEnabled: isIOSRuntime ? false : precountLoopEnabled,
       precountClickCount,
-      precountTempoBpm,
-      tempoOriginalBpm,
-      tempoTargetBpm: tempoTargetBpmForPlayback,
-      timingGrid: analysisTimingGrid,
+      precountTempoBpm: isIOSRuntime ? null : precountTempoBpm,
+      tempoOriginalBpm: isIOSRuntime ? null : tempoOriginalBpm,
+      tempoTargetBpm: isIOSRuntime ? null : tempoTargetBpmForPlayback,
+      timingGrid: isIOSRuntime ? null : analysisTimingGrid,
       loopRange,
       chordDictionaryFollowProject,
     });
@@ -2433,6 +2465,7 @@ export function useProjectViewModel() {
     chordDictionaryFollowProject,
     hydratedProjectId,
     isStemPlayback,
+    isIOSRuntime,
     projectId,
     projectQuery.data?.duration_seconds,
     projectPlaybackName,
@@ -2454,7 +2487,7 @@ export function useProjectViewModel() {
 
 
   return {
-    activeWorkspace,
+    activeWorkspace: effectiveActiveWorkspace,
     activeProjectPanel,
     activeChordIndex,
     activeEnharmonicKeyContext,
@@ -2576,6 +2609,7 @@ export function useProjectViewModel() {
     isTabImportOpen,
     isLyricsRunning,
     isMobileRuntime,
+    isIOSRuntime,
     isPlaying,
     isFetchingNextProjectHistoryJobsPage: terminalProjectJobsQuery.isFetchingNextPage,
     isFetchNextProjectHistoryJobsPageError: terminalProjectJobsQuery.isFetchNextPageError,

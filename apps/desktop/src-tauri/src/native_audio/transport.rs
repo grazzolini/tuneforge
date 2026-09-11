@@ -690,6 +690,8 @@ pub struct TransportState {
     app: Option<AppHandle>,
     #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
     runtime: Option<PlaybackRuntime>,
+    #[cfg(any(target_os = "ios", test))]
+    runtime_inhibited: Option<Arc<AtomicBool>>,
     #[cfg(test)]
     fail_next_runtime_start: bool,
     #[cfg(test)]
@@ -720,6 +722,8 @@ impl Default for TransportState {
             app: None,
             #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
             runtime: None,
+            #[cfg(any(target_os = "ios", test))]
+            runtime_inhibited: None,
             #[cfg(test)]
             fail_next_runtime_start: false,
             #[cfg(test)]
@@ -729,6 +733,11 @@ impl Default for TransportState {
 }
 
 impl TransportState {
+    #[cfg(any(target_os = "ios", test))]
+    pub(crate) fn bind_runtime_inhibitor(&mut self, inhibited: Arc<AtomicBool>) {
+        self.runtime_inhibited = Some(inhibited);
+    }
+
     pub fn bind_session(
         &mut self,
         generation: u64,
@@ -1376,6 +1385,13 @@ impl TransportState {
         self.snapshot()
     }
 
+    #[cfg(any(target_os = "ios", test))]
+    pub fn pause_for_lifecycle(&mut self) -> AudioSnapshot {
+        let snapshot = self.pause();
+        self.stop_runtime();
+        snapshot
+    }
+
     pub fn stop(&mut self) -> AudioSnapshot {
         #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
         let failed_runtime = self.runtime.as_ref().and_then(|runtime| {
@@ -1513,6 +1529,14 @@ impl TransportState {
 
     #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
     fn ensure_runtime(&mut self, require_project_runtime: bool) -> Result<bool, String> {
+        #[cfg(any(target_os = "ios", test))]
+        if self
+            .runtime_inhibited
+            .as_ref()
+            .is_some_and(|inhibited| inhibited.load(Ordering::Acquire))
+        {
+            return Err("native_audio_inactive".to_string());
+        }
         #[cfg(test)]
         if std::mem::take(&mut self.fail_next_runtime_start) {
             return Err("injected_runtime_start_failure".to_string());
@@ -2438,6 +2462,14 @@ fn start_output_stream_thread(
     stop_receiver: mpsc::Receiver<RuntimeControl>,
     ready_sender: mpsc::Sender<Result<(), String>>,
 ) {
+    #[cfg(target_os = "ios")]
+    let _audio_session = match super::ios_session::PlaybackAudioSession::activate() {
+        Ok(session) => session,
+        Err(error) => {
+            let _ = ready_sender.send(Err(error));
+            return;
+        }
+    };
     let host = cpal::default_host();
     let result = (|| {
         let device = host
@@ -3044,22 +3076,40 @@ impl StreamingDecoder {
         start_seconds: f64,
         diagnostics_context: Option<(u64, usize)>,
     ) -> Result<Self, String> {
+        #[cfg(target_os = "ios")]
+        let _ = diagnostics_context;
         let is_wav = path
             .extension()
             .and_then(|value| value.to_str())
             .map(|value| value.eq_ignore_ascii_case("wav"))
             .unwrap_or(false);
-        if is_wav {
-            match WavStreamDecoder::open(
+        #[cfg(target_os = "ios")]
+        {
+            if !is_wav {
+                return Err("iOS native playback requires a registered WAV source.".to_string());
+            }
+            return WavStreamDecoder::open(
                 &path,
                 target_sample_rate,
                 target_channels,
                 playback_rate,
                 start_seconds,
-            ) {
-                Ok(decoder) => return Ok(Self::Wav(decoder)),
-                Err(wav_error) => {
-                    return SymphoniaStreamDecoder::open(
+            )
+            .map(Self::Wav);
+        }
+        #[cfg(not(target_os = "ios"))]
+        {
+            if is_wav {
+                match WavStreamDecoder::open(
+                    &path,
+                    target_sample_rate,
+                    target_channels,
+                    playback_rate,
+                    start_seconds,
+                ) {
+                    Ok(decoder) => return Ok(Self::Wav(decoder)),
+                    Err(wav_error) => {
+                        return SymphoniaStreamDecoder::open(
                         path,
                         target_sample_rate,
                         target_channels,
@@ -3073,19 +3123,20 @@ impl StreamingDecoder {
                             "Native playback could not decode WAV source. Fast path failed: {wav_error}. Symphonia failed: {symphonia_error}"
                         )
                     });
+                    }
                 }
             }
-        }
 
-        SymphoniaStreamDecoder::open(
-            path,
-            target_sample_rate,
-            target_channels,
-            playback_rate,
-            start_seconds,
-            diagnostics_context,
-        )
-        .map(Self::Symphonia)
+            SymphoniaStreamDecoder::open(
+                path,
+                target_sample_rate,
+                target_channels,
+                playback_rate,
+                start_seconds,
+                diagnostics_context,
+            )
+            .map(Self::Symphonia)
+        }
     }
 
     fn next_chunk(&mut self) -> Result<Option<Vec<f32>>, String> {
@@ -4383,6 +4434,49 @@ mod tests {
         for receiver in exited_receivers {
             assert!(receiver.try_recv().is_ok());
         }
+    }
+
+    #[test]
+    #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
+    fn lifecycle_pause_releases_click_runtime_and_preserves_controls() {
+        let mut shared =
+            shared_with_lane(Arc::new(Mutex::new(RingBuffer::new(1_000))), 1_000, 1, 1.0);
+        shared.position_seconds = 6.5;
+        shared.click.enabled = true;
+        let (runtime, exited_receivers) = stoppable_runtime(shared);
+        let mut state = TransportState::default();
+        state.session_id = Some("session".to_string());
+        state.duration_seconds = 30.0;
+        state.native_playback_supported = true;
+        state.status = TransportStatus::Playing;
+        state.click.enabled = true;
+        state.runtime = Some(runtime);
+
+        let snapshot = state.pause_for_lifecycle();
+
+        assert!(state.runtime.is_none());
+        assert!(state.click.enabled);
+        assert_eq!(snapshot.state, "paused");
+        assert_seconds_close(snapshot.position_seconds, 6.5);
+        for receiver in exited_receivers {
+            assert!(receiver.try_recv().is_ok());
+        }
+    }
+
+    #[test]
+    #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
+    fn inhibited_output_blocks_the_common_runtime_creation_sink() {
+        let mut state = TransportState::default();
+        let inhibited = Arc::new(AtomicBool::new(true));
+        state.bind_runtime_inhibitor(inhibited.clone());
+
+        assert_eq!(
+            state.ensure_runtime(false).unwrap_err(),
+            "native_audio_inactive"
+        );
+
+        inhibited.store(false, Ordering::Release);
+        assert!(!state.ensure_runtime(false).expect("runtime is authorized"));
     }
 
     #[test]

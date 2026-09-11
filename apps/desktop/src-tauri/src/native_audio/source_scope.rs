@@ -7,6 +7,8 @@ use std::{
 #[cfg(any(target_os = "linux", target_os = "macos", test))]
 use std::{env, ffi::OsStr};
 
+#[cfg(target_os = "ios")]
+use super::mixer::AudioLaneRequest;
 use rusqlite::{params, Connection, Error as SqliteError, OpenFlags, OptionalExtension};
 use serde_json::Value;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -89,8 +91,11 @@ impl PlaybackSourceScope {
             .ok_or(PlaybackSourceError::Unavailable)?;
         let canonical_path = validate_playback_source_path(source_path, &self.projects_root)?;
         let artifact_paths = artifact_paths_for_id(&self.database_path, artifact_id)?;
-        let matches_registered_path = artifact_paths.iter().any(|artifact_path| {
-            validate_artifact_record_path(artifact_path, &self.projects_root)
+        let matches_registered_path = artifact_paths.iter().any(|artifact| {
+            if !registered_path_is_playable(artifact.format.as_deref(), cfg!(target_os = "ios")) {
+                return false;
+            }
+            validate_artifact_record_path(&artifact.path, &self.projects_root)
                 .is_ok_and(|registered_path| registered_path == canonical_path)
         });
         if !matches_registered_path {
@@ -98,6 +103,22 @@ impl PlaybackSourceScope {
         }
         Ok(canonical_path)
     }
+}
+
+#[cfg(target_os = "ios")]
+pub(super) fn validate_playback_lanes(
+    app: &AppHandle,
+    lanes: &[AudioLaneRequest],
+) -> Result<(), String> {
+    let scope = PlaybackSourceScope::from_app(app)?;
+    for lane in lanes {
+        if let Some(source_path) = lane.source_path.as_deref() {
+            scope
+                .validate(lane.artifact_id.as_deref(), source_path)
+                .map_err(|error| error.message().to_string())?;
+        }
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -211,7 +232,7 @@ fn validate_playback_source_path(
 fn artifact_paths_for_id(
     database_path: &Path,
     artifact_id: &str,
-) -> Result<Vec<PathBuf>, PlaybackSourceError> {
+) -> Result<Vec<RegisteredPlaybackPath>, PlaybackSourceError> {
     let connection = Connection::open_with_flags(
         database_path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
@@ -222,38 +243,56 @@ fn artifact_paths_for_id(
         .map_err(|_| PlaybackSourceError::Unavailable)?;
     let artifact = connection
         .query_row(
-            "SELECT path, metadata_json FROM artifacts WHERE id = ?1",
+            "SELECT path, format, metadata_json FROM artifacts WHERE id = ?1",
             params![artifact_id],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
         )
         .optional()
         .map_err(|error| match error {
             SqliteError::QueryReturnedNoRows => PlaybackSourceError::Unavailable,
             _ => PlaybackSourceError::Unavailable,
         })?;
-    let (artifact_path, metadata_json) = artifact.ok_or(PlaybackSourceError::Unavailable)?;
+    let (artifact_path, artifact_format, metadata_json) =
+        artifact.ok_or(PlaybackSourceError::Unavailable)?;
     let mut paths = Vec::with_capacity(2);
     if !artifact_path.trim().is_empty() {
-        paths.push(PathBuf::from(artifact_path));
+        paths.push(RegisteredPlaybackPath {
+            path: PathBuf::from(artifact_path),
+            format: Some(artifact_format),
+        });
     }
-    if let Some(playback_path) =
-        serde_json::from_str::<Value>(&metadata_json)
-            .ok()
-            .and_then(|metadata| {
-                metadata
-                    .get("playback_path")
-                    .and_then(Value::as_str)
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .map(PathBuf::from)
-            })
-    {
-        paths.push(playback_path);
+    if let Ok(metadata) = serde_json::from_str::<Value>(&metadata_json) {
+        if let Some(playback_path) = metadata.get("playback_path").and_then(Value::as_str) {
+            if !playback_path.trim().is_empty() {
+                paths.push(RegisteredPlaybackPath {
+                    path: PathBuf::from(playback_path),
+                    format: metadata
+                        .get("playback_format")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                });
+            }
+        }
     }
     if paths.is_empty() {
         return Err(PlaybackSourceError::Unavailable);
     }
     Ok(paths)
+}
+
+struct RegisteredPlaybackPath {
+    path: PathBuf,
+    format: Option<String>,
+}
+
+fn registered_path_is_playable(format: Option<&str>, require_wav: bool) -> bool {
+    !require_wav || format.is_some_and(|value| value.eq_ignore_ascii_case("wav"))
 }
 
 fn validate_artifact_record_path(
@@ -350,7 +389,7 @@ mod tests {
             Connection::open(data_root.join(BACKEND_DATABASE_NAME)).expect("open test database");
         connection
             .execute(
-                "CREATE TABLE artifacts (id TEXT PRIMARY KEY, path TEXT NOT NULL, metadata_json TEXT NOT NULL)",
+                "CREATE TABLE artifacts (id TEXT PRIMARY KEY, path TEXT NOT NULL, format TEXT NOT NULL, metadata_json TEXT NOT NULL)",
                 [],
             )
             .expect("create artifacts table");
@@ -361,7 +400,7 @@ mod tests {
             Connection::open(data_root.join(BACKEND_DATABASE_NAME)).expect("open test database");
         connection
             .execute(
-                "INSERT INTO artifacts (id, path, metadata_json) VALUES (?1, ?2, '{}')",
+                "INSERT INTO artifacts (id, path, format, metadata_json) VALUES (?1, ?2, 'wav', '{}')",
                 params![artifact_id, source_path_string(path)],
             )
             .expect("insert artifact");
@@ -378,7 +417,7 @@ mod tests {
         let metadata = serde_json::json!({"playback_path": source_path_string(playback_path)});
         connection
             .execute(
-                "INSERT INTO artifacts (id, path, metadata_json) VALUES (?1, ?2, ?3)",
+                "INSERT INTO artifacts (id, path, format, metadata_json) VALUES (?1, ?2, 'flac', ?3)",
                 params![artifact_id, source_path_string(path), metadata.to_string()],
             )
             .expect("insert artifact");
@@ -494,6 +533,14 @@ mod tests {
             validated,
             playback_path.canonicalize().expect("canonical file")
         );
+    }
+
+    #[test]
+    fn ios_requires_an_explicit_wav_format_for_registered_paths() {
+        assert!(registered_path_is_playable(Some("WAV"), true));
+        assert!(!registered_path_is_playable(Some("mp3"), true));
+        assert!(!registered_path_is_playable(None, true));
+        assert!(registered_path_is_playable(None, false));
     }
 
     #[test]

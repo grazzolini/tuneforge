@@ -45,6 +45,9 @@ symphonia = { version = "0.6.1", default-features = false, features = ["all"] }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 
 [target.'cfg(target_os = "ios")'.dependencies]
+objc2 = "0.6.4"
+objc2-avf-audio = { version = "0.3.2", features = ["AVAudioSession", "AVAudioSessionTypes"] }
+objc2-ui-kit = { version = "0.3.2", features = ["UIApplication"] }
 rustls = { version = "0.23.43", default-features = false, features = ["ring", "std"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]

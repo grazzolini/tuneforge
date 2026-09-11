@@ -19,6 +19,7 @@ export function ProjectHeader({
     handleSelectWorkspace,
     hasLyricsTranscript,
     isLyricsRunning,
+    isIOSRuntime,
     isMobileRuntime,
     isRenaming,
     lyricsMutation,
@@ -163,7 +164,7 @@ export function ProjectHeader({
             <SlidersHorizontal aria-hidden="true" />
             <span>Practice Controls</span>
           </button>
-          <div className="mobile-playback-overflow" ref={overflowRef}>
+          {!isIOSRuntime ? <div className="mobile-playback-overflow" ref={overflowRef}>
             <button
               aria-expanded={overflowOpen}
               aria-haspopup="menu"
@@ -230,7 +231,7 @@ export function ProjectHeader({
                 </button>
               </div>
             ) : null}
-          </div>
+          </div> : null}
         </div>
       </header>
     );

@@ -1,27 +1,8 @@
-use super::*;
 use crate::mobile_ffmpeg::{render_audio, AudioOutputFormat};
 use crate::native_audio::decode::{
     probe_mobile_durable_audio, read_mobile_audio, read_resampled_mono_audio, write_mono_pcm_wav,
 };
 use android_system_properties::AndroidSystemProperties;
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use chrono::{DateTime, Duration, SecondsFormat, Utc};
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
-use rand::{rngs::SysRng, TryRng};
-use rusqlite::{params, Connection, OptionalExtension, Row};
-use serde_json::json;
-use sha2::{Digest, Sha256};
-use std::{
-    collections::{BTreeMap, HashMap, HashSet},
-    convert::TryInto,
-    fs,
-    io::{self, Read},
-    path::{Path, PathBuf},
-    str::FromStr,
-    thread,
-    time::Instant,
-};
-use tauri::{AppHandle, Manager};
 use tauri_plugin_fs::{FilePath, FsExt, OpenOptions};
 use whisper_rs::{
     install_logging_hooks, FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters,
@@ -31,85 +12,25 @@ use whisper_rs::{
 mod audio;
 #[path = "export.rs"]
 mod export;
-#[path = "identity.rs"]
-mod identity;
 #[path = "lyrics.rs"]
 mod lyrics;
-#[path = "manifests.rs"]
-mod manifests;
-#[path = "reconciliation.rs"]
-mod reconciliation;
-#[path = "staging_cleanup.rs"]
-mod staging_cleanup;
-#[path = "storage.rs"]
-mod storage;
-#[path = "storage_cleanup.rs"]
-mod storage_cleanup;
-#[path = "transport_bridge.rs"]
-mod transport_bridge;
 
-use self::staging_cleanup::reconcile_staged_artifacts_after_commit;
-use self::storage::*;
-use self::storage_cleanup::reconcile_project_storage_after_commit;
+include!("embedded.rs");
+
 use audio::{ensure_source_playback_proxy_metadata, spawn_playback_proxy_generation};
-use identity::{
-    active_trusted_device_ids, ensure_local_identity, local_identity, trim_optional_string,
-};
 use lyrics::find_whisper_model;
-use manifests::{
-    apply_delete_tombstone, hydrate_imported_read_models, import_entity_revisions,
-    import_sync_project_manifest, local_tombstone_superseded_by_live_target,
-    normalize_tombstone_target_type, record_local_delete_tombstone, update_project_sync_status,
-    validate_manifest_delete_tombstones, validate_project_manifest_identity,
-    validate_remote_delete_tombstone,
-};
 
 pub use audio::{
     mobile_get_analysis, mobile_get_chords, mobile_submit_analyze, mobile_submit_chords,
     mobile_submit_preview, mobile_submit_retune, mobile_submit_stems, mobile_submit_transpose,
 };
 pub use export::mobile_submit_export;
-pub use identity::{
-    mobile_answer_sync_pairing_offer, mobile_create_sync_pairing_offer, mobile_get_sync_identity,
-    mobile_list_sync_trusted_peers, mobile_revoke_sync_trusted_peer,
-    mobile_sign_transport_handshake, mobile_trust_sync_peer,
-    mobile_update_sync_trusted_peer_endpoint_hints,
-};
 pub use lyrics::{mobile_get_lyrics, mobile_submit_lyrics, mobile_update_lyrics};
-pub use manifests::{
-    mobile_get_sync_metadata, mobile_get_sync_project_manifest, mobile_import_sync_project,
-    mobile_update_sync_project_status,
-};
-pub use reconciliation::{mobile_apply_sync_reconciliation, mobile_plan_sync_reconciliation};
-pub use storage::{
-    mobile_cancel_job, mobile_delete_artifact, mobile_delete_project, mobile_get_health,
-    mobile_get_job, mobile_get_project, mobile_get_sync_staged_artifact, mobile_import_project,
-    mobile_list_artifacts, mobile_list_jobs, mobile_list_projects,
-    mobile_register_sync_staged_reference, mobile_stage_sync_artifact,
-    mobile_sync_transport_artifact_file, mobile_update_project,
-};
-pub use transport_bridge::{
-    mobile_sync_transport_create_pairing_offer_value, mobile_sync_transport_local_identity_value,
-    mobile_sync_transport_metadata_value, mobile_sync_transport_project_manifest_value,
-    mobile_sync_transport_reconciliation_apply_value,
-    mobile_sync_transport_reconciliation_plan_value, mobile_sync_transport_stage_artifact_value,
-    mobile_sync_transport_staged_artifact_value, mobile_sync_transport_trusted_peers_value,
-    mobile_sync_transport_update_trusted_peer_endpoint_hints_value,
-};
 
 const WHISPER_SAMPLE_RATE: u32 = 16_000;
 const WHISPER_MODEL_DIR: &str = "models/whisper";
 const WHISPER_MODEL_MISSING: &str =
         "Side-load a Whisper ggml model into app storage at models/whisper/ggml-base.bin or models/whisper/ggml-tiny.bin to enable local lyrics.";
-const LOCAL_IDENTITY_ID: &str = "local";
-const DEFAULT_LOCAL_DISPLAY_NAME: &str = "TuneForge Device";
-const DEVICE_ID_PREFIX: &str = "dev_ed25519_";
-const SYNC_GROUP_ID_PREFIX: &str = "syncgrp_";
-const PAIRING_PREFIX: &str = "pair_";
-const SECRET_HASH_PREFIX: &str = "sha256_";
-const PAIRING_SECRET_HASH_CONTEXT: &[u8] = b"tuneforge.sync.pairing_secret.v1\0";
-const DEFAULT_PAIRING_TTL_SECONDS: i64 = 600;
-const MAX_PAIRING_TTL_SECONDS: i64 = 3600;
 pub fn mobile_capabilities(app: AppHandle) -> Result<MobileCapabilities, String> {
     let root = app_data_root(&app)?;
     let whisper_model = find_whisper_model(&root);
@@ -182,8 +103,4 @@ fn generation_unavailable_message(job_type: &str) -> &'static str {
     } else {
         GPU_REQUIRED
     }
-}
-
-fn now_iso() -> String {
-    Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
 }

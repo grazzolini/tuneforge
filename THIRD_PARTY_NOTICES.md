@@ -174,19 +174,19 @@ This file is the source of truth for dependency and model-weight distribution po
 
 - **License:** Apache-2.0 / MIT (dual)
 - **Source:** <https://github.com/RustAudio/cpal>
-- **Notes:** Used by the desktop shell for local microphone device enumeration and tuner input capture, and by macOS, Linux, and Android project playback. Android playback uses CPAL's AAudio backend and requires API 26 or newer.
+- **Notes:** Used by the desktop shell for local microphone device enumeration and tuner input capture, and by macOS, Linux, and Android project playback. Android playback uses CPAL's AAudio backend and requires API 26 or newer. The iOS simulator foundation initializes CPAL's CoreAudio output backend during its debug startup smoke; product playback remains unavailable there.
 
 ### signalsmith-stretch
 
 - **License:** MIT
 - **Source:** <https://github.com/colinmarc/signalsmith-stretch-rs>
-- **Notes:** Used by the native macOS, Linux, and Android playback engine for tempo changes with pitch preservation. Its resolved Rust transitive stack is permissively licensed.
+- **Notes:** Used by the native macOS, Linux, and Android playback engine for tempo changes with pitch preservation. The iOS simulator foundation constructs and processes a synthetic buffer during its debug startup smoke. Its resolved Rust transitive stack is permissively licensed.
 
 ### Symphonia
 
 - **License:** MPL-2.0
 - **Source:** <https://github.com/pdeljanov/Symphonia>
-- **Notes:** Used by the native macOS, Linux, and Android playback engine and by Android durable-artifact validation. FFmpeg conversion remains separate from realtime playback.
+- **Notes:** Used by the native macOS, Linux, and Android playback engine and by Android durable-artifact validation. The iOS simulator foundation decodes a generated WAV during its debug startup smoke. FFmpeg conversion remains separate from realtime playback and is not included on iOS.
 
 ### ndk-context
 
@@ -198,7 +198,13 @@ This file is the source of truth for dependency and model-weight distribution po
 
 - **License:** MIT for rusqlite; SQLite is public domain
 - **Source:** <https://github.com/rusqlite/rusqlite> and <https://sqlite.org/>
-- **Notes:** Used by the embedded Android backend. Desktop persistence remains in the Python backend.
+- **Notes:** Used by the embedded Android backend. The iOS simulator foundation exercises an in-memory database during debug startup; durable iOS persistence is not yet available. Desktop persistence remains in the Python backend.
+
+### rustls
+
+- **License:** Apache-2.0 OR ISC OR MIT
+- **Source:** <https://github.com/rustls/rustls>
+- **Notes:** The iOS target explicitly installs the already-resolved ring crypto provider before Tauri initializes its existing Rustls-based networking stack. This keeps startup deterministic and does not add an iOS transport feature.
 
 ### android_system_properties
 

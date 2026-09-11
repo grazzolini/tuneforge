@@ -1,0 +1,13 @@
+{
+  "identifier": "com.tuneforge.simulator",
+  "build": {
+    "beforeBuildCommand": "pnpm --filter @tuneforge/desktop build"
+  },
+  "bundle": {
+    "resources": [],
+    "iOS": {
+      "frameworks": ["SystemConfiguration"],
+      "minimumSystemVersion": "14.0"
+    }
+  }
+}

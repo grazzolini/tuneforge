@@ -1,6 +1,6 @@
 use std::{process::Child, sync::Mutex};
 
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use std::{
     collections::HashMap,
     env,
@@ -16,10 +16,12 @@ use std::{
 
 use tauri::{AppHandle, Manager, State};
 
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use serde::{Deserialize, Serialize};
 
 mod file_dialog_scope;
+#[cfg(all(target_os = "ios", debug_assertions))]
+mod ios_dependency_smoke;
 mod mobile_backend;
 #[cfg(target_os = "android")]
 mod mobile_ffmpeg;
@@ -107,13 +109,13 @@ where
         .map_err(|_| "Sync evidence export worker stopped unexpectedly.".to_string())?
 }
 
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn allocate_port() -> Result<u16, Box<dyn std::error::Error>> {
     let listener = TcpListener::bind(("127.0.0.1", 0))?;
     Ok(listener.local_addr()?.port())
 }
 
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn try_health_check(port: u16) -> bool {
     let mut stream = match TcpStream::connect(("127.0.0.1", port)) {
         Ok(stream) => stream,
@@ -138,7 +140,7 @@ fn try_health_check(port: u16) -> bool {
     response.starts_with("HTTP/1.1 200") || response.starts_with("HTTP/1.0 200")
 }
 
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn wait_for_backend(port: u16, timeout: Duration) -> Result<(), Box<dyn std::error::Error>> {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
@@ -151,12 +153,12 @@ fn wait_for_backend(port: u16, timeout: Duration) -> Result<(), Box<dyn std::err
     Err(format!("Timed out waiting for bundled backend on port {port}").into())
 }
 
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn python_executable(python_root: &Path) -> PathBuf {
     python_root.join("bin").join("python3.14")
 }
 
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[derive(Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 struct TorchExtensionProfile {
@@ -173,7 +175,7 @@ struct TorchExtensionProfile {
     pair_id: String,
 }
 
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 const TORCH_EXTENSION_POLICY_JSON: &str = r#"{
   "schema_version": 2,
   "contract": "profile-pair-v1",
@@ -198,7 +200,7 @@ const TORCH_EXTENSION_POLICY_JSON: &str = r#"{
   }
 }"#;
 
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[derive(Deserialize)]
 struct TorchExtensionPolicy {
     schema_version: u8,
@@ -207,7 +209,7 @@ struct TorchExtensionPolicy {
     profiles: HashMap<String, TorchExtensionPolicyProfile>,
 }
 
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[derive(Deserialize)]
 struct TorchExtensionPolicyProfile {
     ref_prefix: String,
@@ -218,7 +220,7 @@ struct TorchExtensionPolicyProfile {
     pair_id: String,
 }
 
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn expected_torch_extension_profile(name: &str, role: &str) -> TorchExtensionProfile {
     let policy = serde_json::from_str::<TorchExtensionPolicy>(TORCH_EXTENSION_POLICY_JSON)
         .expect("valid embedded Torch extension policy");
@@ -246,7 +248,7 @@ fn expected_torch_extension_profile(name: &str, role: &str) -> TorchExtensionPro
     }
 }
 
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn valid_torch_extension_site_packages(root: &Path, name: &str) -> Option<PathBuf> {
     let site_packages = root.join("site-packages");
     let core = root.join("Core");
@@ -270,19 +272,19 @@ fn valid_torch_extension_site_packages(root: &Path, name: &str) -> Option<PathBu
     .then_some(site_packages)
 }
 
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn select_torch_extension_site_packages(nvidia_root: &Path, legacy_root: &Path) -> Option<PathBuf> {
     valid_torch_extension_site_packages(nvidia_root, "Nvidia")
         .or_else(|| valid_torch_extension_site_packages(legacy_root, "LegacyNvidia"))
 }
 
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn mounted_torch_extension_site_packages() -> Option<PathBuf> {
     let root = Path::new("/app/lib/tuneforge/backend/torch-extensions");
     select_torch_extension_site_packages(&root.join("Nvidia"), &root.join("LegacyNvidia"))
 }
 
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn build_python_path(backend_root: &Path) -> Result<String, Box<dyn std::error::Error>> {
     let site_packages = backend_root.join("site-packages");
     let backend_source = backend_root.join("src");
@@ -297,7 +299,7 @@ fn build_python_path(backend_root: &Path) -> Result<String, Box<dyn std::error::
     Ok(joined.to_string_lossy().into_owned())
 }
 
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn build_backend_library_path(
     python_root: &Path,
     mut prefixes: Vec<PathBuf>,
@@ -309,7 +311,7 @@ fn build_backend_library_path(
     env::join_paths(append_unique_paths(prefixes, current_paths))
 }
 
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn resolve_bundled_backend_root(app: &AppHandle) -> Result<PathBuf, Box<dyn std::error::Error>> {
     if let Some(root) = env::var_os("TUNEFORGE_BUNDLED_BACKEND_ROOT") {
         return Ok(PathBuf::from(root));
@@ -319,7 +321,10 @@ fn resolve_bundled_backend_root(app: &AppHandle) -> Result<PathBuf, Box<dyn std:
     Ok(resources_root.join("resources").join("backend"))
 }
 
-#[cfg(all(not(target_os = "android"), target_os = "macos"))]
+#[cfg(all(
+    not(any(target_os = "android", target_os = "ios")),
+    target_os = "macos"
+))]
 fn host_tool_fallback_dirs() -> Vec<PathBuf> {
     [
         "/opt/homebrew/bin",
@@ -338,12 +343,15 @@ fn host_tool_fallback_dirs() -> Vec<PathBuf> {
     .collect()
 }
 
-#[cfg(all(not(target_os = "android"), not(target_os = "macos")))]
+#[cfg(all(
+    not(any(target_os = "android", target_os = "ios")),
+    not(target_os = "macos")
+))]
 fn host_tool_fallback_dirs() -> Vec<PathBuf> {
     Vec::new()
 }
 
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn append_unique_paths(
     mut paths: Vec<PathBuf>,
     extras: impl IntoIterator<Item = PathBuf>,
@@ -356,7 +364,7 @@ fn append_unique_paths(
     paths
 }
 
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn build_backend_search_path(mut prefixes: Vec<PathBuf>) -> Result<OsString, env::JoinPathsError> {
     let current_paths: Vec<PathBuf> = env::var_os("PATH")
         .map(|path| env::split_paths(&path).collect())
@@ -365,7 +373,11 @@ fn build_backend_search_path(mut prefixes: Vec<PathBuf>) -> Result<OsString, env
     env::join_paths(append_unique_paths(prefixes, host_tool_fallback_dirs()))
 }
 
-#[cfg(all(not(target_os = "android"), any(not(target_os = "macos"), test), unix))]
+#[cfg(all(
+    not(any(target_os = "android", target_os = "ios")),
+    any(not(target_os = "macos"), test),
+    unix
+))]
 fn is_executable_file(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
 
@@ -375,7 +387,7 @@ fn is_executable_file(path: &Path) -> bool {
 }
 
 #[cfg(all(
-    not(target_os = "android"),
+    not(any(target_os = "android", target_os = "ios")),
     any(not(target_os = "macos"), test),
     not(unix)
 ))]
@@ -383,14 +395,17 @@ fn is_executable_file(path: &Path) -> bool {
     path.is_file()
 }
 
-#[cfg(all(not(target_os = "android"), any(not(target_os = "macos"), test)))]
+#[cfg(all(
+    not(any(target_os = "android", target_os = "ios")),
+    any(not(target_os = "macos"), test)
+))]
 fn find_executable_in_path(binary_name: &str, search_path: &OsString) -> Option<PathBuf> {
     env::split_paths(search_path)
         .map(|directory| directory.join(binary_name))
         .find(|candidate| is_executable_file(candidate))
 }
 
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn spawn_packaged_backend(app: &AppHandle) -> Result<BackendRuntime, Box<dyn std::error::Error>> {
     let bundled_backend_root = resolve_bundled_backend_root(app)?;
     let bundled_python_root = bundled_backend_root.join("python");
@@ -489,7 +504,7 @@ fn spawn_packaged_backend(app: &AppHandle) -> Result<BackendRuntime, Box<dyn std
     Ok(BackendRuntime::new(base_url, Some(child)))
 }
 
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn development_backend() -> BackendRuntime {
     let base_url = env::var("TUNEFORGE_DEV_API_BASE_URL")
         .unwrap_or_else(|_| "http://127.0.0.1:8765".to_string());
@@ -538,6 +553,8 @@ fn install_linux_media_permission_handler(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(target_os = "ios")]
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let builder = tauri::Builder::default();
     #[cfg(target_os = "android")]
     let builder = builder.plugin(tauri_plugin_barcode_scanner::init());
@@ -547,14 +564,16 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .setup(|app| {
-            #[cfg(target_os = "android")]
+            #[cfg(any(target_os = "android", target_os = "ios"))]
             let runtime = BackendRuntime::new("mobile://embedded".to_string(), None);
-            #[cfg(not(target_os = "android"))]
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
             let runtime = if cfg!(debug_assertions) {
                 development_backend()
             } else {
                 spawn_packaged_backend(app.handle())?
             };
+            #[cfg(all(target_os = "ios", debug_assertions))]
+            ios_dependency_smoke::run(app.handle())?;
             let power_inhibition = power_inhibition::PowerInhibitionState::new();
             let mobile_media =
                 mobile_media_transport::MobileMediaTransportState::new(app.handle().clone())?;
@@ -684,7 +703,7 @@ pub fn run() {
     });
 }
 
-#[cfg(all(test, not(target_os = "android")))]
+#[cfg(all(test, not(any(target_os = "android", target_os = "ios"))))]
 mod tests {
     use super::*;
 

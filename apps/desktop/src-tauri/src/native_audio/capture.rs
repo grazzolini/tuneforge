@@ -3,6 +3,8 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::AppHandle;
+#[cfg(target_os = "ios")]
+use tauri::Emitter;
 
 #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};

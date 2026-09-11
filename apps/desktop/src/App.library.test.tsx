@@ -252,6 +252,8 @@ describe("Desktop app library", () => {
 
     const alert = await screen.findByRole("alert");
     expect(within(alert).getByText("Could not load projects.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Import Track(s)" })).toBeDisabled();
+    expect(screen.queryByText("0 projects ready")).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "No projects yet" })).not.toBeInTheDocument();
   });
 

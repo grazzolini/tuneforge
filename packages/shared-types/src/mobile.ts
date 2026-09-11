@@ -1,6 +1,6 @@
 export type MobileCapabilities = {
   platform: "android" | "ios";
-  mediaBackend: "android_media_codec" | "avfoundation";
+  mediaBackend: "android_media_codec" | "avfoundation" | "cpal_coreaudio";
   isEmulator: boolean;
   gpuBackend: "vulkan" | "nnapi" | "qnn" | "coreml" | null;
   analysisAvailable: boolean;

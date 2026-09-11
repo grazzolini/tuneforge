@@ -2,9 +2,19 @@
 
 use std::{fs, path::Path};
 
-#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+#[cfg(any(
+    target_os = "android",
+    target_os = "ios",
+    target_os = "linux",
+    target_os = "macos"
+))]
 use std::{fs::File, io::Read};
-#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+#[cfg(any(
+    target_os = "android",
+    target_os = "ios",
+    target_os = "linux",
+    target_os = "macos"
+))]
 use symphonia::core::{
     codecs::audio::{
         well_known::{
@@ -35,14 +45,34 @@ pub struct DecodedInterleavedAudio {
     pub channels: u32,
 }
 
-#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+#[cfg(any(
+    target_os = "android",
+    target_os = "ios",
+    target_os = "linux",
+    target_os = "macos"
+))]
 const DURABLE_PROBE_PACKET_LIMIT: usize = 32;
-#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+#[cfg(any(
+    target_os = "android",
+    target_os = "ios",
+    target_os = "linux",
+    target_os = "macos"
+))]
 const DURABLE_PROBE_PACKET_BYTES: usize = 4 * 1024 * 1024;
-#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+#[cfg(any(
+    target_os = "android",
+    target_os = "ios",
+    target_os = "linux",
+    target_os = "macos"
+))]
 const DURABLE_PROBE_HEADER_BYTES: usize = 64;
 
-#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+#[cfg(any(
+    target_os = "android",
+    target_os = "ios",
+    target_os = "linux",
+    target_os = "macos"
+))]
 fn durable_container_matches(format: &str, header: &[u8]) -> bool {
     match format {
         "wav" => header.starts_with(b"RIFF") && header.get(8..12) == Some(b"WAVE"),
@@ -60,7 +90,12 @@ fn durable_container_matches(format: &str, header: &[u8]) -> bool {
 }
 
 pub fn probe_mobile_durable_audio(path: &Path, expected_format: &str) -> Result<(), String> {
-    #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+    #[cfg(any(
+        target_os = "android",
+        target_os = "ios",
+        target_os = "linux",
+        target_os = "macos"
+    ))]
     {
         let expected_format = expected_format.trim().to_ascii_lowercase();
         let expected_suffix = format!(".{expected_format}");
@@ -162,7 +197,12 @@ pub fn probe_mobile_durable_audio(path: &Path, expected_format: &str) -> Result<
         );
     }
 
-    #[cfg(not(any(target_os = "android", target_os = "linux", target_os = "macos")))]
+    #[cfg(not(any(
+        target_os = "android",
+        target_os = "ios",
+        target_os = "linux",
+        target_os = "macos"
+    )))]
     {
         let _ = (path, expected_format);
         Err("Durable audio probing is unavailable on this platform.".to_string())

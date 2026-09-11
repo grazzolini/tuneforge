@@ -2,11 +2,35 @@ use super::*;
 use serde_json::Value;
 use tauri::AppHandle;
 
-#[cfg(not(target_os = "android"))]
+#[cfg(target_os = "ios")]
+#[tauri::command]
+pub fn mobile_capabilities() -> Result<MobileCapabilities, String> {
+    Ok(MobileCapabilities {
+        platform: "ios",
+        media_backend: "cpal_coreaudio",
+        is_emulator: cfg!(target_abi = "sim"),
+        gpu_backend: None,
+        analysis_available: false,
+        basic_chords_available: false,
+        whisper_available: false,
+        stem_separation_available: false,
+        generation_testing_available: false,
+        max_recommended_model: None,
+        cpu_fallback_allowed: false,
+    })
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
 pub fn mobile_capabilities() -> Result<MobileCapabilities, String> {
     Err(MOBILE_UNAVAILABLE.to_string())
 }
+
+#[cfg(target_os = "ios")]
+const MOBILE_STUB_UNAVAILABLE: &str =
+    "This operation is unavailable in the iOS runtime foundation.";
+#[cfg(not(target_os = "ios"))]
+const MOBILE_STUB_UNAVAILABLE: &str = MOBILE_UNAVAILABLE;
 
 #[cfg(not(target_os = "android"))]
 macro_rules! mobile_stub {
@@ -14,7 +38,7 @@ macro_rules! mobile_stub {
         #[tauri::command]
         pub fn $name($($arg: $ty,)*) -> Result<$ret, String> {
             $(let _ = $arg;)*
-            Err(MOBILE_UNAVAILABLE.to_string())
+            Err(MOBILE_STUB_UNAVAILABLE.to_string())
         }
     };
 }

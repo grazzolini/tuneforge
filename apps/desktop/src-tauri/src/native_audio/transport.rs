@@ -7,7 +7,7 @@ use std::sync::{
 use std::time::{Duration, Instant};
 use tauri::AppHandle;
 
-#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+#[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
 use std::{
     fs::File,
     io::{Read, Seek, SeekFrom},
@@ -16,11 +16,11 @@ use std::{
     thread::{self, JoinHandle},
 };
 
-#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+#[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+#[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
 use cpal::{ErrorKind, FromSample, Sample, SampleFormat, SizedSample};
-#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+#[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
 use symphonia::core::{
     codecs::audio::{AudioDecoder, AudioDecoderOptions},
     errors::Error as SymphoniaError,
@@ -29,7 +29,7 @@ use symphonia::core::{
     meta::MetadataOptions,
     units::Time,
 };
-#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+#[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
 use tauri::Emitter;
 
 use super::{
@@ -44,7 +44,7 @@ use super::{
     AudioCapabilities,
 };
 
-#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+#[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
 use super::{
     decode::{
         convert_interleaved_channels, decode_wav_sample, read_u16_le, read_u32_le,
@@ -66,15 +66,15 @@ const CLICK_ACCENT_FREQUENCY_HZ: f64 = 1760.0;
 const PRECOUNT_FREQUENCY_HZ: f64 = 760.0;
 const PRECOUNT_ATTACK_SECONDS: f64 = 0.002;
 const PRECOUNT_DURATION_SECONDS: f64 = 0.045;
-#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+#[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
 const STREAM_CHUNK_FRAMES: usize = 2048;
-#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+#[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
 const RING_BUFFER_SECONDS: usize = 8;
-#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+#[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
 const PREBUFFER_TARGET_SECONDS: f64 = 0.12;
-#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+#[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
 const PREBUFFER_TIMEOUT: Duration = Duration::from_millis(1500);
-#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+#[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
 const PREBUFFER_POLL_INTERVAL: Duration = Duration::from_millis(5);
 const SUSTAINED_UNDERRUN_ERROR_SECONDS: f64 = 0.5;
 const AUDIBLE_GAIN_FLOOR: f32 = 0.0001;
@@ -365,7 +365,7 @@ impl RingReadStatus {
     }
 }
 
-#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+#[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
 enum WorkerControl {
     SetPlaybackRate {
         playback_rate: f64,
@@ -379,7 +379,7 @@ enum WorkerControl {
     Stop,
 }
 
-#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+#[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
 struct WorkerError {
     lane_id: String,
     message: String,
@@ -472,7 +472,7 @@ struct PlaybackShared {
     diagnostics_gain_first_change_recorded: bool,
     timeline: Arc<Mutex<Timeline>>,
     generation: u64,
-    #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+    #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
     report_sender: mpsc::SyncSender<RuntimeReport>,
     pending_cues: VecDeque<timeline::CueEvent>,
     terminal_reported: bool,
@@ -515,7 +515,7 @@ impl PlaybackShared {
         }
     }
 
-    #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+    #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
     fn prebuffer_ready(&self) -> bool {
         if self.duration_seconds > 0.0 && self.position_seconds >= self.duration_seconds {
             return true;
@@ -545,7 +545,7 @@ impl PlaybackShared {
     }
 }
 
-#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+#[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
 fn mark_terminal_runtime_error(
     shared: &mut PlaybackShared,
     code: NativeAudioErrorCode,
@@ -560,7 +560,7 @@ fn mark_terminal_runtime_error(
     diagnostics::record_callback_safe_code(shared.diagnostics_generation, diagnostic_code);
 }
 
-#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+#[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
 fn output_stream_error_code(error: &cpal::Error) -> NativeAudioErrorCode {
     match error.kind() {
         ErrorKind::DeviceChanged => NativeAudioErrorCode::DeviceChanged,
@@ -570,7 +570,7 @@ fn output_stream_error_code(error: &cpal::Error) -> NativeAudioErrorCode {
     }
 }
 
-#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+#[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
 fn diagnostic_output_stream_error_kind(error: &cpal::Error) -> DiagnosticOutputStreamErrorKind {
     match error.kind() {
         ErrorKind::DeviceBusy => DiagnosticOutputStreamErrorKind::DeviceBusy,
@@ -591,7 +591,7 @@ fn diagnostic_output_stream_error_kind(error: &cpal::Error) -> DiagnosticOutputS
     }
 }
 
-#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+#[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
 fn handle_output_stream_error_with_policy(
     shared: &mut PlaybackShared,
     error: &cpal::Error,
@@ -612,12 +612,12 @@ fn handle_output_stream_error_with_policy(
     }
 }
 
-#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+#[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
 fn handle_output_stream_error(shared: &mut PlaybackShared, error: &cpal::Error) {
     handle_output_stream_error_with_policy(shared, error, cfg!(target_os = "linux"));
 }
 
-#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+#[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
 fn diagnostic_code_for_output_stream_error(code: NativeAudioErrorCode) -> DiagnosticSafeCode {
     match code {
         NativeAudioErrorCode::DeviceChanged => DiagnosticSafeCode::DeviceChanged,
@@ -628,7 +628,7 @@ fn diagnostic_code_for_output_stream_error(code: NativeAudioErrorCode) -> Diagno
     }
 }
 
-#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+#[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
 fn mark_device_changed(shared: &mut PlaybackShared) {
     if shared.terminal_error.is_some()
         || shared.terminal_cause.is_some()
@@ -643,7 +643,7 @@ fn mark_device_changed(shared: &mut PlaybackShared) {
     );
 }
 
-#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+#[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
 fn prebuffer_target_samples(sample_rate: u32, channels: usize) -> usize {
     let target_frames = (sample_rate as f64 * PREBUFFER_TARGET_SECONDS).ceil() as usize;
     target_frames
@@ -651,7 +651,7 @@ fn prebuffer_target_samples(sample_rate: u32, channels: usize) -> usize {
         .max(STREAM_CHUNK_FRAMES.saturating_mul(channels))
 }
 
-#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+#[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
 struct PlaybackRuntime {
     shared: Arc<Mutex<PlaybackShared>>,
     audio_stop_sender: mpsc::Sender<RuntimeControl>,
@@ -663,7 +663,7 @@ struct PlaybackRuntime {
     auxiliary_only: bool,
 }
 
-#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+#[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
 enum RuntimeControl {
     Stop,
 }
@@ -684,11 +684,11 @@ pub struct TransportState {
     diagnostics_generation: u64,
     timeline: Option<Arc<Mutex<Timeline>>>,
     generation: u64,
-    #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+    #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
     report_sender: Option<mpsc::SyncSender<RuntimeReport>>,
-    #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+    #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
     app: Option<AppHandle>,
-    #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+    #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
     runtime: Option<PlaybackRuntime>,
     #[cfg(test)]
     fail_next_runtime_start: bool,
@@ -714,11 +714,11 @@ impl Default for TransportState {
             diagnostics_generation: 0,
             timeline: None,
             generation: 0,
-            #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+            #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
             report_sender: None,
-            #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+            #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
             app: None,
-            #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+            #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
             runtime: None,
             #[cfg(test)]
             fail_next_runtime_start: false,
@@ -733,12 +733,12 @@ impl TransportState {
         &mut self,
         generation: u64,
         timeline: Arc<Mutex<Timeline>>,
-        #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+        #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
         report_sender: mpsc::SyncSender<RuntimeReport>,
     ) {
         self.generation = generation;
         self.timeline = Some(timeline);
-        #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+        #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
         {
             self.report_sender = Some(report_sender);
         }
@@ -749,33 +749,30 @@ impl TransportState {
     }
 
     pub fn has_runtime(&self) -> bool {
-        #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+        #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
         {
             self.runtime.is_some()
         }
-        #[cfg(not(any(target_os = "android", target_os = "linux", target_os = "macos")))]
+        #[cfg(not(any(mobile, target_os = "linux", target_os = "macos")))]
         {
             false
         }
     }
 
     pub fn has_auxiliary_runtime(&self) -> bool {
-        #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+        #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
         {
             self.runtime
                 .as_ref()
                 .is_some_and(|runtime| runtime.auxiliary_only)
         }
-        #[cfg(not(any(target_os = "android", target_os = "linux", target_os = "macos")))]
+        #[cfg(not(any(mobile, target_os = "linux", target_os = "macos")))]
         {
             false
         }
     }
 
-    #[cfg(all(
-        test,
-        any(target_os = "android", target_os = "linux", target_os = "macos")
-    ))]
+    #[cfg(all(test, any(mobile, target_os = "linux", target_os = "macos")))]
     pub(crate) fn install_test_auxiliary_runtime(&mut self) {
         let timeline = self
             .timeline
@@ -829,7 +826,7 @@ impl TransportState {
     }
 
     pub fn begin_explicit_attempt(&mut self, capabilities: AudioCapabilities) {
-        #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+        #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
         if self.runtime.as_ref().is_some_and(|runtime| {
             runtime.shared.lock().ok().is_some_and(|shared| {
                 shared.terminal_error.is_some() || shared.terminal_cause.is_some()
@@ -853,7 +850,7 @@ impl TransportState {
                 timeline.stop();
             }
         }
-        #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+        #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
         if let Some(runtime) = &self.runtime {
             for sender in &runtime.worker_control_senders {
                 let _ = sender.send(WorkerControl::Stop);
@@ -874,7 +871,7 @@ impl TransportState {
 
     pub fn set_diagnostics_generation(&mut self, generation: u64) {
         self.diagnostics_generation = generation;
-        #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+        #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
         if let Some(runtime) = &self.runtime {
             if let Ok(mut shared) = runtime.shared.lock() {
                 shared.diagnostics_generation = generation;
@@ -913,18 +910,12 @@ impl TransportState {
             .expect("session acquisition is validated before prepare");
         let duration_seconds = request.duration_seconds.unwrap_or(0.0).max(0.0);
         let playback_rate = normalize_playback_rate(request.playback_rate);
-        #[cfg(all(
-            not(test),
-            any(target_os = "android", target_os = "linux", target_os = "macos")
-        ))]
+        #[cfg(all(not(test), any(mobile, target_os = "linux", target_os = "macos")))]
         let runtime_unavailable_reason = (capabilities.native_playback_supported && app.is_none())
             .then(|| "Native audio runtime is unavailable.".to_string());
-        #[cfg(all(
-            test,
-            any(target_os = "android", target_os = "linux", target_os = "macos")
-        ))]
+        #[cfg(all(test, any(mobile, target_os = "linux", target_os = "macos")))]
         let runtime_unavailable_reason: Option<String> = None;
-        #[cfg(not(any(target_os = "android", target_os = "linux", target_os = "macos")))]
+        #[cfg(not(any(mobile, target_os = "linux", target_os = "macos")))]
         let runtime_unavailable_reason = capabilities
             .native_playback_supported
             .then(|| "Native playback is unsupported on this platform.".to_string());
@@ -932,13 +923,13 @@ impl TransportState {
             capabilities.native_playback_supported && runtime_unavailable_reason.is_none();
         let availability_reason = runtime_unavailable_reason
             .or_else(|| capabilities.availability_reason.map(str::to_string));
-        #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+        #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
         let preserve_standalone_runtime = self.click.enabled && self.runtime.is_some();
-        #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+        #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
         if !preserve_standalone_runtime {
             self.stop_runtime();
         }
-        #[cfg(not(any(target_os = "android", target_os = "linux", target_os = "macos")))]
+        #[cfg(not(any(mobile, target_os = "linux", target_os = "macos")))]
         self.stop_runtime();
 
         self.session_id = Some(request.session_id.clone());
@@ -951,7 +942,7 @@ impl TransportState {
         self.lanes = lanes.clone();
         self.native_playback_supported = native_playback_supported;
         self.availability_reason = availability_reason;
-        #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+        #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
         {
             self.app = app;
             if preserve_standalone_runtime {
@@ -1010,7 +1001,7 @@ impl TransportState {
                 next_playback_rate = Some(rate);
             }
         }
-        #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+        #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
         if let Some(runtime) = &self.runtime {
             let mut should_prebuffer = false;
             if let Ok(mut shared) = runtime.shared.lock() {
@@ -1052,13 +1043,13 @@ impl TransportState {
     pub fn bind_auxiliary_runtime(
         &mut self,
         timeline: Arc<Mutex<Timeline>>,
-        #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+        #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
         report_sender: mpsc::SyncSender<RuntimeReport>,
     ) {
         if self.timeline.is_none() {
             self.timeline = Some(timeline);
         }
-        #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+        #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
         if self.report_sender.is_none() {
             self.report_sender = Some(report_sender);
         }
@@ -1100,7 +1091,7 @@ impl TransportState {
                 .validate_acquisition()
                 .map_err(str::to_string)?;
         }
-        #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+        #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
         if acquisition && request.enabled && self.runtime_requires_replacement(false) {
             self.stop_runtime();
             self.click.enabled = false;
@@ -1121,10 +1112,10 @@ impl TransportState {
         let previous_status = self.status;
         let previous_position_seconds = self.position_seconds;
         let previous_started_at = self.started_at;
-        #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+        #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
         let previous_app = self.app.clone();
         let state = self.apply_standalone_metronome(&request)?;
-        #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+        #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
         let lifecycle_result = (|| {
             if let Some(app) = app {
                 self.app = Some(app);
@@ -1151,7 +1142,7 @@ impl TransportState {
             }
             Ok::<(), String>(())
         })();
-        #[cfg(not(any(target_os = "android", target_os = "linux", target_os = "macos")))]
+        #[cfg(not(any(mobile, target_os = "linux", target_os = "macos")))]
         let lifecycle_result = Ok::<(), String>(());
         if let Err(error) = lifecycle_result {
             self.click = previous_click;
@@ -1163,11 +1154,11 @@ impl TransportState {
             self.status = previous_status;
             self.position_seconds = previous_position_seconds;
             self.started_at = previous_started_at;
-            #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+            #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
             {
                 self.app = previous_app;
             }
-            #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+            #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
             if let Some(runtime) = &self.runtime {
                 if let Ok(mut shared) = runtime.shared.lock() {
                     shared.click = self.click.clone();
@@ -1277,9 +1268,9 @@ impl TransportState {
             self.position_seconds = self.clamp_position(start_time_seconds);
         }
         let _ = request.scheduled_start_time_seconds;
-        #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+        #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
         let runtime_started = self.ensure_runtime(true)?;
-        #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+        #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
         let terminal_runtime = self.runtime.as_ref().and_then(|runtime| {
             let shared = runtime.shared.lock().ok()?;
             let reason = shared
@@ -1292,7 +1283,7 @@ impl TransportState {
                 })?;
             Some((shared.position_seconds, reason))
         });
-        #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+        #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
         if let Some((position_seconds, reason)) = terminal_runtime {
             self.position_seconds = position_seconds;
             self.status = TransportStatus::Paused;
@@ -1302,7 +1293,7 @@ impl TransportState {
             self.stop_runtime();
             return Err(reason);
         }
-        #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+        #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
         if let Some(runtime) = &self.runtime {
             if runtime_started || request.start_time_seconds.is_some() {
                 seek_runtime_workers(runtime, self.position_seconds, self.diagnostics_generation);
@@ -1351,7 +1342,7 @@ impl TransportState {
         self.status = TransportStatus::Paused;
         self.started_at = None;
 
-        #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+        #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
         if let Some(runtime) = &self.runtime {
             if let Ok(mut shared) = runtime.shared.lock() {
                 self.position_seconds = shared.position_seconds;
@@ -1375,18 +1366,18 @@ impl TransportState {
                 }
             }
         }
-        #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+        #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
         if !self.click.enabled || !self.native_playback_supported {
             self.stop_runtime();
         }
-        #[cfg(not(any(target_os = "android", target_os = "linux", target_os = "macos")))]
+        #[cfg(not(any(mobile, target_os = "linux", target_os = "macos")))]
         self.stop_runtime();
 
         self.snapshot()
     }
 
     pub fn stop(&mut self) -> AudioSnapshot {
-        #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+        #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
         let failed_runtime = self.runtime.as_ref().and_then(|runtime| {
             let shared = runtime.shared.lock().ok()?;
             let reason = shared
@@ -1399,7 +1390,7 @@ impl TransportState {
                 })?;
             Some((shared.position_seconds, reason))
         });
-        #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+        #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
         if let Some((position_seconds, reason)) = failed_runtime {
             self.position_seconds = position_seconds;
             self.status = TransportStatus::Paused;
@@ -1413,7 +1404,7 @@ impl TransportState {
         self.position_seconds = 0.0;
         self.status = TransportStatus::Stopped;
         self.started_at = None;
-        #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+        #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
         if self.click.enabled {
             if let Some(runtime) = &self.runtime {
                 seek_runtime_workers(runtime, 0.0, self.diagnostics_generation);
@@ -1428,7 +1419,7 @@ impl TransportState {
         } else {
             self.stop_runtime();
         }
-        #[cfg(not(any(target_os = "android", target_os = "linux", target_os = "macos")))]
+        #[cfg(not(any(mobile, target_os = "linux", target_os = "macos")))]
         self.stop_runtime();
 
         self.snapshot()
@@ -1440,7 +1431,7 @@ impl TransportState {
             self.started_at = Some(Instant::now());
         }
 
-        #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+        #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
         if let Some(runtime) = &self.runtime {
             let was_playing = self.status == TransportStatus::Playing;
             if was_playing {
@@ -1476,7 +1467,7 @@ impl TransportState {
     }
 
     pub fn snapshot(&self) -> AudioSnapshot {
-        #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+        #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
         if let Some(runtime) = &self.runtime {
             if let Ok(shared) = runtime.shared.lock() {
                 return shared.snapshot();
@@ -1520,7 +1511,7 @@ impl TransportState {
         clamp_position(value, self.duration_seconds)
     }
 
-    #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+    #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
     fn ensure_runtime(&mut self, require_project_runtime: bool) -> Result<bool, String> {
         #[cfg(test)]
         if std::mem::take(&mut self.fail_next_runtime_start) {
@@ -1596,7 +1587,7 @@ impl TransportState {
         }
     }
 
-    #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+    #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
     fn runtime_requires_replacement(&self, require_project_runtime: bool) -> bool {
         self.runtime.as_ref().is_some_and(|runtime| {
             let terminal = runtime.shared.lock().ok().is_some_and(|shared| {
@@ -1617,7 +1608,7 @@ impl TransportState {
     }
 
     fn stop_runtime(&mut self) {
-        #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+        #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
         if let Some(mut runtime) = self.runtime.take() {
             for sender in &runtime.worker_control_senders {
                 let _ = sender.send(WorkerControl::Stop);
@@ -1637,7 +1628,7 @@ impl TransportState {
     }
 }
 
-#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+#[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
 fn runtime_threads_finished(runtime: &PlaybackRuntime) -> bool {
     runtime
         .audio_thread
@@ -1650,7 +1641,7 @@ fn runtime_threads_finished(runtime: &PlaybackRuntime) -> bool {
         && runtime.worker_threads.iter().all(JoinHandle::is_finished)
 }
 
-#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+#[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
 fn seek_runtime_workers(
     runtime: &PlaybackRuntime,
     position_seconds: f64,
@@ -1670,7 +1661,7 @@ fn seek_runtime_workers(
     }
 }
 
-#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+#[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
 fn wait_for_runtime_prebuffer(
     runtime: &PlaybackRuntime,
 ) -> Result<(), NativePlaybackTerminalCause> {
@@ -1693,7 +1684,7 @@ fn wait_for_runtime_prebuffer(
     }
 }
 
-#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+#[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
 fn mark_runtime_terminal(runtime: &PlaybackRuntime, cause: NativePlaybackTerminalCause) {
     if let Ok(mut shared) = runtime.shared.lock() {
         shared.status = TransportStatus::Paused;
@@ -2214,7 +2205,7 @@ fn render_shared_output(shared: &mut PlaybackShared, output: &mut [f32]) {
     }
 }
 
-#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+#[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
 fn render_shared_output_typed<T>(shared: &mut PlaybackShared, output: &mut [T])
 where
     T: Sample + FromSample<f32> + Copy,
@@ -2286,7 +2277,7 @@ where
     }
 }
 
-#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+#[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
 fn start_native_runtime(
     app: AppHandle,
     session_id: &str,
@@ -2439,7 +2430,7 @@ fn start_native_runtime(
     })
 }
 
-#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+#[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
 fn start_output_stream_thread(
     config: cpal::StreamConfig,
     sample_format: SampleFormat,
@@ -2486,7 +2477,7 @@ fn start_output_stream_thread(
     drop(stream);
 }
 
-#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+#[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
 fn build_output_stream(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
@@ -2503,7 +2494,7 @@ fn build_output_stream(
     }
 }
 
-#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+#[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
 fn build_typed_output_stream<T>(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
@@ -2543,7 +2534,7 @@ where
     Ok((stream, callback_receiver))
 }
 
-#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+#[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
 fn emit_runtime_events(app: &AppHandle, shared: &Arc<Mutex<PlaybackShared>>) -> bool {
     let (snapshot, ended, error, terminal, cues, reporter, metronome_enabled) = {
         let mut shared = match shared.lock() {
@@ -2657,30 +2648,30 @@ fn emit_runtime_events(app: &AppHandle, shared: &Arc<Mutex<PlaybackShared>>) -> 
     should_stop_runtime_after_report(ended, terminal.is_some(), metronome_enabled)
 }
 
-#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+#[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
 fn should_emit_ended(ended_pending: bool, requires_error_handling: bool) -> bool {
     ended_pending && !requires_error_handling
 }
 
-#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+#[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
 fn should_stop_runtime_after_report(ended: bool, terminal: bool, metronome_enabled: bool) -> bool {
     terminal || (ended && !metronome_enabled)
 }
 
-#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+#[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
 struct LoadedPlaybackLanes {
     lanes: Vec<PlaybackLane>,
     workers: DecoderWorkers,
 }
 
-#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+#[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
 #[derive(Default)]
 struct DecoderWorkers {
     control_senders: Vec<mpsc::Sender<WorkerControl>>,
     threads: Vec<JoinHandle<()>>,
 }
 
-#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+#[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
 fn sourced_playback_lanes(
     raw_lanes: &[AudioLaneRequest],
 ) -> impl Iterator<Item = (usize, &AudioLaneRequest)> {
@@ -2690,7 +2681,7 @@ fn sourced_playback_lanes(
         .enumerate()
 }
 
-#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+#[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
 impl DecoderWorkers {
     fn into_parts(mut self) -> (Vec<mpsc::Sender<WorkerControl>>, Vec<JoinHandle<()>>) {
         (
@@ -2700,7 +2691,7 @@ impl DecoderWorkers {
     }
 }
 
-#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+#[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
 impl Drop for DecoderWorkers {
     fn drop(&mut self) {
         for sender in &self.control_senders {
@@ -2712,7 +2703,7 @@ impl Drop for DecoderWorkers {
     }
 }
 
-#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+#[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
 fn load_playback_lanes(
     app: &AppHandle,
     raw_lanes: &[AudioLaneRequest],
@@ -2803,7 +2794,7 @@ fn load_playback_lanes(
     Ok(LoadedPlaybackLanes { lanes, workers })
 }
 
-#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+#[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
 fn spawn_decoder_worker(
     lane_id: String,
     lane_ordinal: usize,
@@ -2974,7 +2965,7 @@ fn spawn_decoder_worker(
     Ok((sender, worker_thread))
 }
 
-#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+#[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
 fn push_or_defer_worker_samples(
     ring: &Arc<Mutex<RingBuffer>>,
     pending_samples: &mut Option<Vec<f32>>,
@@ -2989,18 +2980,18 @@ fn push_or_defer_worker_samples(
     }
 }
 
-#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+#[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
 enum StreamingDecoder {
     Wav(WavStreamDecoder),
     Symphonia(SymphoniaStreamDecoder),
 }
 
-#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+#[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
 trait WorkerDiagnosticsGenerationTarget {
     fn set_worker_diagnostics_generation(&mut self, generation: u64, lane_ordinal: usize);
 }
 
-#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+#[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
 fn apply_worker_control_diagnostics_generation<T: WorkerDiagnosticsGenerationTarget>(
     control: &WorkerControl,
     current_generation: &mut u64,
@@ -3024,7 +3015,7 @@ fn apply_worker_control_diagnostics_generation<T: WorkerDiagnosticsGenerationTar
     }
 }
 
-#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+#[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
 impl StreamingDecoder {
     fn open_with_diagnostics(
         path: PathBuf,
@@ -3129,19 +3120,19 @@ impl StreamingDecoder {
     }
 }
 
-#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+#[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
 impl WorkerDiagnosticsGenerationTarget for StreamingDecoder {
     fn set_worker_diagnostics_generation(&mut self, generation: u64, lane_ordinal: usize) {
         self.set_diagnostics_generation(generation, lane_ordinal);
     }
 }
 
-#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+#[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
 fn decoder_diagnostics_context(generation: u64, lane_ordinal: usize) -> Option<(u64, usize)> {
     (generation != 0).then_some((generation, lane_ordinal))
 }
 
-#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+#[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
 fn set_decoder_diagnostics_context(
     context: &mut Option<(u64, usize)>,
     generation: u64,
@@ -3150,7 +3141,7 @@ fn set_decoder_diagnostics_context(
     *context = decoder_diagnostics_context(generation, lane_ordinal);
 }
 
-#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+#[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
 struct WavStreamDecoder {
     file: File,
     audio_format: u16,
@@ -3167,7 +3158,7 @@ struct WavStreamDecoder {
     stretch: signalsmith_stretch::Stretch,
 }
 
-#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+#[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
 impl WavStreamDecoder {
     fn open(
         path: &Path,
@@ -3346,7 +3337,7 @@ impl WavStreamDecoder {
     }
 }
 
-#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+#[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
 struct SymphoniaStreamDecoder {
     format: Box<dyn FormatReader>,
     decoder: Box<dyn AudioDecoder>,
@@ -3359,7 +3350,7 @@ struct SymphoniaStreamDecoder {
     diagnostics_context: Option<(u64, usize)>,
 }
 
-#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+#[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
 impl SymphoniaStreamDecoder {
     fn open(
         path: PathBuf,
@@ -3525,7 +3516,7 @@ impl SymphoniaStreamDecoder {
     }
 }
 
-#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+#[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
 fn prepare_stream_chunk(
     samples: &[f32],
     source_channels: u32,
@@ -3563,7 +3554,7 @@ fn prepare_stream_chunk(
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+    #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
     use std::fs;
 
     fn capabilities() -> AudioCapabilities {
@@ -3743,7 +3734,7 @@ mod tests {
         render(true);
     }
 
-    #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+    #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
     fn stoppable_runtime(shared: PlaybackShared) -> (PlaybackRuntime, Vec<mpsc::Receiver<()>>) {
         let (audio_stop_sender, audio_stop_receiver) = mpsc::channel();
         let (audio_exited_sender, audio_exited_receiver) = mpsc::channel();
@@ -3794,7 +3785,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+    #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
     fn classifies_cpal_output_errors_without_exposing_backend_details() {
         let classified = [
             (
@@ -3880,7 +3871,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+    #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
     fn linux_xrun_policy_preserves_playing_runtime_until_a_fatal_output_error() {
         let mut shared =
             shared_with_lane(Arc::new(Mutex::new(RingBuffer::new(1_000))), 1_000, 1, 1.0);
@@ -3957,7 +3948,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+    #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
     fn terminal_error_precedes_recoverable_and_device_changed_events() {
         let mut device_changed_first =
             shared_with_lane(Arc::new(Mutex::new(RingBuffer::new(1_000))), 1_000, 1, 1.0);
@@ -4003,7 +3994,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+    #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
     fn terminal_error_suppresses_ended_notification_for_the_same_snapshot() {
         let mut shared =
             shared_with_lane(Arc::new(Mutex::new(RingBuffer::new(1_000))), 1_000, 1, 1.0);
@@ -4024,7 +4015,7 @@ mod tests {
         assert!(should_emit_ended(true, false));
     }
 
-    #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+    #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
     fn assert_sample_close(actual: f32, expected: f32) {
         assert!(
             (actual - expected).abs() < 0.000_1,
@@ -4032,7 +4023,7 @@ mod tests {
         );
     }
 
-    #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+    #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
     fn write_mono_i16_wav(path: &std::path::Path, sample_rate: u32, samples: &[i16]) {
         let data_size = samples.len().checked_mul(2).expect("wav data size");
         let chunk_size = 36usize.checked_add(data_size).expect("wav chunk size") as u32;
@@ -4117,7 +4108,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+    #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
     fn play_rejects_a_retained_terminal_runtime_error() {
         let shared = Arc::new(Mutex::new(shared_with_lane(
             Arc::new(Mutex::new(RingBuffer::new(1_000))),
@@ -4168,7 +4159,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+    #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
     fn runtime_start_failure_cleanup_stops_decoder_workers() {
         let (control_sender, control_receiver) = mpsc::channel();
         let (exited_sender, exited_receiver) = mpsc::channel();
@@ -4191,7 +4182,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+    #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
     fn stop_releases_failed_runtime_and_preserves_terminal_handoff_state() {
         let mut shared =
             shared_with_lane(Arc::new(Mutex::new(RingBuffer::new(1_000))), 1_000, 1, 1.0);
@@ -4228,7 +4219,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+    #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
     fn decoder_worker_exits_when_its_startup_owner_disconnects() {
         let path = std::env::temp_dir().join(format!(
             "tuneforge-decoder-worker-disconnect-test-{}.wav",
@@ -4257,7 +4248,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+    #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
     fn sourced_lanes_receive_loaded_ordinals_when_raw_lanes_are_sparse() {
         let lane = |id: &str, source_path: Option<&str>| AudioLaneRequest {
             id: id.to_string(),
@@ -4371,7 +4362,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+    #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
     fn pause_releases_runtime_workers_and_preserves_confirmed_position() {
         let mut shared =
             shared_with_lane(Arc::new(Mutex::new(RingBuffer::new(1_000))), 1_000, 1, 1.0);
@@ -4395,7 +4386,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+    #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
     fn stop_releases_runtime_workers_and_resets_position() {
         let mut shared =
             shared_with_lane(Arc::new(Mutex::new(RingBuffer::new(1_000))), 1_000, 1, 1.0);
@@ -4723,7 +4714,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+    #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
     fn offline_render_seek_starts_from_requested_wav_offset() {
         let sample_rate = 1_000;
         let path = std::env::temp_dir().join(format!(
@@ -4746,7 +4737,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+    #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
     fn tempo_and_seek_controls_attribute_skipped_events_to_active_generation() {
         assert_eq!(decoder_diagnostics_context(0, 3), None);
         let mut disabled_context = Some((9, 3));
@@ -5004,7 +4995,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+    #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
     fn standalone_enable_rolls_back_control_when_runtime_start_fails() {
         let mut transport = TransportState::default();
         transport.fail_next_runtime_start = true;
@@ -5031,7 +5022,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+    #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
     fn standalone_enable_preserves_paused_project_generation() {
         let mut transport = TransportState::default();
         transport.session_id = Some("project-session".into());
@@ -5051,7 +5042,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+    #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
     fn standalone_rejects_acquisition_while_active() {
         let mut transport = TransportState::default();
         let started = transport
@@ -5080,7 +5071,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+    #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
     fn standalone_terminal_retry_reaps_runtime_and_advances_generation() {
         let mut transport = TransportState::default();
         let started = transport
@@ -5116,7 +5107,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+    #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
     fn standalone_stop_rejects_delayed_acquisition_without_restarting_audio() {
         let mut transport = TransportState::default();
         let started = transport
@@ -5174,7 +5165,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+    #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
     fn standalone_disable_rolls_back_control_when_release_fails() {
         let mut transport = TransportState::default();
         let started = transport
@@ -5216,7 +5207,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+    #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
     fn pause_and_stop_keep_enabled_standalone_runtime_free_running() {
         let mut shared =
             shared_with_lane(Arc::new(Mutex::new(RingBuffer::new(1_000))), 1_000, 1, 1.0);
@@ -5252,7 +5243,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+    #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
     fn reporter_keeps_output_alive_after_end_only_for_enabled_metronome() {
         assert!(!should_stop_runtime_after_report(true, false, true));
         assert!(should_stop_runtime_after_report(true, false, false));
@@ -5260,7 +5251,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+    #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
     fn unavailable_playback_prepare_preserves_existing_standalone_runtime() {
         let ring = Arc::new(Mutex::new(RingBuffer::new(1_000)));
         let mut shared = shared_with_lane(ring, 1_000, 1, 1.0);
@@ -5377,7 +5368,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+    #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
     fn wav_stream_decoder_preserves_stereo_channels() {
         let path = std::env::temp_dir().join(format!(
             "tuneforge-transport-stereo-stream-test-{}.wav",

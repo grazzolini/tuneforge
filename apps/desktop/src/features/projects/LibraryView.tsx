@@ -1,5 +1,5 @@
-import { startTransition, useDeferredValue, useState } from "react";
-import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { startTransition, useDeferredValue, useState, type PropsWithChildren } from "react";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Music2, Upload } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
@@ -46,7 +46,26 @@ function formatUpdatedAt(value: string | null) {
   };
 }
 
-function ProjectCard({ project }: { project: ProjectSchema }) {
+function ProjectSummaryLink({
+  children,
+  isIOSRuntime,
+  project,
+}: PropsWithChildren<{ isIOSRuntime: boolean; project: ProjectSchema }>) {
+  if (isIOSRuntime) {
+    return <div className="project-card__link">{children}</div>;
+  }
+  return (
+    <Link
+      aria-label={`Open ${project.display_name} project`}
+      className="project-card__link"
+      to={`/projects/${project.id}`}
+    >
+      {children}
+    </Link>
+  );
+}
+
+function ProjectCard({ project, isIOSRuntime }: { project: ProjectSchema; isIOSRuntime: boolean }) {
   const { informationDensity } = usePreferences();
   const updatedAt = formatUpdatedAt(project.updated_at);
   const fileType = project.source_path.split(".").pop()?.toUpperCase() ?? "Audio";
@@ -55,11 +74,7 @@ function ProjectCard({ project }: { project: ProjectSchema }) {
 
   return (
     <article className="project-card project-library-row">
-      <Link
-        aria-label={`Open ${project.display_name} project`}
-        className="project-card__link"
-        to={`/projects/${project.id}`}
-      >
+      <ProjectSummaryLink isIOSRuntime={isIOSRuntime} project={project}>
         <span className="project-library-row__icon" aria-hidden="true">
           <Music2 />
         </span>
@@ -109,21 +124,23 @@ function ProjectCard({ project }: { project: ProjectSchema }) {
           ) : null}
         </div>
 
-      </Link>
+      </ProjectSummaryLink>
 
-      <details className="card-details">
-        <summary>Show file details</summary>
-        <dl className="details-grid details-grid--single-column">
-          <div>
-            <dt>Original Source</dt>
-            <dd className="path">{project.source_path}</dd>
-          </div>
-          <div>
-            <dt>Imported Audio</dt>
-            <dd className="path">{project.imported_path}</dd>
-          </div>
-        </dl>
-      </details>
+      {!isIOSRuntime ? (
+        <details className="card-details">
+          <summary>Show file details</summary>
+          <dl className="details-grid details-grid--single-column">
+            <div>
+              <dt>Original Source</dt>
+              <dd className="path">{project.source_path}</dd>
+            </div>
+            <div>
+              <dt>Imported Audio</dt>
+              <dd className="path">{project.imported_path}</dd>
+            </div>
+          </dl>
+        </details>
+      ) : null}
     </article>
   );
 }
@@ -285,6 +302,13 @@ export function LibraryView() {
   const [importPendingPhase, setImportPendingPhase] = useState<ImportPendingPhase | null>(null);
   const deferredSearch = useDeferredValue(searchDraft.trim());
   const showSubtitle = informationDensity !== "minimal";
+  const mobileCapabilitiesQuery = useQuery({
+    queryKey: ["runtime", "mobile-capabilities"],
+    queryFn: () => api.getMobileCapabilities(),
+  });
+  const isIOSHost = /\b(iPhone|iPad|iPod)\b/i.test(navigator.userAgent)
+    || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  const isIOSRuntime = mobileCapabilitiesQuery.data?.platform === "ios";
 
   const projectsQuery = useInfiniteQuery({
     queryKey: ["projects", deferredSearch],
@@ -308,6 +332,7 @@ export function LibraryView() {
     isFetchingNextPage,
     isLoading: isProjectsLoading,
     isRefetchError,
+    refetch: refetchProjects,
   } = projectsQuery;
 
   const importMutation = useMutation({
@@ -459,11 +484,13 @@ export function LibraryView() {
           <h1>Practice Projects</h1>
           {showSubtitle ? (
             <p className="screen__subtitle">
-              Keep songs, saved mixes, and stem-ready practice sessions close to playback.
+              {isIOSRuntime
+                ? "Browse projects synced from a trusted desktop."
+                : "Keep songs, saved mixes, and stem-ready practice sessions close to playback."}
             </p>
           ) : null}
         </div>
-        <div className="screen__title-block">
+        {(!isIOSHost || mobileCapabilitiesQuery.isSuccess) && !isIOSRuntime ? <div className="screen__title-block">
           <button
             className="button button--primary"
             onClick={() => importMutation.mutate()}
@@ -477,7 +504,7 @@ export function LibraryView() {
               {pendingImportCopy.guidance}
             </p>
           ) : null}
-        </div>
+        </div> : null}
       </div>
 
       {importNotice ? (
@@ -547,7 +574,8 @@ export function LibraryView() {
       ) : null}
       {showInitialError ? (
         <div className="panel panel--error" role="alert">
-          Could not load projects.
+          Could not load projects.{" "}
+          <button onClick={() => void refetchProjects()} type="button">Retry</button>
         </div>
       ) : null}
       {showRefetchError ? (
@@ -565,7 +593,9 @@ export function LibraryView() {
               <span>Updated</span>
               <span>Format / Duration</span>
             </div>
-            {projects.map((project) => <ProjectCard key={project.id} project={project} />)}
+            {projects.map((project) => (
+              <ProjectCard isIOSRuntime={isIOSHost || isIOSRuntime} key={project.id} project={project} />
+            ))}
           </>
         ) : showEmptyState ? (
           <div className="panel panel--empty">
@@ -573,7 +603,9 @@ export function LibraryView() {
             <p>
               {deferredSearch
                 ? "Try a different name or clear the search."
-                : "Import audio or video to create a local project. Processing stays on this device, and Activity shows queue progress."}
+                : isIOSRuntime
+                  ? "Pair with TuneForge on your desktop, then use Activity to sync projects here."
+                  : "Import audio or video to create a local project. Processing stays on this device, and Activity shows queue progress."}
             </p>
           </div>
         ) : null}

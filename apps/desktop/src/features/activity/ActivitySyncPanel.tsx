@@ -2251,6 +2251,7 @@ export function ActivitySyncPanel() {
   }, [pairingInputValue]);
 	  const qrScanSupported = mobileCapabilitiesQuery.data?.platform === "android";
 	  const isAndroidRuntime = mobileCapabilitiesQuery.data?.platform === "android";
+    const isIOSRuntime = mobileCapabilitiesQuery.data?.platform === "ios";
     const pairingPrerequisitesUnavailable = identityQuery.isError || peersQuery.isError;
 
   const refreshSyncQueries = useCallback(async () => {
@@ -2797,6 +2798,11 @@ export function ActivitySyncPanel() {
   }
 
   const listenerMutationPending = startListenerMutation.isPending || stopListenerMutation.isPending;
+  const listenerMutationErrorMessage = startListenerMutation.isError
+    ? "Sync listener could not start. Pairing with a listening peer and Sync Now remain available."
+    : stopListenerMutation.isError
+      ? "Sync listener could not stop. Try again."
+      : null;
   const pairingPayloadPending = answerPairingOfferMutation.isPending || trustPeerMutation.isPending;
   const pairingInputInvalid = Boolean(pairingInputValue && decodedPairingInput.error);
   const trustedPeers = peersQuery.data ?? [];
@@ -2854,7 +2860,7 @@ export function ActivitySyncPanel() {
       <div className="panel-heading activity-sync-panel__heading">
         <div>
           <h2 id="activity-sync-heading">Sync</h2>
-          <p className="subpanel__copy">Native LAN transport lab for trusted desktop peers.</p>
+          <p className="subpanel__copy">Native LAN sync for trusted desktop peers.</p>
         </div>
         <button
           className="button button--ghost button--small"
@@ -2865,6 +2871,12 @@ export function ActivitySyncPanel() {
           {listenerMutationPending ? "Updating..." : listenerActive ? "Stop Listener" : "Start Listener"}
         </button>
       </div>
+
+      {listenerMutationErrorMessage ? (
+        <p className="activity-sync-alert activity-sync-alert--error" role="alert">
+          {listenerMutationErrorMessage}
+        </p>
+      ) : null}
 
       <div className="activity-sync-grid">
         <section className="activity-sync-section" aria-labelledby="activity-sync-listener-heading">
@@ -2897,14 +2909,16 @@ export function ActivitySyncPanel() {
               >
                 Copy Evidence
               </button>
-              <button
-                className="button button--ghost button--small"
-                disabled={!visibleSyncResult || evidenceActionPending !== null}
-                onClick={handleExportSyncEvidence}
-                type="button"
-              >
-                {evidenceActionPending === "export" ? "Exporting…" : "Export Evidence"}
-              </button>
+              {!isIOSRuntime ? (
+                  <button
+                    className="button button--ghost button--small"
+                    disabled={!visibleSyncResult || evidenceActionPending !== null}
+                    onClick={handleExportSyncEvidence}
+                    type="button"
+                  >
+                    {evidenceActionPending === "export" ? "Exporting…" : "Export Evidence"}
+                  </button>
+              ) : null}
             </div>
           </div>
           <dl className="activity-sync-facts">
@@ -2976,11 +2990,6 @@ export function ActivitySyncPanel() {
               {retryableInterruptionText(retryableInterruption)}
             </p>
           ) : null}
-          {startListenerMutation.isError || stopListenerMutation.isError ? (
-            <p className="activity-sync-alert activity-sync-alert--error" role="alert">
-              Could not update the sync listener.
-            </p>
-          ) : null}
           {lastSyncMessage ? (
             <p className="activity-sync-alert" role="status">
               {lastSyncMessage}
@@ -3039,7 +3048,7 @@ export function ActivitySyncPanel() {
                     value={pairingOutput.code}
                   />
                 </label>
-                <div
+                {!isIOSRuntime ? <div
                   aria-label={
                     pairingOutput.kind === "response"
                       ? "Pairing response QR code"
@@ -3056,7 +3065,7 @@ export function ActivitySyncPanel() {
                     size={288}
                     value={pairingOutput.code}
                   />
-                </div>
+                </div> : null}
               </div>
               <button
                 className="button button--ghost button--small"
@@ -3268,7 +3277,7 @@ export function ActivitySyncPanel() {
         ))}
       </section>
 
-      <section className="activity-sync-section activity-sync-section--nearby" aria-labelledby="activity-sync-nearby-heading">
+      {!isIOSRuntime ? <section className="activity-sync-section activity-sync-section--nearby" aria-labelledby="activity-sync-nearby-heading">
         <div className="activity-sync-section__header">
           <h3 id="activity-sync-nearby-heading">Nearby Devices</h3>
           <span className="metric-label">{nearbyPeers.length} nearby</span>
@@ -3352,7 +3361,7 @@ export function ActivitySyncPanel() {
             })}
           </ul>
         ) : null}
-      </section>
+      </section> : null}
 
       <section className="activity-sync-section activity-sync-section--peers" aria-labelledby="activity-sync-peers-heading">
         <div className="activity-sync-section__header">

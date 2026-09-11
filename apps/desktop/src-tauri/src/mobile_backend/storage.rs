@@ -365,9 +365,117 @@ pub(super) fn db_at_root(root: &Path) -> Result<Connection, String> {
     let connection =
         Connection::open(root.join("mobile.sqlite3")).map_err(|error| error.to_string())?;
     migrate_mobile_db(&connection)?;
+    #[cfg(target_os = "ios")]
+    relocate_ios_paths(&connection, root)?;
     mark_interrupted_jobs_on_first_open(root, &connection)?;
     ensure_local_identity(&connection)?;
     Ok(connection)
+}
+
+#[cfg(any(target_os = "ios", test))]
+fn ios_relocated_path(root: &Path, project_id: &str, stored_path: &str) -> Result<PathBuf, String> {
+    let stored_path = Path::new(stored_path);
+    let stored_path_text = stored_path
+        .to_str()
+        .ok_or_else(|| "Stored iOS project path is not valid UTF-8.".to_string())?;
+    let separator = std::path::MAIN_SEPARATOR;
+    let marker = format!("{separator}projects{separator}{project_id}{separator}");
+    let mut parts = stored_path_text.split(&marker);
+    let (Some(prefix), Some(relative), None) = (parts.next(), parts.next(), parts.next()) else {
+        return Err("Stored iOS project path cannot be safely relocated.".to_string());
+    };
+    if !stored_path.is_absolute() || prefix.is_empty() || relative.is_empty() {
+        return Err("Stored iOS project path cannot be safely relocated.".to_string());
+    }
+    let project_root = project_root_path(root, project_id)?;
+    Ok(project_root.join(safe_relative_path(relative)?))
+}
+
+#[cfg(any(target_os = "ios", test))]
+pub(super) fn relocate_ios_paths(connection: &Connection, root: &Path) -> Result<(), String> {
+    let _storage_guard = super::storage_cleanup::project_storage_mutation_guard();
+    let transaction =
+        rusqlite::Transaction::new_unchecked(connection, rusqlite::TransactionBehavior::Immediate)
+            .map_err(|error| error.to_string())?;
+    let rows = {
+        let mut statement = transaction
+            .prepare(&format!(
+                "SELECT {ARTIFACT_COLUMNS} FROM artifacts WHERE project_id IN (SELECT id FROM projects WHERE sync_status != 'deleted')"
+            ))
+            .map_err(|error| error.to_string())?;
+        let mapped = statement
+            .query_map([], row_artifact)
+            .map_err(|error| error.to_string())?;
+        mapped
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?
+    };
+    let mut changes = Vec::new();
+    for artifact in rows {
+        if Path::new(&artifact.path).starts_with(root) {
+            continue;
+        }
+        let new_path = ios_relocated_path(root, &artifact.project_id, &artifact.path)?;
+        let expected_sha256 = artifact
+            .content_sha256
+            .as_deref()
+            .ok_or_else(|| "Stored iOS artifact lacks SHA-256 metadata.".to_string())
+            .and_then(|value| normalize_sha256(value, "content_sha256"))?;
+        let metadata = fs::symlink_metadata(&new_path)
+            .map_err(|_| "Relocated iOS artifact is missing.".to_string())?;
+        if !metadata.file_type().is_file() {
+            return Err("Relocated iOS artifact is not a regular file.".to_string());
+        }
+        let project_root = project_root_path(root, &artifact.project_id)?;
+        let owned =
+            super::storage_cleanup::capture_owned_project_file(root, &project_root, &new_path)?;
+        super::storage_cleanup::require_owned_project_file(&owned)?;
+        if metadata.len() as i64 != artifact.size_bytes
+            || file_sha256(&new_path)? != expected_sha256
+        {
+            return Err("Relocated iOS artifact does not match its registration.".to_string());
+        }
+        super::storage_cleanup::require_owned_project_file(&owned)?;
+        changes.push((artifact.id, artifact.project_id, artifact.path, new_path));
+    }
+    for (artifact_id, project_id, old_path, new_path) in &changes {
+        let new_path = new_path.to_string_lossy();
+        transaction
+            .execute(
+                "UPDATE artifacts SET path = ?1 WHERE id = ?2 AND path = ?3",
+                params![new_path.as_ref(), artifact_id, old_path],
+            )
+            .map_err(|error| error.to_string())?;
+        transaction
+                .execute(
+                    "UPDATE projects SET source_path = CASE WHEN source_path = ?1 THEN ?2 ELSE source_path END, imported_path = CASE WHEN imported_path = ?1 THEN ?2 ELSE imported_path END WHERE id = ?3",
+                    params![old_path, new_path.as_ref(), project_id],
+                )
+                .map_err(|error| error.to_string())?;
+    }
+    let paths = {
+        let mut statement = transaction
+            .prepare(
+                "SELECT source_path, imported_path FROM projects WHERE sync_status != 'deleted'",
+            )
+            .map_err(|error| error.to_string())?;
+        let mapped = statement
+            .query_map([], |row| {
+                Ok([row.get::<_, String>(0)?, row.get::<_, String>(1)?])
+            })
+            .map_err(|error| error.to_string())?;
+        mapped
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?
+    };
+    if paths
+        .into_iter()
+        .flatten()
+        .any(|path| !path.is_empty() && !Path::new(&path).starts_with(root))
+    {
+        return Err("Stored iOS project path has no verified artifact registration.".to_string());
+    }
+    transaction.commit().map_err(|error| error.to_string())
 }
 
 fn mark_interrupted_jobs_on_first_open(root: &Path, connection: &Connection) -> Result<(), String> {
@@ -390,6 +498,7 @@ fn mark_interrupted_jobs_on_first_open(root: &Path, connection: &Connection) -> 
             .map_err(|error| error.to_string())?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|error| error.to_string())?;
+        #[cfg(target_os = "android")]
         super::export::fail_interrupted_exports(connection)?;
         fail_interrupted_audio_transforms(connection)?;
         for project_id in project_ids {
@@ -1481,6 +1590,7 @@ pub fn mobile_register_sync_staged_reference(
     )
 }
 
+#[cfg(target_os = "android")]
 pub(super) fn can_upgrade_project_placeholder(
     project: &ProjectSchema,
     project_id: &str,
@@ -1514,6 +1624,7 @@ pub(super) fn delete_project_rows(connection: &Connection, project_id: &str) -> 
     Ok(())
 }
 
+#[cfg(target_os = "android")]
 pub(super) fn discard_deleted_project_placeholders(
     connection: &Connection,
     root: &Path,
@@ -1561,6 +1672,7 @@ pub(super) fn discard_deleted_project_placeholders(
     Ok(())
 }
 
+#[cfg(target_os = "android")]
 pub(super) fn clear_project_delete_tombstones_for_reimport(
     connection: &Connection,
     project_id: &str,
@@ -1573,10 +1685,12 @@ pub(super) fn clear_project_delete_tombstones_for_reimport(
         .map_err(|error| error.to_string())?;
     Ok(())
 }
+#[cfg(target_os = "android")]
 pub(super) fn is_android_file_uri(source_path: &str) -> bool {
     source_path.starts_with("content://") || source_path.starts_with("file://")
 }
 
+#[cfg(target_os = "android")]
 pub(super) fn source_filename(app: &AppHandle, source_path: &str) -> String {
     if is_android_file_uri(source_path) {
         return app
@@ -1594,6 +1708,7 @@ pub(super) fn source_filename(app: &AppHandle, source_path: &str) -> String {
         .to_string()
 }
 
+#[cfg(target_os = "android")]
 pub(super) fn source_stem(file_name: &str) -> String {
     Path::new(file_name)
         .file_stem()
@@ -1635,6 +1750,7 @@ pub(super) fn hex_digest(bytes: &[u8]) -> String {
     output
 }
 
+#[cfg(target_os = "android")]
 pub(super) fn copy_source_into_project(
     app: &AppHandle,
     source_path: &str,
@@ -1750,6 +1866,7 @@ pub fn mobile_list_projects(
     })
 }
 
+#[cfg(target_os = "android")]
 pub fn mobile_import_project(
     app: AppHandle,
     payload: ProjectImportRequest,
@@ -1938,6 +2055,7 @@ pub fn mobile_import_project(
     Ok(ProjectResponse { project })
 }
 
+#[cfg(any(target_os = "android", test))]
 struct ImportAudioProperties {
     duration_seconds: f64,
     sample_rate: u32,

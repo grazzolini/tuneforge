@@ -9,11 +9,11 @@ const PROJECT_ID_PREFIX: &str = "proj_sha256_";
 const SYNC_PROJECT_MANIFEST_SCHEMA_VERSION: &str = "1";
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 const SYNC_PAIRING_PROTOCOL_VERSION: &str = "tuneforge-sync-v1";
-#[cfg(any(test, target_os = "android"))]
+#[cfg(any(test, mobile))]
 const TRANSPORT_HANDSHAKE_CHALLENGE_TYPE: &str = "transport_handshake";
-#[cfg(any(test, target_os = "android"))]
+#[cfg(any(test, mobile))]
 const TRANSPORT_HANDSHAKE_MAX_TTL_SECONDS: i64 = 300;
-#[cfg(any(test, target_os = "android"))]
+#[cfg(any(test, mobile))]
 const TRANSPORT_HANDSHAKE_CLOCK_SKEW_SECONDS: i64 = 30;
 #[cfg(not(target_os = "android"))]
 const MOBILE_UNAVAILABLE: &str = "Mobile embedded backend is only available in Android builds.";

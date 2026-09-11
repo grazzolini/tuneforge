@@ -16,6 +16,7 @@
     "dev:android:studio": "pnpm --filter @tuneforge/desktop android:studio",
     "dev:backend": "bash scripts/run-backend-module.sh uvicorn app.main:app --reload --host 127.0.0.1 --port 8765",
     "dev:desktop": "pnpm --filter @tuneforge/desktop tauri dev",
+    "history:languages": "bash -c 'if [[ \"${1:-}\" == \"--\" ]]; then shift; fi; invocation_dir=\"${INIT_CWD:-$PWD}\"; cd apps/backend && uv run --python 3.11 python ../../scripts/language-history.py --output-dir \"${invocation_dir}/linguist-animation\" \"$@\"' --",
     "lint": "pnpm --filter @tuneforge/desktop lint && bash scripts/run-backend-module.sh ruff check . && bash scripts/run-backend-module.sh mypy app",
     "models:demucs:prepare": "bash -c 'if [[ \"${1:-}\" == \"--\" ]]; then shift; fi; export TUNEFORGE_DEMUCS_PREPARE_BASE_DIR=\"${INIT_CWD:-$PWD}\"; exec bash scripts/run-backend-module.sh app.cli.prepare_demucs_models \"$@\"' --",
     "package:android": "pnpm --filter @tuneforge/desktop android:build",

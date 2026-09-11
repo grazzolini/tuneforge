@@ -7,6 +7,8 @@ download, installation, verification, signature, and publication instructions.
 
 ### Added
 
+- Added local GitHub Linguist language-history tooling that renders reproducible CSV, PNG, GIF, and
+  MP4 artifacts while keeping generated media outside the repository.
 - Added simulator-only iOS project persistence and manual TCP sync with trusted desktop peers,
   including synced project metadata in Library.
 - Added simulator-only iOS playback for synced registered WAV sources, practice mixes, and stems,

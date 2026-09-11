@@ -30,6 +30,12 @@ This file is the source of truth for dependency and model-weight distribution po
 - **Source:** <https://github.com/mozilla/sccache/tree/v0.17.0>
 - **Notes:** The pinned x86_64 musl release binary accelerates Rust compilation during Linux Flatpak builds. It is build-only and is removed from the final Tuneforge package.
 
+### Pillow
+
+- **License:** HPND
+- **Source:** <https://github.com/python-pillow/Pillow>
+- **Notes:** Development-only renderer for the repository language-history animation. It is not bundled into TuneForge runtime artifacts.
+
 ## Runtime Dependencies (bundled or required)
 
 ### Demucs

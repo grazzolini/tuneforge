@@ -58,6 +58,24 @@ Security reports follow the process in [SECURITY.md](./SECURITY.md). "There is n
 - [Mobile architecture](./docs/MOBILE.md)
 - [References](./docs/REFERENCES.md)
 
+## Repository History
+
+Render a local GitHub Linguist language-history animation for the current checkout:
+
+```sh
+pnpm history:languages
+```
+
+Generated PNG frames, CSV, GIF, and MP4 stay in `linguist-animation/`, which is ignored. The command
+requires Docker, FFmpeg, and the development Python environment. To refresh and render current
+`origin/main` without checking it out, run:
+
+```sh
+pnpm history:languages -- --ref origin/main --refresh
+```
+
+Use `pnpm history:languages -- --render-only` after changing only the animation renderer.
+
 ## Prerequisites
 
 - `pnpm` (version pinned in [package.json](./package.json))

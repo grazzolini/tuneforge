@@ -63,6 +63,7 @@ apps/desktop/src-tauri/gen/
 packages/shared-types/openapi.json
 apps/site/public/media/generated/
 stem-waveforms/
+linguist-animation/
 data/
 *.sqlite3
 *.db

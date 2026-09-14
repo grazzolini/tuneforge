@@ -56,6 +56,7 @@ const selectedPythonExtras = [
   ...(packageOptions.beatThis ? ["advanced-beats"] : []),
   ...(packageOptions.lvChordia ? ["lv-chordia"] : []),
 ];
+export const flatpakPythonBuildRequirementNames = Object.freeze(["setuptools", "wheel", "hatchling"]);
 
 function readRequiredFile(filePath) {
   return readFileSync(filePath, "utf8");
@@ -807,7 +808,7 @@ function generatePythonSources() {
     }
     extensionPackageCount += packageRows(packages).length;
   }
-  const buildRequirementNames = ["setuptools", "wheel", ...(packageOptions.lvChordia ? ["hatchling"] : [])];
+  const buildRequirementNames = flatpakPythonBuildRequirementNames;
   const buildPackages = resolveNamedPythonPackages(lockedPackages, buildRequirementNames);
   const runtimePackageNames = new Set(runtimePackages.map((pkg) => packageIdentity(pkg)));
   const packages = Array.from(

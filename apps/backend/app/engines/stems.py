@@ -26,7 +26,7 @@ from app.utils.torch_runtime import with_mps_fallback_env
 
 
 def _require_demucs_dependency() -> None:
-    if importlib.util.find_spec("demucs") is None:
+    if importlib.util.find_spec("demucs_infer") is None:
         raise demucs_dependency_missing_error()
 
 

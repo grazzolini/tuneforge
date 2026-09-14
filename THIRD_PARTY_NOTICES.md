@@ -38,11 +38,13 @@ This file is the source of truth for dependency and model-weight distribution po
 
 ## Runtime Dependencies (bundled or required)
 
-### Demucs
+### demucs-infer 4.2.2
 
 - **License:** MIT
-- **Source:** <https://github.com/facebookresearch/demucs>
-- **Notes:** Used for source separation. Installed via `pip` as a normal Python dependency.
+- **Source:** <https://github.com/openmirlab/demucs-infer/tree/4b79d5c756ce298503d90b0cca2abbc76c565416>
+- **Notes:** Used for source separation from the immutable source archive pinned in
+  `apps/backend/pyproject.toml`. TuneForge loads its pinned YAML+safetensors models through a
+  native strict loader and does not use the package's legacy pickle checkpoint loader.
 
 ### htdemucs_6s / htdemucs_ft model weights
 

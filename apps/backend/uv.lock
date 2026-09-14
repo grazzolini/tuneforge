@@ -268,24 +268,39 @@ wheels = [
 ]
 
 [[package]]
-name = "demucs"
-version = "4.1.0"
-source = { registry = "https://pypi.org/simple" }
+name = "demucs-infer"
+version = "4.2.2"
+source = { url = "https://github.com/openmirlab/demucs-infer/archive/4b79d5c756ce298503d90b0cca2abbc76c565416.tar.gz" }
 dependencies = [
     { name = "einops" },
-    { name = "huggingface-hub" },
     { name = "julius" },
-    { name = "lameenc" },
+    { name = "numpy" },
     { name = "pyyaml" },
-    { name = "safetensors" },
-    { name = "sphn" },
+    { name = "soundfile" },
     { name = "torch" },
+    { name = "torchaudio" },
     { name = "tqdm" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/cd/0a/fe873fc9d9576de2b20fd6421857b189dee951b89305977f6c37416a8d42/demucs-4.1.0.tar.gz", hash = "sha256:d94c4f7dac886595b66af405c0fd1756fa00c297183f1cf021fd2eeedeeb67b2", size = 1244351, upload-time = "2026-07-11T14:52:27.43Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/68/93/6f338f3f5c53522406dc32cd3b8a59abde20ac80d33604aa9dc8c82450e5/demucs-4.1.0-py3-none-any.whl", hash = "sha256:4916a804702033ce934a6cdfa7e38dde03f7a7a6e85f41d0120eefe9e2966758", size = 100567, upload-time = "2026-07-11T14:52:25.934Z" },
+sdist = { hash = "sha256:ce17f629bad9a22d16b6d13231a0dcd5f5c298e22594dde5d5a268d50ea44e94" }
+
+[package.metadata]
+requires-dist = [
+    { name = "black", marker = "extra == 'dev'" },
+    { name = "diffq", marker = "extra == 'quantized'", specifier = ">=0.2.1" },
+    { name = "einops" },
+    { name = "gdown", marker = "extra == 'community'", specifier = ">=5.0.0" },
+    { name = "julius", specifier = ">=0.2.3" },
+    { name = "lameenc", marker = "extra == 'mp3'", specifier = ">=1.2" },
+    { name = "numpy" },
+    { name = "pyyaml" },
+    { name = "ruff", marker = "extra == 'dev'" },
+    { name = "soundfile", specifier = ">=0.12.1" },
+    { name = "torch", specifier = ">=2.0.0" },
+    { name = "torchaudio", specifier = ">=2.0.0" },
+    { name = "torchcodec", marker = "extra == 'torchcodec'" },
+    { name = "tqdm" },
 ]
+provides-extras = ["community", "dev", "mp3", "quantized", "torchcodec"]
 
 [[package]]
 name = "einops"
@@ -512,19 +527,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/1d/c6/5c2aea2b11ead1680bb5b17c996def31f8ccade471cada37cdb93855e06f/julius-0.2.8.tar.gz", hash = "sha256:d691e651200930affea4f6c849c26e95fec846087281ae3d1a7757eac90253d5", size = 48081, upload-time = "2026-06-03T16:05:34.52Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/86/43/efdb0bcb07c47826fa55857cec0deb743f74cd83b6ba5ec9e413505a72e6/julius-0.2.8-py3-none-any.whl", hash = "sha256:6891235cbc355e629d839f87489bff8ca46e57a0e7cc35abb909c7a2aa538c25", size = 21819, upload-time = "2026-06-03T16:05:33.443Z" },
-]
-
-[[package]]
-name = "lameenc"
-version = "1.8.4"
-source = { registry = "https://pypi.org/simple" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/13/57/44735025842e06e5e00f37049585df1ab45922b91d874bcce85110dc9deb/lameenc-1.8.4-cp314-cp314-macosx_10_15_universal2.whl", hash = "sha256:55e468c75354fd3a1874282d4b23b605137025dca9b024bb8be8f4e91c5169e5", size = 189543, upload-time = "2026-06-27T15:03:23.256Z" },
-    { url = "https://files.pythonhosted.org/packages/97/d6/14e15129caa7cb4d2cb5c6b2b030d0bbc87ab9c7224be2a84d88997b3e78/lameenc-1.8.4-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:859fa9f05e0c7e825efb72431f8243bcc4318c71ff3b4d57c7cebaed6fcadb65", size = 183350, upload-time = "2026-06-27T15:03:11.532Z" },
-    { url = "https://files.pythonhosted.org/packages/36/d6/224f9055296dfd16e44da364220167c2612402906fcc53e9e882d6bc72cc/lameenc-1.8.4-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:c6527a8ae8ac078010a1fecc697145e7be1bb163cd5092b5c32d4332b6430886", size = 247729, upload-time = "2026-06-27T14:58:58.417Z" },
-    { url = "https://files.pythonhosted.org/packages/43/6c/2298da206cdeac946cafc07d9e04d48e457874c96e6f5c8676cce39c83a0/lameenc-1.8.4-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_34_x86_64.whl", hash = "sha256:d44282c566712e42aee1624b5e406a9f277ae5395b729338bd20d844a98eb770", size = 247696, upload-time = "2026-06-27T15:03:02.216Z" },
-    { url = "https://files.pythonhosted.org/packages/32/af/668d9fc052852dd04fcb7093d55bd88484c2821bc0132adb75b017ede7c6/lameenc-1.8.4-cp314-cp314t-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:6a4948b98574c025e8902af0aaba905ce9bf032a0b6ce6a578b64817611860e5", size = 249448, upload-time = "2026-06-27T14:58:59.78Z" },
-    { url = "https://files.pythonhosted.org/packages/b7/d9/be995262968580b08e88e47d2e7a0192dce209009d554569a50a8335674c/lameenc-1.8.4-cp314-cp314t-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_34_x86_64.whl", hash = "sha256:970685ae4ac246dccc177e3dad16a27187582cd4cdc57208e894e6bf860699d7", size = 249276, upload-time = "2026-06-27T15:03:03.77Z" },
 ]
 
 [[package]]
@@ -1275,16 +1277,6 @@ wheels = [
 ]
 
 [[package]]
-name = "sphn"
-version = "0.2.1"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/b7/94/0957f866030d6071bcfd285977ff3652bacf85e663a634d3172cf47055a7/sphn-0.2.1.tar.gz", hash = "sha256:3b19b1fece67d979d84080458bed545d1f55ddc5abac6ca5deae2672a184c7fe", size = 33477, upload-time = "2026-01-07T12:00:32.277Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/ba/32/8b02902e52184526b666584eea85575acc12840ddd4d4f95ffca246c23b3/sphn-0.2.1-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:051458b6ab24a0c39d53b3ffe2ea83f675ae9fcc443591570caad3552fae4a78", size = 1752795, upload-time = "2026-01-07T12:00:31.04Z" },
-    { url = "https://files.pythonhosted.org/packages/91/73/bffe894f8f06ac5c38a20be99c2854afb43492e0fc193a90f4c62d0813e7/sphn-0.2.1-cp314-cp314-manylinux_2_24_x86_64.whl", hash = "sha256:a793040472e4039fd05ae4d33c75c3f51eea75f94cafc9e54a4ea4cf6df480d7", size = 18086868, upload-time = "2026-01-07T12:00:19.463Z" },
-]
-
-[[package]]
 name = "sqlalchemy"
 version = "2.0.52"
 source = { registry = "https://pypi.org/simple" }
@@ -1434,13 +1426,14 @@ dependencies = [
     { name = "alembic" },
     { name = "audioop-lts" },
     { name = "cryptography" },
-    { name = "demucs" },
+    { name = "demucs-infer" },
     { name = "fastapi" },
     { name = "huggingface-hub" },
     { name = "librosa" },
     { name = "numpy" },
     { name = "openai-whisper" },
     { name = "pydantic" },
+    { name = "safetensors" },
     { name = "soundfile" },
     { name = "sqlalchemy" },
     { name = "uvicorn" },
@@ -1477,7 +1470,7 @@ requires-dist = [
     { name = "audioop-lts", marker = "python_full_version >= '3.13'", specifier = ">=0.2.2" },
     { name = "beat-this", marker = "extra == 'advanced-beats'", specifier = ">=1.1.0,<2.0.0" },
     { name = "cryptography", specifier = ">=50.0.1,<51.0.0" },
-    { name = "demucs", specifier = "==4.1.0" },
+    { name = "demucs-infer", url = "https://github.com/openmirlab/demucs-infer/archive/4b79d5c756ce298503d90b0cca2abbc76c565416.tar.gz" },
     { name = "fastapi", specifier = ">=0.141.1,<1.0.0" },
     { name = "huggingface-hub", specifier = ">=1.29.0,<2.0.0" },
     { name = "librosa", specifier = ">=1.0.0,<2.0.0" },
@@ -1487,6 +1480,7 @@ requires-dist = [
     { name = "onnxruntime", marker = "extra == 'advanced-chords-onnx'", specifier = "==1.29.0" },
     { name = "openai-whisper", specifier = ">=20250625,<20260000" },
     { name = "pydantic", specifier = ">=2.13.4,<3.0.0" },
+    { name = "safetensors", specifier = "==0.8.0" },
     { name = "soundfile", specifier = ">=0.14.0,<1.0.0" },
     { name = "sqlalchemy", specifier = ">=2.0.52,<3.0.0" },
     { name = "uvicorn", specifier = ">=0.52.4,<1.0.0" },

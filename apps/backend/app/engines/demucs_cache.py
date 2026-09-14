@@ -218,8 +218,9 @@ def load_demucs_model(
 
     paths_by_name = {path.name: path for path in paths}
     bag = _read_bag_definition(paths_by_name[model.yaml_file], model)
-    from demucs.apply import BagOfModels
-    from demucs.hf import load_safetensors_model
+    from demucs_infer.apply import BagOfModels
+
+    from app.engines.demucs_safetensors import load_safetensors_model
 
     loaded_models = [
         load_safetensors_model(paths_by_name[f"{signature}.safetensors"])

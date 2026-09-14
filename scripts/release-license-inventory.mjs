@@ -49,7 +49,7 @@ export const REVIEWED_FLATPAK_PYTHON_LICENSES = Object.freeze({
   alembic: "MIT", "annotated-doc": "MIT", "annotated-types": "MIT", anyio: "MIT",
   "audioop-lts": "PSF-2.0", certifi: "MPL-2.0", cffi: "MIT", "charset-normalizer": "MIT",
   click: "BSD-3-Clause", cryptography: "Apache-2.0 OR BSD-3-Clause", decorator: "BSD-2-Clause",
-  "beat-this": "MIT", demucs: "MIT", einops: "MIT", fastapi: "MIT", filelock: "Unlicense",
+  "beat-this": "MIT", "demucs-infer": "MIT", einops: "MIT", fastapi: "MIT", filelock: "Unlicense",
   flatbuffers: "Apache-2.0", fsspec: "BSD-3-Clause",
   greenlet: "MIT", h11: "MIT", "hf-xet": "Apache-2.0", httpcore: "BSD-3-Clause",
   httpx: "BSD-3-Clause", "huggingface-hub": "Apache-2.0", idna: "BSD-3-Clause",

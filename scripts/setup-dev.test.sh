@@ -14,6 +14,10 @@ mkdir -p \
 cp "${repo_root}/scripts/setup-dev.sh" "${fixture}/scripts/setup-dev.sh"
 cp "${repo_root}/scripts/sync-backend-default.sh" "${fixture}/scripts/sync-backend-default.sh"
 cp "${repo_root}/scripts/sync-backend-legacy-nvidia.sh" "${fixture}/scripts/sync-backend-legacy-nvidia.sh"
+cp "${repo_root}/scripts/verify-legacy-nvidia-setup.py" \
+  "${fixture}/scripts/verify-legacy-nvidia-setup.py"
+cp "${repo_root}/scripts/verify-legacy-nvidia-sync.py" \
+  "${fixture}/scripts/verify-legacy-nvidia-sync.py"
 
 cat > "${fixture}/scripts/configure-tauri-build-env.sh" <<'EOF'
 #!/usr/bin/env bash

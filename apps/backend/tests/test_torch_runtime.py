@@ -1106,6 +1106,8 @@ def _write_model_bundle_manifest(
     whisper_payload: bytes,
     crema_onnx_payloads: dict[str, bytes] | None = None,
 ) -> None:
+    from app.engines.crema_onnx import MODEL_REVISION
+
     crema_onnx_payloads = crema_onnx_payloads or {}
     (bundle_dir / "manifest.json").write_text(
         json.dumps(
@@ -1134,7 +1136,7 @@ def _write_model_bundle_manifest(
                         "label": f"fixture {name}",
                         "file_name": name,
                         "relative_path": (
-                            f"crema/0.2.0/65af18f49af5101267fd28f15ac8c452d98b8e3d/{name}"
+                            f"crema/0.2.0/{MODEL_REVISION}/{name}"
                         ),
                         "size": len(payload),
                         "sha256": hashlib.sha256(payload).hexdigest(),

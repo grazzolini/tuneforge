@@ -15,6 +15,8 @@ download, installation, verification, signature, and publication instructions.
   with native play, pause, stop, seek, loop, mute, and solo controls at 1.0x speed.
 - Added owned, offline LGPL FFmpeg conversion for macOS arm64 and Android arm64, API 26+, with
   durable WAV, FLAC, MP3, and M4A import, preview, retune, transpose, and Android export support.
+- Added local Android Advanced Beat Analysis with verified first-use model download, optional local
+  model bundling, cancellable job progress, and guarded beat, bar, and tempo persistence.
 
 ### Changed
 

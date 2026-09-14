@@ -77,7 +77,7 @@ This file is the source of truth for dependency and model-weight distribution po
 
 - **License:** PyPI metadata lists ISC; upstream `LICENSE.md` currently contains BSD-2-Clause terms.
 - **Source:** <https://github.com/bmcfee/crema>
-- **Notes:** Advanced Chords uses an ONNX format conversion of the Crema 0.2.0 model, not a TuneForge-trained model. The model and runtime state are pinned to immutable Hugging Face revision `65af18f49af5101267fd28f15ac8c452d98b8e3d` and included in every package that enables Advanced Chords. Package startup verifies and seeds the normal cache. Source/training provenance remains incomplete. The complete Brian McFee BSD-2-Clause notice is packaged at [`LICENSES/crema-0.2.0-BSD-2-Clause.txt`](./LICENSES/crema-0.2.0-BSD-2-Clause.txt).
+- **Notes:** Advanced Chords uses an ONNX format conversion of the Crema 0.2.0 model, not a TuneForge-trained model. The model and runtime state are pinned to immutable Hugging Face catalog revision `895b249c4ccabaedc0770b12935c2b7b2f60e145` and included in every package that enables Advanced Chords. Package startup verifies and seeds the normal cache. Source/training provenance remains incomplete. The complete Brian McFee BSD-2-Clause notice is packaged at [`LICENSES/crema-0.2.0-BSD-2-Clause.txt`](./LICENSES/crema-0.2.0-BSD-2-Clause.txt).
 
 ### ONNX Runtime / Advanced Chords backend
 
@@ -89,7 +89,13 @@ This file is the source of truth for dependency and model-weight distribution po
 
 - **License:** MIT
 - **Source:** <https://github.com/CPJKU/beat_this>
-- **Notes:** Advanced Beat Analysis is part of the default desktop/dev/package dependency set and can be excluded with `--no-beat-this` / `--no-advanced-beats`. Tuneforge does not bundle beat-this checkpoints by default. `pnpm setup:dev` preloads the selected `small0` checkpoint into the local PyTorch cache; if it is not preloaded, the first Advanced Beat Analysis run may download it through `beat-this`. Packages built with `--model-bundle` include the `small0` checkpoint when beat-this dependencies are included.
+- **Notes:** Advanced Beat Analysis is part of the default desktop/dev/package dependency set and can be excluded with `--no-beat-this` / `--no-advanced-beats`. Desktop uses the upstream Python runtime. Android uses the pinned, digest-verified FP32 ExecuTorch `small0` program from immutable Hugging Face catalog revision `895b249c4ccabaedc0770b12935c2b7b2f60e145` (`beat-this/beat-this-small0.pte`, 9,820,680 bytes, SHA-256 `03b512e135edeb4f4644a7f05fa13ae20ba676484997548f81118fec13d42293`). Default packages do not bundle beat-this checkpoints: Android downloads and verifies this program on first use, while desktop uses its existing local cache/download path. The explicit local/dev `--model-bundle` option embeds the same Android program or desktop checkpoint. Its verified availability does not grant redistribution approval for publishable artifacts.
+
+### ExecuTorch Android 1.4.0
+
+- **License:** BSD-3-Clause
+- **Source:** <https://github.com/pytorch/executorch/tree/v1.4.0>
+- **Notes:** Android Advanced Beat Analysis executes the FP32 `small0` program through the XNNPACK backend. Gradle resolves `org.pytorch:executorch-android:1.4.0`; packaging rejects the build unless the AAR digest is SHA-256 `a4a836b9fadd5b9afdf07b8533b2c3326695d04a58dd37e2cdfe709e804854fb`.
 
 ### lv-chordia / LV Chordia (Submission) backend and checkpoints
 

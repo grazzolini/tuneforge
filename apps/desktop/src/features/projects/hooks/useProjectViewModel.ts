@@ -312,6 +312,7 @@ export function useProjectViewModel() {
   } = usePlayback();
   const {
     defaultPlaybackDisplayMode,
+    defaultBeatAnalysisBackend,
     defaultChordsFollowEnabled,
     defaultInspectorOpen,
     defaultLoopAlignmentMode,
@@ -948,8 +949,25 @@ export function useProjectViewModel() {
         ? "Emulator lyrics actions are enabled for flow testing; stem generation is unavailable on this device."
         : "Side-load a Whisper model to enable local lyrics. Stem generation is unavailable on this device."
     : null;
+  const mobileAdvancedAnalysisUnavailable =
+    isMobileRuntime &&
+    defaultBeatAnalysisBackend === "beat-this" &&
+    (mobileCapabilities?.platform !== "android" || mobileCapabilities.beatThisAvailable !== true);
+  const mobileBeatAnalysisMessage = !isMobileRuntime
+    ? null
+    : defaultBeatAnalysisBackend === "built-in"
+      ? "Basic analysis · Key and tuning; tempo and beat timing unavailable on Android."
+      : mobileAdvancedAnalysisUnavailable
+        ? "Advanced Beat Analysis is unavailable on this device. Choose Built-in Beat Analysis in Settings."
+        : mobileCapabilities?.beatThisModelStatus === "ready"
+          ? "Advanced analysis · Verified 9.4 MB model ready offline."
+          : mobileCapabilities?.beatThisModelStatus === "corrupt"
+            ? "Advanced analysis · Model repair and verification will run on next use."
+            : "Advanced analysis · Verified 9.4 MB model downloads on first use.";
   const canAnalyze =
-    !projectEditLocked && (!isMobileRuntime || mobileCapabilities?.analysisAvailable === true);
+    !projectEditLocked &&
+    (!isMobileRuntime || mobileCapabilities?.analysisAvailable === true) &&
+    !mobileAdvancedAnalysisUnavailable;
   const canGenerateLyrics =
     !projectEditLocked &&
     (!isMobileRuntime ||
@@ -2631,6 +2649,8 @@ export function useProjectViewModel() {
     lowerTargetPreview,
     lowerTargetShiftOptions,
     mobileCapabilities,
+    mobileBeatAnalysisMessage,
+    mobileAdvancedAnalysisUnavailable,
     mobileGenerationMessage,
     lyricsFollowEnabled,
     lyricsPracticeStatus,

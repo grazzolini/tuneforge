@@ -361,7 +361,7 @@ export function buildReleaseLicenseInventory({
         },
       },
       cachePaths: [
-        "$TUNEFORGE_DATA_DIR/cache/models/crema/0.2.0/65af18f49af5101267fd28f15ac8c452d98b8e3d",
+        "$TUNEFORGE_DATA_DIR/cache/models/crema/0.2.0/895b249c4ccabaedc0770b12935c2b7b2f60e145",
         "$TORCH_HOME/hub/checkpoints",
         "$XDG_CACHE_HOME/torch/hub/checkpoints",
         "~/.cache/torch/hub/checkpoints",

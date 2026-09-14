@@ -10,7 +10,7 @@ use std::{
     collections::{BTreeMap, HashMap, HashSet},
     convert::TryInto,
     fs,
-    io::{self, Read},
+    io::{self, Read, Write},
     path::{Path, PathBuf},
     str::FromStr,
     thread,

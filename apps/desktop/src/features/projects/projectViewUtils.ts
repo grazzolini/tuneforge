@@ -555,6 +555,10 @@ export function formatJobErrorMessage(
   if (!trimmed) {
     return null;
   }
+  const advancedBeatPrefix = "ADVANCED_BEAT_BACKEND_FAILED:";
+  if (job?.type === "analyze" && trimmed.startsWith(advancedBeatPrefix)) {
+    return trimmed.slice(advancedBeatPrefix.length).trim();
+  }
   return (
     formatDependencyDiagnostic({
       fallbackOperation: operationForJobType(job?.type),

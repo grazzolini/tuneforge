@@ -1,0 +1,12 @@
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+
+include ':app'
+project(':app').projectDir = new File(rootDir, 'apps/desktop/src-tauri/gen/android/app')
+
+apply from: 'apps/desktop/src-tauri/gen/android/tauri.settings.gradle'

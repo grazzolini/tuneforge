@@ -84,7 +84,14 @@ export const BEAT_THIS_CHECKPOINT_SPEC = {
   url: "https://cloud.cp.jku.at/public.php/dav/files/7ik4RrBKTS273gp/small0.ckpt",
 };
 
-export const CREMA_ONNX_REVISION = "65af18f49af5101267fd28f15ac8c452d98b8e3d";
+export const MODEL_CATALOG_REVISION = "895b249c4ccabaedc0770b12935c2b7b2f60e145";
+export const CREMA_ONNX_REVISION = MODEL_CATALOG_REVISION;
+export const BEAT_THIS_ANDROID_SPEC = {
+  fileName: "beat-this-small0.pte",
+  relativePath: "beat-this/beat-this-small0.pte",
+  sha256: "03b512e135edeb4f4644a7f05fa13ae20ba676484997548f81118fec13d42293",
+  size: 9_820_680,
+};
 export const CREMA_ONNX_FILE_SPECS = [
   {
     label: "Crema ONNX model",
@@ -191,7 +198,7 @@ export function buildModelBundlePlan({
       const relativePath = `crema/0.2.0/${CREMA_ONNX_REVISION}/${spec.fileName}`;
       const entry = addEntry(entriesByPath, {
         ...spec,
-        url: `https://huggingface.co/grazzolini/tuneforge-models/resolve/${CREMA_ONNX_REVISION}/${spec.fileName}`,
+        url: `https://huggingface.co/grazzolini/tuneforge-models/resolve/${CREMA_ONNX_REVISION}/crema/${spec.fileName}`,
         relativePath,
       });
       cremaOnnxFiles.push(entry);

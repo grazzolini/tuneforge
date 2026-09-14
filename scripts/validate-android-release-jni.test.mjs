@@ -11,7 +11,13 @@ const rules = `-keepclassmembers class com.tuneforge.desktop.MainActivity {
     public java.lang.String getTuneForgePowerInhibitionStatus();
     public java.lang.String getTuneForgeAudioPermissionState();
     public java.lang.String requestTuneForgeAudioPermission();
-}`;
+    public java.lang.String getTuneForgeBeatThisStatus();
+    public float[][] runTuneForgeBeatThis(float[],int,java.lang.String);
+    public java.lang.String takeTuneForgeBeatThisError(java.lang.String);
+    public void cancelTuneForgeBeatThis(java.lang.String);
+}
+-keep class org.pytorch.executorch.** { *; }
+-keep class com.facebook.jni.** { *; }`;
 
 test("parses only exact narrow JNI rules", () => {
   const methods = parseJniRules(rules);
@@ -20,9 +26,15 @@ test("parses only exact narrow JNI rules", () => {
     ["getTuneForgePowerInhibitionStatus", "()Ljava/lang/String;"],
     ["getTuneForgeAudioPermissionState", "()Ljava/lang/String;"],
     ["requestTuneForgeAudioPermission", "()Ljava/lang/String;"],
+    ["getTuneForgeBeatThisStatus", "()Ljava/lang/String;"],
+    ["runTuneForgeBeatThis", "([FILjava/lang/String;)[[F"],
+    ["takeTuneForgeBeatThisError", "(Ljava/lang/String;)Ljava/lang/String;"],
+    ["cancelTuneForgeBeatThis", "(Ljava/lang/String;)V"],
   ]);
   assert.throws(() => parseJniRules(rules.replace("getTuneForgeAudioPermissionState()", "*")), /wildcards/);
   assert.throws(() => parseJniRules(rules.replace("setTuneForgePowerInhibition(int)", "setTuneForgePowerInhibition()")), /exactly/);
+  assert.throws(() => parseJniRules(rules.replace("-keep class org.pytorch.executorch.** { *; }", "")), /ExecuTorch/);
+  assert.throws(() => parseJniRules(rules.replace("-keep class com.facebook.jni.** { *; }", "")), /fbjni/);
 });
 
 test("accepts only one safe universal release APK output", () => {
@@ -129,6 +141,6 @@ test("rejects unclosed classes, methods, and extra closing tags", () => {
 
 function dexXml(methods) {
   return `<package name="com.tuneforge.desktop"><class name="MainActivity"><constructor name="&lt;init&gt;" return="void"><parameter name="arg0" type="int">\n</parameter></constructor>${methods.map((method) =>
-    `<method name="${method.name}" return="java.lang.String">${method.name === "setTuneForgePowerInhibition" ? '<parameter name="arg0" type="int">\n</parameter>' : ""}</method>`,
+    `<method name="${method.name}" return="${method.returnType}">${method.parameters.map((parameter, index) => `<parameter name="arg${index}" type="${parameter}">\n</parameter>`).join("")}</method>`,
   ).join("")}</class></package>`;
 }

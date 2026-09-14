@@ -521,7 +521,7 @@ function chordBackendOptions(
     return {
       value: fallback.value,
       label: backend.label,
-      description: fallback.description,
+      description: backend.description || fallback.description,
       disabled: fetching || error || !backend.available,
       status: fetching
         ? "Checking availability…"
@@ -538,8 +538,11 @@ function beatBackendOptions(backends: BeatBackendSchema[] | undefined): ChoiceOp
   if (backends === undefined) {
     return fallbackBeatAnalysisBackendOptions.map((option) => ({
       ...option,
+      description: option.value === "beat-this"
+        ? "Checking Advanced model availability."
+        : "Checking Basic analysis capabilities.",
       disabled: true,
-      status: "Checking availability",
+      status: option.value === "beat-this" ? "Checking model…" : "Checking availability…",
     }));
   }
 
@@ -556,29 +559,11 @@ function beatBackendOptions(backends: BeatBackendSchema[] | undefined): ChoiceOp
     return {
       value: fallback.value,
       label: backend.label,
-      description: fallback.description,
+      description: backend.description || fallback.description,
       disabled: !backend.available,
       status: unavailableReason ?? undefined,
     };
   });
-}
-
-function effectiveChoiceValue<T extends string>(
-  value: T,
-  options: ChoiceOption<T>[],
-  fallback: T,
-  availabilityResolved: boolean,
-) {
-  if (!availabilityResolved) {
-    return value;
-  }
-  if (options.some((option) => option.value === value && !option.disabled)) {
-    return value;
-  }
-  if (options.some((option) => option.value === fallback && !option.disabled)) {
-    return fallback;
-  }
-  return null;
 }
 
 function stemModelOptions(models: StemModelSchema[] | undefined): ChoiceOption<DefaultStemModel>[] {
@@ -806,12 +791,9 @@ export function SettingsView() {
   const savedThemeOverrideCount = themeOverrideCount(themeOverrides);
   const beatAvailabilityResolved = beatBackendsQuery.data?.backends !== undefined;
   const beatBackendChoices = beatBackendOptions(beatBackendsQuery.data?.backends);
-  const effectiveBeatAnalysisBackend = effectiveChoiceValue(
-    defaultBeatAnalysisBackend,
-    beatBackendChoices,
-    "built-in",
-    beatAvailabilityResolved,
-  );
+  const effectiveBeatAnalysisBackend = defaultBeatAnalysisBackend;
+  const noBeatBackendAvailable =
+    beatAvailabilityResolved && beatBackendChoices.every((choice) => choice.disabled);
   const chordBackendChoices = chordBackendOptions(
     chordBackendsQuery.data?.backends,
     chordBackendsQuery.isFetching,
@@ -1087,6 +1069,9 @@ export function SettingsView() {
               {effectiveBeatAnalysisBackend === null
                 ? "No available backend"
                 : beatAnalysisBackendLabel(effectiveBeatAnalysisBackend)}
+              {noBeatBackendAvailable && effectiveBeatAnalysisBackend !== null ? (
+                <span>No available backend</span>
+              ) : null}
             </dd>
           </div>
           <div className="settings-overview__stat">

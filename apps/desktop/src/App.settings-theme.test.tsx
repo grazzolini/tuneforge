@@ -737,13 +737,46 @@ describe("Desktop app settings theme", () => {
 
     expect(await screen.findByRole("heading", { name: "Control Room" })).toBeInTheDocument();
     expect(await screen.findByText("beat-this is not installed")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /^Built-in Beat Analysis/ })).toHaveAttribute(
+    expect(screen.getByRole("button", { name: /^Advanced Beat Analysis/ })).toHaveAttribute(
       "aria-pressed",
       "true",
     );
-    expect(screen.getByRole("button", { name: /^Advanced Beat Analysis/ })).toHaveAttribute("aria-pressed", "false");
     expect(screen.getByRole("button", { name: /^Advanced Beat Analysis/ })).toBeDisabled();
     expect(screen.getAllByText("Advanced Beat Analysis").length).toBeGreaterThan(0);
+  });
+
+  it("explains Android Advanced model readiness before first use", async () => {
+    setBeatBackends([
+      {
+        availability: "available",
+        available: true,
+        description: "TuneForge's built-in beat detector.",
+        desktopOnly: false,
+        experimental: false,
+        id: "built-in",
+        label: "Built-in Beat Analysis",
+        unavailable_reason: null,
+      },
+      {
+        availability: "available",
+        available: true,
+        description: "Advanced Beat Analysis downloads its verified model on first use.",
+        desktopOnly: false,
+        experimental: true,
+        id: "beat-this",
+        label: "Advanced Beat Analysis",
+        unavailable_reason: null,
+      },
+    ]);
+
+    renderApp(["/settings"]);
+
+    expect(await screen.findByRole("heading", { name: "Control Room" })).toBeInTheDocument();
+    const advanced = screen.getByRole("button", { name: /^Advanced Beat Analysis/ });
+    await waitFor(() => {
+      expect(advanced).toHaveTextContent("Advanced Beat Analysis downloads its verified model on first use.");
+      expect(advanced).toBeEnabled();
+    });
   });
 
   it("keeps engine defaults neutral while registry availability is loading", async () => {
@@ -783,7 +816,7 @@ describe("Desktop app settings theme", () => {
       expect(screen.getAllByText("Missing from backend registry").length).toBeGreaterThanOrEqual(4),
     );
     expect(screen.queryByText("Checking availability")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /^Advanced Beat Analysis/ })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("button", { name: /^Advanced Beat Analysis/ })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: /^Advanced Chords/ })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getAllByText("No available backend")).toHaveLength(1);
     expect(screen.getByText(/Imports may use Built-in Chords if the saved backend is unavailable/)).toBeInTheDocument();
@@ -840,7 +873,7 @@ describe("Desktop app settings theme", () => {
     expect(screen.getByText("built-in beat engine failed diagnostics")).toBeInTheDocument();
     expect(screen.getByText("Selected · Unavailable — crema is not installed")).toBeInTheDocument();
     expect(screen.getByText("Unavailable — built-in chord engine failed diagnostics")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /^Advanced Beat Analysis/ })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("button", { name: /^Advanced Beat Analysis/ })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: /^Built-in Beat Analysis/ })).toHaveAttribute("aria-pressed", "false");
     expect(screen.getByRole("button", { name: /^Advanced Chords/ })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: /^Built-in Chords/ })).toHaveAttribute("aria-pressed", "false");

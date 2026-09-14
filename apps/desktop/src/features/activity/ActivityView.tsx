@@ -304,12 +304,16 @@ function JobTimestamps({ job }: { job: JobSchema }) {
 function JobRow({
   displayJob,
   isCancelling,
+  isRetrying,
   onCancel,
+  onRetry,
   project,
 }: {
   displayJob: DisplayJob;
   isCancelling: boolean;
+  isRetrying: boolean;
   onCancel: (jobId: string) => void;
+  onRetry: (job: JobSchema) => void;
   project: ProjectSchema | null;
 }) {
   const { job, queuePosition } = displayJob;
@@ -319,6 +323,11 @@ function JobRow({
   const errorMessage = formatJobErrorMessage(job.error_message, job);
   const progress = formatJobProgressValue(job);
   const canCancel = CANCELABLE_JOB_STATUSES.has(job.status);
+  const canRetry =
+    job.type === "analyze" &&
+    TERMINAL_JOB_STATUSES.has(job.status) &&
+    job.status !== "completed" &&
+    Boolean(job.project_id && job.analysis_request?.beat_backend);
   const stageTone = TERMINAL_JOB_STATUSES.has(job.status) ? "terminal" : "active";
 
   return (
@@ -356,17 +365,34 @@ function JobRow({
 
           <div className="activity-job-row__progress">
             <span>{progress}%</span>
-            <progress aria-label={`${job.type} job progress`} max={100} value={progress} />
+            <progress
+              aria-label={`${job.type} job progress`}
+              aria-valuetext={`${stageLabel ?? formatJobStatusSummary(job)} · ${progress}%`}
+              max={100}
+              value={progress}
+            />
           </div>
 
           {canCancel ? (
             <button
               className="button button--ghost button--small activity-job-row__cancel"
               disabled={isCancelling}
+              aria-label={`Cancel ${job.type} job`}
               onClick={() => onCancel(job.id)}
               type="button"
             >
               {isCancelling ? "Cancelling..." : "Cancel"}
+            </button>
+          ) : null}
+          {canRetry ? (
+            <button
+              aria-label={`Retry analysis for ${project?.display_name ?? "project"}`}
+              className="button button--ghost button--small activity-job-row__cancel"
+              disabled={isRetrying}
+              onClick={() => onRetry(job)}
+              type="button"
+            >
+              {isRetrying ? "Retrying..." : "Retry analysis"}
             </button>
           ) : null}
         </div>
@@ -509,6 +535,18 @@ export function ActivityView() {
       await queryClient.invalidateQueries({ queryKey: ["jobs"] });
     },
   });
+  const retryAnalysisMutation = useMutation({
+    mutationFn: (job: JobSchema) => {
+      if (!job.project_id || !job.analysis_request?.beat_backend) {
+        throw new Error("The original analysis request is unavailable.");
+      }
+      return api.analyzeProject(job.project_id, job.analysis_request);
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      await queryClient.invalidateQueries({ queryKey: ["runtime", "mobile-capabilities"] });
+    },
+  });
   const bulkJobsMutation = useMutation({
     mutationFn: async (action: BulkJobMutationAction) => {
       const request: BulkJobRequest = { job_type: action.jobType };
@@ -591,6 +629,8 @@ export function ActivityView() {
 
     if (activeJobLeftQueue) {
       queryClient.invalidateQueries({ queryKey: terminalJobsQueryKey });
+      queryClient.invalidateQueries({ queryKey: ["runtime", "mobile-capabilities"] });
+      queryClient.invalidateQueries({ queryKey: ["beat-backends"] });
     }
   }, [activeJobs, isActiveJobsSuccess, queryClient, terminalJobsQueryKey]);
 
@@ -774,6 +814,12 @@ export function ActivityView() {
             </div>
           ) : null}
 
+          {retryAnalysisMutation.isError ? (
+            <div className="activity-jobs-panel__state activity-jobs-panel__state--error" role="alert">
+              Could not retry analysis.
+            </div>
+          ) : null}
+
           {showJobList ? (
             <ul aria-label="Job queue" className="activity-job-list">
               {displayJobs.map((displayJob) => (
@@ -783,7 +829,12 @@ export function ActivityView() {
                   isCancelling={
                     cancelJobMutation.isPending && cancelJobMutation.variables === displayJob.job.id
                   }
+                  isRetrying={
+                    retryAnalysisMutation.isPending &&
+                    retryAnalysisMutation.variables.id === displayJob.job.id
+                  }
                   onCancel={(jobId) => cancelJobMutation.mutate(jobId)}
+                  onRetry={(job) => retryAnalysisMutation.mutate(job)}
                   project={
                     displayJob.job.project_id ? projectsById.get(displayJob.job.project_id) ?? null : null
                   }

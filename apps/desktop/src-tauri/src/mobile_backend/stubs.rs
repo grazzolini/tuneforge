@@ -11,6 +11,8 @@ pub fn mobile_capabilities() -> Result<MobileCapabilities, String> {
         is_emulator: cfg!(target_abi = "sim"),
         gpu_backend: None,
         analysis_available: false,
+        beat_this_available: false,
+        beat_this_model_status: "unavailable".to_string(),
         basic_chords_available: false,
         whisper_available: false,
         stem_separation_available: false,
@@ -56,7 +58,7 @@ mobile_stub!(mobile_update_project, ProjectResponse, app: AppHandle, project_id:
 #[cfg(not(target_os = "android"))]
 mobile_stub!(mobile_delete_project, DeleteResponse, app: AppHandle, project_id: String);
 #[cfg(not(target_os = "android"))]
-mobile_stub!(mobile_submit_analyze, JobResponse, app: AppHandle, project_id: String);
+mobile_stub!(mobile_submit_analyze, JobResponse, app: AppHandle, project_id: String, payload: Value);
 #[cfg(not(target_os = "android"))]
 mobile_stub!(mobile_get_analysis, AnalysisResponse, app: AppHandle, project_id: String);
 #[cfg(not(target_os = "android"))]

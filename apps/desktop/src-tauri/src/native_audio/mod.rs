@@ -3,6 +3,7 @@ use std::sync::{mpsc, Arc, Mutex, MutexGuard};
 use tauri::{AppHandle, Emitter, State};
 
 pub mod android_media;
+pub mod beat_this;
 pub mod capture;
 pub mod decode;
 pub mod diagnostics;

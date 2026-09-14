@@ -147,7 +147,7 @@ def stem_model_availability(model_id: str) -> StemModelAvailability:
 
     repo = configured_stem_model_repo()
     if repo is None:
-        if importlib.util.find_spec("demucs") is None:
+        if importlib.util.find_spec("demucs_infer") is None:
             return StemModelAvailability(
                 False,
                 "Demucs is unavailable, so TuneForge cannot separate stems.",
@@ -170,7 +170,7 @@ def stem_model_availability(model_id: str) -> StemModelAvailability:
             f"Bundled {model_id} model cache is {cache_status}.",
             cache_status=cache_status,
         )
-    if importlib.util.find_spec("demucs") is None:
+    if importlib.util.find_spec("demucs_infer") is None:
         return StemModelAvailability(
             False,
             "Demucs is unavailable, so TuneForge cannot separate stems.",

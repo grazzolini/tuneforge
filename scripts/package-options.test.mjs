@@ -20,6 +20,7 @@ import {
   torchExtensionPairId,
   torchExtensionMarker,
   assertReviewedTorchExtensionPair,
+  flatpakPythonBuildRequirementNames,
   TORCH_EXTENSION_PROFILES,
   wheelScore,
 } from "./generate-flatpak-sources.mjs";
@@ -296,6 +297,7 @@ test("Flatpak package options are scoped to the TuneForge module build environme
     optOutManifest,
     /pip install --no-index --no-build-isolation .* -r python-requirements\.txt/,
   );
+  assert.match(optOutManifest, /import fastapi, demucs_infer, whisper, torch/);
 });
 
 test("selective Flatpak manifests retain declarations and bundle only selected profile leaves", () => {
@@ -491,6 +493,10 @@ test("Flatpak reads reviewed CPU and legacy NVIDIA Torch locks without live reso
   assert.ok(legacy.size > 0);
   assert.equal(assertReviewedTorchExtensionPair("LegacyNvidia", legacy), TORCH_EXTENSION_PROFILES.LegacyNvidia.pair_id);
   assert.equal(assertReviewedTorchExtensionPair("Nvidia", nvidia), TORCH_EXTENSION_PROFILES.Nvidia.pair_id);
+});
+
+test("Flatpak always installs source build requirements", () => {
+  assert.deepEqual(flatpakPythonBuildRequirementNames, ["setuptools", "wheel", "hatchling"]);
 });
 
 test("failed Torch lock refresh preserves the reviewed lock bytes", () => {

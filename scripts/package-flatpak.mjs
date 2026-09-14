@@ -216,7 +216,7 @@ function generatedManifestPath(options, cacheRoot, namespace, frontendGitRef) {
     );
   }
 
-  const imports = ["fastapi", "demucs", "whisper", "torch"];
+  const imports = ["fastapi", "demucs_infer", "whisper", "torch"];
   if (options.crema === "onnx") {
     imports.push("onnxruntime");
   }
@@ -231,7 +231,7 @@ function generatedManifestPath(options, cacheRoot, namespace, frontendGitRef) {
     : "      - /app/lib/tuneforge/backend/python/bin/python3.14 -c \"from pathlib import Path; files=list(Path('/app/lib/tuneforge/backend').rglob('*.sdict')); assert not files, files\"\n";
   manifest = replaceManifestFragment(
     manifest,
-    '      - /app/lib/tuneforge/backend/python/bin/python3.14 -c "import fastapi, demucs, whisper, torch"\n',
+    '      - /app/lib/tuneforge/backend/python/bin/python3.14 -c "import fastapi, demucs_infer, whisper, torch"\n',
     `      - /app/lib/tuneforge/backend/python/bin/python3.14 -c "import ${imports.join(", ")}"\n` +
       lvChordiaValidation,
   );

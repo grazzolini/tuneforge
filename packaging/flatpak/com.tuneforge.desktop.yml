@@ -378,5 +378,5 @@ modules:
       - install -Dm644 icons/32x32.png /app/share/icons/hicolor/32x32/apps/com.tuneforge.desktop.png
       - install -Dm644 icons/128x128.png /app/share/icons/hicolor/128x128/apps/com.tuneforge.desktop.png
       - install -Dm644 icons/512x512.png /app/share/icons/hicolor/512x512/apps/com.tuneforge.desktop.png
-      - /app/lib/tuneforge/backend/python/bin/python3.14 -c "import fastapi, demucs, whisper, torch"
+      - /app/lib/tuneforge/backend/python/bin/python3.14 -c "import fastapi, demucs_infer, whisper, torch"
       - rm -rf /app/share/tuneforge/build /app/share/tuneforge/node-sources /app/lib/pnpm /app/bin/pnpm /app/bin/pnpx /app/bin/sccache

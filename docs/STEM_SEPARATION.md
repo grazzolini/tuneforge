@@ -1,6 +1,6 @@
 # Stem separation behavior
 
-TuneForge runs stem separation through local Demucs. This document captures current
+TuneForge runs stem separation through local `demucs-infer`. This document captures current
 runtime behavior and security boundaries for model loading.
 
 ## Demucs usage path
@@ -52,8 +52,11 @@ Face cache. Version 1 bundles remain compatible only when their Torch checkpoint
 no legacy Demucs entries. Default release package commands still exclude external Demucs model
 weights unless `--model-bundle` is explicitly selected.
 
-The worker constructs each bag with `demucs.hf.load_safetensors_model` and `BagOfModels` in
-the manifest's pinned order. No trusted pickle checkpoint loader or FBAI fallback is used.
+The worker constructs each bag with TuneForge's native safetensors loader and
+`demucs_infer.apply.BagOfModels` in the manifest's pinned order. The loader accepts only the
+pinned HTDemucs metadata grammar, constructs `demucs_infer.htdemucs.HTDemucs` directly, and
+strictly loads its tensor keys. No pickle checkpoint loader, dynamic class import, or FBAI
+fallback is used.
 Treat writable local repos and bundles as integrity-sensitive generated artifacts even though
 safetensors removes the legacy pickle execution path.
 

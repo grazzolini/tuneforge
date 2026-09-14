@@ -410,9 +410,9 @@ def test_demucs_adapter_loads_local_safetensors_in_bag_order(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ):
-    from demucs import apply as demucs_apply
-    from demucs import hf as demucs_hf
+    from demucs_infer import apply as demucs_apply
 
+    from app.engines import demucs_safetensors
     from app.engines.demucs_cache import load_demucs_model
 
     manifest_path, payloads = _write_hf_demucs_manifest(tmp_path)
@@ -424,7 +424,7 @@ def test_demucs_adapter_loads_local_safetensors_in_bag_order(
 
     loaded_paths: list[Path] = []
     monkeypatch.setattr(
-        demucs_hf,
+        demucs_safetensors,
         "load_safetensors_model",
         lambda path: loaded_paths.append(Path(path)) or SimpleNamespace(),
     )

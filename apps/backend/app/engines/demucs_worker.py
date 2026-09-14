@@ -6,8 +6,8 @@ from pathlib import Path
 
 import soundfile as sf
 import torch
-from demucs.apply import apply_model
-from demucs.audio import AudioFile
+from demucs_infer.apply import apply_model
+from demucs_infer.audio import AudioFile
 
 from app.engines.demucs_cache import load_demucs_model
 from app.runtime_status import emit_runtime_event

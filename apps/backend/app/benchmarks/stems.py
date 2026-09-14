@@ -13,8 +13,8 @@ from typing import Any
 
 import soundfile as sf
 import torch
-from demucs.apply import apply_model
-from demucs.audio import AudioFile
+from demucs_infer.apply import apply_model
+from demucs_infer.audio import AudioFile
 
 from app.engines.demucs_cache import load_demucs_model
 from app.services.metadata import extract_audio_metadata

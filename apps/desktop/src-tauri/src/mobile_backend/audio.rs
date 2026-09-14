@@ -422,16 +422,57 @@ fn pitch_name(pitch_class: usize) -> &'static str {
     NAMES[pitch_class % 12]
 }
 
+fn beat_this_preprocessing_provenance() -> Value {
+    json!({
+        "id": "beat-this-logmel-chunk-v1",
+        "resampler": {
+            "library": "rubato",
+            "version": "0.16.2",
+            "method": "FftFixedInOut",
+        },
+        "sample_rate_hz": 22_050,
+        "log_mel": {
+            "version": 1,
+            "fft_size": 1_024,
+            "hop_length": 441,
+            "mel_bins": 128,
+            "mel_scale": "slaney",
+            "min_hz": 30,
+            "max_hz": 11_000,
+            "magnitude": "log1p(1000*x)",
+        },
+        "chunking": {
+            "version": 1,
+            "frames": 1_500,
+            "border_frames": 6,
+            "last_chunk": "shifted",
+            "overlap": "keep_first",
+        },
+    })
+}
+
 fn store_analysis_result(
     connection: &Connection,
     root: &Path,
     project: &ProjectSchema,
     source_artifact: &ArtifactSchema,
     features: &MobileAudioFeatures,
+    beat_result: Option<&crate::native_audio::beat_this::BeatThisResult>,
+    beat_backend: &str,
+    job_id: &str,
 ) -> Result<Value, String> {
     let timestamp = now_iso();
     let (estimated_key, key_confidence) = estimate_key(&features.pitch_classes);
-    let analysis_version = "mobile-cpu-v1";
+    let analysis_version = if beat_result.is_some() {
+        "mobile-beat-this-et14-v1"
+    } else {
+        "mobile-basic-v2"
+    };
+    let tempo_bpm = beat_result.map(|result| result.tempo_bpm);
+    let timing = beat_result.map(|result| result.timing.clone());
+    let preprocessing = beat_result
+        .map(|_| beat_this_preprocessing_provenance())
+        .unwrap_or(Value::Null);
     let analysis = json!({
         "project_id": project.id,
         "source_artifact_id": source_artifact.id,
@@ -439,13 +480,50 @@ fn store_analysis_result(
         "key_confidence": key_confidence,
         "estimated_reference_hz": features.estimated_reference_hz,
         "tuning_offset_cents": features.tuning_offset_cents,
-        "tempo_bpm": Value::Null,
-        "timing": Value::Null,
+        "tempo_bpm": tempo_bpm,
+        "timing": timing,
         "analysis_version": analysis_version,
+        "preprocessing": preprocessing.clone(),
         "created_at": timestamp,
     });
 
-    connection
+    let _storage_guard = project_storage_mutation_guard();
+    let analysis_dir = project_root_path(root, &project.id)?.join("analysis");
+    fs::create_dir_all(&analysis_dir).map_err(|error| error.to_string())?;
+    let temporary_path = analysis_dir.join(format!(".{job_id}.json.tmp"));
+    let analysis_path = analysis_dir.join(format!("{job_id}.json"));
+    let bytes = serde_json::to_vec_pretty(&analysis).map_err(|error| error.to_string())?;
+    let mut temporary = fs::OpenOptions::new().create_new(true).write(true).open(&temporary_path)
+        .map_err(|error| error.to_string())?;
+    temporary.write_all(&bytes).map_err(|error| error.to_string())?;
+    temporary.sync_all().map_err(|error| error.to_string())?;
+    drop(temporary);
+    fs::rename(&temporary_path, &analysis_path).map_err(|error| error.to_string())?;
+    let size_bytes = bytes.len() as i64;
+    let content_sha256 = match file_sha256(&analysis_path) {
+        Ok(hash) => hash,
+        Err(message) => {
+            let _ = fs::remove_file(&analysis_path);
+            return Err(message);
+        }
+    };
+
+    connection.execute_batch("BEGIN IMMEDIATE").map_err(|error| error.to_string())?;
+    let publish = (|| -> Result<(), String> {
+        let current_source: String = connection.query_row(
+            "SELECT path FROM artifacts WHERE id = ?1 AND project_id = ?2 AND type = 'source_audio'",
+            params![source_artifact.id, project.id],
+            |row| row.get(0),
+        ).map_err(|_| "Analysis source changed before publication.".to_string())?;
+        if current_source != project.imported_path {
+            return Err("Analysis source changed before publication.".to_string());
+        }
+        let active: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM jobs WHERE id = ?1 AND status = 'running' AND cancel_requested = 0",
+            params![job_id], |row| row.get(0),
+        ).map_err(|error| error.to_string())?;
+        if active != 1 { return Err("ANALYSIS_CANCELLED".to_string()); }
+        connection
         .execute(
             "UPDATE projects SET duration_seconds = ?1, sample_rate = ?2, channels = ?3, updated_at = ?4 WHERE id = ?5",
             params![
@@ -457,10 +535,10 @@ fn store_analysis_result(
             ],
         )
         .map_err(|error| error.to_string())?;
-    connection
+        connection
         .execute(
             "INSERT INTO analysis_results (project_id, source_artifact_id, estimated_key, key_confidence, estimated_reference_hz, tuning_offset_cents, tempo_bpm, timing_json, analysis_version, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, NULL, ?7, ?8)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
              ON CONFLICT(project_id) DO UPDATE SET source_artifact_id = excluded.source_artifact_id, estimated_key = excluded.estimated_key, key_confidence = excluded.key_confidence, estimated_reference_hz = excluded.estimated_reference_hz, tuning_offset_cents = excluded.tuning_offset_cents, tempo_bpm = excluded.tempo_bpm, timing_json = excluded.timing_json, analysis_version = excluded.analysis_version, created_at = excluded.created_at",
             params![
                 project.id,
@@ -469,31 +547,20 @@ fn store_analysis_result(
                 key_confidence,
                 features.estimated_reference_hz,
                 features.tuning_offset_cents,
+                tempo_bpm,
+                timing.as_ref().map(Value::to_string),
                 analysis_version,
                 timestamp,
             ],
         )
         .map_err(|error| error.to_string())?;
-
-    let analysis_dir = project_root_path(root, &project.id)?.join("analysis");
-    fs::create_dir_all(&analysis_dir).map_err(|error| error.to_string())?;
-    let analysis_path = analysis_dir.join("analysis.json");
-    fs::write(
-        &analysis_path,
-        serde_json::to_vec_pretty(&analysis).map_err(|error| error.to_string())?,
-    )
-    .map_err(|error| error.to_string())?;
-    let size_bytes = fs::metadata(&analysis_path)
-        .map(|metadata| metadata.len() as i64)
-        .unwrap_or(0);
-    let content_sha256 = file_sha256(&analysis_path)?;
-    connection
+        connection
         .execute(
             "DELETE FROM artifacts WHERE project_id = ?1 AND type = 'analysis_json'",
             params![project.id],
         )
         .map_err(|error| error.to_string())?;
-    connection
+        connection
         .execute(
             "INSERT INTO artifacts (id, project_id, type, format, path, content_sha256, size_bytes, generated_by, can_delete, can_regenerate, metadata_json, cache_key, created_at)
              VALUES (?1, ?2, 'analysis_json', 'json', ?3, ?4, ?5, 'analysis', 0, 1, ?6, NULL, ?7)",
@@ -506,13 +573,47 @@ fn store_analysis_result(
                 json!({
                     "analysis_version": analysis_version,
                     "source_artifact_id": source_artifact.id,
+                    "beat_backend": beat_backend,
+                    "runtime": if beat_result.is_some() { "executorch-1.4.0-xnnpack" } else { "native-cpu" },
+                    "model_revision": if beat_result.is_some() { Value::String("895b249c4ccabaedc0770b12935c2b7b2f60e145".to_string()) } else { Value::Null },
+                    "model_sha256": if beat_result.is_some() { Value::String("03b512e135edeb4f4644a7f05fa13ae20ba676484997548f81118fec13d42293".to_string()) } else { Value::Null },
+                    "preprocessing": preprocessing,
                 })
                 .to_string(),
                 timestamp,
             ],
         )
         .map_err(|error| error.to_string())?;
-
+        let payload_raw = connection.query_row("SELECT payload_json FROM jobs WHERE id = ?1", params![job_id], |row| row.get::<_, String>(0)).map_err(|error| error.to_string())?;
+        let mut payload = serde_json::from_str::<Value>(&payload_raw).unwrap_or_else(|_| json!({}));
+        payload["stage"] = json!("complete");
+        payload["stage_label"] = json!("Analysis complete");
+        payload["runtime_detail"] = json!(if beat_result.is_some() {
+            "ExecuTorch 1.4.0 XNNPACK"
+        } else {
+            "Native CPU"
+        });
+        let updated = connection.execute(
+            "UPDATE jobs SET status = 'completed', progress = 100, payload_json = ?1, runtime_device = 'cpu', error_message = NULL, completed_at = ?2, updated_at = ?2 WHERE id = ?3 AND status = 'running' AND cancel_requested = 0",
+            params![payload.to_string(), now_iso(), job_id],
+        ).map_err(|error| error.to_string())?;
+        if updated != 1 { return Err("ANALYSIS_CANCELLED".to_string()); }
+        Ok(())
+    })();
+    match publish {
+        Ok(()) => {
+            if let Err(error) = connection.execute_batch("COMMIT") {
+                let _ = connection.execute_batch("ROLLBACK");
+                let _ = fs::remove_file(&analysis_path);
+                return Err(error.to_string());
+            }
+        }
+        Err(message) => {
+            let _ = connection.execute_batch("ROLLBACK");
+            let _ = fs::remove_file(&analysis_path);
+            return Err(message);
+        }
+    }
     Ok(analysis)
 }
 
@@ -1022,27 +1123,126 @@ fn submit_transform(
     Ok(JobResponse { job })
 }
 
-pub fn mobile_submit_analyze(app: AppHandle, project_id: String) -> Result<JobResponse, String> {
+fn analysis_cancel_requested(connection: &Connection, job_id: &str) -> Result<bool, String> {
+    connection.query_row(
+        "SELECT cancel_requested != 0 OR status = 'cancelled' FROM jobs WHERE id = ?1",
+        params![job_id],
+        |row| row.get(0),
+    ).map_err(|error| error.to_string())
+}
+
+fn run_analysis_job(
+    root: PathBuf,
+    job_id: String,
+    project: ProjectSchema,
+    source_artifact: ArtifactSchema,
+    beat_backend: String,
+) {
+    let started = Instant::now();
+    let connection = match db_at_root(&root) { Ok(connection) => connection, Err(_) => return };
+    let result = (|| -> Result<(), String> {
+        update_job_stage(&connection, &job_id, 10, "decoding", "Preparing audio")?;
+        let features = read_audio_features(Path::new(&project.imported_path))?;
+        if analysis_cancel_requested(&connection, &job_id)? { return Err("ANALYSIS_CANCELLED".to_string()); }
+        let beat_result = if beat_backend == "beat-this" {
+            update_job_stage(&connection, &job_id, 25, "features", "Preparing Beat This features")?;
+            let decoded = read_mobile_audio(Path::new(&project.imported_path))?;
+            let spectrogram = crate::native_audio::beat_this::log_mel_spectrogram(&decoded)
+                .map_err(|message| format!("ADVANCED_BEAT_BACKEND_FAILED: {message}"))?;
+            let model_status = crate::native_audio::beat_this::android_model_status();
+            let label = match model_status.as_str() {
+                "ready" => "Loading model and running Advanced Beat Analysis",
+                "corrupt" => "Repairing, verifying, and running Advanced Beat Analysis",
+                _ => "Preparing, verifying, and running Advanced Beat Analysis",
+            };
+            update_job_stage(&connection, &job_id, 45, "model", label)?;
+            let (beat, downbeat) = crate::native_audio::beat_this::predict_chunks(
+                &spectrogram,
+                |input, frames| {
+                    if analysis_cancel_requested(&connection, &job_id).unwrap_or(true) {
+                        crate::native_audio::beat_this::cancel_android_model(&job_id);
+                        return Err("ANALYSIS_CANCELLED".to_string());
+                    }
+                    crate::native_audio::beat_this::run_android_model(input, frames, &job_id)
+                },
+            )?;
+            Some(crate::native_audio::beat_this::postprocess_timing(
+                &beat,
+                &downbeat,
+                features.duration_seconds,
+            )?)
+        } else {
+            None
+        };
+        if analysis_cancel_requested(&connection, &job_id)? { return Err("ANALYSIS_CANCELLED".to_string()); }
+        update_job_stage(&connection, &job_id, 90, "saving", "Saving analysis")?;
+        store_analysis_result(
+            &connection,
+            &root,
+            &project,
+            &source_artifact,
+            &features,
+            beat_result.as_ref(),
+            &beat_backend,
+            &job_id,
+        )?;
+        reconcile_project_storage_after_commit(&connection, &root, &project.id);
+        Ok(())
+    })();
+    if let Err(message) = result {
+        if message == "ANALYSIS_CANCELLED" || analysis_cancel_requested(&connection, &job_id).unwrap_or(false) {
+            let timestamp = now_iso();
+            let _ = connection.execute(
+                "UPDATE jobs SET status = 'cancelled', progress = 0, error_message = NULL, completed_at = ?1, duration_seconds = ?2, updated_at = ?1 WHERE id = ?3 AND status IN ('pending', 'running', 'cancelled')",
+                params![timestamp, started.elapsed().as_secs_f64(), job_id],
+            );
+        } else {
+            let failure = if beat_backend == "beat-this" && !message.starts_with("ADVANCED_BEAT_BACKEND_FAILED") {
+                format!("ADVANCED_BEAT_BACKEND_FAILED: {message}")
+            } else { message };
+            let _ = fail_running_job(&connection, &job_id, &failure, started.elapsed().as_secs_f64());
+        }
+    }
+}
+
+pub fn mobile_submit_analyze(
+    app: AppHandle,
+    project_id: String,
+    payload: Value,
+) -> Result<JobResponse, String> {
     let connection = db(&app)?;
     let root = app_data_root(&app)?;
     let project = require_sync_editable_project(&connection, &project_id)?;
     let source_artifact = get_source_artifact(&connection, &project_id)?;
-    let features = match read_audio_features(Path::new(&project.imported_path)) {
-        Ok(features) => features,
-        Err(message) => {
-            return Ok(JobResponse {
-                job: create_failed_job(&connection, &project_id, "analyze", &message)?,
-            });
-        }
+    let beat_backend = payload.get("beat_backend").and_then(Value::as_str).unwrap_or("beat-this").to_string();
+    if !matches!(beat_backend.as_str(), "built-in" | "beat-this") {
+        return Ok(JobResponse {
+            job: create_failed_job(&connection, &project_id, "analyze", "Selected beat backend is unavailable on Android.")?,
+        });
+    }
+    if let Some(job) = connection.query_row(
+        &format!("SELECT {JOB_COLUMNS} FROM jobs WHERE project_id = ?1 AND type = 'analyze' AND status IN ('pending', 'running') ORDER BY created_at DESC LIMIT 1"),
+        params![project_id],
+        row_job,
+    ).optional().map_err(|error| error.to_string())? {
+        return Ok(JobResponse { job });
     };
-    store_analysis_result(&connection, &root, &project, &source_artifact, &features)?;
-    let job = create_completed_job(
+    let mut job = create_running_job(
         &connection,
         &project_id,
         "analyze",
-        Some(source_artifact.id),
+        Some(source_artifact.id.clone()),
     )?;
-    reconcile_project_storage_after_commit(&connection, &root, &project_id);
+    let mut job_payload = payload;
+    job_payload["beat_backend"] = json!(beat_backend);
+    job.beat_backend = Some(beat_backend.clone());
+    job.analysis_request = Some(job_payload.clone());
+    connection.execute(
+        "UPDATE jobs SET payload_json = ?1, updated_at = ?2 WHERE id = ?3",
+        params![job_payload.to_string(), now_iso(), job.id],
+    ).map_err(|error| error.to_string())?;
+    let job_for_worker = job.clone();
+    thread::spawn(move || run_analysis_job(root, job_for_worker.id, project, source_artifact, beat_backend));
     Ok(JobResponse { job })
 }
 
@@ -1249,8 +1449,14 @@ pub fn mobile_submit_transpose(
 
 #[cfg(test)]
 mod tuning_tests {
-    use super::{cache_source_reference_tuning, estimate_tuning_offset_cents};
-    use crate::mobile_backend::{db_at_root, new_id, now_iso};
+    use super::{
+        beat_this_preprocessing_provenance, cache_source_reference_tuning,
+        estimate_tuning_offset_cents, get_analysis_value, store_analysis_result,
+        MobileAudioFeatures,
+    };
+    use crate::mobile_backend::{
+        create_running_job, db_at_root, get_project_schema, get_source_artifact, new_id, now_iso,
+    };
     use rusqlite::params;
     use std::fs;
 
@@ -1358,6 +1564,176 @@ mod tuning_tests {
             fs::read(&analysis_path).unwrap(),
             br#"{"tempo_bpm":123,"estimated_key":"D major"}"#
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn analysis_persistence_guards_source_and_records_backend_provenance() {
+        let project_id = format!("proj_sha256_{}", "0".repeat(64));
+        let root = std::env::temp_dir().join(format!("tuneforge-analysis-{}", new_id("test")));
+        let project_root = root.join("projects").join(&project_id);
+        fs::create_dir_all(project_root.join("analysis")).unwrap();
+        let source_path = project_root.join("source.wav");
+        fs::write(&source_path, b"synthetic source marker").unwrap();
+        let connection = db_at_root(&root).unwrap();
+        let timestamp = now_iso();
+        connection.execute(
+            "INSERT INTO projects (id, display_name, source_path, imported_path, sync_status, created_at, updated_at) VALUES (?1, 'Synthetic', ?2, ?2, 'local', ?3, ?3)",
+            params![project_id, source_path.to_string_lossy(), timestamp],
+        ).unwrap();
+        connection.execute(
+            "INSERT INTO artifacts (id, project_id, type, format, path, size_bytes, generated_by, can_delete, can_regenerate, metadata_json, created_at) VALUES ('source', ?1, 'source_audio', 'wav', ?2, 23, 'import', 0, 0, '{}', ?3)",
+            params![project_id, source_path.to_string_lossy(), timestamp],
+        ).unwrap();
+        connection.execute(
+            "INSERT INTO analysis_results (project_id, source_artifact_id, estimated_key, tempo_bpm, timing_json, analysis_version, created_at) VALUES (?1, 'source', 'A minor', 120.0, '{\"beats\":[0.5]}', 'desktop-v4', ?2)",
+            params![project_id, timestamp],
+        ).unwrap();
+        let project = get_project_schema(&connection, &project_id).unwrap();
+        let source = get_source_artifact(&connection, &project_id).unwrap();
+        let features = MobileAudioFeatures {
+            duration_seconds: 2.0,
+            sample_rate: 22_050,
+            channels: 1,
+            pitch_classes: [1.0, 0.0, 0.0, 0.0, 0.7, 0.0, 0.0, 0.6, 0.0, 0.0, 0.0, 0.0],
+            estimated_reference_hz: Some(440.0),
+            tuning_offset_cents: Some(0.0),
+        };
+
+        let cancelled = create_running_job(&connection, &project_id, "analyze", Some("source".into())).unwrap();
+        connection.execute(
+            "UPDATE jobs SET cancel_requested = 1 WHERE id = ?1",
+            params![cancelled.id],
+        ).unwrap();
+        assert_eq!(
+            store_analysis_result(
+                &connection, &root, &project, &source, &features, None, "built-in", &cancelled.id,
+            ).unwrap_err(),
+            "ANALYSIS_CANCELLED",
+        );
+        assert!(!project_root.join(format!("analysis/{}.json", cancelled.id)).exists());
+        let preserved: (String, f64, String) = connection.query_row(
+            "SELECT estimated_key, tempo_bpm, timing_json FROM analysis_results WHERE project_id = ?1",
+            params![project_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        ).unwrap();
+        assert_eq!(preserved, ("A minor".into(), 120.0, "{\"beats\":[0.5]}".into()));
+
+        let changed_source = create_running_job(
+            &connection,
+            &project_id,
+            "analyze",
+            Some("source".into()),
+        )
+        .unwrap();
+        connection
+            .execute(
+                "UPDATE artifacts SET path = 'replacement.wav' WHERE id = 'source'",
+                [],
+            )
+            .unwrap();
+        assert_eq!(
+            store_analysis_result(
+                &connection,
+                &root,
+                &project,
+                &source,
+                &features,
+                None,
+                "built-in",
+                &changed_source.id,
+            )
+            .unwrap_err(),
+            "Analysis source changed before publication.",
+        );
+        assert!(!project_root
+            .join(format!("analysis/{}.json", changed_source.id))
+            .exists());
+        let preserved: (String, f64, String) = connection
+            .query_row(
+                "SELECT estimated_key, tempo_bpm, timing_json FROM analysis_results WHERE project_id = ?1",
+                params![project_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(preserved, ("A minor".into(), 120.0, "{\"beats\":[0.5]}".into()));
+        connection
+            .execute(
+                "UPDATE artifacts SET path = ?1 WHERE id = 'source'",
+                params![source_path.to_string_lossy()],
+            )
+            .unwrap();
+
+        let retry = create_running_job(&connection, &project_id, "analyze", Some("source".into())).unwrap();
+        let stored = store_analysis_result(
+            &connection, &root, &project, &source, &features, None, "built-in", &retry.id,
+        ).unwrap();
+        assert!(stored["estimated_key"].is_string());
+        assert!(stored["estimated_reference_hz"].is_number());
+        assert!(stored["tuning_offset_cents"].is_number());
+        assert!(stored["tempo_bpm"].is_null());
+        assert!(stored["timing"].is_null());
+        assert!(stored["preprocessing"].is_null());
+        let status: (String, i64) = connection.query_row(
+            "SELECT status, progress FROM jobs WHERE id = ?1",
+            params![retry.id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ).unwrap();
+        assert_eq!(status, ("completed".into(), 100));
+        drop(connection);
+
+        let reopened = db_at_root(&root).unwrap();
+        let reloaded = get_analysis_value(&reopened, &project_id).unwrap().unwrap();
+        assert!(reloaded["estimated_key"].is_string());
+        assert!(reloaded["tempo_bpm"].is_null());
+        assert!(reloaded["timing"].is_null());
+        let metadata: String = reopened.query_row(
+            "SELECT metadata_json FROM artifacts WHERE project_id = ?1 AND type = 'analysis_json'",
+            params![project_id],
+            |row| row.get(0),
+        ).unwrap();
+        let metadata: serde_json::Value = serde_json::from_str(&metadata).unwrap();
+        assert_eq!(metadata["beat_backend"], "built-in");
+        assert_eq!(metadata["runtime"], "native-cpu");
+        assert!(metadata["model_sha256"].is_null());
+
+        let advanced = create_running_job(
+            &reopened,
+            &project_id,
+            "analyze",
+            Some("source".into()),
+        )
+        .unwrap();
+        let beat_result = crate::native_audio::beat_this::BeatThisResult {
+            tempo_bpm: 120.0,
+            timing: serde_json::json!({"beats": [], "bars": []}),
+        };
+        let stored = store_analysis_result(
+            &reopened,
+            &root,
+            &project,
+            &source,
+            &features,
+            Some(&beat_result),
+            "beat-this",
+            &advanced.id,
+        )
+        .unwrap();
+        assert_eq!(stored["preprocessing"], beat_this_preprocessing_provenance());
+        assert_eq!(stored["preprocessing"]["resampler"]["version"], "0.16.2");
+        assert_eq!(stored["preprocessing"]["sample_rate_hz"], 22_050);
+        let metadata: String = reopened
+            .query_row(
+                "SELECT metadata_json FROM artifacts WHERE project_id = ?1 AND type = 'analysis_json'",
+                params![project_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let metadata: serde_json::Value = serde_json::from_str(&metadata).unwrap();
+        assert_eq!(metadata["preprocessing"], stored["preprocessing"]);
+        assert_eq!(metadata["runtime"], "executorch-1.4.0-xnnpack");
+        assert!(metadata["model_sha256"].is_string());
+        drop(reopened);
         let _ = fs::remove_dir_all(root);
     }
 }

@@ -138,6 +138,23 @@ const releaseMediaCaptureCatalog = [
     capture: captureScreenshotEntry,
   },
   {
+    id: "mobile-analysis-results",
+    enabled: true,
+    kind: "screenshot",
+    fileName: "mobile-analysis-results.png",
+    title: "Android Advanced analysis results",
+    caption: "Local Android analysis returns detected tuning, key, tempo, and a practice-ready timing grid.",
+    alt: "TuneForge Android Analysis showing synthetic 439.80 Hz tuning, F major key, and 116 BPM tempo",
+    fixture: "release-showcase-mobile-analysis-v1",
+    runtime: "mobile",
+    mobileFixtureOptions: { analysisFocused: true },
+    viewport: { width: 411, height: 891 },
+    route: "/projects/proj_release_showcase",
+    prepare: prepareMobileAnalysisResults,
+    ready: readyMobileAnalysisResults,
+    capture: captureScreenshotEntry,
+  },
+  {
     id: "mobile-export",
     enabled: true,
     kind: "screenshot",
@@ -1479,6 +1496,32 @@ async function prepareMobilePlayback({ page, timeoutMs }) {
   }
 }
 
+async function prepareMobileAnalysisResults({ page, timeoutMs }) {
+  const panel = page.locator(".analysis-summary-panel");
+  const mainContent = page.locator(".main-content");
+  const tabs = page.getByRole("tablist", { name: "Project sections" });
+  await panel.waitFor({ state: "visible", timeout: timeoutMs });
+  await panel.scrollIntoViewIfNeeded();
+  const viewport = page.viewportSize();
+  const bounds = await panel.boundingBox();
+  const scrollDelta = overflowToScrollDelta(bounds?.y + bounds?.height, viewport?.height);
+  if (scrollDelta > 0) {
+    await panel.evaluate(
+      (element, delta) => element.closest(".main-content")?.scrollBy(0, delta),
+      scrollDelta,
+    );
+  }
+  const [contentBounds, tabBounds] = await Promise.all([
+    mainContent.boundingBox(),
+    tabs.boundingBox(),
+  ]);
+  if (contentBounds && tabBounds &&
+      tabBounds.y < contentBounds.y && tabBounds.y + tabBounds.height > contentBounds.y) {
+    const overlap = Math.ceil(tabBounds.y + tabBounds.height - contentBounds.y);
+    await mainContent.evaluate((element, delta) => element.scrollBy(0, delta), overlap);
+  }
+}
+
 async function prepareMobileExport({ page, timeoutMs }) {
   const practiceSet = page.getByRole("radio", { name: /Practice Mix 1 Shift \+2/i });
   await practiceSet.waitFor({ state: "visible", timeout: timeoutMs });
@@ -1699,6 +1742,34 @@ async function readyMobilePlayback({ page, timeoutMs }) {
   const value = Number(await position.inputValue());
   if (value !== 0) {
     throw new Error(`Mobile Playback screenshot must stay stopped at 0 seconds; received ${value}.`);
+  }
+}
+
+async function readyMobileAnalysisResults({ page, timeoutMs }) {
+  await page.getByRole("tab", { name: "Analysis" }).waitFor({ state: "visible", timeout: timeoutMs });
+  const panel = page.locator(".analysis-summary-panel");
+  await panel.waitFor({ state: "visible", timeout: timeoutMs });
+  await panel.getByText("Detected Tuning", { exact: true }).waitFor({ timeout: timeoutMs });
+  await panel.getByText("439.80", { exact: true }).waitFor({ timeout: timeoutMs });
+  await panel.getByText("Estimated Key", { exact: true }).waitFor({ timeout: timeoutMs });
+  const keyStat = panel.locator(".analysis-stat").filter({ hasText: "Estimated Key" });
+  await keyStat.getByLabel("F", { exact: true }).waitFor({ timeout: timeoutMs });
+  await panel.getByText("116.0", { exact: true }).waitFor({ timeout: timeoutMs });
+  await page.getByRole("link", { name: "Follow on metronome at 116.0 BPM" })
+    .waitFor({ state: "visible", timeout: timeoutMs });
+  const box = await panel.boundingBox();
+  const tabs = await page.getByRole("tablist", { name: "Project sections" }).boundingBox();
+  const content = await page.locator(".main-content").boundingBox();
+  const viewport = page.viewportSize();
+  if (!box || !viewport || box.x < 0 || box.y < 0 ||
+      box.x + box.width > viewport.width || box.y + box.height > viewport.height) {
+    throw new Error("Android Analysis summary must fit fully within the 411px capture viewport.");
+  }
+  const tabsHiddenAbove = tabs && content && tabs.y + tabs.height <= content.y + 1;
+  const tabsFullyInside = tabs && content && tabs.y >= content.y - 1 &&
+    tabs.y + tabs.height <= content.y + content.height + 1;
+  if (!tabsHiddenAbove && !tabsFullyInside) {
+    throw new Error("Android Analysis project tabs must not be partially clipped in the capture.");
   }
 }
 
@@ -2173,7 +2244,7 @@ function project(id, displayName, sourcePath, durationSeconds, extra = {}) {
   };
 }
 
-function mobilePlaybackFixture({ timedLyrics = true, exportFocused = false } = {}) {
+function mobilePlaybackFixture({ timedLyrics = true, exportFocused = false, analysisFocused = false } = {}) {
   const projectId = "proj_release_showcase";
   const fixtureProject = projects().find((candidate) => candidate.id === projectId);
   if (!fixtureProject) {
@@ -2187,14 +2258,16 @@ function mobilePlaybackFixture({ timedLyrics = true, exportFocused = false } = {
     words: [],
   }));
   return {
-    initialWorkspace: exportFocused ? "project" : "playback",
-    initialProjectPanel: exportFocused ? "export" : "studio",
+    initialWorkspace: exportFocused || analysisFocused ? "project" : "playback",
+    initialProjectPanel: exportFocused ? "export" : analysisFocused ? "analysis" : "studio",
     capabilities: {
       platform: "android",
       mediaBackend: "android_media_codec",
       isEmulator: true,
       gpuBackend: null,
       analysisAvailable: true,
+      beatThisAvailable: true,
+      beatThisModelStatus: "ready",
       basicChordsAvailable: true,
       whisperAvailable: false,
       stemSeparationAvailable: false,
@@ -2225,6 +2298,19 @@ function analysis(projectId) {
     estimated_reference_hz: 439.8,
     tuning_offset_cents: -8,
     tempo_bpm: 116,
+    timing: {
+      beats_per_bar: 4,
+      meter: "4/4",
+      source: "beat-this",
+      downbeat_source: "beat-this",
+      beats: [
+        { index: 0, seconds: 0, bar_index: 0, beat_in_bar: 1 },
+        { index: 1, seconds: 0.517, bar_index: 0, beat_in_bar: 2 },
+        { index: 2, seconds: 1.034, bar_index: 0, beat_in_bar: 3 },
+        { index: 3, seconds: 1.552, bar_index: 0, beat_in_bar: 4 },
+      ],
+      bars: [{ index: 0, start_seconds: 0, end_seconds: 2.069 }],
+    },
     analysis_version: "release-media-fixture",
     created_at: fixtureTimestamp,
   };

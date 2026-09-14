@@ -4,62 +4,16 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ANDROID_ROOT="$ROOT/apps/desktop/src-tauri/gen/android"
 BUILDSRC_PACKAGE="com/tuneforge/desktop/kotlin"
+TEMPLATE_ROOT="$ROOT/scripts/android-studio-root-shim-templates"
 
 if [[ ! -f "$ANDROID_ROOT/settings.gradle" ]]; then
   echo "Tauri Android target not found. Run: pnpm --filter @tuneforge/desktop tauri android init" >&2
   exit 1
 fi
 
-cat > "$ROOT/settings.gradle" <<'GRADLE'
-pluginManagement {
-    repositories {
-        google()
-        mavenCentral()
-        gradlePluginPortal()
-    }
-}
-
-include ':app'
-project(':app').projectDir = new File(rootDir, 'apps/desktop/src-tauri/gen/android/app')
-
-apply from: 'apps/desktop/src-tauri/gen/android/tauri.settings.gradle'
-GRADLE
-
-cat > "$ROOT/build.gradle.kts" <<'GRADLE'
-buildscript {
-    repositories {
-        google()
-        mavenCentral()
-    }
-    dependencies {
-        classpath("com.android.tools.build:gradle:8.11.0")
-        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.25")
-    }
-}
-
-allprojects {
-    repositories {
-        google()
-        mavenCentral()
-    }
-}
-
-tasks.register("clean").configure {
-    delete("build")
-}
-GRADLE
-
-cat > "$ROOT/gradle.properties" <<'PROPERTIES'
-# Project-wide Gradle settings for local Android Studio root import.
-org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
-android.useAndroidX=true
-kotlin.code.style=official
-android.nonTransitiveRClass=true
-android.nonFinalResIds=false
-targetList=aarch64
-archList=arm64
-abiList=arm64-v8a
-PROPERTIES
+cp "$TEMPLATE_ROOT/settings.gradle" "$ROOT/settings.gradle"
+cp "$TEMPLATE_ROOT/build.gradle.kts" "$ROOT/build.gradle.kts"
+cp "$TEMPLATE_ROOT/gradle.properties" "$ROOT/gradle.properties"
 
 ANDROID_HOME_RESOLVED="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$HOME/Library/Android/sdk}}"
 if [[ -d "$ANDROID_HOME_RESOLVED" ]]; then

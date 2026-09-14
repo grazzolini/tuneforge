@@ -36,6 +36,7 @@ import {
   mockSyncTrustedPeerNow,
   mockTrustSyncPeer,
   mockListJobs,
+  mockAnalyzeProject,
   mockBulkJobs,
   mockGetSyncPreflight,
   mockListProjects,
@@ -5496,14 +5497,39 @@ describe("Desktop app activity", () => {
 
     const pendingRow = await screen.findByRole("article", { name: "analyze pending job" });
     const completedRow = await screen.findByRole("article", { name: "preview completed job" });
-    expect(within(completedRow).queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument();
+    expect(within(completedRow).queryByRole("button", { name: /Cancel/ })).not.toBeInTheDocument();
     const initialListJobsCalls = mockListJobs.mock.calls.length;
 
-    await user.click(within(pendingRow).getByRole("button", { name: "Cancel" }));
+    await user.click(within(pendingRow).getByRole("button", { name: "Cancel analyze job" }));
 
     await waitFor(() => expect(mockCancelJob).toHaveBeenCalledWith("job_pending"));
     await waitFor(() => expect(mockListJobs.mock.calls.length).toBeGreaterThan(initialListJobsCalls));
     expect(await screen.findByRole("article", { name: "analyze cancelled job" })).toBeInTheDocument();
+  });
+
+  it("retries terminal analysis with the original request", async () => {
+    const user = userEvent.setup();
+    setJobs([job({
+      id: "job_analysis_failed",
+      type: "analyze",
+      status: "failed",
+      beat_backend: "beat-this",
+      analysis_request: { beat_backend: "beat-this", force: true, include_tempo: true },
+      error_message: "ADVANCED_BEAT_BACKEND_FAILED: Not enough free space to install Advanced Beat Analysis. Free 9.4 MB, then retry.",
+    })]);
+
+    renderApp(["/activity"]);
+
+    expect(await screen.findByText(
+      "Not enough free space to install Advanced Beat Analysis. Free 9.4 MB, then retry.",
+    )).toBeInTheDocument();
+    expect(screen.queryByText(/ADVANCED_BEAT_BACKEND_FAILED/)).not.toBeInTheDocument();
+    await user.click(await screen.findByRole("button", { name: "Retry analysis for Demo Song" }));
+    await waitFor(() => expect(mockAnalyzeProject).toHaveBeenCalledWith("proj_123", {
+      beat_backend: "beat-this",
+      force: true,
+      include_tempo: true,
+    }));
   });
 
   it("requires confirmation before starting a bulk job action", async () => {

@@ -234,6 +234,9 @@ Validation failures return `INVALID_REQUEST` with serialized validation details.
 - The Linux legacy NVIDIA profile is an opt-in local backend environment override; it does not change the default lockfile, CI setup, or packaged dependency baseline.
 - Android arm64 uses a narrow in-process FFmpeg bridge for durable conversion and keeps platform
   media APIs plus Symphonia/Signalsmith for existing playback and validation paths.
+- Android Advanced Beat Analysis computes the desktop-compatible log-mel feature shape in Rust,
+  invokes the pinned FP32 Beat This program through ExecuTorch 1.4 XNNPACK, and publishes timing
+  only through the guarded mobile job/artifact transaction.
 - Mobile does not run the desktop Python/FastAPI backend today.
 
 ## Extensibility Rules

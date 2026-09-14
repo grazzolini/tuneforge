@@ -6,6 +6,22 @@ import path from "node:path";
 import test from "node:test";
 
 const sourceScript = new URL("./android-prepare-generated.sh", import.meta.url);
+const beatRunnerSource = new URL(
+  "../apps/desktop/src-tauri/android/java/com/tuneforge/desktop/BeatThisRunner.java",
+  import.meta.url,
+);
+const modelAssetSource = new URL(
+  "../apps/desktop/src-tauri/android/java/com/tuneforge/desktop/ModelAssetDescriptor.java",
+  import.meta.url,
+);
+const mainActivitySource = new URL(
+  "../apps/desktop/src-tauri/android/kotlin/com/tuneforge/desktop/MainActivity.kt",
+  import.meta.url,
+);
+const powerServiceSource = new URL(
+  "../apps/desktop/src-tauri/android/kotlin/com/tuneforge/desktop/PowerInhibitionService.kt",
+  import.meta.url,
+);
 
 function section(source, startMarker, endMarker) {
   const start = source.indexOf(startMarker);
@@ -32,7 +48,17 @@ function generatedProject(t) {
   fs.mkdirSync(path.join(main, "res"), { recursive: true });
   fs.writeFileSync(path.join(main, "AndroidManifest.xml"), "<manifest>\n  <application>\n  </application>\n</manifest>\n");
   fs.writeFileSync(path.join(java, "MainActivity.kt"), "placeholder\n");
+  fs.writeFileSync(path.join(tauri, "gen/android/app/build.gradle.kts"), "dependencies {\n}\n");
   fs.writeFileSync(path.join(tauri, "proguard-tuneforge.pro"), "# test\n");
+
+  const javaSource = path.join(tauri, "android/java/com/tuneforge/desktop");
+  fs.mkdirSync(javaSource, { recursive: true });
+  fs.copyFileSync(beatRunnerSource, path.join(javaSource, "BeatThisRunner.java"));
+  fs.copyFileSync(modelAssetSource, path.join(javaSource, "ModelAssetDescriptor.java"));
+  const kotlinSource = path.join(tauri, "android/kotlin/com/tuneforge/desktop");
+  fs.mkdirSync(kotlinSource, { recursive: true });
+  fs.copyFileSync(mainActivitySource, path.join(kotlinSource, "MainActivity.kt"));
+  fs.copyFileSync(powerServiceSource, path.join(kotlinSource, "PowerInhibitionService.kt"));
 
   const icons = path.join(tauri, "target/android-icons/android");
   for (const density of ["mdpi", "hdpi", "xhdpi", "xxhdpi", "xxxhdpi", "anydpi-v26"]) {
@@ -56,8 +82,47 @@ function generatedProject(t) {
   return {
     activity: fs.readFileSync(path.join(java, "MainActivity.kt"), "utf8"),
     service: fs.readFileSync(path.join(java, "PowerInhibitionService.kt"), "utf8"),
+    beatRunner: fs.readFileSync(path.join(java, "BeatThisRunner.java"), "utf8"),
+    modelAsset: fs.readFileSync(path.join(java, "ModelAssetDescriptor.java"), "utf8"),
+    beatRunnerSource: fs.readFileSync(beatRunnerSource, "utf8"),
+    modelAssetSource: fs.readFileSync(modelAssetSource, "utf8"),
+    activitySource: fs.readFileSync(mainActivitySource, "utf8"),
+    serviceSource: fs.readFileSync(powerServiceSource, "utf8"),
+    gradle: fs.readFileSync(path.join(tauri, "gen/android/app/build.gradle.kts"), "utf8"),
   };
 }
+
+test("preparation copies maintained Beat This Java sources", (t) => {
+  const { beatRunner, beatRunnerSource, modelAsset, modelAssetSource } = generatedProject(t);
+  assert.equal(beatRunner, beatRunnerSource);
+  assert.equal(modelAsset, modelAssetSource);
+});
+
+test("preparation copies maintained Android Kotlin sources", (t) => {
+  const { activity, activitySource, service, serviceSource } = generatedProject(t);
+  assert.equal(activity, activitySource);
+  assert.equal(service, serviceSource);
+});
+
+test("maintained Beat This runtime pins and verifies the Android model", (t) => {
+  const { activity, beatRunnerSource, modelAssetSource, gradle } = generatedProject(t);
+  assert.match(gradle, /org\.pytorch:executorch-android:1\.4\.0/);
+  assert.match(activity, /runTuneForgeBeatThis\(input: FloatArray, frames: Int, jobId: String\)/);
+  assert.match(activity, /takeTuneForgeBeatThisError\(jobId: String\)/);
+  assert.match(modelAssetSource, /final String sha256/);
+  assert.match(beatRunnerSource, /9820680L/);
+  assert.match(beatRunnerSource, /03b512e135edeb4f4644a7f05fa13ae20ba676484997548f81118fec13d42293/);
+  assert.match(beatRunnerSource, /new long\[\] \{1, frames, 128\}/);
+  assert.match(beatRunnerSource, /output\.length != 2/);
+  assert.match(beatRunnerSource, /long\[\] beatShape = beatTensor\.shape\(\)/);
+  assert.match(beatRunnerSource, /long\[\] downbeatShape = downbeatTensor\.shape\(\)/);
+  assert.match(beatRunnerSource, /beatShape\.length != 2 \|\| beatShape\[0\] != 1 \|\| beatShape\[1\] != frames/);
+  assert.match(beatRunnerSource, /downbeatShape\.length != 2 \|\| downbeatShape\[0\] != 1/);
+  assert.match(beatRunnerSource, /downbeatShape\[1\] != frames/);
+  assert.match(beatRunnerSource, /output\.getFD\(\)\.sync\(\)/);
+  assert.match(beatRunnerSource, /temporary\.renameTo\(destination\)/);
+  assert.match(beatRunnerSource, /LAST_ERRORS\.put\(jobId/);
+});
 
 test("generated screen protection is revision-gated to the current activity", (t) => {
   const { activity, service } = generatedProject(t);

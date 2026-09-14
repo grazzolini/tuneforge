@@ -1595,6 +1595,8 @@ mod mobile_backend_tests {
             stage_label: None,
             source_artifact_id: None,
             result_artifact_ids: Vec::new(),
+            beat_backend: None,
+            analysis_request: None,
             chord_backend: None,
             chord_backend_fallback_from: None,
             chord_source: None,

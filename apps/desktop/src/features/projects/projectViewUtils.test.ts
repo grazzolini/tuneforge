@@ -586,6 +586,13 @@ describe("dependency diagnostic formatting", () => {
       "Could not finish stems.",
     );
   });
+
+  it("hides the Advanced Beat Analysis persistence code", () => {
+    expect(formatJobErrorMessage(
+      "ADVANCED_BEAT_BACKEND_FAILED: Not enough free space to install Advanced Beat Analysis. Free 9.4 MB, then retry.",
+      testJob({ type: "analyze" }),
+    )).toBe("Not enough free space to install Advanced Beat Analysis. Free 9.4 MB, then retry.");
+  });
 });
 
 describe("formatJobStatusSummary", () => {

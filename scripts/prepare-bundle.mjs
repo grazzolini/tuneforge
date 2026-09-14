@@ -40,7 +40,7 @@ const CREMA_ONNX_ARTIFACT_NAMES = new Set([
   "crema-0.2.0-opset18.onnx",
   "crema-0.2.0-runtime-state.json",
 ]);
-const CREMA_ONNX_REVISION = "65af18f49af5101267fd28f15ac8c452d98b8e3d";
+const CREMA_ONNX_REVISION = "895b249c4ccabaedc0770b12935c2b7b2f60e145";
 export const CREMA_ONNX_BUNDLE_RELATIVE_PATHS = Array.from(CREMA_ONNX_ARTIFACT_NAMES, (name) =>
   path.join("models", "bundle", "crema", "0.2.0", CREMA_ONNX_REVISION, name),
 ).sort();

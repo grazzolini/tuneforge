@@ -13,6 +13,7 @@ import {
   generatedState,
   normalizeFingerprint,
   parseMode,
+  parseAndroidOptions,
   pinnedEnv,
   preparedState,
   publishableBuildEnv,
@@ -27,7 +28,43 @@ import {
   sanitizedEnv,
   validatePublishableCredentials,
   verifyPublishable,
+  verifyExecutorchAar,
+  verifyApplicationId,
 } from "./package-android.mjs";
+
+test("Android model bundle remains explicit and composes with build modes", () => {
+  assert.deepEqual(parseAndroidOptions([]), {
+    mode: "local-release", modelBundle: false, testIdentity: false,
+  });
+  assert.deepEqual(parseAndroidOptions(["--debug", "--model-bundle"]), {
+    mode: "debug", modelBundle: true, testIdentity: false,
+  });
+  assert.deepEqual(parseAndroidOptions(["--model-bundle", "--prepare"]), {
+    mode: "prepare", modelBundle: true, testIdentity: false,
+  });
+  assert.deepEqual(parseAndroidOptions(["--debug", "--test-identity"]), {
+    mode: "debug", modelBundle: false, testIdentity: true,
+  });
+  assert.throws(() => parseAndroidOptions(["--publishable", "--test-identity"]), /only for local/);
+});
+
+test("Android packaging verifies the pinned ExecuTorch AAR", (t) => {
+  const root = temp(t);
+  const aar = path.join(root, "caches/modules/files/executorch-android-1.4.0.aar");
+  fs.mkdirSync(path.dirname(aar), { recursive: true });
+  fs.writeFileSync(aar, "wrong");
+  assert.throws(() => verifyExecutorchAar(root), /SHA-256 verification failed/);
+});
+test("test APK identity is verified from packaged badging", () => {
+  const tools = { aapt2: "/sdk/aapt2" };
+  const good = () => ({ ok: true, output: "package: name='com.tuneforge.desktop.test539' versionCode='1'" });
+  assert.doesNotThrow(() => verifyApplicationId("app.apk", tools, "com.tuneforge.desktop.test539", {
+    runCapture: good,
+  }));
+  assert.throws(() => verifyApplicationId("app.apk", tools, "com.tuneforge.desktop.test539", {
+    runCapture: () => ({ ok: true, output: "package: name='com.tuneforge.desktop'" }),
+  }), /applicationId/);
+});
 function temp(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "tuneforge-android-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -109,6 +146,8 @@ test("prepared state requires outputs owned by the explicit preparation command"
   assert.throws(() => requirePrepared(root), /Run pnpm package:android:prepare/);
   for (const relative of ["app/proguard-tuneforge.pro",
     "app/src/main/java/com/tuneforge/desktop/PowerInhibitionService.kt",
+    "app/src/main/java/com/tuneforge/desktop/ModelAssetDescriptor.java",
+    "app/src/main/java/com/tuneforge/desktop/BeatThisRunner.java",
     "app/src/main/res/values/ic_launcher_background.xml",
     "app/src/main/jniLibs/arm64-v8a/libavcodec.so",
     "app/src/main/jniLibs/arm64-v8a/libavfilter.so",

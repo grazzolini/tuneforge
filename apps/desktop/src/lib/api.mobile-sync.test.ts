@@ -292,21 +292,16 @@ describe("mobile sync API adapter", () => {
     expect(request).not.toHaveProperty("destination");
   });
 
-  it("rejects advanced mobile import beat analysis before native invoke", async () => {
+  it("forwards advanced mobile import beat analysis", async () => {
     const api = await loadMobileApi();
 
-    await expect(
-      api.importProject({
+    const request = {
         source_path: "/music/song.wav",
         copy_into_project: true,
         beat_backend: "beat-this",
-      }),
-    ).rejects.toMatchObject({
-      code: "UNSUPPORTED_RUNTIME",
-      details: { beat_backend: "beat-this" },
-    });
-
-    expect(mockInvoke).not.toHaveBeenCalled();
+      } as const;
+    await api.importProject(request);
+    expect(mockInvoke).toHaveBeenCalledWith("mobile_import_project", { payload: request });
   });
 
   it("rejects LV Chordia mobile import before native invoke", async () => {
@@ -347,19 +342,24 @@ describe("mobile sync API adapter", () => {
     await api.analyzeProject("proj_1", { beat_backend: "built-in" });
     await api.analyzeProject("proj_2");
 
-    expect(mockInvoke).toHaveBeenNthCalledWith(1, "mobile_submit_analyze", { projectId: "proj_1" });
-    expect(mockInvoke).toHaveBeenNthCalledWith(2, "mobile_submit_analyze", { projectId: "proj_2" });
+    expect(mockInvoke).toHaveBeenNthCalledWith(1, "mobile_submit_analyze", {
+      projectId: "proj_1", payload: { beat_backend: "built-in" },
+    });
+    expect(mockInvoke).toHaveBeenNthCalledWith(2, "mobile_submit_analyze", {
+      projectId: "proj_2", payload: {},
+    });
   });
 
-  it("rejects advanced mobile beat analysis before native invoke", async () => {
+  it("forwards advanced mobile beat analysis to the native job", async () => {
     const api = await loadMobileApi();
 
-    await expect(api.analyzeProject("proj_1", { beat_backend: "beat-this" })).rejects.toMatchObject({
-      code: "UNSUPPORTED_RUNTIME",
-      details: { beat_backend: "beat-this" },
+    await api.analyzeProject("proj_1", {
+      beat_backend: "beat-this", force: true, include_tempo: true,
     });
-
-    expect(mockInvoke).not.toHaveBeenCalled();
+    expect(mockInvoke).toHaveBeenCalledWith("mobile_submit_analyze", {
+      projectId: "proj_1",
+      payload: { beat_backend: "beat-this", force: true, include_tempo: true },
+    });
   });
 
   it("reports LV Chordia unavailable on mobile", async () => {

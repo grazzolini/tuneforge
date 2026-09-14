@@ -35,12 +35,15 @@ pub fn mobile_capabilities(app: AppHandle) -> Result<MobileCapabilities, String>
     let root = app_data_root(&app)?;
     let whisper_model = find_whisper_model(&root);
     let is_emulator = is_android_emulator();
+    let beat_this_model_status = crate::native_audio::beat_this::android_model_status();
     Ok(MobileCapabilities {
         platform: "android",
         media_backend: "android_media_codec",
         is_emulator,
         gpu_backend: None,
         analysis_available: true,
+        beat_this_available: beat_this_model_status != "unavailable",
+        beat_this_model_status,
         basic_chords_available: true,
         whisper_available: whisper_model.is_some(),
         stem_separation_available: false,

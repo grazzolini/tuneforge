@@ -29,6 +29,8 @@ export function useActiveJobPolling(
         queryClient.invalidateQueries({ queryKey: ["artifacts", projectId] }),
         queryClient.invalidateQueries({ queryKey: ["project", projectId] }),
         queryClient.invalidateQueries({ queryKey: ["projects"] }),
+        queryClient.invalidateQueries({ queryKey: ["runtime", "mobile-capabilities"] }),
+        queryClient.invalidateQueries({ queryKey: ["beat-backends"] }),
       ]);
     };
     refresh();

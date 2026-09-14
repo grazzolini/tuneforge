@@ -44,6 +44,16 @@ describe("Desktop app project analysis mix", () => {
     ).toEqual({ beat_backend: "built-in" });
   });
 
+  it.each(["built-in", "beat-this"] as const)(
+    "preserves the explicit %s analysis choice on Android",
+    (backend) => {
+      expect(resolveBeatBackendActionSelection(backend, {
+        androidRuntime: true,
+        beatThisIncluded: false,
+      })).toEqual({ beat_backend: backend });
+    },
+  );
+
   async function openPlaybackWorkspace(user: ReturnType<typeof userEvent.setup>) {
     await user.click(screen.getByRole("tab", { name: "Playback" }));
   }
@@ -224,7 +234,7 @@ describe("Desktop app project analysis mix", () => {
     setProjectAnalysis("proj_123", null);
     window.localStorage.setItem(
       "tuneforge.ui-preferences",
-      JSON.stringify({ defaultBeatAnalysisBackend: "beat-this" }),
+      JSON.stringify({ defaultBeatAnalysisBackend: "built-in" }),
     );
 
     try {

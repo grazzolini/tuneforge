@@ -16,7 +16,7 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fs,
-    io::{self, Read},
+    io::{self, Read, Write},
     path::{Path, PathBuf},
     thread,
     time::Instant,
@@ -65,9 +65,10 @@ mod storage;
 #[cfg(all(test, not(target_os = "android")))]
 use self::storage::{
     app_data_root, create_completed_job, create_failed_job, create_running_job, db, db_at_root,
+    fail_running_job,
     file_sha256, find_existing_project_source, get_project_manifest, get_project_schema,
     get_source_artifact, get_staged_artifact, migrate_mobile_db, new_id, project_cleanup_root_path,
-    project_root_path, register_job_staging_path, relative_artifact_path,
+    project_root_path, register_job_staging_path, relative_artifact_path, update_job_stage,
     require_sync_editable_project, row_artifact, row_delete_tombstone, row_entity_revision,
     row_job, row_project, safe_relative_path, source_format, verify_staged_artifact,
     ARTIFACT_COLUMNS, JOB_COLUMNS, PROJECT_COLUMNS, SYNC_DELETE_TOMBSTONE_COLUMNS,
@@ -206,7 +207,7 @@ android_command!(mobile_import_project, ProjectResponse, app: tauri::AppHandle, 
 android_command!(mobile_get_project, ProjectResponse, app: tauri::AppHandle, project_id: String);
 android_command!(mobile_update_project, ProjectResponse, app: tauri::AppHandle, project_id: String, payload: ProjectUpdateRequest);
 android_command!(mobile_delete_project, DeleteResponse, app: tauri::AppHandle, project_id: String);
-android_command!(mobile_submit_analyze, JobResponse, app: tauri::AppHandle, project_id: String);
+android_command!(mobile_submit_analyze, JobResponse, app: tauri::AppHandle, project_id: String, payload: Value);
 android_command!(mobile_get_analysis, AnalysisResponse, app: tauri::AppHandle, project_id: String);
 android_command!(mobile_submit_chords, JobResponse, app: tauri::AppHandle, project_id: String, payload: Value);
 android_command!(mobile_get_chords, ChordResponse, app: tauri::AppHandle, project_id: String);

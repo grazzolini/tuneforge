@@ -49,6 +49,8 @@ Analyze and basic chord detection may run on CPU. Lyrics transcription may also 
 - `gpuBackend`: `vulkan`, `nnapi`, `qnn`, `coreml`, or `null`
 - `isEmulator`
 - `analysisAvailable`
+- `beatThisAvailable`
+- `beatThisModelStatus`: `ready`, `download-required`, `downloading`, `cancelled`, `corrupt`, or `unavailable`
 - `basicChordsAvailable`
 - `whisperAvailable`
 - `stemSeparationAvailable`
@@ -63,6 +65,14 @@ Side-load a Whisper model to enable local lyrics. Stem generation is unavailable
 ```
 
 Debug Android emulator builds may set `generationTestingAvailable` so the lyrics action can submit jobs during UI flow testing. This does not report Whisper or stem separation as available. Once a Whisper model is side-loaded, lyrics use the real local transcription path; stems stay disabled and still fail closed if invoked directly.
+
+Advanced Beat Analysis runs locally through ExecuTorch 1.4 XNNPACK. The first use downloads the
+pinned `small0` program into app-private storage unless the local/dev APK was prepared with
+`--model-bundle`. TuneForge verifies the expected byte length and SHA-256 before loading, stages
+downloads atomically, and reports download, verification, inference, saving, cancellation, and
+failure through the existing Analyze job. A failed Advanced run keeps the prior analysis and ends
+with `ADVANCED_BEAT_BACKEND_FAILED`; it never publishes empty timing or switches to Built-in.
+Built-in remains an explicit choice and saves key/tuning with null tempo and timing.
 
 Lyrics generation accepts the same nullable `language_override` payload as desktop. `null`, omission, or blank text keeps Whisper language detection on auto. Mobile validates explicit overrides against `none`, `en`, `pt`, `es`, `fr`, `de`, `it`, `ja`, `ko`, `zh`, and `hi`. `none` records an empty lyrics transcript without running `whisper.cpp`; other explicit codes are passed to `whisper.cpp`.
 
@@ -238,6 +248,10 @@ variables documented in [Packaging](PACKAGING.md#android), verifies the PKCS12 f
 passwords, expected certificate fingerprint, signer count, and manifest version, then atomically
 writes `apps/desktop/src-tauri/target/release/bundle/apk/TuneForge_<version>_android_aarch64_publishable.apk`.
 Packaging never installs, launches, uploads, tags, or publishes the app.
+
+Pass `--model-bundle` to `package:android:prepare` and the chosen local build command to verify and
+embed the pinned Android Beat This program. Default Android builds omit it and download the same
+verified bytes on first use.
 
 Normal Android Tauri requires native `android-aaudio` playback. Native capability, decode, startup,
 or runtime failure stays terminal for native playback: TuneForge freezes the last authoritative

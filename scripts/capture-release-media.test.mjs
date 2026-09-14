@@ -137,8 +137,8 @@ test("settings scroll delta rounds bottom overflow up to whole pixels", () => {
 
 test("release-media catalog has unique identifiers, files, and required callbacks", () => {
   assert.equal(validateReleaseMediaCatalog(releaseMediaCaptureCatalog), releaseMediaCaptureCatalog);
-  assert.equal(releaseMediaCaptureCatalog.length, 10);
-  assert.equal(releaseMediaCaptureCatalog.filter((entry) => entry.kind === "screenshot").length, 9);
+  assert.equal(releaseMediaCaptureCatalog.length, 11);
+  assert.equal(releaseMediaCaptureCatalog.filter((entry) => entry.kind === "screenshot").length, 10);
   assert.equal(releaseMediaCaptureCatalog.filter((entry) => entry.kind === "video").length, 1);
 
   const ids = releaseMediaCaptureCatalog.map((entry) => entry.id);
@@ -316,7 +316,7 @@ test("Playback fixture anchors an explicit Am-Bb-F gap chord to the following wo
   }]);
 });
 
-test("mobile screenshots provide deterministic Playback and Android Export fixtures", () => {
+test("mobile screenshots provide deterministic Playback, Analysis, and Android Export fixtures", () => {
   const mobileScreenshots = releaseMediaCaptureCatalog.filter(
     (entry) => entry.kind === "screenshot" && entry.runtime === "mobile",
   );
@@ -332,6 +332,13 @@ test("mobile screenshots provide deterministic Playback and Android Export fixtu
       fixture: "release-showcase-mobile-playback-v1",
       id: "mobile-playback",
       mobileFixtureOptions: undefined,
+      route: "/projects/proj_release_showcase",
+      viewport: { width: 411, height: 891 },
+    },
+    {
+      fixture: "release-showcase-mobile-analysis-v1",
+      id: "mobile-analysis-results",
+      mobileFixtureOptions: { analysisFocused: true },
       route: "/projects/proj_release_showcase",
       viewport: { width: 411, height: 891 },
     },

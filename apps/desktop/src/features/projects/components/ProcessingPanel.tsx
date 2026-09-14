@@ -25,6 +25,8 @@ export function ProcessingPanel() {
     lyricsLanguageOptions,
     lyricsMutation,
     mobileGenerationMessage,
+    mobileBeatAnalysisMessage,
+    mobileAdvancedAnalysisUnavailable,
     projectEditLocked,
     projectSyncLockReason,
     selectedLyricsLanguageOverride,
@@ -50,6 +52,9 @@ export function ProcessingPanel() {
     !selectedPrimaryArtifactId ||
     !canGenerateStems;
   const editLockTitle = projectSyncLockReason ?? undefined;
+  const analyzeTitle = mobileAdvancedAnalysisUnavailable
+    ? "Advanced Beat Analysis is unavailable on this device. Choose Built-in Beat Analysis in Settings."
+    : editLockTitle;
   const selectedLyricsLanguageValue = selectedLyricsLanguageOverride ?? "auto";
   const lyricsActionLabel =
     lyricsMutation.isPending || isLyricsRunning
@@ -87,12 +92,21 @@ export function ProcessingPanel() {
         <p className="inline-error">{mobileGenerationMessage}</p>
       ) : null}
 
+      {isMobileRuntime && mobileBeatAnalysisMessage ? (
+        <p
+          aria-live="polite"
+          className={mobileAdvancedAnalysisUnavailable ? "inline-error" : "subpanel__copy"}
+        >
+          {mobileBeatAnalysisMessage}
+        </p>
+      ) : null}
+
       <div className="processing-panel__actions">
         <button
           className="button button--small"
           disabled={analyzeDisabled}
           onClick={() => void handleAnalyzeAction()}
-          title={editLockTitle}
+          title={analyzeTitle}
           type="button"
         >
           {analyzeMutation.isPending || isAnalysisRunning ? "Analyzing..." : "Analyze Track"}

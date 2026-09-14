@@ -19,14 +19,16 @@ from app.config import get_settings
 from app.engines.chord_labels import chord_label_to_segment
 from app.utils.model_cache import ExpectedModelFile, InvalidModelFile, invalid_model_files
 
-MODEL_REVISION = "65af18f49af5101267fd28f15ac8c452d98b8e3d"
+MODEL_REVISION = "895b249c4ccabaedc0770b12935c2b7b2f60e145"
 MODEL_FILENAME = "crema-0.2.0-opset18.onnx"
 STATE_FILENAME = "crema-0.2.0-runtime-state.json"
 MODEL_SHA256 = "a903f9709821fccebb31d4e93d7d783642faaa90859f45f308c0f9131cc7ca59"
 STATE_SHA256 = "3744bf9ecb47de7194cb9f250fba26678ea347911af32ec4813645d5e033aca2"
 MODEL_SIZE = 2_193_804
 STATE_SIZE = 3_790
-_BASE_URL = f"https://huggingface.co/grazzolini/tuneforge-models/resolve/{MODEL_REVISION}"
+_BASE_URL = (
+    f"https://huggingface.co/grazzolini/tuneforge-models/resolve/{MODEL_REVISION}/crema"
+)
 _CLASSES_SHA256 = "e319b684db4725df87ab52c8c7b6df46508af23077c4b0a7dc662a6cbe6228c1"
 _OUTPUTS = ("Identity:0", "Identity_1:0", "Identity_2:0", "Identity_3:0")
 _OUTPUT_WIDTHS = (170, 12, 13, 13)

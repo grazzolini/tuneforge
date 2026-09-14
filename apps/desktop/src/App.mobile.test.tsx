@@ -455,7 +455,10 @@ describe("Desktop app mobile capability gates", () => {
         "Side-load a Whisper model to enable local lyrics. Stem generation is unavailable on this device.",
       ),
     ).toBeInTheDocument();
-    expect(await screen.findByRole("button", { name: "Analyze Track" })).toBeEnabled();
+    expect(await screen.findByRole("button", { name: "Analyze Track" })).toBeDisabled();
+    expect(await screen.findByText(
+      "Advanced Beat Analysis is unavailable on this device. Choose Built-in Beat Analysis in Settings.",
+    )).toBeInTheDocument();
     expect(await screen.findByRole("button", { name: "Refresh Chords" })).toBeEnabled();
     expect(await screen.findByRole("button", { name: "Refresh Lyrics" })).toBeDisabled();
     expect(await screen.findByRole("button", { name: "Generate Stems" })).toBeDisabled();

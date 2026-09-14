@@ -1,6 +1,6 @@
 import createClient from "openapi-fetch";
 import { invoke } from "@tauri-apps/api/core";
-import type { components, MobileCapabilities, paths } from "@tuneforge/shared-types";
+import type { components, MobileCapabilities, MobileJobSchema, paths } from "@tuneforge/shared-types";
 import { normalizeApiDateTime } from "./datetime";
 
 const DEFAULT_API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8765";
@@ -36,7 +36,7 @@ export type LyricsResponse = components["schemas"]["LyricsResponse"];
 export type LyricsSegmentSchema = components["schemas"]["LyricsSegmentSchema"];
 export type LyricsWordSchema = components["schemas"]["LyricsWordSchema"];
 export type ArtifactSchema = components["schemas"]["ArtifactSchema"];
-export type JobSchema = components["schemas"]["JobSchema"];
+export type JobSchema = MobileJobSchema;
 export type JobsResponse = components["schemas"]["JobsResponse"];
 export type BulkJobType = components["schemas"]["BulkJobRequest"]["job_type"];
 export type BulkJobRequest = components["schemas"]["BulkJobRequest"];
@@ -2257,12 +2257,14 @@ const mobileChordBackendsResponse: ChordBackendsResponse = {
     },
   ],
 };
-const mobileBeatBackendsResponse: BeatBackendsResponse = {
+const mobileBeatBackendsResponse = (capabilities: MobileCapabilities): BeatBackendsResponse => ({
   backends: [
     {
       availability: "available",
       available: true,
-      description: "TuneForge's built-in beat detector.",
+      description: capabilities.platform === "android"
+        ? "Analyze key and tuning without a model. Tempo and beat timing are unavailable on Android."
+        : "TuneForge's built-in beat detector.",
       desktopOnly: false,
       experimental: false,
       id: "built-in",
@@ -2271,18 +2273,28 @@ const mobileBeatBackendsResponse: BeatBackendsResponse = {
       unavailable_reason: null,
     },
     {
-      availability: "unavailable",
-      available: false,
-      description: "Optional beat-this beat detector for desktop builds.",
-      desktopOnly: true,
+      availability: capabilities.platform === "android" && capabilities.beatThisAvailable === true
+        ? "available"
+        : "unavailable",
+      available: capabilities.platform === "android" && capabilities.beatThisAvailable === true,
+      description: capabilities.beatThisModelStatus === "ready"
+        ? "Advanced Beat Analysis model ready offline (9.4 MB)."
+        : capabilities.beatThisModelStatus === "corrupt"
+          ? "Advanced Beat Analysis will repair and verify its 9.4 MB model on next use."
+          : capabilities.beatThisModelStatus === "download-required"
+            ? "Advanced Beat Analysis downloads and verifies its 9.4 MB model on first use."
+            : "Advanced Beat Analysis is unavailable on this device.",
+      desktopOnly: false,
       experimental: true,
       id: "beat-this",
       label: "Advanced Beat Analysis",
       runtime_device: "cpu",
-      unavailable_reason: "advanced beat analysis is disabled on mobile",
+      unavailable_reason: capabilities.platform !== "android" || capabilities.beatThisAvailable !== true
+        ? "advanced beat analysis runtime is unavailable"
+        : null,
     },
   ],
-};
+});
 const mobileStemModelsResponse: StemModelsResponse = {
   models: [
     {
@@ -2479,15 +2491,6 @@ function createMobileTuneForgeClient(capabilities: MobileCapabilities): TuneForg
     }
     return mediaInitialization;
   };
-  const requireSupportedMobileAnalysisBackend = (request?: { beat_backend?: BeatAnalysisBackend }) => {
-    if (request?.beat_backend === "beat-this") {
-      throw new ApiError({
-        code: "UNSUPPORTED_RUNTIME",
-        message: "Advanced beat analysis is not available on mobile yet.",
-        details: { beat_backend: request.beat_backend },
-      });
-    }
-  };
   const requireSupportedMobileChordBackend = (request?: {
     backend?: string | null;
     chord_backend?: string | null;
@@ -2502,7 +2505,7 @@ function createMobileTuneForgeClient(capabilities: MobileCapabilities): TuneForg
     }
   };
   return {
-    getMobileCapabilities: async () => capabilities,
+    getMobileCapabilities: () => invokeMobile("mobile_capabilities"),
     ensureWebMediaTransport,
     getHealth: () => invokeMobile("mobile_get_health"),
     getExportCapabilities: async () => {
@@ -2538,7 +2541,6 @@ function createMobileTuneForgeClient(capabilities: MobileCapabilities): TuneForg
     listProjects: (params?: ListProjectsParams) =>
       invokeMobile("mobile_list_projects", { params: params ?? null }),
     importProject: async (body: ProjectImportRequest) => {
-      requireSupportedMobileAnalysisBackend(body);
       requireSupportedMobileChordBackend(body);
       return invokeMobile("mobile_import_project", { payload: body });
     },
@@ -2547,11 +2549,12 @@ function createMobileTuneForgeClient(capabilities: MobileCapabilities): TuneForg
       invokeMobile("mobile_update_project", { projectId, payload: body }),
     deleteProject: (projectId: string) => invokeMobile("mobile_delete_project", { projectId }),
     analyzeProject: async (projectId: string, request?: AnalysisRequest) => {
-      requireSupportedMobileAnalysisBackend(request);
-      return invokeMobile("mobile_submit_analyze", { projectId });
+      return invokeMobile("mobile_submit_analyze", { projectId, payload: request ?? {} });
     },
     getAnalysis: (projectId: string) => invokeMobile("mobile_get_analysis", { projectId }),
-    listBeatBackends: async () => mobileBeatBackendsResponse,
+    listBeatBackends: async () => mobileBeatBackendsResponse(
+      await invokeMobile<MobileCapabilities>("mobile_capabilities"),
+    ),
     listChordBackends: async () => mobileChordBackendsResponse,
     listStemModels: async () => mobileStemModelsResponse,
     createChords: (projectId: string, body: ChordRequest) => {

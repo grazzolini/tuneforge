@@ -12,6 +12,7 @@ const androidDir = path.join(desktopDir, "src-tauri/gen/android");
 const tauriCli = path.join(desktopDir, "node_modules/.bin/tauri");
 const androidEnv = path.join(scriptDir, "android-arm64-env.sh");
 const prepareGenerated = path.join(scriptDir, "android-prepare-generated.sh");
+const prepareModelAssets = path.join(scriptDir, "prepare-android-model-assets.mjs");
 const defaultFfmpegRoot = path.join(repoRoot, "packaging/ffmpeg/generated/android-arm64-v8a");
 const packageLock = path.join(desktopDir, "src-tauri/target/.tuneforge-android-package.lock");
 const publishableVariables = [
@@ -28,6 +29,7 @@ const generatedMarkers = [
   ["app/src/main/res", "directory"], ["gradle/wrapper/gradle-wrapper.jar", "file"],
   ["gradle/wrapper/gradle-wrapper.properties", "file"], ["gradlew", "executable"], ["settings.gradle", "file"],
 ];
+const executorchAarSha256 = "a4a836b9fadd5b9afdf07b8533b2c3326695d04a58dd37e2cdfe709e804854fb";
 function capture(command, args, { cwd = repoRoot, env = process.env } = {}) {
   const result = spawnSync(command, args, {
     cwd, env, encoding: "utf8", maxBuffer: 256 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"],
@@ -52,6 +54,15 @@ export function parseMode(argv) {
   if (argv.length === 1 && argv[0] === "--debug") return "debug";
   if (argv.length === 1 && argv[0] === "--publishable") return "publishable";
   throw new Error("Usage: package-android.mjs [--prepare|--debug|--publishable]");
+}
+export function parseAndroidOptions(argv) {
+  const modelBundle = argv.includes("--model-bundle");
+  const testIdentity = argv.includes("--test-identity");
+  const mode = parseMode(argv.filter((value) => !["--model-bundle", "--test-identity"].includes(value)));
+  if (testIdentity && ["prepare", "publishable"].includes(mode)) {
+    throw new Error("--test-identity is allowed only for local debug or release-profile builds.");
+  }
+  return { mode, modelBundle, testIdentity };
 }
 export function sanitizedEnv(env = process.env) {
   const result = { ...env };
@@ -237,6 +248,8 @@ export function generatedState(baseDir = androidDir) {
 }
 export function preparedState(baseDir = androidDir) {
   const required = ["app/proguard-tuneforge.pro", "app/src/main/java/com/tuneforge/desktop/PowerInhibitionService.kt",
+    "app/src/main/java/com/tuneforge/desktop/ModelAssetDescriptor.java",
+    "app/src/main/java/com/tuneforge/desktop/BeatThisRunner.java",
     "app/src/main/res/values/ic_launcher_background.xml",
     "app/src/main/jniLibs/arm64-v8a/libavcodec.so",
     "app/src/main/jniLibs/arm64-v8a/libavfilter.so",
@@ -248,6 +261,21 @@ export function preparedState(baseDir = androidDir) {
   const missing = required.filter((relative) => !fs.statSync(path.join(baseDir, relative),
     { throwIfNoEntry: false })?.isFile());
   return { ready: missing.length === 0, missing };
+}
+export function verifyExecutorchAar(gradleHome) {
+  const matches = [];
+  const visit = (directory) => {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const candidate = path.join(directory, entry.name);
+      if (entry.isDirectory()) visit(candidate);
+      else if (entry.name === "executorch-android-1.4.0.aar") matches.push(candidate);
+    }
+  };
+  const cache = path.join(gradleHome, "caches");
+  if (fs.statSync(cache, { throwIfNoEntry: false })?.isDirectory()) visit(cache);
+  if (!matches.some((file) => crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex") === executorchAarSha256)) {
+    throw new Error("ExecuTorch Android 1.4.0 AAR SHA-256 verification failed.");
+  }
 }
 export function requirePrepared(baseDir = androidDir) {
   const generated = generatedState(baseDir);
@@ -336,6 +364,15 @@ export function verifyPublishable(apk, tools, expectedFingerprint, expectedVersi
   }
   if (version !== expectedVersion) throw new Error("Publishable APK versionName does not match Tauri configuration.");
 }
+export function verifyApplicationId(apk, tools, expectedApplicationId, {
+  env = process.env, runCapture = capture,
+} = {}) {
+  const badging = runCapture(tools.aapt2, ["dump", "badging", apk], { env });
+  const applicationId = badging.output.match(/^package: name='([^']+)'/m)?.[1];
+  if (!badging.ok || applicationId !== expectedApplicationId) {
+    throw new Error(`Android APK applicationId must be ${expectedApplicationId}.`);
+  }
+}
 export function runPublishableTransaction({
   buildFile, configure, intermediates, metadataPath, staging, destination, tempHome, build, resolveRaw, validate,
 }, {
@@ -385,7 +422,7 @@ function verifySpecific(debug, tools, env) {
   return { apk, metadataPath };
 }
 export function main(argv = process.argv.slice(2)) {
-  const mode = parseMode(argv);
+  const { mode, modelBundle, testIdentity } = parseAndroidOptions(argv);
   const debug = mode === "debug";
   const publishable = mode === "publishable";
   const sourceEnv = { ...process.env };
@@ -393,6 +430,8 @@ export function main(argv = process.argv.slice(2)) {
   console.log(`[android package] start (${mode})`);
   const lock = acquirePackagingLock();
   let isolatedHome;
+  let testIdentityBuildFile;
+  let testIdentitySnapshot;
   try {
     if (mode !== "prepare") requirePrepared();
     const config = publishable ? readPublishableConfig(sourceEnv) : undefined;
@@ -426,11 +465,25 @@ export function main(argv = process.argv.slice(2)) {
       run(tauriCli, ["icon", "--output", "src-tauri/target/android-icons", "src-tauri/icons/icon.png"],
         { cwd: desktopDir, env, label: "Android icon generation" });
       run("bash", [prepareGenerated], { env, label: "Generated Android preparation" });
+      if (modelBundle) run(process.execPath, [prepareModelAssets], { env, label: "Android model bundle preparation" });
+      else fs.rmSync(path.join(androidDir, "app/src/main/assets/models"), { recursive: true, force: true });
       requirePrepared();
       console.log("[android package] completion (prepare)");
       return;
     }
     const buildFile = path.join(androidDir, "app/build.gradle.kts");
+    if (testIdentity) {
+      testIdentityBuildFile = buildFile;
+      testIdentitySnapshot = fs.readFileSync(buildFile, "utf8");
+      const configured = testIdentitySnapshot.replace(
+        'applicationId = "com.tuneforge.desktop"',
+        'applicationId = "com.tuneforge.desktop.test539"',
+      );
+      if (configured === testIdentitySnapshot) throw new Error("Generated Android applicationId marker is missing.");
+      fs.writeFileSync(buildFile, configured);
+    }
+    if (modelBundle) run(process.execPath, [prepareModelAssets], { env, label: "Android model bundle preparation" });
+    else fs.rmSync(path.join(androidDir, "app/src/main/assets/models"), { recursive: true, force: true });
     const rawApk = path.join(androidDir, "app/build/outputs/apk/universal/release/app-universal-release.apk");
     const metadata = path.join(path.dirname(rawApk), "output-metadata.json");
     const mapping = path.join(androidDir, "app/build/outputs/mapping/universalRelease/mapping.txt");
@@ -444,6 +497,7 @@ export function main(argv = process.argv.slice(2)) {
       const build = () => { console.log(`[android package] build (${mode})`);
         run("bash", [androidEnv, tauriCli, "android", "build", "--ci", "--target", "aarch64", "--apk"],
           { cwd: desktopDir, env: buildEnv, label: "Tauri Android publishable build" });
+        verifyExecutorchAar(buildEnv.GRADLE_USER_HOME);
         requireExecutables([tools.aapt2, tools.apksigner, tools.dexdump]);
       };
       const resolveRaw = (metadataPath) => {
@@ -469,8 +523,10 @@ export function main(argv = process.argv.slice(2)) {
       const args = [androidEnv, tauriCli, "android", "build", "--ci", "--target", "aarch64", "--apk"];
       if (debug) args.push("--debug");
       run("bash", args, { cwd: desktopDir, env, label: `Tauri Android ${mode} build` });
+      verifyExecutorchAar(env.GRADLE_USER_HOME);
       requireExecutables(debug ? [tools.aapt2, tools.apksigner] : [tools.aapt2, tools.apksigner, tools.dexdump]);
       const artifact = verifySpecific(debug, tools, env);
+      if (testIdentity) verifyApplicationId(artifact.apk, tools, "com.tuneforge.desktop.test539", { env });
       if (!debug) run(process.execPath, [path.join(scriptDir, "validate-android-release-jni.mjs")],
         { env, label: "Android release JNI validation" });
       console.log(`[android package] ${debug ? "debug" : "optimized release-profile"} APK: ${artifact.apk}`);
@@ -478,6 +534,9 @@ export function main(argv = process.argv.slice(2)) {
     }
   } finally {
     try {
+      if (testIdentityBuildFile && testIdentitySnapshot !== undefined) {
+        fs.writeFileSync(testIdentityBuildFile, testIdentitySnapshot);
+      }
       if (isolatedHome) fs.rmSync(isolatedHome, { recursive: true, force: true });
     } finally {
       lock.release();

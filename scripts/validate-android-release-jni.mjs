@@ -7,29 +7,42 @@ import { fileURLToPath } from "node:url";
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const workspaceRoot = path.resolve(scriptDir, "..");
 const activityClass = "com.tuneforge.desktop.MainActivity";
+const executorchKeepRule = "-keep class org.pytorch.executorch.** { *; }";
+const fbjniKeepRule = "-keep class com.facebook.jni.** { *; }";
 const requiredMethods = new Map([
   ["setTuneForgePowerInhibition", "(I)Ljava/lang/String;"],
   ["getTuneForgePowerInhibitionStatus", "()Ljava/lang/String;"],
   ["getTuneForgeAudioPermissionState", "()Ljava/lang/String;"],
   ["requestTuneForgeAudioPermission", "()Ljava/lang/String;"],
+  ["getTuneForgeBeatThisStatus", "()Ljava/lang/String;"],
+  ["runTuneForgeBeatThis", "([FILjava/lang/String;)[[F"],
+  ["takeTuneForgeBeatThisError", "(Ljava/lang/String;)Ljava/lang/String;"],
+  ["cancelTuneForgeBeatThis", "(Ljava/lang/String;)V"],
 ]);
 
 export function parseJniRules(source) {
-  const lines = source.replace(/#.*/g, "").split("\n").map((line) => line.trim()).filter(Boolean);
+  const allLines = source.replace(/#.*/g, "").split("\n").map((line) => line.trim()).filter(Boolean);
+  if (allLines.filter((line) => line === executorchKeepRule).length !== 1) {
+    throw new Error("JNI rules must preserve the pinned ExecuTorch package against R8 rewriting.");
+  }
+  if (allLines.filter((line) => line === fbjniKeepRule).length !== 1) {
+    throw new Error("JNI rules must preserve the pinned fbjni exception bridge against R8 rewriting.");
+  }
+  const lines = allLines.filter((line) => line !== executorchKeepRule && line !== fbjniKeepRule);
   if (lines.some((line) => /\*|\.\.\./.test(line)) ||
     lines[0] !== `-keepclassmembers class ${activityClass} {` || lines.at(-1) !== "}") {
     throw new Error("JNI rules must be one narrow MainActivity -keepclassmembers block without wildcards.");
   }
   const methods = lines.slice(1, -1).map((line) => {
-    const match = /^public\s+([\w.]+)\s+([A-Za-z_$][\w$]*)\(([^)]*)\);$/.exec(line);
+    const match = /^public\s+([\w.]+(?:\[\])*)\s+([A-Za-z_$][\w$]*)\(([^)]*)\);$/.exec(line);
     if (!match) throw new Error(`Invalid JNI rule: ${line}`);
     const parameters = match[3] ? match[3].split(",").map((item) => item.trim()) : [];
     return { returnType: match[1], name: match[2], parameters, descriptor: `(${parameters.map(javaDescriptor).join("")})${javaDescriptor(match[1])}` };
   });
-  if (lines.length !== 6 || methods.length !== requiredMethods.size ||
+  if (lines.length !== requiredMethods.size + 2 || methods.length !== requiredMethods.size ||
     methods.some((method) => requiredMethods.get(method.name) !== method.descriptor) ||
     new Set(methods.map((method) => method.name)).size !== methods.length) {
-    throw new Error("JNI rules must preserve exactly the four Rust-called MainActivity methods.");
+    throw new Error("JNI rules must preserve exactly the eight Rust-called MainActivity methods.");
   }
   return methods;
 }
@@ -204,10 +217,11 @@ export function parseCli(argv) {
 
 function javaDescriptor(type) {
   const primitive = { void: "V", boolean: "Z", byte: "B", char: "C", short: "S", int: "I", long: "J", float: "F", double: "D" };
-  if (primitive[type]) return primitive[type];
   if (!type || !/^[\w.]+(?:\[\])*$/.test(type)) throw new Error(`Unsupported Java type in JNI rule or DEX output: ${type}`);
   const dimensions = (type.match(/\[\]/g) ?? []).length;
-  return `${"[".repeat(dimensions)}L${type.replace(/\[\]/g, "").replaceAll(".", "/")};`;
+  const base = type.replace(/\[\]/g, "");
+  const descriptor = primitive[base] ?? `L${base.replaceAll(".", "/")};`;
+  return `${"[".repeat(dimensions)}${descriptor}`;
 }
 
 function xmlAttribute(attributes, name) {

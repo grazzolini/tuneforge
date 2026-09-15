@@ -1,6 +1,69 @@
 # syntax=docker/dockerfile:1
 
-FROM --platform=linux/amd64 ubuntu:24.04@sha256:1e0a86e57d247923571b75e0aaf48a1449cf8c543d51fb3e07a4a7d7bfa79316
+FROM ubuntu:24.04@sha256:1e0a86e57d247923571b75e0aaf48a1449cf8c543d51fb3e07a4a7d7bfa79316 AS soxr-builder
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+RUN set -eux; \
+    export DEBIAN_FRONTEND=noninteractive; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+      build-essential \
+      ca-certificates \
+      cmake \
+      file \
+      nodejs \
+      patch \
+      tar; \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace
+
+COPY scripts/build-soxr.mjs scripts/flatpak-source-snapshots.mjs scripts/
+COPY packaging/soxr/sources.lock.json packaging/soxr/sources.lock.json
+COPY packaging/soxr/patches/android-unversioned-soname.patch packaging/soxr/patches/android-unversioned-soname.patch
+
+RUN set -eux; \
+    node scripts/build-soxr.mjs \
+      --target host-test \
+      --output-dir /opt/tuneforge-ci/soxr/host-test; \
+    soxr_library="$(find /opt/tuneforge-ci/soxr/host-test/lib -maxdepth 1 \
+      -type f -name 'libsoxr.so.*' -print -quit)"; \
+    test -n "${soxr_library}"; \
+    file "${soxr_library}" | grep -F 'ELF 64-bit LSB shared object, x86-64'; \
+    grep -F '"-DWITH_PFFFT=ON"' /opt/tuneforge-ci/soxr/host-test/provenance.json; \
+    printf '%s\n' \
+      '#include <stddef.h>' \
+      '#include <soxr.h>' \
+      'int main(void) {' \
+      '  float input[480] = {0};' \
+      '  float output[960] = {0};' \
+      '  size_t input_done = 0, output_done = 0;' \
+      '  input[0] = 1.0f;' \
+      '  soxr_error_t error = soxr_oneshot(48000, 96000, 1, input, 480, &input_done, output, 960, &output_done, 0, 0, 0);' \
+      '  return error || input_done != 480 || output_done == 0;' \
+      '}' > /tmp/verify-soxr.c; \
+    cc -std=c11 -Wall -Wextra -Werror \
+      -I/opt/tuneforge-ci/soxr/host-test/include \
+      -L/opt/tuneforge-ci/soxr/host-test/lib \
+      -Wl,-rpath,/opt/tuneforge-ci/soxr/host-test/lib \
+      /tmp/verify-soxr.c -lsoxr -o /tmp/verify-soxr; \
+    /tmp/verify-soxr; \
+    { cc --version | sed -n '1p'; cmake --version | sed -n '1p'; node --version; } \
+      > /opt/tuneforge-ci/soxr/build-tools.txt; \
+    sha256sum \
+      scripts/build-soxr.mjs \
+      scripts/flatpak-source-snapshots.mjs \
+      packaging/soxr/sources.lock.json \
+      packaging/soxr/patches/android-unversioned-soname.patch \
+      > /opt/tuneforge-ci/soxr/build-inputs.sha256; \
+    cd /opt/tuneforge-ci/soxr; \
+    find . -type f ! -name payload.sha256 -print0 \
+      | LC_ALL=C sort -z \
+      | xargs -0 sha256sum \
+      > payload.sha256
+
+FROM ubuntu:24.04@sha256:1e0a86e57d247923571b75e0aaf48a1449cf8c543d51fb3e07a4a7d7bfa79316
 
 ARG FFMPEG_VERSION=7:6.1.1-3ubuntu5
 ARG FFMPEG_DEB_URL=https://archive.ubuntu.com/ubuntu/pool/universe/f/ffmpeg/ffmpeg_6.1.1-3ubuntu5_amd64.deb
@@ -22,6 +85,8 @@ LABEL org.opencontainers.image.source="https://github.com/grazzolini/tuneforge" 
       org.opencontainers.image.licenses="LicenseRef-TuneForge-CI-Image"
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+COPY --from=soxr-builder /opt/tuneforge-ci/soxr /opt/tuneforge-ci/soxr
 
 RUN set -eux; \
     export DEBIAN_FRONTEND=noninteractive; \
@@ -60,6 +125,9 @@ RUN set -eux; \
     printf '%s  %s\n' "${FFMPEG_SHA256}" /usr/bin/ffmpeg | sha256sum -c -; \
     printf '%s  %s\n' "${FFPROBE_SHA256}" /usr/bin/ffprobe | sha256sum -c -; \
     test -f /usr/share/doc/ffmpeg/copyright; \
+    test -f /opt/tuneforge-ci/soxr/host-test/include/soxr.h; \
+    grep -F '"-DWITH_PFFFT=ON"' /opt/tuneforge-ci/soxr/host-test/provenance.json; \
+    (cd /opt/tuneforge-ci/soxr && sha256sum --check --strict payload.sha256); \
     install -d /usr/share/tuneforge-ci; \
     printf '%s\n' \
       'ubuntu:24.04@sha256:1e0a86e57d247923571b75e0aaf48a1449cf8c543d51fb3e07a4a7d7bfa79316' \
@@ -110,4 +178,4 @@ RUN set -eux; \
     cat /usr/share/tuneforge-ci/codec-validation.jsonl; \
     rm -rf /var/lib/apt/lists/*
 
-COPY README.md /usr/share/doc/tuneforge-ci/README.md
+COPY .github/ci/README.md /usr/share/doc/tuneforge-ci/README.md

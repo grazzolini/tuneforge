@@ -84,3 +84,5 @@ data/
 # Verified local FFmpeg source/build cache and generated platform payloads.
 packaging/ffmpeg/cache/
 packaging/ffmpeg/generated/
+packaging/soxr/cache/
+packaging/soxr/generated/

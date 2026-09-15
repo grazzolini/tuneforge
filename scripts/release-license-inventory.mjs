@@ -3,6 +3,8 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildModelBundlePlan, DEFAULT_LYRICS_MODEL } from "./model-bundle-metadata.mjs";
+import { onnxRuntimeAndroidArtifact } from "./package-android.mjs";
+import { cremaAndroidAssets } from "./prepare-android-model-assets.mjs";
 import {
   defaultPackageOptions,
   normalizeFlatpakProfiles,
@@ -16,6 +18,7 @@ const LV_CHORDIA_CHECKPOINT_BYTES = 28_730_939;
 const LV_CHORDIA_SOURCE_REVISION = "9d7de7bbf45efa6731ec8dc62d35280f141c0702";
 const flatpakGeneratedRoot = path.join(workspaceRoot, "packaging", "flatpak", "generated");
 const ffmpegSourceLockPath = path.join(workspaceRoot, "packaging", "ffmpeg", "sources.lock.json");
+const soxrSourceLockPath = path.join(workspaceRoot, "packaging", "soxr", "sources.lock.json");
 
 function buildOwnedCodecPolicy() {
   const sourceLock = JSON.parse(readFileSync(ffmpegSourceLockPath, "utf8"));
@@ -42,6 +45,31 @@ function buildOwnedCodecPolicy() {
     correspondingSources: `packaging/ffmpeg/generated/${sourceArchiveName}`,
     buildCommand: "pnpm ffmpeg:build",
     sourceCommand: "pnpm ffmpeg:sources",
+  };
+}
+
+function buildAndroidAnalysisPolicy() {
+  const soxr = JSON.parse(readFileSync(soxrSourceLockPath, "utf8"));
+  return {
+    onnxRuntime: onnxRuntimeAndroidArtifact,
+    crema: {
+      revision: cremaAndroidAssets[0].revision,
+      assets: cremaAndroidAssets.map(({ fileName, size, sha256 }) => ({ fileName, size, sha256 })),
+      acquisition: "Verified first-use download by default; --model-bundle embeds the same pair.",
+    },
+    soxr: {
+      runtimeVersion: soxr.runtimeVersion,
+      revision: soxr.source.revision,
+      license: soxr.source.license,
+      sourceSha256: soxr.source.sha256,
+      linkage: "Dynamically linked Android arm64-v8a runtime with replaceable companion sources.",
+      sourceLock: "packaging/soxr/sources.lock.json",
+      buildCommand: "pnpm soxr:build -- --target android-arm64-v8a",
+      pffft: {
+        revision: soxr.components.pffft.upstreamRevision,
+        license: soxr.components.pffft.license,
+      },
+    },
   };
 }
 
@@ -323,6 +351,7 @@ export function buildReleaseLicenseInventory({
     })),
     toolStatuses,
     ownedCodecPolicy: buildOwnedCodecPolicy(),
+    androidAnalysisPolicy: buildAndroidAnalysisPolicy(),
     modelPolicy: {
       defaultPackageOptions: {
         lvChordia: defaultOptions.lvChordia,
@@ -469,6 +498,28 @@ export function formatReleaseLicenseInventory(checklist) {
   lines.push(`- corresponding sources: ${checklist.ownedCodecPolicy.correspondingSources}`);
   lines.push(`- build: ${checklist.ownedCodecPolicy.buildCommand}`);
   lines.push(`- source companion: ${checklist.ownedCodecPolicy.sourceCommand}`);
+
+  const android = checklist.androidAnalysisPolicy;
+  lines.push("");
+  lines.push("Android analysis runtime policy:");
+  lines.push(
+    `- ONNX Runtime ${android.onnxRuntime.version}: ${android.onnxRuntime.license}, ` +
+      `${android.onnxRuntime.coordinate}, ${android.onnxRuntime.size} bytes, ` +
+      `SHA-256 ${android.onnxRuntime.sha256}`,
+  );
+  lines.push(`- Crema revision: ${android.crema.revision}`);
+  for (const asset of android.crema.assets) {
+    lines.push(`- Crema ${asset.fileName}: ${asset.size} bytes, SHA-256 ${asset.sha256}`);
+  }
+  lines.push(`- acquisition: ${android.crema.acquisition}`);
+  lines.push(
+    `- libsoxr ${android.soxr.runtimeVersion}: ${android.soxr.license}, revision ` +
+      `${android.soxr.revision}, source SHA-256 ${android.soxr.sourceSha256}`,
+  );
+  lines.push(`- libsoxr linkage: ${android.soxr.linkage}`);
+  lines.push(`- libsoxr source lock: ${android.soxr.sourceLock}`);
+  lines.push(`- libsoxr build: ${android.soxr.buildCommand}`);
+  lines.push(`- PFFFT ${android.soxr.pffft.revision}: ${android.soxr.pffft.license}`);
 
   lines.push("");
   lines.push("Model-weight policy:");

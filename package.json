@@ -9,6 +9,7 @@
     "ffmpeg:sources": "node scripts/build-ffmpeg.mjs --source-only",
     "ffmpeg:validate": "node scripts/validate-packaged-ffmpeg.mjs",
     "ffmpeg:test-shim": "node scripts/test-ffmpeg-shim.mjs",
+    "soxr:build": "node scripts/build-soxr.mjs",
     "chords:benchmark": "bash -c 'if [[ \"${1:-}\" == \"--\" ]]; then shift; fi; exec bash scripts/run-backend-module.sh app.benchmarks.chords \"$@\"' --",
     "contracts:generate": "pnpm --filter @tuneforge/shared-types generate",
     "dev": "concurrently -n backend,desktop -c blue,green \"pnpm dev:backend\" \"pnpm dev:desktop\"",

@@ -694,7 +694,7 @@ describe("Desktop app settings theme", () => {
     expect(screen.getByRole("button", { name: /^Advanced Chords/ })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: /^Advanced Chords/ })).toBeDisabled();
     expect(screen.getByRole("button", { name: /^LV Chordia/ })).toBeDisabled();
-    expect(screen.getByRole("button", { name: /^Built-in Chords/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /^Built-in Chords/ })).not.toBeDisabled();
 
     await user.click(screen.getByRole("button", { name: "Retry availability" }));
 
@@ -804,7 +804,7 @@ describe("Desktop app settings theme", () => {
     expect(screen.getByText("Checking chord backend availability…")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^Advanced Chords/ })).toBeDisabled();
     expect(screen.getByRole("button", { name: /^LV Chordia/ })).toBeDisabled();
-    expect(screen.getByRole("button", { name: /^Built-in Chords/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /^Built-in Chords/ })).not.toBeDisabled();
     expect(screen.queryByText(/Using Built-in .* fallback/)).not.toBeInTheDocument();
 
     await act(async () => {

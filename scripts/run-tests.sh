@@ -107,8 +107,13 @@ printf '\n[tests] Android toolchain helper tests finished in %ss\n' "${android_e
 printf '\n[tests] Starting Tauri shell tests\n\n'
 tauri_start=${SECONDS}
 (
+  cd "${repo_root}"
+  node scripts/build-soxr.mjs --target host-test
   cd "${repo_root}/apps/desktop/src-tauri"
   source "${repo_root}/scripts/configure-tauri-build-env.sh"
+  export TUNEFORGE_SOXR_ROOT="${repo_root}/packaging/soxr/generated/host-test"
+  export DYLD_LIBRARY_PATH="${TUNEFORGE_SOXR_ROOT}/lib${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}"
+  export LD_LIBRARY_PATH="${TUNEFORGE_SOXR_ROOT}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
   cargo test
 )
 tauri_elapsed=$((SECONDS - tauri_start))

@@ -232,11 +232,15 @@ Validation failures return `INVALID_REQUEST` with serialized validation details.
 - Advanced Chords and Advanced Beat Analysis are default desktop/dev/package engines. Advanced Chords uses ONNX Runtime and packages the exact pinned converted Crema model/state; the Crema Python package, TensorFlow, and Keras are absent. Packaged builds must treat ONNX Runtime, model provenance, beat-this, and their runtime dependencies as default-runtime notice scope. Built-in chord and beat engines remain fallback paths when advanced dependencies are unavailable, unsupported, or explicitly excluded.
 - Demucs and lyrics models follow first-use local download/cache behavior.
 - The Linux legacy NVIDIA profile is an opt-in local backend environment override; it does not change the default lockfile, CI setup, or packaged dependency baseline.
-- Android arm64 uses a narrow in-process FFmpeg bridge for durable conversion and keeps platform
-  media APIs plus Symphonia/Signalsmith for existing playback and validation paths.
+- Android arm64 uses a narrow in-process FFmpeg bridge for durable conversion and dynamically linked
+  libsoxr for desktop-compatible analysis resampling. It keeps platform media APIs plus
+  Symphonia/Signalsmith for existing playback and validation paths.
 - Android Advanced Beat Analysis computes the desktop-compatible log-mel feature shape in Rust,
   invokes the pinned FP32 Beat This program through ExecuTorch 1.4 XNNPACK, and publishes timing
   only through the guarded mobile job/artifact transaction.
+- Android general analysis computes desktop-compatible HPSS, tuning, CQT/CENS, key, and confidence.
+  Advanced Chords stays separate and runs the verified Crema 0.2.0 pair through ONNX Runtime 1.29.0
+  FP32 CPU inference with guarded asynchronous persistence.
 - Mobile does not run the desktop Python/FastAPI backend today.
 
 ## Extensibility Rules

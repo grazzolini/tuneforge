@@ -10,9 +10,13 @@ MAIN_ACTIVITY="$ANDROID_MAIN/java/com/tuneforge/desktop/MainActivity.kt"
 POWER_SERVICE="$ANDROID_MAIN/java/com/tuneforge/desktop/PowerInhibitionService.kt"
 MODEL_ASSET_DESCRIPTOR="$ANDROID_MAIN/java/com/tuneforge/desktop/ModelAssetDescriptor.java"
 BEAT_THIS_RUNNER="$ANDROID_MAIN/java/com/tuneforge/desktop/BeatThisRunner.java"
+CREMA_RUNNER="$ANDROID_MAIN/java/com/tuneforge/desktop/CremaRunner.java"
+INFERENCE_LOCK="$ANDROID_MAIN/java/com/tuneforge/desktop/InferenceLock.java"
 ANDROID_JAVA_SOURCE="$ROOT_DIR/apps/desktop/src-tauri/android/java/com/tuneforge/desktop"
 MODEL_ASSET_DESCRIPTOR_SOURCE="$ANDROID_JAVA_SOURCE/ModelAssetDescriptor.java"
 BEAT_THIS_RUNNER_SOURCE="$ANDROID_JAVA_SOURCE/BeatThisRunner.java"
+CREMA_RUNNER_SOURCE="$ANDROID_JAVA_SOURCE/CremaRunner.java"
+INFERENCE_LOCK_SOURCE="$ANDROID_JAVA_SOURCE/InferenceLock.java"
 ANDROID_KOTLIN_SOURCE="$ROOT_DIR/apps/desktop/src-tauri/android/kotlin/com/tuneforge/desktop"
 MAIN_ACTIVITY_SOURCE="$ANDROID_KOTLIN_SOURCE/MainActivity.kt"
 POWER_SERVICE_SOURCE="$ANDROID_KOTLIN_SOURCE/PowerInhibitionService.kt"
@@ -22,6 +26,8 @@ PROGUARD_DEST="$ROOT_DIR/apps/desktop/src-tauri/gen/android/app/proguard-tunefor
 FFMPEG_ROOT="${TUNEFORGE_ANDROID_FFMPEG_ROOT:?TUNEFORGE_ANDROID_FFMPEG_ROOT is required}"
 FFMPEG_JNI_DIR="$ANDROID_MAIN/jniLibs/arm64-v8a"
 FFMPEG_ASSET_DIR="$ANDROID_MAIN/assets/ffmpeg"
+SOXR_ROOT="${TUNEFORGE_ANDROID_SOXR_ROOT:?TUNEFORGE_ANDROID_SOXR_ROOT is required}"
+SOXR_ASSET_DIR="$ANDROID_MAIN/assets/soxr"
 
 if [[ ! -f "$MANIFEST" || ! -f "$MAIN_ACTIVITY" || ! -d "$ANDROID_RES" ]]; then
   echo "Android project is not initialized. Run pnpm --filter @tuneforge/desktop tauri android init first." >&2
@@ -53,6 +59,23 @@ copy_owned_ffmpeg_runtime() {
 
 copy_owned_ffmpeg_runtime
 
+copy_owned_soxr_runtime() {
+  if [[ ! -f "$SOXR_ROOT/lib/libsoxr.so" || ! -f "$SOXR_ROOT/provenance.json" ]]; then
+    echo "Verified Android libsoxr runtime is incomplete: $SOXR_ROOT" >&2
+    exit 1
+  fi
+  if ! grep -Fq '"-DWITH_PFFFT=ON"' "$SOXR_ROOT/provenance.json"; then
+    echo "Verified Android libsoxr runtime does not use the required PFFFT profile: $SOXR_ROOT" >&2
+    exit 1
+  fi
+  mkdir -p "$FFMPEG_JNI_DIR" "$SOXR_ASSET_DIR/licenses"
+  cp "$SOXR_ROOT/lib/libsoxr.so" "$FFMPEG_JNI_DIR/libsoxr.so"
+  cp "$SOXR_ROOT/provenance.json" "$SOXR_ASSET_DIR/provenance.json"
+  cp "$SOXR_ROOT/licenses/"*.txt "$SOXR_ASSET_DIR/licenses/"
+}
+
+copy_owned_soxr_runtime
+
 ensure_executorch_dependency() {
   if grep -Fq 'implementation("org.pytorch:executorch-android:1.4.0")' "$APP_GRADLE"; then
     return
@@ -78,8 +101,35 @@ ensure_executorch_dependency() {
 
 ensure_executorch_dependency
 
+ensure_onnxruntime_dependency() {
+  if grep -Fq 'implementation("com.microsoft.onnxruntime:onnxruntime-android:1.29.0")' "$APP_GRADLE"; then
+    return
+  fi
+  local temp_file
+  temp_file="$(mktemp)"
+  awk '
+    !inserted && /^[[:space:]]*dependencies[[:space:]]*\{/ {
+      print
+      print "    implementation(\"com.microsoft.onnxruntime:onnxruntime-android:1.29.0\")"
+      inserted = 1
+      next
+    }
+    { print }
+    END { if (!inserted) exit 42 }
+  ' "$APP_GRADLE" > "$temp_file" || {
+    rm -f "$temp_file"
+    echo "Could not add the ONNX Runtime Android dependency." >&2
+    exit 1
+  }
+  mv "$temp_file" "$APP_GRADLE"
+}
+
+ensure_onnxruntime_dependency
+
 cp "$MODEL_ASSET_DESCRIPTOR_SOURCE" "$MODEL_ASSET_DESCRIPTOR"
 cp "$BEAT_THIS_RUNNER_SOURCE" "$BEAT_THIS_RUNNER"
+cp "$CREMA_RUNNER_SOURCE" "$CREMA_RUNNER"
+cp "$INFERENCE_LOCK_SOURCE" "$INFERENCE_LOCK"
 cp "$MAIN_ACTIVITY_SOURCE" "$MAIN_ACTIVITY"
 cp "$POWER_SERVICE_SOURCE" "$POWER_SERVICE"
 

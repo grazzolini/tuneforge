@@ -23,6 +23,7 @@ const fixtureFiles = [
   ".github/workflows/pages.yml",
   ".github/dependabot.yml",
   "scripts/build-soxr.mjs",
+  "scripts/verify-ci-image.sh",
 ];
 
 function fixture() {
@@ -302,6 +303,13 @@ test("pinned Rust bootstrap stays required", (context) => {
 
   assert.throws(() => validateCiImagePolicy(root), /must bootstrap pinned Rust/);
 });
+
+test("Tauri uses one image-keyed Cargo cache and prebuilt SoXR", () =>
+  assertMutationsFail(".github/workflows/ci.yml", [
+    ["key: cargo-v1-${{ env.CI_IMAGE_REFERENCE }}-", "key: cargo-v1-"],
+    ["      - name: Check Tauri shell", "      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9\n\n      - name: Check Tauri shell"],
+    ['soxr_root="/opt/tuneforge-ci/soxr/host-test"', 'node scripts/build-soxr.mjs --target host-test\n          soxr_root="packaging/soxr/generated/host-test"'],
+  ], /one image-keyed Cargo cache and the prebuilt SoXR payload/));
 
 test("release-facing workflow stays separate from CI image", (context) => {
   const root = fixture();

@@ -559,6 +559,10 @@ export function formatJobErrorMessage(
   if (job?.type === "analyze" && trimmed.startsWith(advancedBeatPrefix)) {
     return trimmed.slice(advancedBeatPrefix.length).trim();
   }
+  const advancedChordPrefix = "ADVANCED_CHORD_BACKEND_FAILED:";
+  if (job?.type === "chords" && trimmed.startsWith(advancedChordPrefix)) {
+    return trimmed.slice(advancedChordPrefix.length).trim();
+  }
   return (
     formatDependencyDiagnostic({
       fallbackOperation: operationForJobType(job?.type),

@@ -2196,7 +2196,7 @@ export type TuneForgeClient = {
 };
 
 let client = createClient<paths>({ baseUrl: apiBaseUrl });
-const mobileChordBackendsResponse: ChordBackendsResponse = {
+const mobileChordBackendsResponse = (capabilities: MobileCapabilities): ChordBackendsResponse => ({
   backends: [
     {
       availability: "available",
@@ -2218,10 +2218,11 @@ const mobileChordBackendsResponse: ChordBackendsResponse = {
       unavailable_reason: null,
     },
     {
-      availability: "unavailable",
-      available: false,
+      availability: capabilities.platform === "android" && capabilities.cremaAvailable === true
+        ? "available" : "unavailable",
+      available: capabilities.platform === "android" && capabilities.cremaAvailable === true,
       capabilities: {
-        desktopOnly: true,
+        desktopOnly: false,
         estimatedSpeed: "slow",
         experimental: true,
         supportsConfidence: true,
@@ -2229,12 +2230,19 @@ const mobileChordBackendsResponse: ChordBackendsResponse = {
         supportsNoChord: true,
         supportsSevenths: true,
       },
-      description: "Optional crema chord detector for desktop builds.",
-      desktopOnly: true,
+      description: capabilities.cremaModelStatus === "ready"
+        ? "Crema 0.2.0 ONNX. Verified and ready offline."
+        : capabilities.cremaModelStatus === "corrupt"
+          ? "Crema 0.2.0 ONNX. Repair and verification run on next use."
+          : capabilities.cremaModelStatus === "download-required"
+            ? "Crema 0.2.0 ONNX. Installs and verifies on first use (2.1 MB download unless bundled)."
+            : "Crema 0.2.0 ONNX. Unavailable on this device/build — choose Built-in Chords.",
+      desktopOnly: false,
       experimental: true,
       id: "crema-advanced",
       label: "Advanced Chords — Crema",
-      unavailable_reason: "advanced chord backend is disabled on mobile",
+      unavailable_reason: capabilities.platform !== "android" || capabilities.cremaAvailable !== true
+        ? "advanced chord runtime is unavailable" : null,
     },
     {
       availability: "unavailable",
@@ -2256,7 +2264,7 @@ const mobileChordBackendsResponse: ChordBackendsResponse = {
       unavailable_reason: "LV Chordia is disabled on mobile",
     },
   ],
-};
+});
 const mobileBeatBackendsResponse = (capabilities: MobileCapabilities): BeatBackendsResponse => ({
   backends: [
     {
@@ -2496,7 +2504,8 @@ function createMobileTuneForgeClient(capabilities: MobileCapabilities): TuneForg
     chord_backend?: string | null;
   }) => {
     const backend = request?.backend ?? request?.chord_backend;
-    if (backend && !["default", "fast", "tuneforge-fast", "librosa"].includes(backend)) {
+    if (backend && !["default", "fast", "tuneforge-fast", "librosa", "advanced", "crema",
+      "crema-advanced"].includes(backend)) {
       throw new ApiError({
         code: "UNSUPPORTED_RUNTIME",
         message: "Selected chord backend is not available on mobile.",
@@ -2555,7 +2564,9 @@ function createMobileTuneForgeClient(capabilities: MobileCapabilities): TuneForg
     listBeatBackends: async () => mobileBeatBackendsResponse(
       await invokeMobile<MobileCapabilities>("mobile_capabilities"),
     ),
-    listChordBackends: async () => mobileChordBackendsResponse,
+    listChordBackends: async () => mobileChordBackendsResponse(
+      await invokeMobile<MobileCapabilities>("mobile_capabilities"),
+    ),
     listStemModels: async () => mobileStemModelsResponse,
     createChords: (projectId: string, body: ChordRequest) => {
       requireSupportedMobileChordBackend(body);

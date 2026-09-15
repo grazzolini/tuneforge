@@ -52,6 +52,8 @@ Analyze and basic chord detection may run on CPU. Lyrics transcription may also 
 - `beatThisAvailable`
 - `beatThisModelStatus`: `ready`, `download-required`, `downloading`, `cancelled`, `corrupt`, or `unavailable`
 - `basicChordsAvailable`
+- `cremaAvailable`
+- `cremaModelStatus`: `ready`, `download-required`, `corrupt`, or `unavailable`
 - `whisperAvailable`
 - `stemSeparationAvailable`
 - `generationTestingAvailable`
@@ -73,6 +75,13 @@ downloads atomically, and reports download, verification, inference, saving, can
 failure through the existing Analyze job. A failed Advanced run keeps the prior analysis and ends
 with `ADVANCED_BEAT_BACKEND_FAILED`; it never publishes empty timing or switches to Built-in.
 Built-in remains an explicit choice and saves key/tuning with null tempo and timing.
+
+General Android analysis uses the desktop harmonic feature, key, confidence, reference-pitch, and
+tuning calculations for both Built-in and Advanced Beat Analysis. Chord generation stays a separate
+job. Built-in Chords is always selectable. Advanced Chords runs Crema 0.2.0 through ONNX Runtime
+1.29.0's FP32 CPU provider, reports asset preparation/download/verification, inference, and saving
+through the existing job UI, and never switches to Built-in after an explicit Crema failure. Failed,
+cancelled, or interrupted refreshes retain the previously readable and edited chord timeline.
 
 Lyrics generation accepts the same nullable `language_override` payload as desktop. `null`, omission, or blank text keeps Whisper language detection on auto. Mobile validates explicit overrides against `none`, `en`, `pt`, `es`, `fr`, `de`, `it`, `ja`, `ko`, `zh`, and `hi`. `none` records an empty lyrics transcript without running `whisper.cpp`; other explicit codes are passed to `whisper.cpp`.
 
@@ -229,7 +238,8 @@ pnpm package:android:release
 Run `pnpm package:android:prepare` before the build commands. It validates the JDK 17, Android SDK,
 compatible NDK, Rust target, and Tauri tools; initializes an absent target; generates icons; and
 applies TuneForge's generated Android preparation. Build commands fail when that prepared state is
-absent or incomplete and never initialize or prepare it themselves.
+absent or incomplete and never initialize or prepare it themselves. Preparation rejects package
+identity options and stores no identity choice.
 
 `pnpm package:android` produces an optimized local release-profile APK, debug-key signed.
 `pnpm package:android:debug` produces the corresponding debug APK. These local outputs remain under
@@ -240,7 +250,12 @@ the generated Android project:
 
 Packaging verifies the exact Gradle variant metadata and output path, a successful `apksigner`
 check, the expected debuggable state, and a non-empty release mapping. The local release-profile APK
-is not the direct-distribution artifact.
+is not the direct-distribution artifact. Both local commands default to
+`com.tuneforge.desktop.test`; pass `--package-name <id>` to either command for a temporary valid
+non-production application ID. `--test-identity` remains a redundant compatibility alias. The
+selected ID applies only to that build and generated Gradle configuration is restored on success or
+failure. Local APKs reuse `~/.android/tuneforge-test.keystore`; packaging creates it only when absent
+and rejects an invalid existing file without replacing it.
 
 `pnpm package:android:release` builds the direct GitHub Release APK with TuneForge's stable signing
 identity. It requires the five environment
@@ -250,8 +265,8 @@ writes `apps/desktop/src-tauri/target/release/bundle/apk/TuneForge_<version>_and
 Packaging never installs, launches, uploads, tags, or publishes the app.
 
 Pass `--model-bundle` to `package:android:prepare` and the chosen local build command to verify and
-embed the pinned Android Beat This program. Default Android builds omit it and download the same
-verified bytes on first use.
+embed the pinned Android Beat This program plus the coherent Crema model/runtime-state pair. Default
+Android builds omit these assets and download the same verified bytes on first use.
 
 Normal Android Tauri requires native `android-aaudio` playback. Native capability, decode, startup,
 or runtime failure stays terminal for native playback: TuneForge freezes the last authoritative

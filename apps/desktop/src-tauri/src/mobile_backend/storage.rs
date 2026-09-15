@@ -490,7 +490,7 @@ fn mark_interrupted_jobs_on_first_open(root: &Path, connection: &Connection) -> 
     if opened.insert(database_path) {
         let mut statement = connection
             .prepare(
-                "SELECT DISTINCT project_id FROM jobs WHERE project_id IS NOT NULL AND status IN ('pending', 'running') AND type IN ('analyze', 'export', 'preview', 'retune', 'transpose')",
+                "SELECT DISTINCT project_id FROM jobs WHERE project_id IS NOT NULL AND status IN ('pending', 'running') AND type IN ('analyze', 'chords', 'export', 'preview', 'retune', 'transpose')",
             )
             .map_err(|error| error.to_string())?;
         let project_ids = statement
@@ -501,6 +501,7 @@ fn mark_interrupted_jobs_on_first_open(root: &Path, connection: &Connection) -> 
         #[cfg(target_os = "android")]
         super::export::fail_interrupted_exports(connection)?;
         fail_interrupted_analyses(connection)?;
+        fail_interrupted_chords(connection)?;
         fail_interrupted_audio_transforms(connection)?;
         for project_id in project_ids {
             reconcile_project_storage_after_commit(connection, root, &project_id);
@@ -515,7 +516,10 @@ fn fail_interrupted_analyses(connection: &Connection) -> Result<(), String> {
         let mut statement = connection.prepare(
             "SELECT id, payload_json FROM jobs WHERE status IN ('pending', 'running') AND type = 'analyze'",
         ).map_err(|error| error.to_string())?;
-        let mapped = statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+        let mapped = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
             .map_err(|error| error.to_string())?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|error| error.to_string())?;
@@ -527,6 +531,33 @@ fn fail_interrupted_analyses(connection: &Connection) -> Result<(), String> {
         payload["stage_label"] = json!("Analysis interrupted");
         connection.execute(
             "UPDATE jobs SET status = 'failed', progress = 0, payload_json = ?1, error_message = 'TuneForge restarted before analysis finished. Retry analysis.', completed_at = ?2, updated_at = ?2 WHERE id = ?3 AND status IN ('pending', 'running')",
+            params![payload.to_string(), timestamp, job_id],
+        ).map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+fn fail_interrupted_chords(connection: &Connection) -> Result<(), String> {
+    let timestamp = now_iso();
+    let jobs = {
+        let mut statement = connection.prepare(
+            "SELECT id, payload_json FROM jobs WHERE status IN ('pending', 'running') AND type = 'chords'",
+        ).map_err(|error| error.to_string())?;
+        let mapped = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|error| error.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?;
+        mapped
+    };
+    for (job_id, payload_raw) in jobs {
+        let mut payload = serde_json::from_str::<Value>(&payload_raw).unwrap_or_else(|_| json!({}));
+        payload["stage"] = json!("interrupted");
+        payload["stage_label"] = json!("Chord generation interrupted");
+        connection.execute(
+            "UPDATE jobs SET status = 'failed', progress = 0, payload_json = ?1, error_message = 'TuneForge restarted before chord generation finished. Retry chord generation.', completed_at = ?2, updated_at = ?2 WHERE id = ?3 AND status IN ('pending', 'running')",
             params![payload.to_string(), timestamp, job_id],
         ).map_err(|error| error.to_string())?;
     }
@@ -811,9 +842,18 @@ pub(super) fn row_job(row: &Row<'_>) -> rusqlite::Result<JobSchema> {
             }
             Value::Object(request)
         }),
-        chord_backend: None,
-        chord_backend_fallback_from: None,
-        chord_source: None,
+        chord_backend: payload
+            .get("chord_backend")
+            .and_then(Value::as_str)
+            .map(ToString::to_string),
+        chord_backend_fallback_from: payload
+            .get("chord_backend_fallback_from")
+            .and_then(Value::as_str)
+            .map(ToString::to_string),
+        chord_source: payload
+            .get("chord_source")
+            .and_then(Value::as_str)
+            .map(ToString::to_string),
         error_message: row.get(7)?,
         runtime_device: row.get(8)?,
         runtime_detail: payload
@@ -1160,7 +1200,11 @@ pub(super) fn update_job_stage(
     stage_label: &str,
 ) -> Result<(), String> {
     let payload_raw = connection
-        .query_row("SELECT payload_json FROM jobs WHERE id = ?1", params![job_id], |row| row.get::<_, String>(0))
+        .query_row(
+            "SELECT payload_json FROM jobs WHERE id = ?1",
+            params![job_id],
+            |row| row.get::<_, String>(0),
+        )
         .map_err(|error| error.to_string())?;
     let mut payload = serde_json::from_str::<Value>(&payload_raw).unwrap_or_else(|_| json!({}));
     payload["stage"] = json!(stage);
@@ -2381,11 +2425,14 @@ pub fn mobile_get_job(app: AppHandle, job_id: String) -> Result<JobResponse, Str
 
 pub fn mobile_cancel_job(app: AppHandle, job_id: String) -> Result<JobResponse, String> {
     let connection = db(&app)?;
-    let job_type = connection.query_row(
-        "SELECT type FROM jobs WHERE id = ?1",
-        params![job_id],
-        |row| row.get::<_, String>(0),
-    ).optional().map_err(|error| error.to_string())?;
+    let job_type = connection
+        .query_row(
+            "SELECT type FROM jobs WHERE id = ?1",
+            params![job_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
     connection
         .execute(
             "UPDATE jobs SET status = ?1, cancel_requested = 1, updated_at = ?2 WHERE id = ?3 AND status IN ('pending', 'running')",
@@ -2393,8 +2440,16 @@ pub fn mobile_cancel_job(app: AppHandle, job_id: String) -> Result<JobResponse, 
         )
         .map_err(|error| error.to_string())?;
     #[cfg(target_os = "android")]
+    if matches!(job_type.as_deref(), Some("analyze" | "chords")) {
+        super::audio::request_audio_job_cancellation(&job_id);
+    }
+    #[cfg(target_os = "android")]
     if job_type.as_deref() == Some("analyze") {
         crate::native_audio::beat_this::cancel_android_model(&job_id);
+    }
+    #[cfg(target_os = "android")]
+    if job_type.as_deref() == Some("chords") {
+        crate::native_audio::crema::cancel_android_model(&job_id);
     }
     #[cfg(not(target_os = "android"))]
     let _ = job_type;
@@ -2616,30 +2671,99 @@ mod mobile_media_tests {
             "INSERT INTO projects (id, display_name, source_path, imported_path, sync_status, created_at, updated_at) VALUES (?1, 'Restart', 'source.wav', 'source.wav', 'local', ?2, ?2)",
             params![project_id, timestamp],
         ).unwrap();
-        let job = create_running_job(&connection, &project_id, "analyze", Some("source".into())).unwrap();
-        connection.execute(
-            "UPDATE jobs SET payload_json = ?1 WHERE id = ?2",
-            params![json!({ "beat_backend": "beat-this" }).to_string(), job.id],
-        ).unwrap();
+        let job =
+            create_running_job(&connection, &project_id, "analyze", Some("source".into())).unwrap();
+        connection
+            .execute(
+                "UPDATE jobs SET payload_json = ?1 WHERE id = ?2",
+                params![json!({ "beat_backend": "beat-this" }).to_string(), job.id],
+            )
+            .unwrap();
 
         fail_interrupted_analyses(&connection).unwrap();
 
-        let recovered: (String, i64, String, String) = connection.query_row(
-            "SELECT status, progress, payload_json, error_message FROM jobs WHERE id = ?1",
-            params![job.id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-        ).unwrap();
+        let recovered: (String, i64, String, String) = connection
+            .query_row(
+                "SELECT status, progress, payload_json, error_message FROM jobs WHERE id = ?1",
+                params![job.id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
         assert_eq!(recovered.0, "failed");
         assert_eq!(recovered.1, 0);
         let payload: Value = serde_json::from_str(&recovered.2).unwrap();
         assert_eq!(payload["beat_backend"], "beat-this");
         assert_eq!(payload["stage"], "interrupted");
         assert_eq!(payload["stage_label"], "Analysis interrupted");
-        assert_eq!(recovered.3, "TuneForge restarted before analysis finished. Retry analysis.");
         assert_eq!(
-            create_running_job(&connection, &project_id, "analyze", Some("source".into())).unwrap().status,
+            recovered.3,
+            "TuneForge restarted before analysis finished. Retry analysis."
+        );
+        assert_eq!(
+            create_running_job(&connection, &project_id, "analyze", Some("source".into()))
+                .unwrap()
+                .status,
             "running",
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn restart_recovery_fails_chords_without_replacing_the_saved_timeline() {
+        let root = std::env::temp_dir().join(format!(
+            "tuneforge-mobile-chords-restart-{}",
+            new_id("test")
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let connection = db_at_root(&root).unwrap();
+        let project_id = source_hash_to_project_id(&"d".repeat(64)).unwrap();
+        let timestamp = now_iso();
+        connection.execute(
+            "INSERT INTO projects (id, display_name, source_path, imported_path, sync_status, created_at, updated_at) VALUES (?1, 'Restart', 'source.wav', 'source.wav', 'local', ?2, ?2)",
+            params![project_id, timestamp],
+        ).unwrap();
+        connection.execute(
+            "INSERT INTO chord_timelines (project_id, source_segments_json, segments_json, timeline_json, backend, source_kind, metadata_json, has_user_edits, created_at, updated_at) VALUES (?1, '[{\"label\":\"Am\"}]', '[{\"label\":\"Am\"}]', '[{\"label\":\"Am\"}]', 'tuneforge-fast', 'generated', '{}', 0, ?2, ?2)",
+            params![project_id, timestamp],
+        ).unwrap();
+        let job =
+            create_running_job(&connection, &project_id, "chords", Some("source".into())).unwrap();
+        connection
+            .execute(
+                "UPDATE jobs SET payload_json = ?1 WHERE id = ?2",
+                params![
+                    json!({ "chord_backend": "crema-advanced", "stage": "analyzing" }).to_string(),
+                    job.id
+                ],
+            )
+            .unwrap();
+
+        fail_interrupted_chords(&connection).unwrap();
+
+        let recovered: (String, String, String) = connection
+            .query_row(
+                "SELECT status, payload_json, error_message FROM jobs WHERE id = ?1",
+                params![job.id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(recovered.0, "failed");
+        let payload: Value = serde_json::from_str(&recovered.1).unwrap();
+        assert_eq!(payload["chord_backend"], "crema-advanced");
+        assert_eq!(payload["stage"], "interrupted");
+        assert_eq!(payload["stage_label"], "Chord generation interrupted");
+        assert_eq!(
+            recovered.2,
+            "TuneForge restarted before chord generation finished. Retry chord generation."
+        );
+        let timeline: String = connection
+            .query_row(
+                "SELECT segments_json FROM chord_timelines WHERE project_id = ?1",
+                params![project_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(timeline.contains("Am"));
         let _ = fs::remove_dir_all(root);
     }
 

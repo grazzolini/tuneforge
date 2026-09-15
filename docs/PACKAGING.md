@@ -228,7 +228,7 @@ owned `bin`/`lib` directories for Demucs child processes. Missing or invalid pay
 preparation or launch clearly; validators reject Homebrew/MacPorts linkage. Development keeps host
 lookup and explicit overrides. System microphone volume control uses CoreAudio.
 
-By default, Demucs, Whisper, and beat-this weights are read from their normal caches and downloaded on first use if missing. Demucs uses immutable Hugging Face YAML+safetensors in the standard Hub cache: `HF_HUB_CACHE`, legacy `HUGGINGFACE_HUB_CACHE`, `HF_HOME/hub`, `XDG_CACHE_HOME/huggingface/hub`, then `~/.cache/huggingface/hub`. `TUNEFORGE_DATA_DIR` does not control the upstream Demucs, Whisper, or beat-this caches. Advanced Chords always stages the exact verified ONNX model and runtime state so packaged startup can seed `TUNEFORGE_DATA_DIR/cache/models/crema/` offline. It excludes the Crema Python package, TensorFlow, Keras, and their HDF5 model-loading closure; preserved LV Chordia support still brings its declared `h5py` dependency. LV Chordia ships exactly five validated checkpoints. `--model-bundle` independently stages required Demucs and Whisper weights, plus beat-this `small0` when included; Demucs is validated and loaded directly from its pinned bundle path without copying into the Hugging Face cache.
+By default, Demucs, Whisper, and beat-this weights are read from their normal caches and downloaded on first use if missing. Demucs uses immutable Hugging Face YAML+safetensors in the standard Hub cache: `HF_HUB_CACHE`, legacy `HUGGINGFACE_HUB_CACHE`, `HF_HOME/hub`, `XDG_CACHE_HOME/huggingface/hub`, then `~/.cache/huggingface/hub`. `TUNEFORGE_DATA_DIR` does not control the upstream Demucs, Whisper, or beat-this caches. Desktop Advanced Chords retains its exact verified ONNX model/runtime-state package behavior. Android downloads the same coherent pair on first use unless `--model-bundle` embeds it for first-launch offline use. Advanced Chords excludes the Crema Python package, TensorFlow, Keras, and their HDF5 model-loading closure; preserved LV Chordia support still brings its declared `h5py` dependency. LV Chordia ships exactly five validated checkpoints. `--model-bundle` independently stages required Demucs and Whisper weights, Android Crema model/state, plus beat-this `small0` when included; Demucs is validated and loaded directly from its pinned bundle path without copying into the Hugging Face cache.
 
 ## Android
 
@@ -243,9 +243,18 @@ pnpm package:android:release
 ```
 
 Preparation owns toolchain validation, conditional Tauri Android initialization, icon generation,
-generated-project preparation, and staging the six audited shared libraries plus notices and
+generated-project preparation, and staging the seven audited FFmpeg/LAME/libsoxr shared libraries plus notices and
 provenance. All three build commands require this state and never prepare it. The owned target is
 arm64-v8a, API 26+, and every ELF LOAD segment must be aligned to at least 16 KB.
+
+Preparation stores no application identity and rejects `--package-name`. Debug and optimized local
+builds default to `com.tuneforge.desktop.test`; either accepts one valid non-production
+`--package-name <id>` value for that build only. `--test-identity` is retained as a compatibility
+alias for the same local default. The publishable command is fixed to `com.tuneforge.desktop` and
+rejects identity overrides. Under the packaging lock, local builds apply identity and the persistent
+`~/.android/tuneforge-test.keystore` signer to generated Gradle configuration, verify the APK, then
+restore the configuration on success or failure. A missing test keystore is created atomically; a
+corrupt existing keystore fails closed and is never replaced.
 
 Release validation checks the APK's single arm64-v8a payload, every shipped native dependency,
 owned-library closure, DEX/JNI entry points, notices/provenance, and `zipalign -P 16`. AAB release

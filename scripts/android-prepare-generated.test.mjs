@@ -10,6 +10,14 @@ const beatRunnerSource = new URL(
   "../apps/desktop/src-tauri/android/java/com/tuneforge/desktop/BeatThisRunner.java",
   import.meta.url,
 );
+const cremaRunnerSource = new URL(
+  "../apps/desktop/src-tauri/android/java/com/tuneforge/desktop/CremaRunner.java",
+  import.meta.url,
+);
+const inferenceLockSource = new URL(
+  "../apps/desktop/src-tauri/android/java/com/tuneforge/desktop/InferenceLock.java",
+  import.meta.url,
+);
 const modelAssetSource = new URL(
   "../apps/desktop/src-tauri/android/java/com/tuneforge/desktop/ModelAssetDescriptor.java",
   import.meta.url,
@@ -22,7 +30,6 @@ const powerServiceSource = new URL(
   "../apps/desktop/src-tauri/android/kotlin/com/tuneforge/desktop/PowerInhibitionService.kt",
   import.meta.url,
 );
-
 function section(source, startMarker, endMarker) {
   const start = source.indexOf(startMarker);
   const end = endMarker === null
@@ -32,7 +39,7 @@ function section(source, startMarker, endMarker) {
   return source.slice(start, end);
 }
 
-function generatedProject(t) {
+function generatedProject(t, { soxrProfile = "ON" } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "tuneforge-android-generated-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
 
@@ -54,6 +61,8 @@ function generatedProject(t) {
   const javaSource = path.join(tauri, "android/java/com/tuneforge/desktop");
   fs.mkdirSync(javaSource, { recursive: true });
   fs.copyFileSync(beatRunnerSource, path.join(javaSource, "BeatThisRunner.java"));
+  fs.copyFileSync(cremaRunnerSource, path.join(javaSource, "CremaRunner.java"));
+  fs.copyFileSync(inferenceLockSource, path.join(javaSource, "InferenceLock.java"));
   fs.copyFileSync(modelAssetSource, path.join(javaSource, "ModelAssetDescriptor.java"));
   const kotlinSource = path.join(tauri, "android/kotlin/com/tuneforge/desktop");
   fs.mkdirSync(kotlinSource, { recursive: true });
@@ -78,11 +87,22 @@ function generatedProject(t) {
   fs.writeFileSync(path.join(ffmpeg, "licenses", "FFmpeg-COPYING.LGPLv2.1.txt"), "fixture\n");
   fs.writeFileSync(path.join(ffmpeg, "licenses", "LAME-COPYING.LGPL-2.0.txt"), "fixture\n");
 
-  execFileSync(script, { cwd: root, env: { ...process.env, TUNEFORGE_ANDROID_FFMPEG_ROOT: ffmpeg } });
+  const soxr = path.join(root, "owned-soxr");
+  fs.mkdirSync(path.join(soxr, "lib"), { recursive: true });
+  fs.mkdirSync(path.join(soxr, "licenses"), { recursive: true });
+  fs.writeFileSync(path.join(soxr, "lib/libsoxr.so"), "fixture libsoxr\n");
+  fs.writeFileSync(path.join(soxr, "provenance.json"), `${JSON.stringify({
+    cmake: [`-DWITH_PFFFT=${soxrProfile}`],
+  })}\n`);
+  fs.writeFileSync(path.join(soxr, "licenses/libsoxr-LICENCE.txt"), "fixture\n");
+  execFileSync(script, { cwd: root, env: { ...process.env, TUNEFORGE_ANDROID_FFMPEG_ROOT: ffmpeg,
+    TUNEFORGE_ANDROID_SOXR_ROOT: soxr } });
   return {
     activity: fs.readFileSync(path.join(java, "MainActivity.kt"), "utf8"),
     service: fs.readFileSync(path.join(java, "PowerInhibitionService.kt"), "utf8"),
     beatRunner: fs.readFileSync(path.join(java, "BeatThisRunner.java"), "utf8"),
+    cremaRunner: fs.readFileSync(path.join(java, "CremaRunner.java"), "utf8"),
+    inferenceLock: fs.readFileSync(path.join(java, "InferenceLock.java"), "utf8"),
     modelAsset: fs.readFileSync(path.join(java, "ModelAssetDescriptor.java"), "utf8"),
     beatRunnerSource: fs.readFileSync(beatRunnerSource, "utf8"),
     modelAssetSource: fs.readFileSync(modelAssetSource, "utf8"),
@@ -96,6 +116,17 @@ test("preparation copies maintained Beat This Java sources", (t) => {
   const { beatRunner, beatRunnerSource, modelAsset, modelAssetSource } = generatedProject(t);
   assert.equal(beatRunner, beatRunnerSource);
   assert.equal(modelAsset, modelAssetSource);
+});
+
+test("preparation copies maintained Crema sources and pins ONNX Runtime", (t) => {
+  const { cremaRunner, inferenceLock, gradle } = generatedProject(t);
+  assert.equal(cremaRunner, fs.readFileSync(cremaRunnerSource, "utf8"));
+  assert.equal(inferenceLock, fs.readFileSync(inferenceLockSource, "utf8"));
+  assert.match(gradle, /com\.microsoft\.onnxruntime:onnxruntime-android:1\.29\.0/);
+});
+
+test("preparation rejects a stale PFFFT-disabled libsoxr runtime", (t) => {
+  assert.throws(() => generatedProject(t, { soxrProfile: "OFF" }));
 });
 
 test("preparation copies maintained Android Kotlin sources", (t) => {

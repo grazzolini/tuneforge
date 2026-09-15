@@ -586,7 +586,7 @@ pub(crate) fn decode_wav_sample(
                     .try_into()
                     .map_err(|_| "Invalid WAV sample data.".to_string())?,
             );
-            Ok(raw as f64 / i16::MAX as f64)
+            Ok(raw as f64 / 32_768.0)
         }
         (1, 24) => {
             let sample = bytes
@@ -608,7 +608,7 @@ pub(crate) fn decode_wav_sample(
                     .try_into()
                     .map_err(|_| "Invalid WAV sample data.".to_string())?,
             );
-            Ok(raw as f64 / i32::MAX as f64)
+            Ok(raw as f64 / 2_147_483_648.0)
         }
         (3, 32) => {
             let raw = f32::from_le_bytes(
@@ -681,13 +681,36 @@ mod tests {
         fs::write(&path, bytes).expect("write wav");
 
         let decoded = read_wav_audio_interleaved(&path).expect("read wav");
+        let mono = read_wav_audio(&path).expect("read mono wav");
         let _ = fs::remove_file(&path);
 
         assert_eq!(decoded.sample_rate, 48_000);
         assert_eq!(decoded.channels, 2);
         assert_eq!(decoded.samples.len(), 4);
-        assert!(decoded.samples[0] > 0.99);
-        assert!(decoded.samples[1] < -0.99);
+        assert_eq!(decoded.samples[0], 32_767.0 / 32_768.0);
+        assert_eq!(decoded.samples[1], -1.0);
+        assert_eq!(mono.samples[0], ((32_767.0_f32 / 32_768.0 - 1.0) / 2.0));
+        assert_eq!(mono.samples[1], ((0.0 + 16_383.0_f32 / 32_768.0) / 2.0));
+    }
+
+    #[test]
+    fn pcm_integer_endpoints_use_power_of_two_scaling() {
+        assert_eq!(
+            decode_wav_sample(&i16::MAX.to_le_bytes(), 0, 1, 16).unwrap(),
+            32_767.0 / 32_768.0
+        );
+        assert_eq!(
+            decode_wav_sample(&i16::MIN.to_le_bytes(), 0, 1, 16).unwrap(),
+            -1.0
+        );
+        assert_eq!(
+            decode_wav_sample(&i32::MAX.to_le_bytes(), 0, 1, 32).unwrap(),
+            2_147_483_647.0 / 2_147_483_648.0
+        );
+        assert_eq!(
+            decode_wav_sample(&i32::MIN.to_le_bytes(), 0, 1, 32).unwrap(),
+            -1.0
+        );
     }
 
     #[test]

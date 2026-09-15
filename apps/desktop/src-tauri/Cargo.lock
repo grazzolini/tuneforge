@@ -7202,6 +7202,7 @@ dependencies = [
  "realfft",
  "rubato",
  "rusqlite",
+ "rustfft",
  "rustls",
  "serde",
  "serde_json",

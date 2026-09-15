@@ -14,6 +14,8 @@ pub fn mobile_capabilities() -> Result<MobileCapabilities, String> {
         beat_this_available: false,
         beat_this_model_status: "unavailable".to_string(),
         basic_chords_available: false,
+        crema_available: false,
+        crema_model_status: "unavailable".to_string(),
         whisper_available: false,
         stem_separation_available: false,
         generation_testing_available: false,

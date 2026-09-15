@@ -4,9 +4,13 @@ use tauri::{AppHandle, Emitter, State};
 
 pub mod android_media;
 pub mod beat_this;
+pub mod builtin_harmony;
 pub mod capture;
+pub mod crema;
 pub mod decode;
 pub mod diagnostics;
+pub mod harmonic_features;
+pub(crate) mod harmony;
 #[cfg(target_os = "ios")]
 pub(crate) mod ios_session;
 pub mod mixer;
@@ -19,7 +23,10 @@ pub mod session;
     target_os = "macos"
 ))]
 mod source_scope;
+mod soxr;
 pub mod system_input;
+#[cfg(test)]
+mod test_support;
 pub mod timeline;
 pub mod transport;
 

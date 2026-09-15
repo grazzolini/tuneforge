@@ -13,6 +13,7 @@ const paths = {
   pagesWorkflow: ".github/workflows/pages.yml",
   dependabot: ".github/dependabot.yml",
   buildSoxr: "scripts/build-soxr.mjs",
+  imageVerifier: "scripts/verify-ci-image.sh",
 };
 
 const playwrightNoblePackages = [
@@ -52,7 +53,7 @@ const playwrightNoblePackages = [
 ];
 
 const ciImageReference =
-  "ghcr.io/grazzolini/tuneforge-ci@sha256:6b12309d6ce40b047567ce82f7a434b6a1a74f6c5f515480c49b374a3f289bb7";
+  "ghcr.io/grazzolini/tuneforge-ci@sha256:dbd9580c617995c2db85ec94a114568b408b312a6392b620f2b5a9dccde0e542";
 const ciImageConsumers = ["backend", "e2e", "desktop_tauri"];
 function read(root, relativePath) {
   return fs.readFileSync(path.join(root, relativePath), "utf8");
@@ -224,6 +225,7 @@ export function validateCiImagePolicy(root) {
   const pagesWorkflow = read(root, paths.pagesWorkflow);
   const dependabot = read(root, paths.dependabot);
   const buildSoxr = read(root, paths.buildSoxr);
+  const imageVerifier = read(root, paths.imageVerifier);
   const errors = [];
   const check = (condition, message) => {
     if (!condition) errors.push(message);
@@ -383,14 +385,24 @@ export function validateCiImagePolicy(root) {
     "SoXR host corresponding sources must include the helper and rebuild command without repository-wide notices",
   );
   check(
+    imageVerifier.includes("sha256sum --check --strict --status payload.sha256") &&
+      imageVerifier.includes('sha256sum --check --strict --status "${soxr_root}/build-inputs.sha256"') &&
+      imageVerifier.includes("Publish and promote a current tuneforge-ci image"),
+    "CI image verifier must fail closed for missing, corrupt, or stale SoXR payloads",
+  );
+  check(
     !pagesWorkflow.includes("ghcr.io/grazzolini/tuneforge-ci"),
     "Pages/release media workflow must not consume the CI image",
   );
   check(
     mainWorkflow.includes(
-      ".github/ci/*|.github/workflows/ci-image.yml|.github/workflows/ci.yml)",
+      ".github/ci/*|.github/workflows/ci-image.yml|.github/workflows/ci.yml|packaging/soxr/*)",
     ),
     "CI image definitions and publisher changes must select the full CI gate",
+  );
+  check(
+    mainWorkflow.includes("|LICENSE|THIRD_PARTY_NOTICES.md|SECURITY.md|"),
+    "THIRD_PARTY_NOTICES.md must remain documentation-only CI scope",
   );
   check(
     /package-ecosystem: docker\n    directory: "\/\.github\/ci"/.test(dependabot),
@@ -463,6 +475,17 @@ export function validateCiImagePolicy(root) {
       tauriBlock.includes("cache: false") &&
       tauriBlock.includes('rustflags: ""'),
     "desktop_tauri must bootstrap pinned Rust without action-managed caching or rustflags",
+  );
+  check(
+    (tauriBlock.match(/uses: actions\/cache@/g) ?? []).length === 1 &&
+      tauriBlock.includes("key: cargo-v1-${{ env.CI_IMAGE_REFERENCE }}-") &&
+      tauriBlock.includes('soxr_root="/opt/tuneforge-ci/soxr/host-test"') &&
+      tauriBlock.includes('echo "TUNEFORGE_SOXR_ROOT=${soxr_root}"') &&
+      !tauriBlock.includes("node scripts/build-soxr.mjs") &&
+      !tauriBlock.includes("python -m pip install") &&
+      !tauriBlock.includes("actions/setup-node@") &&
+      !tauriBlock.includes("actions/setup-python@"),
+    "desktop_tauri must use one image-keyed Cargo cache and the prebuilt SoXR payload",
   );
 
   if (errors.length > 0) {

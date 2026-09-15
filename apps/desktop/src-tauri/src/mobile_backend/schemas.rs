@@ -9,6 +9,8 @@ pub struct MobileCapabilities {
     beat_this_available: bool,
     beat_this_model_status: String,
     basic_chords_available: bool,
+    crema_available: bool,
+    crema_model_status: String,
     whisper_available: bool,
     stem_separation_available: bool,
     generation_testing_available: bool,

@@ -21,6 +21,18 @@ export function useChordBackendActionSelection() {
       return { backend: "tuneforge-fast" };
     }
 
+    try {
+      const mobileCapabilities = await queryClient.fetchQuery({
+        queryKey: ["runtime", "mobile-capabilities"],
+        queryFn: api.getMobileCapabilities,
+      });
+      if (mobileCapabilities !== null) {
+        return { backend: defaultChordBackend };
+      }
+    } catch {
+      // Backend discovery below preserves the established desktop fallback behavior.
+    }
+
     let backendResponse: ChordBackendsResponse | undefined = chordBackendsQuery.data;
     if (!backendResponse) {
       try {

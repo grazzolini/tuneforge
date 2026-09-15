@@ -4827,7 +4827,7 @@ mod tests {
             .expect("stream chunk");
         let _ = fs::remove_file(&path);
 
-        assert_sample_close(decoded[0], 37.0 / i16::MAX as f32);
+        assert_sample_close(decoded[0], 37.0 / 32_768.0);
     }
 
     #[test]

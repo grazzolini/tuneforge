@@ -9,6 +9,7 @@ const workspaceRoot = path.resolve(scriptDir, "..");
 const activityClass = "com.tuneforge.desktop.MainActivity";
 const executorchKeepRule = "-keep class org.pytorch.executorch.** { *; }";
 const fbjniKeepRule = "-keep class com.facebook.jni.** { *; }";
+const onnxRuntimeKeepRule = "-keep class ai.onnxruntime.** { *; }";
 const requiredMethods = new Map([
   ["setTuneForgePowerInhibition", "(I)Ljava/lang/String;"],
   ["getTuneForgePowerInhibitionStatus", "()Ljava/lang/String;"],
@@ -18,6 +19,11 @@ const requiredMethods = new Map([
   ["runTuneForgeBeatThis", "([FILjava/lang/String;)[[F"],
   ["takeTuneForgeBeatThisError", "(Ljava/lang/String;)Ljava/lang/String;"],
   ["cancelTuneForgeBeatThis", "(Ljava/lang/String;)V"],
+  ["getTuneForgeCremaStatus", "()Ljava/lang/String;"],
+  ["prepareTuneForgeCrema", "(Ljava/lang/String;)Ljava/lang/String;"],
+  ["runTuneForgeCrema", "([FILjava/lang/String;)[[F"],
+  ["takeTuneForgeCremaError", "(Ljava/lang/String;)Ljava/lang/String;"],
+  ["cancelTuneForgeCrema", "(Ljava/lang/String;)V"],
 ]);
 
 export function parseJniRules(source) {
@@ -28,7 +34,10 @@ export function parseJniRules(source) {
   if (allLines.filter((line) => line === fbjniKeepRule).length !== 1) {
     throw new Error("JNI rules must preserve the pinned fbjni exception bridge against R8 rewriting.");
   }
-  const lines = allLines.filter((line) => line !== executorchKeepRule && line !== fbjniKeepRule);
+  if (allLines.filter((line) => line === onnxRuntimeKeepRule).length !== 1) {
+    throw new Error("JNI rules must preserve the pinned ONNX Runtime package against R8 rewriting.");
+  }
+  const lines = allLines.filter((line) => ![executorchKeepRule, fbjniKeepRule, onnxRuntimeKeepRule].includes(line));
   if (lines.some((line) => /\*|\.\.\./.test(line)) ||
     lines[0] !== `-keepclassmembers class ${activityClass} {` || lines.at(-1) !== "}") {
     throw new Error("JNI rules must be one narrow MainActivity -keepclassmembers block without wildcards.");
@@ -42,7 +51,7 @@ export function parseJniRules(source) {
   if (lines.length !== requiredMethods.size + 2 || methods.length !== requiredMethods.size ||
     methods.some((method) => requiredMethods.get(method.name) !== method.descriptor) ||
     new Set(methods.map((method) => method.name)).size !== methods.length) {
-    throw new Error("JNI rules must preserve exactly the eight Rust-called MainActivity methods.");
+    throw new Error("JNI rules must preserve exactly the Rust-called MainActivity methods.");
   }
   return methods;
 }
@@ -163,7 +172,8 @@ export function validateReleaseJni({ root = workspaceRoot, run = runCommand, apk
     if (!dexFiles.length) throw new Error("Release APK contains no classes*.dex files.");
     const requiredLibraries = [
       "libavcodec.so", "libavfilter.so", "libavformat.so", "libavutil.so",
-      "libswresample.so", "libmp3lame.so",
+      "libswresample.so", "libmp3lame.so", "libsoxr.so", "libonnxruntime.so",
+      "libonnxruntime4j_jni.so",
     ];
     const nativeEntries = entries.filter((file) => file.startsWith("lib/"));
     if (nativeEntries.some((file) => !file.startsWith("lib/arm64-v8a/"))) {
@@ -171,13 +181,18 @@ export function validateReleaseJni({ root = workspaceRoot, run = runCommand, apk
     }
     for (const library of requiredLibraries) {
       if (!nativeEntries.includes(`lib/arm64-v8a/${library}`)) {
-        throw new Error(`Release APK is missing owned codec library ${library}.`);
+        throw new Error(`Release APK is missing required native library ${library}.`);
       }
     }
     if (!entries.includes("assets/ffmpeg/provenance.json") ||
         !entries.includes("assets/ffmpeg/licenses/FFmpeg-COPYING.LGPLv2.1.txt") ||
         !entries.includes("assets/ffmpeg/licenses/LAME-COPYING.LGPL-2.0.txt")) {
       throw new Error("Release APK is missing owned codec provenance or LGPL notices.");
+    }
+    if (!entries.includes("assets/soxr/provenance.json") ||
+        !entries.includes("assets/soxr/licenses/libsoxr-LICENCE.txt") ||
+        !entries.includes("assets/soxr/licenses/libsoxr-COPYING.LGPL-2.1.txt")) {
+      throw new Error("Release APK is missing libsoxr provenance or LGPL notices.");
     }
     tempDir = mkdtempSync(path.join(os.tmpdir(), "tuneforge-jni-dex-"));
     run("unzip", ["-qq", artifact, ...dexFiles, ...nativeEntries, "-d", tempDir]);

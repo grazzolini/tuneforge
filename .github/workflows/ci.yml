@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 env:
-  CI_IMAGE_REFERENCE: ghcr.io/grazzolini/tuneforge-ci@sha256:6b12309d6ce40b047567ce82f7a434b6a1a74f6c5f515480c49b374a3f289bb7
+  CI_IMAGE_REFERENCE: ghcr.io/grazzolini/tuneforge-ci@sha256:dbd9580c617995c2db85ec94a114568b408b312a6392b620f2b5a9dccde0e542
 
 jobs:
   ci-scope:
@@ -98,7 +98,7 @@ jobs:
                 apps/site/*|.github/workflows/pages.yml)
                   site=true
                   ;;
-                .github/ci/*|.github/workflows/ci-image.yml|.github/workflows/ci.yml)
+                .github/ci/*|.github/workflows/ci-image.yml|.github/workflows/ci.yml|packaging/soxr/*)
                   full_gate=true
                   ;;
                 .agents/*|.codex/environments/*|docs/*|CHANGELOG.md|README.md|CONTRIBUTING.md|CODE_OF_CONDUCT.md|LICENSE|THIRD_PARTY_NOTICES.md|SECURITY.md|AGENTS.md|.gitignore|packaging/flatpak/*|.github/ISSUE_TEMPLATE/*|.github/PULL_REQUEST_TEMPLATE.md)
@@ -232,7 +232,7 @@ jobs:
           node-version: "26"
 
       - name: Test deterministic Node scripts
-        run: node --test scripts/build-info.test.mjs scripts/package-options.test.mjs scripts/flatpak-options.test.mjs scripts/flatpak-pnpm.test.mjs scripts/desktop-e2e.test.mjs scripts/sync-validation.test.mjs scripts/release-license-inventory.test.mjs scripts/capture-release-media.test.mjs scripts/ci-image-policy.test.mjs scripts/ci-scope-policy.test.mjs
+        run: node --test scripts/build-info.test.mjs scripts/package-options.test.mjs scripts/flatpak-options.test.mjs scripts/flatpak-pnpm.test.mjs scripts/desktop-e2e.test.mjs scripts/sync-validation.test.mjs scripts/release-license-inventory.test.mjs scripts/capture-release-media.test.mjs scripts/ci-image-policy.test.mjs scripts/verify-ci-image.test.mjs scripts/ci-scope-policy.test.mjs
 
       - name: Check release script syntax
         run: |
@@ -251,7 +251,7 @@ jobs:
 
   e2e:
     runs-on: ubuntu-24.04
-    container: ghcr.io/grazzolini/tuneforge-ci@sha256:6b12309d6ce40b047567ce82f7a434b6a1a74f6c5f515480c49b374a3f289bb7
+    container: ghcr.io/grazzolini/tuneforge-ci@sha256:dbd9580c617995c2db85ec94a114568b408b312a6392b620f2b5a9dccde0e542
     defaults:
       run:
         shell: bash
@@ -465,7 +465,7 @@ jobs:
     needs: ci-scope
     if: ${{ always() && (needs.ci-scope.result != 'success' || needs.ci-scope.outputs.backend_static == 'true' || needs.ci-scope.outputs.backend_ffmpeg == 'true') }}
     runs-on: ubuntu-24.04
-    container: ghcr.io/grazzolini/tuneforge-ci@sha256:6b12309d6ce40b047567ce82f7a434b6a1a74f6c5f515480c49b374a3f289bb7
+    container: ghcr.io/grazzolini/tuneforge-ci@sha256:dbd9580c617995c2db85ec94a114568b408b312a6392b620f2b5a9dccde0e542
     defaults:
       run:
         shell: bash
@@ -603,7 +603,7 @@ jobs:
     needs: ci-scope
     if: ${{ always() && (needs.ci-scope.result != 'success' || needs.ci-scope.outputs.desktop == 'true') }}
     runs-on: ubuntu-24.04
-    container: ghcr.io/grazzolini/tuneforge-ci@sha256:6b12309d6ce40b047567ce82f7a434b6a1a74f6c5f515480c49b374a3f289bb7
+    container: ghcr.io/grazzolini/tuneforge-ci@sha256:dbd9580c617995c2db85ec94a114568b408b312a6392b620f2b5a9dccde0e542
     defaults:
       run:
         shell: bash
@@ -621,6 +621,16 @@ jobs:
 
       - name: Verify CI image
         run: bash scripts/verify-ci-image.sh
+
+      - name: Configure prebuilt SoXR runtime
+        if: needs.ci-scope.outputs.desktop == 'true'
+        run: |
+          set -euo pipefail
+          soxr_root="/opt/tuneforge-ci/soxr/host-test"
+          {
+            echo "TUNEFORGE_SOXR_ROOT=${soxr_root}"
+            echo "LD_LIBRARY_PATH=${soxr_root}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+          } >> "${GITHUB_ENV}"
 
       - name: Set up Rust
         if: needs.ci-scope.outputs.desktop == 'true'
@@ -640,7 +650,7 @@ jobs:
             ~/.cargo/git
             apps/desktop/src-tauri/target
             !apps/desktop/src-tauri/target/debug/incremental
-          key: cargo-v1-${{ runner.os }}-${{ runner.arch }}-rust-${{ env.RUST_VERSION }}-${{ hashFiles('apps/desktop/src-tauri/Cargo.lock', 'apps/desktop/src-tauri/Cargo.toml') }}
+          key: cargo-v1-${{ env.CI_IMAGE_REFERENCE }}-${{ runner.os }}-${{ runner.arch }}-rust-${{ env.RUST_VERSION }}-${{ hashFiles('apps/desktop/src-tauri/Cargo.lock', 'apps/desktop/src-tauri/Cargo.toml') }}
 
       - name: Check Tauri shell
         if: needs.ci-scope.outputs.desktop == 'true'

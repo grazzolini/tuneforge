@@ -19,7 +19,6 @@ final class BeatThisRunner {
         "models/beat-this/beat-this-small0.pte",
         "https://huggingface.co/grazzolini/tuneforge-models/resolve/895b249c4ccabaedc0770b12935c2b7b2f60e145/beat-this/beat-this-small0.pte",
         9820680L, "03b512e135edeb4f4644a7f05fa13ae20ba676484997548f81118fec13d42293");
-    private static final Object LOCK = new Object();
     private static final ConcurrentHashMap<String, AtomicBoolean> CANCELLATIONS = new ConcurrentHashMap<>();
     private static final ConcurrentHashMap<String, String> LAST_ERRORS = new ConcurrentHashMap<>();
     private static org.pytorch.executorch.Module module;
@@ -45,7 +44,7 @@ final class BeatThisRunner {
         AtomicBoolean cancellation = CANCELLATIONS.computeIfAbsent(jobId, ignored -> new AtomicBoolean(false));
         LAST_ERRORS.remove(jobId);
         try {
-            synchronized (LOCK) {
+            synchronized (InferenceLock.LOCK) {
                 if (cancellation.get()) throw new IllegalStateException("BEAT_THIS_CANCELLED");
                 File modelFile = prepare(context, cancellation);
                 if (cancellation.get()) throw new IllegalStateException("BEAT_THIS_CANCELLED");

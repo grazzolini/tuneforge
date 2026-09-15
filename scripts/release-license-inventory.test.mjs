@@ -87,6 +87,34 @@ test("owned codec policy records audited payloads and platform ownership", () =>
   assert.doesNotMatch(rendered, /FFmpeg and ffprobe are host-installed and are not bundled/);
 });
 
+test("Android analysis inventory pins Crema, ONNX Runtime, and owned libsoxr", () => {
+  const policy = buildReleaseLicenseInventory().androidAnalysisPolicy;
+
+  assert.deepEqual(policy.onnxRuntime, {
+    coordinate: "com.microsoft.onnxruntime:onnxruntime-android:1.29.0",
+    version: "1.29.0",
+    license: "MIT",
+    size: 51_897_836,
+    sha256: "e97540ca78fe36f6fe2013f82843414fb843b6c7681fb04644cba5e1406662dd",
+  });
+  assert.equal(policy.crema.revision, "895b249c4ccabaedc0770b12935c2b7b2f60e145");
+  assert.deepEqual(policy.crema.assets.map(({ size }) => size), [2_193_804, 3_790]);
+  assert.equal(policy.soxr.license, "LGPL-2.1-or-later");
+  assert.equal(policy.soxr.revision, "a66f3eeeeb62a32403ff143b756eed92b1ec6b62");
+  assert.match(policy.soxr.linkage, /Dynamically linked/);
+  assert.match(policy.soxr.linkage, /replaceable companion sources/);
+  assert.deepEqual(policy.soxr.pffft, {
+    revision: "483453d8f7661058e74aa4e7cf5c27bcd7887e7a",
+    license: "BSD-3-Clause",
+  });
+
+  const rendered = formatReleaseLicenseInventory(buildReleaseLicenseInventory());
+  assert.match(rendered, /Android analysis runtime policy:/);
+  assert.match(rendered, /onnxruntime-android:1\.29\.0/);
+  assert.match(rendered, /libsoxr soxr-a66f3eee: LGPL-2\.1-or-later/);
+  assert.match(rendered, /PFFFT 483453d8f7661058e74aa4e7cf5c27bcd7887e7a: BSD-3-Clause/);
+});
+
 test("model policy output is stable when lyrics model env is overridden", () => {
   const baseline = withLyricsModelEnv(undefined, () => buildReleaseLicenseInventory().modelPolicy);
   const overridden = withLyricsModelEnv("tiny", () => buildReleaseLicenseInventory().modelPolicy);

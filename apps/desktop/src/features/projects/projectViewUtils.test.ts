@@ -593,6 +593,20 @@ describe("dependency diagnostic formatting", () => {
       testJob({ type: "analyze" }),
     )).toBe("Not enough free space to install Advanced Beat Analysis. Free 9.4 MB, then retry.");
   });
+
+  it.each([
+    "Not enough free space to install Advanced Chords. Free 4.3 MB, then retry.",
+    "Advanced Chords needs a one-time 2.1 MB download. Check your connection and retry; after installation, it works offline.",
+    "The Advanced Chords model files failed verification. Retry to repair them.",
+    "Device storage is unavailable for Advanced Chords. Retry after checking available storage.",
+    "The Advanced Chords model or runtime state is incompatible with this app version.",
+    "Advanced Chords could not run on this device. Retry chord generation.",
+  ])("hides the Advanced Chords persistence code for %s", (message) => {
+    expect(formatJobErrorMessage(
+      `ADVANCED_CHORD_BACKEND_FAILED: ${message}`,
+      testJob({ type: "chords" }),
+    )).toBe(message);
+  });
 });
 
 describe("formatJobStatusSummary", () => {

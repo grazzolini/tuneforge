@@ -26,6 +26,8 @@ const mobileCapabilities: MobileCapabilities = {
   gpuBackend: null,
   analysisAvailable: true,
   basicChordsAvailable: true,
+  cremaAvailable: true,
+  cremaModelStatus: "download-required",
   whisperAvailable: false,
   stemSeparationAvailable: false,
   generationTestingAvailable: false,
@@ -371,7 +373,31 @@ describe("mobile sync API adapter", () => {
       id: "lv-chordia-submission",
       unavailable_reason: "LV Chordia is disabled on mobile",
     }));
-    expect(mockInvoke).not.toHaveBeenCalled();
+    expect(mockInvoke).toHaveBeenCalledOnce();
+    expect(mockInvoke).toHaveBeenCalledWith("mobile_capabilities", undefined);
+  });
+
+  it("reports Crema first-use status and forwards its exact chord request", async () => {
+    const api = await loadMobileApi();
+
+    const response = await api.listChordBackends();
+    expect(response.backends).toContainEqual(expect.objectContaining({
+      available: true,
+      id: "crema-advanced",
+      label: "Advanced Chords — Crema",
+      description: expect.stringContaining("Installs and verifies on first use"),
+    }));
+    mockInvoke.mockClear();
+    const request = {
+      backend: "crema-advanced",
+      force: true,
+      overwrite_user_edits: false,
+    } as const;
+    await api.createChords("proj_1", request);
+    expect(mockInvoke).toHaveBeenCalledWith("mobile_submit_chords", {
+      projectId: "proj_1",
+      payload: request,
+    });
   });
 
   it("rejects explicit LV Chordia generation before native invoke", async () => {

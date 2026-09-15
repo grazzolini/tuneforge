@@ -8,9 +8,11 @@ import test from "node:test";
 import {
   acquirePackagingLock,
   artifactFromMetadata,
+  configureLocalBuild,
   configurePublishableSigning,
   configureReleaseDebugSigning,
   generatedState,
+  ensureLocalTestKeystore,
   normalizeFingerprint,
   parseMode,
   parseAndroidOptions,
@@ -29,23 +31,38 @@ import {
   validatePublishableCredentials,
   verifyPublishable,
   verifyExecutorchAar,
+  verifyOnnxRuntimeAar,
+  verifyPreparedSoxr,
   verifyApplicationId,
+  verifyLocalSigner,
 } from "./package-android.mjs";
 
 test("Android model bundle remains explicit and composes with build modes", () => {
   assert.deepEqual(parseAndroidOptions([]), {
-    mode: "local-release", modelBundle: false, testIdentity: false,
+    mode: "local-release", modelBundle: false, testIdentity: false, packageName: undefined,
   });
   assert.deepEqual(parseAndroidOptions(["--debug", "--model-bundle"]), {
-    mode: "debug", modelBundle: true, testIdentity: false,
+    mode: "debug", modelBundle: true, testIdentity: false, packageName: undefined,
+  });
+  assert.deepEqual(parseAndroidOptions(["--debug", "--", "--model-bundle"]), {
+    mode: "debug", modelBundle: true, testIdentity: false, packageName: undefined,
   });
   assert.deepEqual(parseAndroidOptions(["--model-bundle", "--prepare"]), {
-    mode: "prepare", modelBundle: true, testIdentity: false,
+    mode: "prepare", modelBundle: true, testIdentity: false, packageName: undefined,
   });
   assert.deepEqual(parseAndroidOptions(["--debug", "--test-identity"]), {
-    mode: "debug", modelBundle: false, testIdentity: true,
+    mode: "debug", modelBundle: false, testIdentity: true, packageName: undefined,
   });
   assert.throws(() => parseAndroidOptions(["--publishable", "--test-identity"]), /only for local/);
+  assert.equal(parseAndroidOptions(["--debug", "--package-name", "com.example.fixture"]).packageName,
+    "com.example.fixture");
+  for (const args of [["--prepare", "--package-name", "com.example.fixture"],
+    ["--publishable", "--package-name", "com.example.fixture"],
+    ["--package-name", "com.tuneforge.desktop"], ["--package-name", "invalid"],
+    ["--package-name", "com.bad-name.app"],
+    ["--package-name", "com.one", "--package-name", "com.two"]]) {
+    assert.throws(() => parseAndroidOptions(args));
+  }
 });
 
 test("Android packaging verifies the pinned ExecuTorch AAR", (t) => {
@@ -55,13 +72,20 @@ test("Android packaging verifies the pinned ExecuTorch AAR", (t) => {
   fs.writeFileSync(aar, "wrong");
   assert.throws(() => verifyExecutorchAar(root), /SHA-256 verification failed/);
 });
+test("Android packaging verifies the pinned ONNX Runtime AAR", (t) => {
+  const root = temp(t);
+  const aar = path.join(root, "caches/modules/files/onnxruntime-android-1.29.0.aar");
+  fs.mkdirSync(path.dirname(aar), { recursive: true });
+  fs.writeFileSync(aar, "wrong");
+  assert.throws(() => verifyOnnxRuntimeAar(root), /size or SHA-256 verification failed/);
+});
 test("test APK identity is verified from packaged badging", () => {
   const tools = { aapt2: "/sdk/aapt2" };
-  const good = () => ({ ok: true, output: "package: name='com.tuneforge.desktop.test539' versionCode='1'" });
-  assert.doesNotThrow(() => verifyApplicationId("app.apk", tools, "com.tuneforge.desktop.test539", {
+  const good = () => ({ ok: true, output: "package: name='com.tuneforge.desktop.test' versionCode='1'" });
+  assert.doesNotThrow(() => verifyApplicationId("app.apk", tools, "com.tuneforge.desktop.test", {
     runCapture: good,
   }));
-  assert.throws(() => verifyApplicationId("app.apk", tools, "com.tuneforge.desktop.test539", {
+  assert.throws(() => verifyApplicationId("app.apk", tools, "com.tuneforge.desktop.test", {
     runCapture: () => ({ ok: true, output: "package: name='com.tuneforge.desktop'" }),
   }), /applicationId/);
 });
@@ -148,6 +172,8 @@ test("prepared state requires outputs owned by the explicit preparation command"
     "app/src/main/java/com/tuneforge/desktop/PowerInhibitionService.kt",
     "app/src/main/java/com/tuneforge/desktop/ModelAssetDescriptor.java",
     "app/src/main/java/com/tuneforge/desktop/BeatThisRunner.java",
+    "app/src/main/java/com/tuneforge/desktop/CremaRunner.java",
+    "app/src/main/java/com/tuneforge/desktop/InferenceLock.java",
     "app/src/main/res/values/ic_launcher_background.xml",
     "app/src/main/jniLibs/arm64-v8a/libavcodec.so",
     "app/src/main/jniLibs/arm64-v8a/libavfilter.so",
@@ -155,12 +181,36 @@ test("prepared state requires outputs owned by the explicit preparation command"
     "app/src/main/jniLibs/arm64-v8a/libavutil.so",
     "app/src/main/jniLibs/arm64-v8a/libswresample.so",
     "app/src/main/jniLibs/arm64-v8a/libmp3lame.so",
-    "app/src/main/assets/ffmpeg/provenance.json"]) {
+    "app/src/main/jniLibs/arm64-v8a/libsoxr.so",
+    "app/src/main/assets/ffmpeg/provenance.json",
+    "app/src/main/assets/soxr/provenance.json",
+  ]) {
     const candidate = path.join(root, relative); fs.mkdirSync(path.dirname(candidate), { recursive: true });
     fs.writeFileSync(candidate, "prepared");
   }
   assert.deepEqual(preparedState(root), { ready: true, missing: [] });
   assert.doesNotThrow(() => requirePrepared(root));
+});
+test("Android builds reject stale staged libsoxr artifacts", (t) => {
+  const root = temp(t);
+  const soxr = path.join(root, "owned-soxr");
+  const android = path.join(root, "android");
+  const pairs = [
+    ["lib/libsoxr.so", "app/src/main/jniLibs/arm64-v8a/libsoxr.so", "runtime"],
+    ["provenance.json", "app/src/main/assets/soxr/provenance.json",
+      JSON.stringify({ cmake: ["-DWITH_PFFFT=ON"] })],
+  ];
+  for (const [sourceRelative, stagedRelative, contents] of pairs) {
+    const source = path.join(soxr, sourceRelative);
+    const staged = path.join(android, stagedRelative);
+    fs.mkdirSync(path.dirname(source), { recursive: true });
+    fs.mkdirSync(path.dirname(staged), { recursive: true });
+    fs.writeFileSync(source, contents);
+    fs.writeFileSync(staged, contents);
+  }
+  assert.doesNotThrow(() => verifyPreparedSoxr(soxr, android));
+  fs.writeFileSync(path.join(android, pairs[0][1]), "stale PFFFT-disabled runtime");
+  assert.throws(() => verifyPreparedSoxr(soxr, android), /Run pnpm package:android:prepare/);
 });
 test("release debug signing is marker-based and idempotent", (t) => {
   const buildFile = path.join(temp(t), "build.gradle.kts");
@@ -296,6 +346,40 @@ test("publishable Gradle signing is marker-owned, environment-only, restored cle
   assert.equal(removeOwnedSigning(configured),
     original.replace(`${debugSigningLineForTest()}\n`, ""));
   assert.equal(configurePublishableSigning(configured), configured);
+});
+test("local Gradle identity and persistent signer are temporary marker-owned configuration", () => {
+  const original = ["android {", '        applicationId = "com.tuneforge.desktop"',
+    "    buildTypes {", '        getByName("debug") {', "        }", '        getByName("release") {',
+    "            isMinifyEnabled = true", "        }", "    }", "}", ""].join("\n");
+  const configured = configureLocalBuild(original, "com.example.fixture");
+  assert.match(configured, /applicationId = "com\.example\.fixture"/);
+  assert.match(configured, /getByName\("tuneforgeLocal"\)/);
+  assert.match(configured, /TUNEFORGE_ANDROID_TEST_KEYSTORE_PATH/);
+  assert.equal(configured.match(/getByName\("debug"\)/g)?.length, 1);
+  assert.equal(removeOwnedSigning(configured).replace('applicationId = "com.example.fixture"',
+    'applicationId = "com.tuneforge.desktop"'), original);
+});
+test("local APK verification requires the persistent test certificate", () => {
+  const fingerprint = "ab".repeat(32);
+  assert.doesNotThrow(() => verifyLocalSigner("app.apk", { apksigner: "/apksigner" }, fingerprint, {
+    runCapture: () => ({ ok: true, output: `Signer #1 certificate SHA-256 digest: ${fingerprint}` }),
+  }));
+  assert.throws(() => verifyLocalSigner("app.apk", { apksigner: "/apksigner" }, fingerprint, {
+    runCapture: () => ({ ok: true, output: `Signer #1 certificate SHA-256 digest: ${"cd".repeat(32)}` }),
+  }), /persistent test certificate/);
+});
+test("local test keystore is stable and corrupt files are never replaced", (t) => {
+  let java;
+  try { java = resolveJava(); } catch { t.skip("JDK 17 unavailable"); return; }
+  const root = temp(t);
+  const first = ensureLocalTestKeystore(java, { homeDir: root });
+  const before = crypto.createHash("sha256").update(fs.readFileSync(first.path)).digest("hex");
+  const second = ensureLocalTestKeystore(java, { homeDir: root });
+  assert.equal(second.fingerprint, first.fingerprint);
+  assert.equal(crypto.createHash("sha256").update(fs.readFileSync(first.path)).digest("hex"), before);
+  fs.writeFileSync(first.path, "corrupt");
+  assert.throws(() => ensureLocalTestKeystore(java, { homeDir: root }), /not replaced/);
+  assert.equal(fs.readFileSync(first.path, "utf8"), "corrupt");
 });
 function debugSigningLineForTest() {
   return '            signingConfig = signingConfigs.getByName("debug")';
@@ -475,7 +559,9 @@ test("only the explicit prepare mode initializes, generates icons, and prepares 
     assert.equal(source.match(pattern)?.length, 1);
   }
   assert.match(source, /validate-android-release-jni\.mjs"\), "--apk", apk/);
-  assert.doesNotMatch(source, /\.android\/debug\.keystore|Existing debug keystore required/);
+  assert.match(source, /\.android.*tuneforge-test\.keystore|tuneforge-test\.keystore/);
+  assert.match(source, /run\("bash", args, \{ cwd: desktopDir, env: buildEnv,/);
+  assert.match(source, /if \(publishable\) \{\s+const cleanGradle = removeOwnedSigning/);
   const rootScripts = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8")).scripts;
   const desktopScripts = JSON.parse(fs.readFileSync(new URL("../apps/desktop/package.json", import.meta.url), "utf8")).scripts;
   assert.equal(rootScripts["package:android:prepare"], "pnpm --filter @tuneforge/desktop android:prepare");

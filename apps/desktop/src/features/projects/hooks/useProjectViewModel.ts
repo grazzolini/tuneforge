@@ -313,6 +313,7 @@ export function useProjectViewModel() {
   const {
     defaultPlaybackDisplayMode,
     defaultBeatAnalysisBackend,
+    defaultChordBackend,
     defaultChordsFollowEnabled,
     defaultInspectorOpen,
     defaultLoopAlignmentMode,
@@ -976,8 +977,30 @@ export function useProjectViewModel() {
   const canGenerateStems =
     !projectEditLocked &&
     (!isMobileRuntime || mobileCapabilities?.stemSeparationAvailable === true);
-  const canGenerateChords =
-    !projectEditLocked && (!isMobileRuntime || mobileCapabilities?.basicChordsAvailable === true);
+  const mobileBuiltInChordsSelected = defaultChordBackend === "tuneforge-fast";
+  const mobileCremaChordsSelected = defaultChordBackend === "crema-advanced";
+  const mobileUnsupportedChordBackend = isMobileRuntime &&
+    !mobileBuiltInChordsSelected && !mobileCremaChordsSelected;
+  const mobileAdvancedChordsUnavailable = isMobileRuntime && (
+    mobileUnsupportedChordBackend || (mobileCremaChordsSelected &&
+      (mobileCapabilities?.platform !== "android" || mobileCapabilities.cremaAvailable !== true))
+  );
+  const mobileChordBackendMessage = !isMobileRuntime ? null
+    : mobileBuiltInChordsSelected
+      ? "Built-in Chords · Ready on this device."
+      : mobileUnsupportedChordBackend
+        ? "LV Chordia is unavailable on this device/build — choose Built-in Chords."
+        : mobileAdvancedChordsUnavailable
+          ? "Advanced Chords — Crema is unavailable on this device/build — choose Built-in Chords."
+          : mobileCapabilities?.cremaModelStatus === "ready"
+            ? "Advanced Chords — Crema · Verified and ready offline."
+            : mobileCapabilities?.cremaModelStatus === "corrupt"
+              ? "Advanced Chords — Crema · Repair and verification run on next use."
+              : "Advanced Chords — Crema · Installs and verifies on first use (2.1 MB download unless bundled).";
+  const canGenerateChords = !projectEditLocked && (!isMobileRuntime ||
+    (mobileCremaChordsSelected
+      ? !mobileAdvancedChordsUnavailable
+      : mobileBuiltInChordsSelected && mobileCapabilities?.basicChordsAvailable === true));
   const currentKeyValue = sourceKeyOverride ? serializeKey(sourceKeyOverride) : "auto";
   const hasVisibleStems = visibleStemArtifacts.length > 0;
   const stemErrorMessage =
@@ -2650,6 +2673,8 @@ export function useProjectViewModel() {
     lowerTargetShiftOptions,
     mobileCapabilities,
     mobileBeatAnalysisMessage,
+    mobileChordBackendMessage,
+    mobileAdvancedChordsUnavailable,
     mobileAdvancedAnalysisUnavailable,
     mobileGenerationMessage,
     lyricsFollowEnabled,

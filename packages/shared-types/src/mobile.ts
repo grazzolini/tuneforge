@@ -13,6 +13,8 @@ export type MobileCapabilities = {
   beatThisAvailable?: boolean;
   beatThisModelStatus?: "ready" | "download-required" | "corrupt" | "unavailable";
   basicChordsAvailable: boolean;
+  cremaAvailable?: boolean;
+  cremaModelStatus?: "ready" | "download-required" | "corrupt" | "unavailable";
   whisperAvailable: boolean;
   stemSeparationAvailable: boolean;
   generationTestingAvailable: boolean;

@@ -161,6 +161,7 @@
   gap: 0.65rem;
 }
 
+.processing-panel__chord-actions,
 .processing-panel__lyrics-actions {
   display: flex;
   min-width: 10.5rem;

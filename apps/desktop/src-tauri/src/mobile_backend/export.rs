@@ -4,6 +4,10 @@ use super::storage_cleanup::{
     OwnedProjectFile,
 };
 use super::*;
+use crate::native_audio::harmony::{
+    automatic_pitch_spelling, format_chord, parse_display_chord, parse_key,
+    shortest_semitone_delta, KeyMode, KeySignature, PitchSpelling,
+};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -575,15 +579,9 @@ fn validate_document_audio_set(
     Ok(serde_json::from_str(&metadata_raw).unwrap_or_else(|_| json!({})))
 }
 
-#[derive(Clone)]
-struct KeyContext {
-    pitch_class: i64,
-    mode: String,
-}
-
 struct ChordContext {
     transpose_semitones: i64,
-    active_key: Option<KeyContext>,
+    active_key: Option<KeySignature>,
     display_mode: String,
 }
 
@@ -604,7 +602,9 @@ fn document_chord_context(
     let detected = detected_key.as_deref().and_then(parse_key);
     let overridden = source_key_override.as_deref().and_then(parse_key);
     let source_correction = match (&detected, &overridden) {
-        (Some(source), Some(target)) => semitone_delta(source.pitch_class, target.pitch_class),
+        (Some(source), Some(target)) => {
+            shortest_semitone_delta(source.pitch_class, target.pitch_class)
+        }
         _ => 0,
     };
     let mix_transpose = metadata
@@ -614,7 +614,7 @@ fn document_chord_context(
         .and_then(Value::as_i64)
         .unwrap_or(0);
     let spelling_key = overridden.or(detected);
-    let active_key = spelling_key.map(|key| KeyContext {
+    let active_key = spelling_key.map(|key| KeySignature {
         pitch_class: (key.pitch_class + mix_transpose).rem_euclid(12),
         mode: key.mode,
     });
@@ -623,62 +623,6 @@ fn document_chord_context(
         active_key,
         display_mode: display_mode.to_string(),
     })
-}
-
-fn parse_key(value: &str) -> Option<KeyContext> {
-    let normalized = value.trim();
-    if let Some((pitch, mode)) = normalized.split_once(':') {
-        let pitch_class = pitch.parse::<i64>().ok()?;
-        if (0..=11).contains(&pitch_class)
-            && matches!(mode.to_ascii_lowercase().as_str(), "major" | "minor")
-        {
-            return Some(KeyContext {
-                pitch_class,
-                mode: mode.to_ascii_lowercase(),
-            });
-        }
-        return None;
-    }
-    let mut parts = normalized.split_whitespace();
-    let note = parts.next()?;
-    let mode = parts.next().unwrap_or("major").to_ascii_lowercase();
-    let pitch_class = note_pitch_class(note)?;
-    Some(KeyContext {
-        pitch_class,
-        mode: if mode == "minor" || mode == "m" {
-            "minor"
-        } else {
-            "major"
-        }
-        .to_string(),
-    })
-}
-
-fn note_pitch_class(note: &str) -> Option<i64> {
-    match note.to_ascii_uppercase().as_str() {
-        "C" | "B#" => Some(0),
-        "C#" | "DB" => Some(1),
-        "D" => Some(2),
-        "D#" | "EB" => Some(3),
-        "E" | "FB" => Some(4),
-        "F" | "E#" => Some(5),
-        "F#" | "GB" => Some(6),
-        "G" => Some(7),
-        "G#" | "AB" => Some(8),
-        "A" => Some(9),
-        "A#" | "BB" => Some(10),
-        "B" | "CB" => Some(11),
-        _ => None,
-    }
-}
-
-fn semitone_delta(source: i64, target: i64) -> i64 {
-    let upward = (target - source).rem_euclid(12);
-    if upward <= 6 {
-        upward
-    } else {
-        upward - 12
-    }
 }
 
 fn normalized_text(value: &str) -> String {
@@ -717,158 +661,34 @@ fn chord_label(segment: &Value) -> String {
         .to_string()
 }
 
-fn pitch_class_label(pitch_class: i64, context: &ChordContext, mode: &str) -> &'static str {
-    const SHARPS: [&str; 12] = [
-        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
-    ];
-    const FLATS: [&str; 12] = [
-        "C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B",
-    ];
-    const NEUTRAL: [&str; 12] = [
-        "C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B",
-    ];
-    let index = pitch_class.rem_euclid(12) as usize;
-    match mode {
-        "sharps" => SHARPS[index],
-        "flats" => FLATS[index],
-        "auto" => {
-            let family = context.active_key.as_ref().map(|key| {
-                let major = [
-                    "neutral", "flat", "sharp", "flat", "sharp", "flat", "sharp", "sharp", "flat",
-                    "sharp", "flat", "sharp",
-                ];
-                let minor = [
-                    "flat", "sharp", "flat", "flat", "sharp", "flat", "sharp", "flat", "sharp",
-                    "neutral", "flat", "sharp",
-                ];
-                if key.mode == "minor" {
-                    minor[key.pitch_class as usize]
-                } else {
-                    major[key.pitch_class as usize]
-                }
-            });
-            match family {
-                Some("sharp") => SHARPS[index],
-                Some("flat") => FLATS[index],
-                _ => NEUTRAL[index],
-            }
-        }
-        _ => NEUTRAL[index],
-    }
-}
-
-fn quality_suffix(quality: &str) -> Option<&'static str> {
-    match quality {
-        "major" => Some(""),
-        "minor" => Some("m"),
-        "7" => Some("7"),
-        "7b5" => Some("7b5"),
-        "maj7" => Some("maj7"),
-        "m7" => Some("m7"),
-        "sus2" => Some("sus2"),
-        "sus4" => Some("sus4"),
-        "dim" => Some("dim"),
-        "aug" => Some("aug"),
-        "dim7" => Some("dim7"),
-        "hdim7" => Some("m7b5"),
-        _ => None,
-    }
-}
-
-fn parsed_chord(label: &str) -> Option<(i64, String, Option<i64>)> {
-    let trimmed = label.trim();
-    if trimmed.eq_ignore_ascii_case("N.C.") || trimmed.eq_ignore_ascii_case("N.C") {
-        return None;
-    }
-    let (main, bass) = trimmed
-        .split_once('/')
-        .map_or((trimmed, None), |(main, bass)| (main, Some(bass)));
-    let mut chars = main.char_indices();
-    let (_, root) = chars.next()?;
-    if !(('A'..='G').contains(&root.to_ascii_uppercase())) {
-        return None;
-    }
-    let mut root_end = root.len_utf8();
-    if let Some((index, accidental)) = chars.next() {
-        if accidental == '#' || accidental == 'b' {
-            root_end = index + accidental.len_utf8();
-        }
-    }
-    let root_pitch = note_pitch_class(&main[..root_end])?;
-    let suffix = &main[root_end..];
-    let quality = match suffix {
-        "" => "major",
-        "m" => "minor",
-        "7" | "7b5" | "maj7" | "m7" | "sus2" | "sus4" | "dim" | "aug" | "dim7" => suffix,
-        "m7b5" => "hdim7",
-        _ => return None,
-    };
-    let bass_pitch = bass.and_then(note_pitch_class);
-    if bass.is_some() && bass_pitch.is_none() {
-        return None;
-    }
-    Some((root_pitch, quality.to_string(), bass_pitch))
-}
-
 fn format_transposed_chord(
     root: i64,
     quality: &str,
     bass: Option<i64>,
     context: &ChordContext,
 ) -> Option<String> {
-    let suffix = quality_suffix(quality)?;
     let root = (root + context.transpose_semitones).rem_euclid(12);
     let bass = bass.map(|bass| (bass + context.transpose_semitones).rem_euclid(12));
     if context.display_mode == "dual" {
-        let sharp_context = ChordContext {
-            display_mode: "sharps".to_string(),
-            ..context.clone_for_display()
-        };
-        let flat_context = ChordContext {
-            display_mode: "flats".to_string(),
-            ..context.clone_for_display()
-        };
-        let primary = formatted_chord_labels(root, suffix, bass, &sharp_context);
-        let secondary = formatted_chord_labels(root, suffix, bass, &flat_context);
+        let primary = format_chord(root, quality, bass, PitchSpelling::Sharps)?;
+        let secondary = format_chord(root, quality, bass, PitchSpelling::Flats)?;
         return Some(if primary == secondary {
             primary
         } else {
             format!("{primary} / {secondary}")
         });
     }
-    Some(formatted_chord_labels(root, suffix, bass, context))
-}
-
-impl ChordContext {
-    fn clone_for_display(&self) -> Self {
-        Self {
-            transpose_semitones: self.transpose_semitones,
-            active_key: self.active_key.clone(),
-            display_mode: self.display_mode.clone(),
-        }
-    }
-}
-
-fn formatted_chord_labels(
-    root: i64,
-    suffix: &str,
-    bass: Option<i64>,
-    context: &ChordContext,
-) -> String {
-    let root_label = pitch_class_label(root, context, &context.display_mode);
-    let bass_label = bass
-        .filter(|bass| *bass != root)
-        .map(|bass| {
-            format!(
-                "/{}",
-                pitch_class_label(bass, context, &context.display_mode)
-            )
-        })
-        .unwrap_or_default();
-    format!("{root_label}{suffix}{bass_label}")
+    let spelling = match context.display_mode.as_str() {
+        "sharps" => PitchSpelling::Sharps,
+        "flats" => PitchSpelling::Flats,
+        "auto" => automatic_pitch_spelling(context.active_key),
+        _ => PitchSpelling::Neutral,
+    };
+    format_chord(root, quality, bass, spelling)
 }
 
 fn display_chord_label(segment: &Value, context: &ChordContext) -> String {
+    let label = chord_label(segment);
     let structured = segment
         .get("pitch_class")
         .and_then(Value::as_i64)
@@ -876,14 +696,22 @@ fn display_chord_label(segment: &Value, context: &ChordContext) -> String {
         .map(|(root, quality)| {
             (
                 root,
-                quality.to_string(),
+                quality,
                 segment.get("bass_pitch_class").and_then(Value::as_i64),
             )
         });
-    let parsed = structured.or_else(|| parsed_chord(&chord_label(segment)));
+    let parsed = structured.or_else(|| {
+        parse_display_chord(&label).map(|chord| {
+            (
+                chord.root_pitch_class,
+                chord.quality,
+                chord.bass_pitch_class,
+            )
+        })
+    });
     parsed
-        .and_then(|(root, quality, bass)| format_transposed_chord(root, &quality, bass, context))
-        .unwrap_or_else(|| chord_label(segment))
+        .and_then(|(root, quality, bass)| format_transposed_chord(root, quality, bass, context))
+        .unwrap_or(label)
 }
 
 fn word_positions(text: &str, words: &[Value]) -> Vec<Option<usize>> {
@@ -1699,9 +1527,9 @@ mod tests {
     fn context(transpose: i64, display_mode: &str) -> ChordContext {
         ChordContext {
             transpose_semitones: transpose,
-            active_key: Some(KeyContext {
+            active_key: Some(KeySignature {
                 pitch_class: 1,
-                mode: "major".to_string(),
+                mode: KeyMode::Major,
             }),
             display_mode: display_mode.to_string(),
         }
@@ -1868,6 +1696,65 @@ mod tests {
             display_chord_label(&json!({"label": "mystery"}), &context(7, "sharps")),
             "mystery"
         );
+        for (quality, expected) in [
+            ("major", "C"),
+            ("minor", "Cm"),
+            ("7", "C7"),
+            ("7b5", "C7b5"),
+            ("maj7", "Cmaj7"),
+            ("m7", "Cm7"),
+            ("sus2", "Csus2"),
+            ("sus4", "Csus4"),
+            ("dim", "Cdim"),
+            ("aug", "Caug"),
+            ("dim7", "Cdim7"),
+            ("hdim7", "Cm7b5"),
+        ] {
+            assert_eq!(
+                display_chord_label(
+                    &json!({"pitch_class": 0, "quality": quality}),
+                    &context(0, "sharps")
+                ),
+                expected
+            );
+        }
+        assert_eq!(
+            display_chord_label(&json!({"label": "C#m7b5/G#"}), &context(0, "flats")),
+            "Dbm7b5/Ab"
+        );
+        assert_eq!(
+            display_chord_label(
+                &json!({"label": "keep", "pitch_class": 0, "quality": "maj6"}),
+                &context(0, "sharps")
+            ),
+            "keep"
+        );
+        assert_eq!(
+            display_chord_label(
+                &json!({"pitch_class": 1, "quality": "major"}),
+                &context(0, "dual")
+            ),
+            "C# / Db"
+        );
+        assert_eq!(
+            display_chord_label(
+                &json!({"pitch_class": 1, "quality": "minor"}),
+                &context(0, "dual")
+            ),
+            "C#m / Dbm"
+        );
+        assert_eq!(
+            display_chord_label(
+                &json!({"pitch_class": 1, "quality": "minor"}),
+                &context(0, "auto")
+            ),
+            "Dbm"
+        );
+        assert_eq!(parse_key("Cb minor").unwrap().pitch_class, 11);
+        assert_eq!(parse_key("1:minor").unwrap().mode, KeyMode::Minor);
+        assert!(parse_key("1:dorian").is_none());
+        assert_eq!(shortest_semitone_delta(11, 1), 2);
+        assert_eq!(shortest_semitone_delta(1, 11), -2);
     }
 
     #[test]

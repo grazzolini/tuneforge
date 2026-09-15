@@ -25,6 +25,7 @@ serde_json = { version = "1.0.151", features = ["arbitrary_precision"] }
 chrono = { version = "0.4.45", features = ["serde"] }
 tauri-plugin-clipboard-manager = "2.3.2"
 realfft = "3.5.0"
+rustfft = "6.4.1"
 rubato = "=0.16.2"
 
 [target.'cfg(not(target_os = "android"))'.dependencies]

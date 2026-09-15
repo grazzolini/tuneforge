@@ -1,4 +1,5 @@
 import type { ChangeEvent } from "react";
+import { Link } from "react-router-dom";
 import { useProjectViewModelContext } from "./useProjectViewModelContext";
 
 export function ProcessingPanel() {
@@ -9,6 +10,7 @@ export function ProcessingPanel() {
     canGenerateLyrics,
     canGenerateStems,
     chordMutation,
+    chordJob,
     handleAnalyzeAction,
     handleChordAction,
     handleLyricsAction,
@@ -26,6 +28,8 @@ export function ProcessingPanel() {
     lyricsMutation,
     mobileGenerationMessage,
     mobileBeatAnalysisMessage,
+    mobileChordBackendMessage,
+    mobileAdvancedChordsUnavailable,
     mobileAdvancedAnalysisUnavailable,
     projectEditLocked,
     projectSyncLockReason,
@@ -111,19 +115,32 @@ export function ProcessingPanel() {
         >
           {analyzeMutation.isPending || isAnalysisRunning ? "Analyzing..." : "Analyze Track"}
         </button>
-        <button
-          className="button button--small"
-          disabled={chordsDisabled}
-          onClick={() => void handleChordAction()}
-          title={editLockTitle}
-          type="button"
-        >
-          {chordMutation.isPending || isChordRunning
-            ? "Generating..."
-            : hasChordTimeline
-              ? "Refresh Chords"
-              : "Generate Chords"}
-        </button>
+        <div className="processing-panel__chord-actions" role="group" aria-label="Chord generation">
+          <button
+            className="button button--small"
+            disabled={chordsDisabled}
+            onClick={() => void handleChordAction()}
+            title={mobileAdvancedChordsUnavailable ? mobileChordBackendMessage ?? undefined : editLockTitle}
+            type="button"
+          >
+            {chordMutation.isPending || isChordRunning
+              ? "Generating..."
+              : hasChordTimeline
+                ? "Refresh Chords"
+                : "Generate Chords"}
+          </button>
+          {isMobileRuntime && mobileChordBackendMessage ? (
+            <p className={mobileAdvancedChordsUnavailable ? "inline-error" : "subpanel__copy"}>
+              {mobileChordBackendMessage}
+            </p>
+          ) : null}
+          {isChordRunning && chordJob ? (
+            <p aria-live="polite" className="subpanel__copy">
+              {chordJob.stage_label ?? "Generating chords"} · {Math.max(0, Math.min(100, Math.round(chordJob.progress)))}% ·{" "}
+              <Link to="/activity">Activity</Link>
+            </p>
+          ) : null}
+        </div>
         <div className="processing-panel__lyrics-actions" role="group" aria-label="Lyrics generation">
           <button
             className="button button--small"

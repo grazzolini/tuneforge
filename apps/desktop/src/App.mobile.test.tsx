@@ -17,6 +17,7 @@ import {
   mockListArtifacts,
   mockListJobs,
   mockGetMobileCapabilities,
+  mockCreateChords,
   mockStartSyncListener,
   resetAppTestHarness,
   renderApp,
@@ -25,6 +26,7 @@ import {
   setProjectLyrics,
   setProjectArtifacts,
   setMockNativeAudioState,
+  setJobs,
 } from "./test/appTestHarness";
 
 const originalUserAgent = navigator.userAgent;
@@ -39,6 +41,8 @@ function enableAndroidRuntime() {
     gpuBackend: null,
     analysisAvailable: true,
     basicChordsAvailable: true,
+    cremaAvailable: true,
+    cremaModelStatus: "ready",
     whisperAvailable: false,
     stemSeparationAvailable: false,
     generationTestingAvailable: true,
@@ -439,6 +443,8 @@ describe("Desktop app mobile capability gates", () => {
       gpuBackend: null,
       analysisAvailable: true,
       basicChordsAvailable: true,
+      cremaAvailable: false,
+      cremaModelStatus: "unavailable",
       whisperAvailable: false,
       stemSeparationAvailable: false,
       generationTestingAvailable: false,
@@ -459,9 +465,129 @@ describe("Desktop app mobile capability gates", () => {
     expect(await screen.findByText(
       "Advanced Beat Analysis is unavailable on this device. Choose Built-in Beat Analysis in Settings.",
     )).toBeInTheDocument();
-    expect(await screen.findByRole("button", { name: "Refresh Chords" })).toBeEnabled();
+    expect(await screen.findByRole("button", { name: "Refresh Chords" })).toBeDisabled();
+    expect(await screen.findByText(
+      "Advanced Chords — Crema is unavailable on this device/build — choose Built-in Chords.",
+    )).toBeInTheDocument();
     expect(await screen.findByRole("button", { name: "Refresh Lyrics" })).toBeDisabled();
     expect(await screen.findByRole("button", { name: "Generate Stems" })).toBeDisabled();
+  });
+
+  it.each([
+    ["ready", "Advanced Chords — Crema · Verified and ready offline."],
+    ["download-required", "Advanced Chords — Crema · Installs and verifies on first use (2.1 MB download unless bundled)."],
+    ["corrupt", "Advanced Chords — Crema · Repair and verification run on next use."],
+  ] as const)("keeps Crema generation enabled when model status is %s", async (cremaModelStatus, message) => {
+    mockGetMobileCapabilities.mockResolvedValue({
+      platform: "android",
+      mediaBackend: "android_media_codec",
+      isEmulator: false,
+      gpuBackend: null,
+      analysisAvailable: true,
+      basicChordsAvailable: true,
+      cremaAvailable: true,
+      cremaModelStatus,
+      whisperAvailable: false,
+      stemSeparationAvailable: false,
+      generationTestingAvailable: false,
+      maxRecommendedModel: null,
+      cpuFallbackAllowed: false,
+    });
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByText(message)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Refresh Chords" })).toBeEnabled();
+  });
+
+  it("submits the selected Crema backend without fallback", async () => {
+    const user = userEvent.setup();
+    mockGetMobileCapabilities.mockResolvedValue({
+      platform: "android",
+      mediaBackend: "android_media_codec",
+      isEmulator: false,
+      gpuBackend: null,
+      analysisAvailable: true,
+      basicChordsAvailable: true,
+      cremaAvailable: true,
+      cremaModelStatus: "ready",
+      whisperAvailable: false,
+      stemSeparationAvailable: false,
+      generationTestingAvailable: false,
+      maxRecommendedModel: null,
+      cpuFallbackAllowed: false,
+    });
+    renderApp(["/projects/proj_123"]);
+
+    await user.click(await screen.findByRole("button", { name: "Refresh Chords" }));
+
+    await waitFor(() => expect(mockCreateChords).toHaveBeenCalledWith("proj_123", {
+      backend: "crema-advanced",
+      force: true,
+      overwrite_user_edits: false,
+    }));
+  });
+
+  it("keeps Built-in Chords enabled when Crema is unavailable", async () => {
+    window.localStorage.setItem(
+      "tuneforge.ui-preferences",
+      JSON.stringify({ defaultChordBackend: "tuneforge-fast", defaultSourcesRailCollapsed: false }),
+    );
+    mockGetMobileCapabilities.mockResolvedValue({
+      platform: "android",
+      mediaBackend: "android_media_codec",
+      isEmulator: false,
+      gpuBackend: null,
+      analysisAvailable: true,
+      basicChordsAvailable: true,
+      cremaAvailable: false,
+      cremaModelStatus: "unavailable",
+      whisperAvailable: false,
+      stemSeparationAvailable: false,
+      generationTestingAvailable: false,
+      maxRecommendedModel: null,
+      cpuFallbackAllowed: false,
+    });
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByText("Built-in Chords · Ready on this device.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Refresh Chords" })).toBeEnabled();
+  });
+
+  it("shows the active chord stage, progress, and Activity affordance", async () => {
+    enableAndroidRuntime();
+    setJobs([{
+      id: "job_crema_running",
+      project_id: "proj_123",
+      type: "chords",
+      status: "running",
+      progress: 35,
+      stage: "preparing",
+      stage_label: "Preparing Advanced Chords features",
+      chord_backend: "crema-advanced",
+    }]);
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("button", { name: "Generating..." })).toBeDisabled();
+    const chordProgress = await screen.findByText(/Preparing Advanced Chords features · 35%/);
+    expect(within(chordProgress).getByRole("link", { name: "Activity" })).toHaveAttribute("href", "/activity");
+  });
+
+  it("disables a stale desktop-only chord backend selection on Android", async () => {
+    window.localStorage.setItem(
+      "tuneforge.ui-preferences",
+      JSON.stringify({
+        defaultChordBackend: "lv-chordia-submission",
+        defaultSourcesRailCollapsed: false,
+      }),
+    );
+    enableAndroidRuntime();
+
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("button", { name: "Refresh Chords" })).toBeDisabled();
+    expect(await screen.findByText(
+      "LV Chordia is unavailable on this device/build — choose Built-in Chords.",
+    )).toBeInTheDocument();
   });
 
   it("shows synced-stems guidance in mobile playback when local stems are unavailable", async () => {

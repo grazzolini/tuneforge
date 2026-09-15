@@ -9,10 +9,10 @@ This document is an engineering notice and distribution checklist, not legal adv
 This file is the source of truth for dependency and model-weight distribution policy:
 
 - Default release package commands (`pnpm package:mac`, `pnpm package:linux:flatpak`) do not pass `--model-bundle`. They include Advanced Chords, Advanced Beat Analysis, and LV Chordia. LV Chordia's five dependency-owned checkpoints are included; external Demucs, Whisper, and beat-this weights are not.
-- Packaged macOS arm64 and Android arm64 include the LGPL FFmpeg/LAME distribution pinned by [`packaging/ffmpeg/sources.lock.json`](./packaging/ffmpeg/sources.lock.json). Development/source runs keep host lookup and explicit overrides. Flatpak includes no owned FFmpeg payload and uses runtime/extension wrappers.
+- Packaged macOS arm64 and Android arm64 include the LGPL FFmpeg/LAME distribution pinned by [`packaging/ffmpeg/sources.lock.json`](./packaging/ffmpeg/sources.lock.json). Android arm64 also dynamically links the owned libsoxr runtime pinned by [`packaging/soxr/sources.lock.json`](./packaging/soxr/sources.lock.json). Development/source runs keep host lookup and explicit overrides. Flatpak includes neither owned payload and uses runtime/extension wrappers for FFmpeg.
 - Demucs, Whisper, and beat-this weights are local cache assets by default. Setup/model-prewarm can prepare them ahead of time, and the app may download them on first use if they are missing. Fully offline use requires the relevant caches/assets to already exist.
 - `--model-bundle` is an explicit local/dev packaging option, not part of default release packaging. It stages Demucs and Whisper weights and, when selected, the beat-this `small0` checkpoint; redistribution needs separate review before publishable artifacts use it.
-- Default Advanced Chords packages use ONNX Runtime and always include the exact pinned 2.2 MB converted model and runtime state so startup can seed the verified TuneForge data cache. The Crema Python package, TensorFlow, and Keras are not included.
+- Android Advanced Chords uses ONNX Runtime and installs the exact pinned Crema model/runtime-state pair on first use. The explicit local/dev `--model-bundle` option embeds the same pair for first-launch offline use. The Crema Python package, TensorFlow, and Keras are not included.
 - LV Chordia's five MIT checkpoints are bundled inside its pinned source dependency, total exactly 28,730,939 bytes, and are removed with `--no-lv-chordia`. They never use a downloader or user cache.
 - Tuneforge does not add cloud processing, accounts, telemetry, or track uploads for these features. Local-first does not mean first use is always offline.
 
@@ -79,13 +79,13 @@ This file is the source of truth for dependency and model-weight distribution po
 
 - **License:** PyPI metadata lists ISC; upstream `LICENSE.md` currently contains BSD-2-Clause terms.
 - **Source:** <https://github.com/bmcfee/crema>
-- **Notes:** Advanced Chords uses an ONNX format conversion of the Crema 0.2.0 model, not a TuneForge-trained model. The model and runtime state are pinned to immutable Hugging Face catalog revision `895b249c4ccabaedc0770b12935c2b7b2f60e145` and included in every package that enables Advanced Chords. Package startup verifies and seeds the normal cache. Source/training provenance remains incomplete. The complete Brian McFee BSD-2-Clause notice is packaged at [`LICENSES/crema-0.2.0-BSD-2-Clause.txt`](./LICENSES/crema-0.2.0-BSD-2-Clause.txt).
+- **Notes:** Advanced Chords uses an ONNX format conversion of the Crema 0.2.0 model, not a TuneForge-trained model. The model and runtime state are pinned to immutable Hugging Face catalog revision `895b249c4ccabaedc0770b12935c2b7b2f60e145`. Desktop packages retain their existing bundled-cache behavior. Android downloads and verifies the pair on first use unless `--model-bundle` embeds it for first-launch offline use. Source/training provenance remains incomplete. The complete Brian McFee BSD-2-Clause notice is packaged at [`LICENSES/crema-0.2.0-BSD-2-Clause.txt`](./LICENSES/crema-0.2.0-BSD-2-Clause.txt).
 
 ### ONNX Runtime / Advanced Chords backend
 
 - **License:** MIT
 - **Source:** <https://github.com/microsoft/onnxruntime>
-- **Notes:** Included by the canonical `advanced-chords` dependency profile and equivalent `advanced-chords-onnx` compatibility profile. TuneForge uses CPU execution and an immutable converted-model revision. Advanced Chords packages include the exact model and runtime-state files and seed the same verified cache on startup. This removes Crema/TensorFlow's HDF5 model-loading closure; preserved LV Chordia support still brings its separately declared `h5py` dependency.
+- **Notes:** Included by the canonical desktop `advanced-chords` dependency profile and equivalent `advanced-chords-onnx` compatibility profile. Android pins `com.microsoft.onnxruntime:onnxruntime-android:1.29.0` (AAR SHA-256 `e97540ca78fe36f6fe2013f82843414fb843b6c7681fb04644cba5e1406662dd`) and uses the FP32 CPU provider. This removes Crema/TensorFlow's HDF5 model-loading closure; preserved LV Chordia support still brings its separately declared `h5py` dependency.
 
 ### beat-this / Advanced Beat Analysis backend
 
@@ -138,6 +138,13 @@ This file is the source of truth for dependency and model-weight distribution po
 - **License:** LGPL-2.1-or-later for TuneForge's owned configuration
 - **Source:** <https://ffmpeg.org/>
 - **Notes:** Packaged macOS arm64 and Android arm64 use the repository recipe and source lock in `packaging/ffmpeg/`. The build disables GPL, nonfree, version3, network, device, and unused libraries/features. macOS also includes `ffmpeg` and `ffprobe`; Android links the five selected libav libraries through a narrow C bridge. The detached source signature is verified against the signing key pinned by the source lock. Each build emits a hash-bound corresponding-source companion containing the full upstream archives, signature/key, patch, recipe, lock, validator, and notices. Development/source runs keep host lookup. Flatpak uses only sandbox runtime/extension wrappers.
+
+### libsoxr
+
+- **Version:** Revision `a66f3eeeeb62a32403ff143b756eed92b1ec6b62`
+- **License:** LGPL-2.1-or-later; embedded PFFFT component under the UCAR/NCAR BSD-3-Clause terms
+- **Source:** <https://github.com/dofuuz/soxr/tree/a66f3eeeeb62a32403ff143b756eed92b1ec6b62>
+- **Notes:** Android arm64 dynamically links the audited libsoxr build used only for desktop-compatible analysis and Crema resampling. The build enables PFFFT, Copyright (c) 2013 Julien Pommier, based on UCAR/NCAR FFTPACK, under BSD-3-Clause terms. [`packaging/soxr/sources.lock.json`](./packaging/soxr/sources.lock.json) pins the exact upstream source archive, PFFFT revision and source path, hashes, license texts, and Android patch. `pnpm soxr:build -- --target android-arm64-v8a` emits the replaceable shared library, license texts, hash-bound provenance, and corresponding-source companion. Rebuilding that companion with a replacement LGPL-compatible libsoxr preserves the narrow C ABI consumed by TuneForge; the APK does not statically incorporate libsoxr.
 
 ### LAME
 

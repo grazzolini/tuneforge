@@ -44,3 +44,19 @@ test("release-media CI scope captures desktop-affecting changes without widening
   assert.ok(installIndex >= 0 && installIndex < captureIndex && captureIndex < buildIndex);
   assert.doesNotMatch(siteJob, /capture-release-media\.mjs --run.*--(?:allow-partial|no-video)/);
 });
+
+test("third-party notice changes remain documentation-only CI scope", () => {
+  const imageInputs = caseArm(
+    String.raw`\.github/ci/\*\|\.github/workflows/ci-image\.yml\|\.github/workflows/ci\.yml\|packaging/soxr/\*\)`,
+  );
+  assert.match(imageInputs, /full_gate=true/);
+  assert.doesNotMatch(imageInputs, /THIRD_PARTY_NOTICES\.md/);
+
+  const documentation = caseArm(
+    String.raw`\.agents/\*\|\.codex/environments/\*\|docs/\*\|CHANGELOG\.md\|README\.md\|CONTRIBUTING\.md\|CODE_OF_CONDUCT\.md\|LICENSE\|THIRD_PARTY_NOTICES\.md\|SECURITY\.md\|AGENTS\.md\|\.gitignore\|packaging/flatpak/\*\|\.github/ISSUE_TEMPLATE/\*\|\.github/PULL_REQUEST_TEMPLATE\.md\)`,
+  );
+  assert.doesNotMatch(
+    documentation,
+    /full_gate=true|backend_static=true|desktop=true|site=true|release_media=true/,
+  );
+});

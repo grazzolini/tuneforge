@@ -501,8 +501,10 @@ function chordBackendOptions(
   if (backends === undefined) {
     return fallbackChordBackendOptions.map((option) => ({
       ...option,
-      disabled: true,
-      status: error ? "Availability could not be checked" : "Checking availability",
+      disabled: option.value !== "tuneforge-fast",
+      status: option.value === "tuneforge-fast"
+        ? "Available"
+        : error ? "Availability could not be checked" : "Checking availability",
     }));
   }
 
@@ -511,8 +513,8 @@ function chordBackendOptions(
     if (!backend) {
       return {
         ...fallback,
-        disabled: true,
-        status: "Missing from backend registry",
+        disabled: fallback.value !== "tuneforge-fast",
+        status: fallback.value === "tuneforge-fast" ? "Available" : "Missing from backend registry",
       };
     }
     const unavailableReason = backend.available
@@ -522,7 +524,7 @@ function chordBackendOptions(
       value: fallback.value,
       label: backend.label,
       description: backend.description || fallback.description,
-      disabled: fetching || error || !backend.available,
+      disabled: fallback.value === "tuneforge-fast" ? false : fetching || error || !backend.available,
       status: fetching
         ? "Checking availability…"
         : error

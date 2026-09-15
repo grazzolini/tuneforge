@@ -52,6 +52,17 @@ class MainActivity : TauriActivity() {
 
   fun cancelTuneForgeBeatThis(jobId: String) = BeatThisRunner.cancel(jobId)
 
+  fun getTuneForgeCremaStatus(): String = CremaRunner.status(this)
+
+  fun prepareTuneForgeCrema(jobId: String): String = CremaRunner.prepare(this, jobId)
+
+  fun runTuneForgeCrema(input: FloatArray, frames: Int, jobId: String): Array<FloatArray> =
+    CremaRunner.run(this, input, frames, jobId)
+
+  fun takeTuneForgeCremaError(jobId: String): String = CremaRunner.takeError(jobId)
+
+  fun cancelTuneForgeCrema(jobId: String) = CremaRunner.cancel(jobId)
+
   fun applyTuneForgeScreenProtection(expectedRevision: Long) {
     window.decorView.post {
       val requestedMask = PowerInhibitionService

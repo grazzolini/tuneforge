@@ -15,9 +15,15 @@ const rules = `-keepclassmembers class com.tuneforge.desktop.MainActivity {
     public float[][] runTuneForgeBeatThis(float[],int,java.lang.String);
     public java.lang.String takeTuneForgeBeatThisError(java.lang.String);
     public void cancelTuneForgeBeatThis(java.lang.String);
+    public java.lang.String getTuneForgeCremaStatus();
+    public java.lang.String prepareTuneForgeCrema(java.lang.String);
+    public float[][] runTuneForgeCrema(float[],int,java.lang.String);
+    public java.lang.String takeTuneForgeCremaError(java.lang.String);
+    public void cancelTuneForgeCrema(java.lang.String);
 }
 -keep class org.pytorch.executorch.** { *; }
--keep class com.facebook.jni.** { *; }`;
+-keep class com.facebook.jni.** { *; }
+-keep class ai.onnxruntime.** { *; }`;
 
 test("parses only exact narrow JNI rules", () => {
   const methods = parseJniRules(rules);
@@ -30,11 +36,17 @@ test("parses only exact narrow JNI rules", () => {
     ["runTuneForgeBeatThis", "([FILjava/lang/String;)[[F"],
     ["takeTuneForgeBeatThisError", "(Ljava/lang/String;)Ljava/lang/String;"],
     ["cancelTuneForgeBeatThis", "(Ljava/lang/String;)V"],
+    ["getTuneForgeCremaStatus", "()Ljava/lang/String;"],
+    ["prepareTuneForgeCrema", "(Ljava/lang/String;)Ljava/lang/String;"],
+    ["runTuneForgeCrema", "([FILjava/lang/String;)[[F"],
+    ["takeTuneForgeCremaError", "(Ljava/lang/String;)Ljava/lang/String;"],
+    ["cancelTuneForgeCrema", "(Ljava/lang/String;)V"],
   ]);
   assert.throws(() => parseJniRules(rules.replace("getTuneForgeAudioPermissionState()", "*")), /wildcards/);
   assert.throws(() => parseJniRules(rules.replace("setTuneForgePowerInhibition(int)", "setTuneForgePowerInhibition()")), /exactly/);
   assert.throws(() => parseJniRules(rules.replace("-keep class org.pytorch.executorch.** { *; }", "")), /ExecuTorch/);
   assert.throws(() => parseJniRules(rules.replace("-keep class com.facebook.jni.** { *; }", "")), /fbjni/);
+  assert.throws(() => parseJniRules(rules.replace("-keep class ai.onnxruntime.** { *; }", "")), /ONNX Runtime/);
 });
 
 test("accepts only one safe universal release APK output", () => {
@@ -65,10 +77,14 @@ test("validates an explicit APK, falls through empty SDK values, and rejects inv
   const archiveEntries = [
     "classes.dex", "lib/arm64-v8a/libtuneforge.so",
     ...["libavcodec.so", "libavfilter.so", "libavformat.so", "libavutil.so",
-      "libswresample.so", "libmp3lame.so"].map((name) => `lib/arm64-v8a/${name}`),
+      "libswresample.so", "libmp3lame.so", "libsoxr.so", "libonnxruntime.so",
+      "libonnxruntime4j_jni.so"].map((name) => `lib/arm64-v8a/${name}`),
     "assets/ffmpeg/provenance.json",
     "assets/ffmpeg/licenses/FFmpeg-COPYING.LGPLv2.1.txt",
     "assets/ffmpeg/licenses/LAME-COPYING.LGPL-2.0.txt",
+    "assets/soxr/provenance.json",
+    "assets/soxr/licenses/libsoxr-LICENCE.txt",
+    "assets/soxr/licenses/libsoxr-COPYING.LGPL-2.1.txt",
   ];
   const calls = [];
   validateReleaseJni({ root, apk, sdkRoot: "", env: {

@@ -12,6 +12,8 @@ from app.services.chord_backends import (
     resolve_chord_backend_id,
 )
 
+from .conftest import import_project_without_jobs
+
 
 def test_chord_label_parser_handles_harte_sevenths_and_inversions():
     parsed = parse_chord_label("D:maj/3")
@@ -151,10 +153,7 @@ def test_chord_backends_api_marks_crema_unavailable(client, monkeypatch):
 
 def test_advanced_chords_request_fails_if_crema_missing(client, sample_chord_audio_file: Path, monkeypatch):
     monkeypatch.setattr("app.engines.crema_chords._module_available", lambda _name: False)
-    project = client.post(
-        "/api/v1/projects/import",
-        json={"source_path": str(sample_chord_audio_file), "copy_into_project": True},
-    ).json()["project"]
+    project = import_project_without_jobs(sample_chord_audio_file)
 
     response = client.post(
         f"/api/v1/projects/{project['id']}/chords",
@@ -176,10 +175,7 @@ def test_explicit_lv_chordia_request_fails_if_bundle_is_unavailable(
         "app.services.chord_backends.lv_chordia_dependency_status",
         lambda **_kwargs: (False, "Bundled LV Chordia checkpoint is sha256; reinstall TuneForge"),
     )
-    project = client.post(
-        "/api/v1/projects/import",
-        json={"source_path": str(sample_chord_audio_file), "copy_into_project": True},
-    ).json()["project"]
+    project = import_project_without_jobs(sample_chord_audio_file)
 
     response = client.post(
         f"/api/v1/projects/{project['id']}/chords",

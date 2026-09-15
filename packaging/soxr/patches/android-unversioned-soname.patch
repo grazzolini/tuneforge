@@ -1,0 +1,13 @@
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index 521eeba..a990687 100644
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -88,6 +88,9 @@ set_target_properties (${PROJECT_NAME} PROPERTIES
+   LINK_INTERFACE_LIBRARIES ""
+   PUBLIC_HEADER "${PROJECT_NAME}.h")
++if (ANDROID)
++  set_target_properties (${PROJECT_NAME} PROPERTIES NO_SONAME TRUE)
++endif ()
+ if (BUILD_FRAMEWORK)
+   set_target_properties (${PROJECT_NAME} PROPERTIES FRAMEWORK TRUE)
+ elseif (NOT WIN32)

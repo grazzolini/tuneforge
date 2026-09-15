@@ -16,11 +16,13 @@ const fixtureFiles = [
   "apps/desktop/package.json",
   "pnpm-lock.yaml",
   ".github/ci/Dockerfile",
+  ".github/ci/Dockerfile.dockerignore",
   ".github/ci/README.md",
   ".github/workflows/ci-image.yml",
   ".github/workflows/ci.yml",
   ".github/workflows/pages.yml",
   ".github/dependabot.yml",
+  "scripts/build-soxr.mjs",
 ];
 
 function fixture() {
@@ -82,6 +84,40 @@ test("Rust bindgen requires libclang-dev in the CI image", (context) => {
   assert.throws(() => validateCiImagePolicy(root), /libclang-dev for Rust bindgen/);
 });
 
+test("SoXR builder stages, payload checks, and restricted context fail closed", () =>
+  assertMutationsFail(".github/ci/Dockerfile", [
+    ["FROM ubuntu:24.04@", "FROM --platform=linux/amd64 ubuntu:24.04@"],
+    [" AS soxr-builder", " AS unreviewed-builder"],
+    ['grep -F \'"-DWITH_PFFFT=ON"\'', "grep -F 'disabled'"],
+    ["COPY --from=soxr-builder /opt/tuneforge-ci/soxr /opt/tuneforge-ci/soxr", "COPY . /workspace"],
+  ], /same pinned Ubuntu base without constant FROM platform flags|must verify SoXR|repository context/));
+
+test("SoXR image context rejects additional checkout files", (context) => {
+  const root = fixture();
+  context.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const target = path.join(root, ".github/ci/Dockerfile.dockerignore");
+  fs.appendFileSync(target, "!package.json\n");
+  assert.throws(() => validateCiImagePolicy(root), /context must allow and copy only reviewed SoXR inputs/);
+});
+
+test("SoXR build-input manifest requires every reviewed input", () =>
+  assertMutationsFail(".github/ci/Dockerfile", [
+    ["      scripts/build-soxr.mjs \\\n", ""],
+    ["      scripts/flatpak-source-snapshots.mjs \\\n", ""],
+    ["      packaging/soxr/sources.lock.json \\\n", ""],
+    ["      packaging/soxr/patches/android-unversioned-soname.patch \\\n", ""],
+  ], /build-input manifest must hash the exact reviewed recipe, helper, lock, and patch/));
+
+test("SoXR corresponding sources require helper and host rebuild instructions", () =>
+  assertMutationsFail("scripts/build-soxr.mjs", [
+    [', "scripts/flatpak-source-snapshots.mjs"];', "];"],
+    [
+      'if (target === "android-arm64-v8a") correspondingSourceFiles.push("THIRD_PARTY_NOTICES.md");',
+      'correspondingSourceFiles.push("THIRD_PARTY_NOTICES.md");',
+    ],
+    ['"node scripts/build-soxr.mjs --target host-test"', '"node scripts/build-soxr.mjs --target android-arm64-v8a"'],
+  ], /host corresponding sources must include/));
+
 test("untrusted and broad publisher triggers fail closed", (context) => {
   const root = fixture();
   context.after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -96,6 +132,22 @@ test("untrusted and broad publisher triggers fail closed", (context) => {
   assert.throws(
     () => validateCiImagePolicy(root),
     /events must be exactly push and workflow_dispatch[\s\S]*must publish only for trusted main image inputs[\s\S]*must not publish the CI image/,
+  );
+});
+
+test("repository-wide notices do not trigger CI image publication", (context) => {
+  const root = fixture();
+  context.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  replace(
+    root,
+    ".github/workflows/ci-image.yml",
+    "      - scripts/flatpak-source-snapshots.mjs\n",
+    "      - scripts/flatpak-source-snapshots.mjs\n      - THIRD_PARTY_NOTICES.md\n",
+  );
+
+  assert.throws(
+    () => validateCiImagePolicy(root),
+    /must publish only for trusted main image inputs/,
   );
 });
 
@@ -139,6 +191,12 @@ test("publisher tag is unique per run attempt", (context) => {
 
   assert.throws(() => validateCiImagePolicy(root), /unique commit\/run\/attempt tag/);
 });
+
+test("publisher uses repository context without an Actions Docker cache", () =>
+  assertMutationsFail(".github/workflows/ci-image.yml", [
+    ["          context: .\n", "          context: .github/ci\n"],
+    ["          no-cache: true\n", "          no-cache: true\n          cache-to: type=gha,mode=max\n"],
+  ], /restricted repository-root build context|must not consume Actions cache storage/));
 
 test("FFmpeg package checksum verification precedes installation", (context) => {
   const root = fixture();

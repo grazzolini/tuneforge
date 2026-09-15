@@ -7,6 +7,10 @@ on:
     paths:
       - .github/ci/**
       - .github/workflows/ci-image.yml
+      - packaging/soxr/sources.lock.json
+      - packaging/soxr/patches/android-unversioned-soname.patch
+      - scripts/build-soxr.mjs
+      - scripts/flatpak-source-snapshots.mjs
   workflow_dispatch:
 
 permissions: {}
@@ -42,7 +46,7 @@ jobs:
         id: build
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
-          context: .github/ci
+          context: .
           file: .github/ci/Dockerfile
           platforms: linux/amd64
           pull: true
@@ -69,13 +73,23 @@ jobs:
             exit 1
           fi
 
-          base_image="$(sed -n 's/^FROM --platform=linux\/amd64 //p' .github/ci/Dockerfile)"
+          base_images="$(sed -n 's/^FROM \([^ ]*\).*$/\1/p' \
+            .github/ci/Dockerfile | LC_ALL=C sort -u)"
+          if [[ "$(wc -l <<< "${base_images}")" -ne 1 ]]; then
+            echo "CI image stages must use one exact base image reference." >&2
+            exit 1
+          fi
+          base_image="${base_images}"
           ffmpeg_version="$(sed -n 's/^ARG FFMPEG_VERSION=//p' .github/ci/Dockerfile)"
           ffmpeg_source="$(sed -n 's/^ARG FFMPEG_DEB_URL=//p' .github/ci/Dockerfile)"
           ffmpeg_deb_sha="$(sed -n 's/^ARG FFMPEG_DEB_SHA256=//p' .github/ci/Dockerfile)"
           ffmpeg_sha="$(sed -n 's/^ARG FFMPEG_SHA256=//p' .github/ci/Dockerfile)"
           ffprobe_sha="$(sed -n 's/^ARG FFPROBE_SHA256=//p' .github/ci/Dockerfile)"
           playwright_version="$(sed -n 's/^ARG PLAYWRIGHT_VERSION=//p' .github/ci/Dockerfile)"
+          soxr_runtime="$(sed -n 's/^  "runtimeVersion": "\([^"]*\)",$/\1/p' \
+            packaging/soxr/sources.lock.json)"
+          soxr_revision="$(sed -n 's/^    "revision": "\([^"]*\)",$/\1/p' \
+            packaging/soxr/sources.lock.json)"
           immutable_tag="${IMAGE_NAME}:sha-${GITHUB_SHA}-run-${GITHUB_RUN_ID}-attempt-${GITHUB_RUN_ATTEMPT}"
           immutable_reference="${IMAGE_NAME}@${IMAGE_DIGEST}"
 
@@ -92,6 +106,9 @@ jobs:
             echo "- \`ffmpeg\` SHA-256: \`${ffmpeg_sha}\`"
             echo "- \`ffprobe\` SHA-256: \`${ffprobe_sha}\`"
             echo "- Playwright dependency review marker: \`${playwright_version}\`"
+            echo "- SoXR runtime: \`${soxr_runtime}\` (\`${soxr_revision}\`)"
+            echo "- SoXR payload: \`/opt/tuneforge-ci/soxr/host-test\`"
+            echo "- SoXR build evidence: \`/opt/tuneforge-ci/soxr/{build-tools.txt,build-inputs.sha256,payload.sha256}\`"
             echo "- BuildKit SBOM: attached by the successful build"
             echo "- BuildKit provenance: attached with \`mode=max\`"
             echo "- Image inventory: \`/usr/share/tuneforge-ci/packages.txt\`"

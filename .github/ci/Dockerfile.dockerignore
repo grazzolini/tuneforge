@@ -1,0 +1,12 @@
+**
+!.github/
+!.github/ci/
+!.github/ci/README.md
+!packaging/
+!packaging/soxr/
+!packaging/soxr/patches/
+!packaging/soxr/patches/android-unversioned-soname.patch
+!packaging/soxr/sources.lock.json
+!scripts/
+!scripts/build-soxr.mjs
+!scripts/flatpak-source-snapshots.mjs

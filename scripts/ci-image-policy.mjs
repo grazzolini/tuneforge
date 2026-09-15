@@ -6,11 +6,13 @@ const paths = {
   desktopPackage: "apps/desktop/package.json",
   lockfile: "pnpm-lock.yaml",
   dockerfile: ".github/ci/Dockerfile",
+  dockerignore: ".github/ci/Dockerfile.dockerignore",
   imageReadme: ".github/ci/README.md",
   imageWorkflow: ".github/workflows/ci-image.yml",
   mainWorkflow: ".github/workflows/ci.yml",
   pagesWorkflow: ".github/workflows/pages.yml",
   dependabot: ".github/dependabot.yml",
+  buildSoxr: "scripts/build-soxr.mjs",
 };
 
 const playwrightNoblePackages = [
@@ -215,11 +217,13 @@ export function validateCiImagePolicy(root) {
   const desktopPackage = read(root, paths.desktopPackage);
   const lockfile = read(root, paths.lockfile);
   const dockerfile = read(root, paths.dockerfile);
+  const dockerignore = read(root, paths.dockerignore);
   const imageReadme = read(root, paths.imageReadme);
   const imageWorkflow = read(root, paths.imageWorkflow);
   const mainWorkflow = read(root, paths.mainWorkflow);
   const pagesWorkflow = read(root, paths.pagesWorkflow);
   const dependabot = read(root, paths.dependabot);
+  const buildSoxr = read(root, paths.buildSoxr);
   const errors = [];
   const check = (condition, message) => {
     if (!condition) errors.push(message);
@@ -257,6 +261,44 @@ export function validateCiImagePolicy(root) {
       imageReadme.includes("`libclang-dev` for Rust bindgen"),
     "CI image must install and document libclang-dev for Rust bindgen",
   );
+  const baseImages = [...dockerfile.matchAll(
+    /^FROM (\S+)(?: AS (\S+))?$/gm,
+  )].map((match) => ({ image: match[1], stage: match[2] }));
+  check(
+    baseImages.length === 2 &&
+      baseImages[0].stage === "soxr-builder" &&
+      baseImages[1].stage === undefined &&
+      baseImages[0].image === baseImages[1].image &&
+      !dockerfile.includes("FROM --platform="),
+    "CI image must use the same pinned Ubuntu base without constant FROM platform flags",
+  );
+  check(
+    dockerfile.includes("      cmake \\\n") &&
+      dockerfile.includes("      nodejs \\\n") &&
+      dockerfile.includes("node scripts/build-soxr.mjs \\\n      --target host-test") &&
+      dockerfile.includes("COPY --from=soxr-builder /opt/tuneforge-ci/soxr /opt/tuneforge-ci/soxr"),
+    "CI image must build pinned host SoXR in its disposable builder and copy only the finished payload",
+  );
+  check(
+    dockerfile.includes("ELF 64-bit LSB shared object, x86-64") &&
+      dockerfile.includes('\"-DWITH_PFFFT=ON\"') &&
+      dockerfile.includes("/tmp/verify-soxr") &&
+      dockerfile.includes("> /opt/tuneforge-ci/soxr/build-tools.txt") &&
+      dockerfile.includes("> payload.sha256"),
+    "CI image must verify SoXR AMD64 linkage, PFFFT, resampling, tools, inputs, and payload hashes",
+  );
+  const soxrBuildInputManifest = [
+    "    sha256sum \\",
+    "      scripts/build-soxr.mjs \\",
+    "      scripts/flatpak-source-snapshots.mjs \\",
+    "      packaging/soxr/sources.lock.json \\",
+    "      packaging/soxr/patches/android-unversioned-soname.patch \\",
+    "      > /opt/tuneforge-ci/soxr/build-inputs.sha256; \\",
+  ].join("\n");
+  check(
+    dockerfile.includes(soxrBuildInputManifest),
+    "CI image SoXR build-input manifest must hash the exact reviewed recipe, helper, lock, and patch",
+  );
 
   check(
     JSON.stringify(topLevelMappingKeys(imageWorkflow, "on")) ===
@@ -271,7 +313,7 @@ export function validateCiImagePolicy(root) {
     "Publish job must scope contents: read and packages: write",
   );
   check(
-    /push:\n    branches:\n      - main\n    paths:\n      - \.github\/ci\/\*\*\n      - \.github\/workflows\/ci-image\.yml\n  workflow_dispatch:/.test(imageWorkflow),
+    /push:\n    branches:\n      - main\n    paths:\n      - \.github\/ci\/\*\*\n      - \.github\/workflows\/ci-image\.yml\n      - packaging\/soxr\/sources\.lock\.json\n      - packaging\/soxr\/patches\/android-unversioned-soname\.patch\n      - scripts\/build-soxr\.mjs\n      - scripts\/flatpak-source-snapshots\.mjs\n  workflow_dispatch:/.test(imageWorkflow),
     "CI image workflow must publish only for trusted main image inputs or manual dispatch",
   );
   check(
@@ -279,6 +321,11 @@ export function validateCiImagePolicy(root) {
     "Package or lockfile changes must not publish the CI image",
   );
   check(imageWorkflow.includes("platforms: linux/amd64"), "CI image must build only linux/amd64");
+  check(
+    imageWorkflow.includes("          context: .\n") &&
+      imageWorkflow.includes("          file: .github/ci/Dockerfile\n"),
+    "CI image workflow must use the restricted repository-root build context",
+  );
   check(
     imageWorkflow.includes(
       "tags: ${{ env.IMAGE_NAME }}:sha-${{ github.sha }}-run-${{ github.run_id }}-attempt-${{ github.run_attempt }}",
@@ -288,6 +335,7 @@ export function validateCiImagePolicy(root) {
   check(!/:latest\b|:main\b/.test(imageWorkflow), "CI image workflow must not publish moving tags");
   check(imageWorkflow.includes("provenance: mode=max"), "CI image build must request provenance");
   check(imageWorkflow.includes("sbom: true"), "CI image build must request an SBOM");
+  check(!imageWorkflow.includes("type=gha"), "CI image build must not consume Actions cache storage");
   for (const line of imageWorkflow.matchAll(/^\s*uses:\s+[^@\n]+@([^\s#]+)/gm)) {
     check(/^[0-9a-f]{40}$/.test(line[1]), `Action must use a full commit SHA: ${line[0].trim()}`);
   }
@@ -306,9 +354,33 @@ export function validateCiImagePolicy(root) {
     ffmpegDownload >= 0 && ffmpegDownload < ffmpegChecksum && ffmpegChecksum < ffmpegInstall,
     "FFmpeg AMD64 package must be downloaded, checksum-verified, then installed",
   );
+  const expectedCopies = [
+    "scripts/build-soxr.mjs scripts/flatpak-source-snapshots.mjs scripts/",
+    "packaging/soxr/sources.lock.json packaging/soxr/sources.lock.json",
+    "packaging/soxr/patches/android-unversioned-soname.patch packaging/soxr/patches/android-unversioned-soname.patch",
+    "--from=soxr-builder /opt/tuneforge-ci/soxr /opt/tuneforge-ci/soxr",
+    ".github/ci/README.md /usr/share/doc/tuneforge-ci/README.md",
+  ];
+  const expectedDockerignore = [
+    "**", "!.github/", "!.github/ci/", "!.github/ci/README.md", "!packaging/",
+    "!packaging/soxr/", "!packaging/soxr/patches/",
+    "!packaging/soxr/patches/android-unversioned-soname.patch",
+    "!packaging/soxr/sources.lock.json", "!scripts/", "!scripts/build-soxr.mjs",
+    "!scripts/flatpak-source-snapshots.mjs", "",
+  ].join("\n");
   check(
-    copyInstructions.length === 1 && copyInstructions[0] === "README.md /usr/share/doc/tuneforge-ci/README.md",
-    "CI image build context must copy only its license/provenance notice",
+    JSON.stringify(copyInstructions) === JSON.stringify(expectedCopies) &&
+      dockerignore === expectedDockerignore,
+    "CI image repository context must allow and copy only reviewed SoXR inputs and its image README",
+  );
+  check(
+    buildSoxr.includes('"scripts/build-soxr.mjs", "scripts/flatpak-source-snapshots.mjs"];') &&
+      buildSoxr.includes(
+        'if (target === "android-arm64-v8a") correspondingSourceFiles.push("THIRD_PARTY_NOTICES.md");',
+      ) &&
+      (buildSoxr.match(/THIRD_PARTY_NOTICES\.md/g) ?? []).length === 1 &&
+      buildSoxr.includes('"node scripts/build-soxr.mjs --target host-test"'),
+    "SoXR host corresponding sources must include the helper and rebuild command without repository-wide notices",
   );
   check(
     !pagesWorkflow.includes("ghcr.io/grazzolini/tuneforge-ci"),

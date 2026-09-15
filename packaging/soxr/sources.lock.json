@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "runtimeVersion": "soxr-a66f3eee",
+  "source": {
+    "repository": "https://github.com/dofuuz/soxr",
+    "revision": "a66f3eeeeb62a32403ff143b756eed92b1ec6b62",
+    "url": "https://codeload.github.com/dofuuz/soxr/tar.gz/a66f3eeeeb62a32403ff143b756eed92b1ec6b62",
+    "archiveName": "soxr-a66f3eee.tar.gz",
+    "sourceDirectory": "soxr-a66f3eeeeb62a32403ff143b756eed92b1ec6b62",
+    "size": 145440,
+    "sha256": "d72cf79f82b4bc56d853c8e166bef994f0bbf9a1ca90ae6f81a3847081f48b96",
+    "license": "LGPL-2.1-or-later",
+    "licenseSha256": "dc98676341fdcd29d9f279c9679d6a75288785b174ded8d1b2e316c366166135",
+    "copyingSha256": "f2f118b9029ec1871b953639ecc46651b2fc7b62e295e6cf3ef2ac4c9a058b33",
+    "verification": "HTTPS upstream archive pinned after review of the exact python-soxr 1.1.0 submodule revision."
+  },
+  "components": {
+    "pffft": {
+      "upstreamRevision": "483453d8f7661058e74aa4e7cf5c27bcd7887e7a",
+      "sourcePath": "src/pffft.c",
+      "license": "BSD-3-Clause"
+    }
+  },
+  "patch": {
+    "path": "packaging/soxr/patches/android-unversioned-soname.patch",
+    "sha256": "787423a687565b78e4c2036f57efef5844ea202a23d7d0f95ec99a8adec66fdc",
+    "purpose": "Use an unversioned Android DT_NEEDED entry loadable from APK jniLibs."
+  },
+  "target": {
+    "name": "android-arm64-v8a",
+    "apiLevel": 26,
+    "abi": "arm64-v8a",
+    "architecture": "aarch64",
+    "pageAlignment": 16384
+  }
+}

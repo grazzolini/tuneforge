@@ -5,6 +5,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { selectAndroidTools } from "./validate-android-release-jni.mjs";
+import { validateSoxrOutput } from "./build-soxr.mjs";
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDir, "..");
 const desktopDir = path.join(repoRoot, "apps/desktop");
@@ -366,10 +367,38 @@ export function verifyPreparedSoxr(soxrRoot, baseDir = androidDir) {
     if (!matches) {
       throw new Error(
         `Generated Android libsoxr staging does not match the selected verified runtime (${stagedRelative}). ` +
-        "Run pnpm package:android:prepare before building.",
+        "Native Android preparation did not complete successfully.",
       );
     }
   }
+}
+
+function prepareNativeProject({ env, ffmpegRoot, soxrRoot, sourceEnv = process.env }) {
+  if (!sourceEnv.TUNEFORGE_ANDROID_FFMPEG_ROOT) {
+    run(process.execPath, [path.join(scriptDir, "build-ffmpeg.mjs"),
+      "--target", "android-arm64-v8a", "--ensure"], { env, label: "Android FFmpeg runtime build" });
+  }
+  if (!sourceEnv.TUNEFORGE_ANDROID_SOXR_ROOT) {
+    run(process.execPath, [path.join(scriptDir, "build-soxr.mjs"),
+      "--target", "android-arm64-v8a", "--ensure"], { env, label: "Android libsoxr runtime build" });
+  }
+  validateSoxrOutput(soxrRoot, "android-arm64-v8a", soxrValidationOptions(env));
+  run(process.execPath, [path.join(scriptDir, "validate-packaged-ffmpeg.mjs"),
+    "--target", "android-arm64-v8a", "--root", ffmpegRoot],
+  { env, label: "Android FFmpeg runtime validation" });
+  const state = generatedState();
+  if (state.state === "partial") throw new Error(`Generated Android project is partial: ${state.missing.join(", ")}`);
+  if (state.state === "absent") run("bash", [androidEnv, tauriCli, "android", "init", "--ci", "--skip-targets-install"],
+    { cwd: desktopDir, env, label: "Tauri Android init" });
+  if (generatedState().state !== "complete") throw new Error("Generated Android project initialization failed.");
+  run(tauriCli, ["icon", "--output", "src-tauri/target/android-icons", "src-tauri/icons/icon.png"],
+    { cwd: desktopDir, env, label: "Android icon generation" });
+  run("bash", [prepareGenerated], { env, label: "Generated Android preparation" });
+  requirePrepared();
+  verifyPreparedSoxr(soxrRoot);
+}
+export function soxrValidationOptions(env) {
+  return { readelf: env.LLVM_READELF };
 }
 export function removeOwnedSigning(contents) {
   let result = contents;
@@ -601,7 +630,6 @@ export function main(argv = process.argv.slice(2)) {
   let localBuildFile;
   let localBuildSnapshot;
   try {
-    if (mode !== "prepare") requirePrepared();
     const config = publishable ? readPublishableConfig(sourceEnv) : undefined;
     const java = resolveJava({ env: cleanEnv });
     const sdk = resolveSdk({ env: cleanEnv });
@@ -619,12 +647,7 @@ export function main(argv = process.argv.slice(2)) {
       TUNEFORGE_ANDROID_SOXR_ROOT: soxrRoot,
       LLVM_READELF: llvmReadelf,
     };
-    if (mode !== "prepare") verifyPreparedSoxr(soxrRoot);
-    run(process.execPath, [
-      path.join(scriptDir, "validate-packaged-ffmpeg.mjs"),
-      "--target", "android-arm64-v8a",
-      "--root", ffmpegRoot,
-    ], { env, label: "Android FFmpeg runtime validation" });
+    prepareNativeProject({ env, ffmpegRoot, soxrRoot, sourceEnv });
     const localSigning = mode !== "prepare" && !publishable
       ? ensureLocalTestKeystore(java, { env: cleanEnv }) : undefined;
     const buildEnv = publishable ? publishableBuildEnv(env, sourceEnv) : localSigning ? {
@@ -634,18 +657,8 @@ export function main(argv = process.argv.slice(2)) {
     } : env;
     console.log(`[android package] JDK ${java.version}; SDK ${sdk}; NDK ${ndk.version} (${ndk.path})`);
     if (mode === "prepare") {
-      const state = generatedState();
-      if (state.state === "partial") throw new Error(`Generated Android project is partial: ${state.missing.join(", ")}`);
-      if (state.state === "absent") run("bash", [androidEnv, tauriCli, "android", "init", "--ci", "--skip-targets-install"],
-        { cwd: desktopDir, env, label: "Tauri Android init" });
-      if (generatedState().state !== "complete") throw new Error("Generated Android project initialization failed.");
-      run(tauriCli, ["icon", "--output", "src-tauri/target/android-icons", "src-tauri/icons/icon.png"],
-        { cwd: desktopDir, env, label: "Android icon generation" });
-      run("bash", [prepareGenerated], { env, label: "Generated Android preparation" });
       if (modelBundle) run(process.execPath, [prepareModelAssets], { env, label: "Android model bundle preparation" });
       else fs.rmSync(path.join(androidDir, "app/src/main/assets/models"), { recursive: true, force: true });
-      requirePrepared();
-      verifyPreparedSoxr(soxrRoot);
       console.log("[android package] completion (prepare)");
       return;
     }

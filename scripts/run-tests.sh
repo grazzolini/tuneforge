@@ -73,6 +73,7 @@ android_package_start=${SECONDS}
 (
   cd "${repo_root}"
   node --test scripts/package-android.test.mjs
+  node --test scripts/build-ffmpeg.test.mjs
 )
 android_package_elapsed=$((SECONDS - android_package_start))
 printf '\n[tests] Android packaging helper tests finished in %ss\n' "${android_package_elapsed}"

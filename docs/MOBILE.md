@@ -235,11 +235,12 @@ pnpm package:android
 pnpm package:android:release
 ```
 
-Run `pnpm package:android:prepare` before the build commands. It validates the JDK 17, Android SDK,
-compatible NDK, Rust target, and Tauri tools; initializes an absent target; generates icons; and
-applies TuneForge's generated Android preparation. Build commands fail when that prepared state is
-absent or incomplete and never initialize or prepare it themselves. Preparation rejects package
-identity options and stores no identity choice.
+Each build command validates the JDK 17, Android SDK, compatible NDK, Rust target, and Tauri tools;
+builds or reuses verified FFmpeg/LAME/libsoxr runtimes; initializes an absent target; generates
+icons; and applies TuneForge's generated Android preparation under one packaging lock. Running
+`pnpm package:android:prepare` separately remains useful for preparation-only checks but is optional.
+Preparation rejects package identity options and stores no identity choice. Explicit native-runtime
+overrides are validated but never rebuilt.
 
 `pnpm package:android` produces an optimized local release-profile APK, debug-key signed.
 `pnpm package:android:debug` produces the corresponding debug APK. These local outputs remain under
@@ -264,7 +265,7 @@ passwords, expected certificate fingerprint, signer count, and manifest version,
 writes `apps/desktop/src-tauri/target/release/bundle/apk/TuneForge_<version>_android_aarch64_publishable.apk`.
 Packaging never installs, launches, uploads, tags, or publishes the app.
 
-Pass `--model-bundle` to `package:android:prepare` and the chosen local build command to verify and
+Pass `--model-bundle` to the chosen preparation or build command to verify and
 embed the pinned Android Beat This program plus the coherent Crema model/runtime-state pair. Default
 Android builds omit these assets and download the same verified bytes on first use.
 

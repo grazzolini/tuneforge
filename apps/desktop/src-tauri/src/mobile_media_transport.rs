@@ -44,6 +44,8 @@ struct ServerRuntime {
     active: Arc<Mutex<Vec<Option<TcpStream>>>>,
     listener: Mutex<Option<JoinHandle<()>>>,
     workers: Mutex<Vec<JoinHandle<()>>>,
+    #[cfg(test)]
+    connection_ready: Mutex<Receiver<()>>,
 }
 
 #[cfg(not(any(target_os = "android", test)))]
@@ -75,6 +77,8 @@ impl ServerRuntime {
         ));
         let (sender, receiver) = mpsc::sync_channel::<TcpStream>(QUEUE_DEPTH);
         let receiver = Arc::new(Mutex::new(receiver));
+        #[cfg(test)]
+        let (connection_ready_sender, connection_ready_receiver) = mpsc::channel();
         let workers = (0..WORKER_COUNT)
             .map(|worker_index| {
                 let receiver = receiver.clone();
@@ -82,6 +86,8 @@ impl ServerRuntime {
                 let stop = stop.clone();
                 let active = active.clone();
                 let artifact_route_prefix = artifact_route_prefix.clone();
+                #[cfg(test)]
+                let connection_ready_sender = connection_ready_sender.clone();
                 thread::spawn(move || {
                     worker_loop(
                         worker_index,
@@ -91,6 +97,8 @@ impl ServerRuntime {
                         stop,
                         active,
                         stream_chunk_delay,
+                        #[cfg(test)]
+                        connection_ready_sender,
                     )
                 })
             })
@@ -100,7 +108,9 @@ impl ServerRuntime {
             while !listener_stop.load(Ordering::Acquire) {
                 match listener.accept() {
                     Ok((stream, _)) => {
-                        let _ = sender.try_send(stream);
+                        if stream.set_nonblocking(false).is_ok() {
+                            let _ = sender.try_send(stream);
+                        }
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                         thread::sleep(Duration::from_millis(10));
@@ -116,6 +126,8 @@ impl ServerRuntime {
             active,
             listener: Mutex::new(Some(listener_thread)),
             workers: Mutex::new(workers),
+            #[cfg(test)]
+            connection_ready: Mutex::new(connection_ready_receiver),
         })
     }
 
@@ -269,6 +281,7 @@ fn worker_loop(
     stop: Arc<AtomicBool>,
     active: Arc<Mutex<Vec<Option<TcpStream>>>>,
     stream_chunk_delay: Option<Duration>,
+    #[cfg(test)] connection_ready_sender: mpsc::Sender<()>,
 ) {
     while !stop.load(Ordering::Acquire) {
         let stream = receiver
@@ -282,6 +295,8 @@ fn worker_loop(
             };
             if let Ok(mut sockets) = active.lock() {
                 sockets[worker_index] = Some(tracked);
+                #[cfg(test)]
+                let _ = connection_ready_sender.send(());
             }
             if stop.load(Ordering::Acquire) {
                 let _ = stream.shutdown(Shutdown::Both);
@@ -806,14 +821,13 @@ mod tests {
     }
 
     fn wait_for_active_connection(server: &ServerRuntime) {
-        let deadline = Instant::now() + Duration::from_secs(1);
-        while active_connection_count(server) == 0 {
-            assert!(
-                Instant::now() < deadline,
-                "worker did not accept test connection"
-            );
-            thread::yield_now();
-        }
+        server
+            .connection_ready
+            .lock()
+            .unwrap()
+            .recv_timeout(Duration::from_secs(1))
+            .expect("worker did not accept test connection");
+        assert_eq!(active_connection_count(server), 1);
     }
 
     #[test]
@@ -967,6 +981,15 @@ mod tests {
         )
         .unwrap();
         wait_for_active_connection(&fixture.server);
+        stream
+            .set_read_timeout(Some(Duration::from_millis(100)))
+            .unwrap();
+        let error = stream.read(&mut [0_u8; 1]).unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+        ));
+        assert_eq!(active_connection_count(&fixture.server), 1);
 
         let started = Instant::now();
         fixture.server.shutdown();

@@ -35,8 +35,6 @@ if (existsSync(legacyNvidiaMarker)) {
       "run",
       "--project",
       backendRoot,
-      "--python",
-      "3.14",
       "python",
       "-m",
       "app.export_openapi",

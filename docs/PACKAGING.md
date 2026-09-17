@@ -320,6 +320,10 @@ installs the CPU-only backend under `/app/lib/tuneforge/backend`. The same manif
 NVIDIA and legacy NVIDIA Torch extensions from one repository. It bundles `pactl` for microphone
 volume control but does not bundle FFmpeg.
 
+The root `.python-version` owns the exact Python release for release sync. Flatpak keeps its reviewed
+CPython archive, checksum, and `cp314` wheel ABI literals; source generation fails if they no longer
+match that root pin.
+
 ### Flatpak Build Caches and Evidence
 
 Flatpak packaging runs `flatpak-builder --force-clean`, so `packaging/flatpak/build-dir` is always a

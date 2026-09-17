@@ -6,9 +6,11 @@ import {
   flatpakTorchLockPaths,
   validateFlatpakTorchLock,
 } from "./generate-flatpak-sources.mjs";
+import { readPythonVersion } from "./python-version.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const workspaceRoot = path.resolve(path.dirname(__filename), "..");
+const { minor: pythonVersion } = readPythonVersion();
 const profiles = new Map([
   ["--cpu", { id: "cpu", backend: "cpu", lockPath: flatpakTorchLockPaths.cpu }],
   ["--legacy-nvidia", { id: "legacy-nvidia", backend: "cu126", lockPath: flatpakTorchLockPaths["legacy-nvidia"] }],
@@ -29,7 +31,7 @@ function compileTorchLock(profile, requirementsPath, temporaryPath) {
   writeFileSync(requirementsPath, "torch==2.13.0\ntorchaudio==2.11.0\n");
   const result = spawnSync("uv", [
     "--quiet", "pip", "compile", requirementsPath,
-    "--python-version", "3.14",
+    "--python-version", pythonVersion,
     "--python-platform", "x86_64-manylinux_2_28",
     "--torch-backend", profile.backend,
     "--format", "pylock.toml",

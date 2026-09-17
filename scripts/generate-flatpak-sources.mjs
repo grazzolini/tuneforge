@@ -8,12 +8,24 @@ import { parsePnpmLock } from "../packaging/flatpak/seed-pnpm-store.mjs";
 import { buildModelBundlePlan } from "./model-bundle-metadata.mjs";
 import { parsePackageOptions } from "./package-options.mjs";
 import { generateFlatpakSourceSnapshots } from "./flatpak-source-snapshots.mjs";
+import { assertPythonVersionCompatibility, readPythonVersion } from "./python-version.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const scriptDir = path.dirname(__filename);
 const workspaceRoot = path.resolve(scriptDir, "..");
 const flatpakRoot = path.join(workspaceRoot, "packaging", "flatpak");
+const flatpakManifestPath = path.join(flatpakRoot, "com.tuneforge.desktop.yml");
 const generatedRoot = path.join(flatpakRoot, "generated");
+const flatpakPythonVersion = readPythonVersion();
+const flatpakManifest = readFileSync(flatpakManifestPath, "utf8");
+const flatpakArchiveVersion = /Python-(\d+\.\d+\.\d+)\.tar\.xz/.exec(flatpakManifest)?.[1];
+if (!flatpakArchiveVersion) throw new Error("Flatpak manifest is missing its reviewed CPython archive version.");
+assertPythonVersionCompatibility(flatpakPythonVersion, {
+  abi: "cp314",
+  full: flatpakArchiveVersion,
+  subject: "Flatpak source generation",
+});
+export const flatpakPythonTarget = Object.freeze({ ...flatpakPythonVersion });
 export const flatpakTorchLocksRoot = path.join(flatpakRoot, "locks");
 export const flatpakTorchLockPaths = Object.freeze({
   cpu: path.join(flatpakTorchLocksRoot, "pylock.cpu-torch.toml"),
@@ -204,8 +216,8 @@ export function markerMatchesFlatpakTarget(marker, { extras = [] } = {}) {
     .replace(/\bplatform_system\b/g, '"Linux"')
     .replace(/\bplatform_python_implementation\b/g, '"CPython"')
     .replace(/\bimplementation_name\b/g, '"cpython"')
-    .replace(/\bpython_version\b/g, '"3.14"')
-    .replace(/\bpython_full_version\b/g, '"3.14.7"')
+    .replace(/\bpython_version\b/g, JSON.stringify(flatpakPythonVersion.minor))
+    .replace(/\bpython_full_version\b/g, JSON.stringify(flatpakPythonVersion.full))
     .replace(/extra\s*==\s*'([^']+)'/g, (_match, extra) => String(selectedExtras.has(extra)))
     .replace(/extra\s*!=\s*'([^']+)'/g, (_match, extra) => String(!selectedExtras.has(extra)))
     .replace(/\band\b/g, "&&")

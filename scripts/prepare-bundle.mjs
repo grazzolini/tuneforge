@@ -19,10 +19,16 @@ import {
   packageOptionsFromEnvironmentOrArgv,
   printModelBundleWarning,
 } from "./package-options.mjs";
+import { assertPythonVersionCompatibility, readPythonVersion } from "./python-version.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const scriptDir = path.dirname(__filename);
 const workspaceRoot = path.resolve(scriptDir, "..");
+assertPythonVersionCompatibility(readPythonVersion(), {
+  abi: "cp314",
+  minor: "3.14",
+  subject: "macOS bundle preparation",
+});
 const backendRoot = path.join(workspaceRoot, "apps", "backend");
 const tauriRoot = path.join(workspaceRoot, "apps", "desktop", "src-tauri");
 const resourcesRoot = path.join(tauriRoot, "resources");

@@ -16,7 +16,8 @@ test("release inventory commands cover JS, Python, and Rust without writing repo
   assert.equal(commandsById.get("javascript").commands[0].shell, "pnpm licenses list --recursive");
   assert.match(commandsById.get("python").commands[0].shell, /--extra advanced-chords /);
   assert.doesNotMatch(commandsById.get("python").commands[0].shell, /--all-extras/);
-  assert.match(commandsById.get("python").commands[1].shell, /--python 3\.14 python -m pip inspect --local/);
+  assert.match(commandsById.get("python").commands[1].shell, /uv run --no-sync python -m pip inspect --local/);
+  assert.doesNotMatch(commandsById.get("python").commands[1].shell, /--python/);
   assert.equal(
     commandsById.get("rust").commands[0].shell,
     "cd apps/desktop/src-tauri && cargo about generate --format json --locked",

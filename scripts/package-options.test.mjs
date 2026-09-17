@@ -21,6 +21,7 @@ import {
   torchExtensionMarker,
   assertReviewedTorchExtensionPair,
   flatpakPythonBuildRequirementNames,
+  flatpakPythonTarget,
   TORCH_EXTENSION_PROFILES,
   wheelScore,
 } from "./generate-flatpak-sources.mjs";
@@ -48,8 +49,47 @@ import {
   packageOptionsToGeneratorArgs,
   parsePackageOptions,
 } from "./package-options.mjs";
+import {
+  assertPythonVersionCompatibility,
+  parsePythonVersion,
+  readPythonVersion,
+} from "./python-version.mjs";
 
 const flatpakPipTmpDir = "/run/build/python-runtime-deps/.pip-tmp";
+
+test("release Python version reader requires an exact pin and matches Flatpak's reviewed target", () => {
+  const version = readPythonVersion();
+
+  assert.deepEqual(version, {
+    full: "3.14.7",
+    minor: "3.14",
+    abi: "cp314",
+    major: "3",
+    patch: "7",
+  });
+  assert.deepEqual(flatpakPythonTarget, version);
+  assert.deepEqual(parsePythonVersion("3.14.7\n"), version);
+  assert.throws(
+    () => parsePythonVersion("3.14"),
+    /exact major\.minor\.patch Python version/,
+  );
+  const missingRoot = mkdtempSync(path.join(tmpdir(), "tuneforge-python-version-"));
+  try {
+    assert.throws(
+      () => readPythonVersion({ versionFilePath: path.join(missingRoot, ".python-version") }),
+      /Required Python version file is missing/,
+    );
+  } finally {
+    rmSync(missingRoot, { recursive: true, force: true });
+  }
+  assert.throws(
+    () => assertPythonVersionCompatibility(
+      { full: "3.15.0", minor: "3.15", abi: "cp315" },
+      { abi: "cp314", minor: "3.14", subject: "Flatpak source generation" },
+    ),
+    /Flatpak source generation targets Python 3\.14, but \.python-version pins 3\.15\.0/,
+  );
+});
 
 test("Flatpak source generation removes only exact obsolete Torch extension outputs", () => {
   const root = mkdtempSync(path.join(tmpdir(), "tuneforge-obsolete-torch-"));

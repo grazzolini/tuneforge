@@ -208,7 +208,7 @@ assert_python_args "legacy-lv" \
   --include-beat-this \
   --include-lv-chordia
 printf '%s\n' \
-  '[call]' sync --python 3.14 --all-groups --extra advanced-chords --extra advanced-beats --extra lv-chordia \
+  '[call]' sync --all-groups --extra advanced-chords --extra advanced-beats --extra lv-chordia \
   '[call]' pip install --python .venv/bin/python --torch-backend cu126 \
   --reinstall-package torch --reinstall-package torchaudio \
   'torch==2.13.0' 'torchaudio==2.11.0' > "${fixture}/expected-setup-legacy-uv-args"
@@ -243,7 +243,7 @@ run_sync_backend() {
 }
 
 run_sync_backend "default"
-printf '%s\n' sync --python 3.14 --all-groups --extra lv-chordia > "${fixture}/expected-sync-uv-args"
+printf '%s\n' sync --all-groups --extra lv-chordia > "${fixture}/expected-sync-uv-args"
 cmp "${fixture}/expected-sync-uv-args" "${sync_uv_args_file}"
 printf '%s\n' \
   -m \
@@ -254,7 +254,7 @@ printf '%s\n' \
 cmp "${fixture}/expected-sync-python-args" "${sync_python_args_file}"
 
 run_sync_backend "opt-out" --no-lv-chordia
-printf '%s\n' sync --python 3.14 --all-groups > "${fixture}/expected-sync-opt-out-uv-args"
+printf '%s\n' sync --all-groups > "${fixture}/expected-sync-opt-out-uv-args"
 cmp "${fixture}/expected-sync-opt-out-uv-args" "${sync_uv_args_file}"
 if [[ -s "${sync_python_args_file}" ]]; then
   echo "unexpected LV Chordia prewarm for sync opt-out" >&2
@@ -285,7 +285,7 @@ run_sync_legacy_backend() {
 }
 
 run_sync_legacy_backend "default"
-printf '%s\n' sync --python 3.14 --all-groups --extra lv-chordia > "${fixture}/expected-legacy-sync-uv-args"
+printf '%s\n' sync --all-groups --extra lv-chordia > "${fixture}/expected-legacy-sync-uv-args"
 cmp "${fixture}/expected-legacy-sync-uv-args" "${sync_uv_args_file}"
 printf '%s\n' \
   -m \
@@ -295,7 +295,7 @@ printf '%s\n' \
   --include-lv-chordia > "${fixture}/expected-legacy-sync-python-args"
 cmp "${fixture}/expected-legacy-sync-python-args" "${sync_python_args_file}"
 printf '%s\n' \
-  '[call]' sync --python 3.14 --all-groups --extra lv-chordia \
+  '[call]' sync --all-groups --extra lv-chordia \
   '[call]' pip install --python .venv/bin/python --torch-backend cu126 \
   --reinstall-package torch --reinstall-package torchaudio \
   'torch==2.13.0' 'torchaudio==2.11.0' > "${fixture}/expected-legacy-sync-all-uv-args"
@@ -308,7 +308,7 @@ grep -F 'torch.version.cuda != "12.6"' "${python_stdin_file}" > /dev/null
 assert_legacy_version_verifier "sync-backend-legacy-nvidia"
 
 run_sync_legacy_backend "opt-out" --no-lv-chordia
-printf '%s\n' sync --python 3.14 --all-groups > "${fixture}/expected-legacy-sync-opt-out-uv-args"
+printf '%s\n' sync --all-groups > "${fixture}/expected-legacy-sync-opt-out-uv-args"
 cmp "${fixture}/expected-legacy-sync-opt-out-uv-args" "${sync_uv_args_file}"
 printf '%s\n' - > "${fixture}/expected-legacy-sync-opt-out-python-args"
 cmp "${fixture}/expected-legacy-sync-opt-out-python-args" "${sync_python_args_file}"

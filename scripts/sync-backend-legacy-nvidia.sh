@@ -87,7 +87,7 @@ fi
 
 cd "${backend_dir}"
 
-backend_sync_args=(sync --python 3.14 --all-groups)
+backend_sync_args=(sync --all-groups)
 if [[ "${advanced_chords}" == "onnx" ]]; then
   backend_sync_args+=(--extra advanced-chords)
 fi

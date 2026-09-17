@@ -8,7 +8,7 @@ Usage: pnpm setup:dev [options]
 Runs the standard developer setup:
   pnpm install
   pnpm --filter @tuneforge/desktop exec playwright install chromium
-  uv sync --python 3.14 --all-groups
+  uv sync --all-groups
   pnpm contracts:generate
   verify model caches and preload/download only missing or invalid assets
 
@@ -137,7 +137,7 @@ if [[ -n "${crema_onnx_model_dir}" && "${advanced_chords}" == "none" ]]; then
   exit 2
 fi
 
-backend_sync_args=(sync --python 3.14 --all-groups)
+backend_sync_args=(sync --all-groups)
 if [[ "${advanced_chords}" == "onnx" ]]; then
   backend_sync_args+=(--extra advanced-chords)
 fi

@@ -1,3 +1,5 @@
+import { readPythonVersion } from "./python-version.mjs";
+
 const OPTION_ALIASES = new Map([
   ["--crema", ["crema", "onnx"]],
   ["--advanced-chords", ["crema", "onnx"]],
@@ -156,7 +158,8 @@ export function packageOptionsToGeneratorArgs(options) {
 
 export function backendSyncArgs(options) {
   const validated = validatePackageOptions(options);
-  const args = ["sync", "--managed-python", "--python", "3.14.7", "--all-groups"];
+  const { full } = readPythonVersion();
+  const args = ["sync", "--managed-python", "--python", full, "--all-groups"];
   if (validated.crema === "onnx") {
     args.push("--extra", "advanced-chords");
   }

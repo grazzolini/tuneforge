@@ -10,6 +10,15 @@ function caseArm(pattern) {
   return match[0];
 }
 
+test("CI reads the exact Python pin once and leaves uv project selection unoverridden", () => {
+  const pythonSetups = workflow.match(/uses: actions\/setup-python@[\s\S]*?python-version-file: \.python-version/g) ?? [];
+
+  assert.equal(pythonSetups.length, 3);
+  assert.doesNotMatch(workflow, /python-version: "3\.14"/);
+  assert.doesNotMatch(workflow, /uses: astral-sh\/setup-uv@[^\n]*\n\s*with:/);
+  assert.doesNotMatch(workflow, /uv run --python/);
+});
+
 test("release-media CI scope captures desktop-affecting changes without widening site-only checks", () => {
   assert.match(workflow, /release_media: \$\{\{ steps\.scope\.outputs\.release_media \}\}/);
   assert.match(workflow, /release_media=false/);

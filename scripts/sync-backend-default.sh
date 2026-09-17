@@ -75,7 +75,7 @@ repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 backend_dir="${repo_root}/apps/backend"
 marker_file="${backend_dir}/.venv/.tuneforge-legacy-nvidia"
 cd "${backend_dir}"
-backend_sync_args=(sync --python 3.14 --all-groups)
+backend_sync_args=(sync --all-groups)
 if [[ "${advanced_chords}" == "onnx" ]]; then
   backend_sync_args+=(--extra advanced-chords)
 fi

@@ -245,8 +245,6 @@ export const releaseInventoryCommands = [
           "uv",
           "run",
           "--no-sync",
-          "--python",
-          "3.14",
           "python",
           "-m",
           "pip",
@@ -378,7 +376,7 @@ export function buildReleaseLicenseInventory({
         },
       ],
       cachePrewarmCommand:
-        "cd apps/backend && uv run --python 3.14 --locked --all-groups " +
+        "cd apps/backend && uv run --locked --all-groups " +
         "--extra advanced-chords --extra advanced-beats --extra lv-chordia " +
         "python -m app.cli.prewarm_models --include-crema --include-beat-this --include-lv-chordia",
       bundledDependencyWeights: {

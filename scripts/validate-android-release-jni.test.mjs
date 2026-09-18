@@ -20,6 +20,13 @@ const rules = `-keepclassmembers class com.tuneforge.desktop.MainActivity {
     public float[][] runTuneForgeCrema(float[],int,java.lang.String);
     public java.lang.String takeTuneForgeCremaError(java.lang.String);
     public void cancelTuneForgeCrema(java.lang.String);
+    public java.lang.String getTuneForgeWhisperStatus();
+    public java.lang.String prepareTuneForgeWhisper(java.lang.String);
+    public java.lang.String takeTuneForgeWhisperError(java.lang.String);
+    public void cancelTuneForgeWhisper(java.lang.String);
+    public int getTuneForgeWhisperProgress(java.lang.String);
+    public void clearTuneForgeWhisperProgress(java.lang.String);
+    public java.lang.Object getTuneForgeInferenceLock();
 }
 -keep class org.pytorch.executorch.** { *; }
 -keep class com.facebook.jni.** { *; }
@@ -41,6 +48,13 @@ test("parses only exact narrow JNI rules", () => {
     ["runTuneForgeCrema", "([FILjava/lang/String;)[[F"],
     ["takeTuneForgeCremaError", "(Ljava/lang/String;)Ljava/lang/String;"],
     ["cancelTuneForgeCrema", "(Ljava/lang/String;)V"],
+    ["getTuneForgeWhisperStatus", "()Ljava/lang/String;"],
+    ["prepareTuneForgeWhisper", "(Ljava/lang/String;)Ljava/lang/String;"],
+    ["takeTuneForgeWhisperError", "(Ljava/lang/String;)Ljava/lang/String;"],
+    ["cancelTuneForgeWhisper", "(Ljava/lang/String;)V"],
+    ["getTuneForgeWhisperProgress", "(Ljava/lang/String;)I"],
+    ["clearTuneForgeWhisperProgress", "(Ljava/lang/String;)V"],
+    ["getTuneForgeInferenceLock", "()Ljava/lang/Object;"],
   ]);
   assert.throws(() => parseJniRules(rules.replace("getTuneForgeAudioPermissionState()", "*")), /wildcards/);
   assert.throws(() => parseJniRules(rules.replace("setTuneForgePowerInhibition(int)", "setTuneForgePowerInhibition()")), /exactly/);
@@ -87,6 +101,7 @@ test("validates an explicit APK, falls through empty SDK values, and rejects inv
     "assets/soxr/licenses/libsoxr-COPYING.LGPL-2.1.txt",
   ];
   const calls = [];
+  let includeZlib = true;
   validateReleaseJni({ root, apk, sdkRoot: "", env: {
     ANDROID_HOME: "", ANDROID_SDK_ROOT: sdkRoot, LLVM_READELF: readelf,
   },
@@ -103,7 +118,12 @@ test("validates an explicit APK, falls through empty SDK values, and rejects inv
         return "";
       }
       if (command.endsWith("dexdump")) return dexXml(parseJniRules(rules));
-      if (command === readelf) return "Machine: AArch64\nLOAD 0x000000 0x000000 0x000000 0x1000 0x1000 R E 0x4000\nShared library: [libc.so]";
+      if (command === readelf) {
+        const zlib = includeZlib && args.at(-1).endsWith("libtuneforge.so")
+          ? "\nShared library: [libz.so]"
+          : "";
+        return `Machine: AArch64\nLOAD 0x000000 0x000000 0x000000 0x1000 0x1000 R E 0x4000\nShared library: [libc.so]${zlib}`;
+      }
       return "";
     },
   });
@@ -111,6 +131,24 @@ test("validates an explicit APK, falls through empty SDK values, and rejects inv
   assert.deepEqual(parseCli(["--apk", apk]), { apk });
   for (const argv of [["--apk"], ["--other", apk], ["--apk", apk, "extra"]]) assert.throws(() => parseCli(argv), /Usage/);
   assert.throws(() => validateReleaseJni({ root, apk: path.join(root, "missing.apk"), sdkRoot }), /missing/);
+  includeZlib = false;
+  assert.throws(() => validateReleaseJni({ root, apk, sdkRoot: "", env: {
+    ANDROID_HOME: "", ANDROID_SDK_ROOT: sdkRoot, LLVM_READELF: readelf,
+  }, run: (command, args) => {
+    if (command.endsWith("aapt2")) return "native-code: 'arm64-v8a'";
+    if (command === "unzip" && args[0] === "-Z1") return archiveEntries.join("\n");
+    if (command === "unzip" && args[0] === "-qq") {
+      const destination = args.at(-1);
+      for (const entry of args.slice(2, -2)) {
+        const candidate = path.join(destination, entry);
+        mkdirSync(path.dirname(candidate), { recursive: true }); writeFileSync(candidate, "fixture");
+      }
+      return "";
+    }
+    if (command.endsWith("dexdump")) return dexXml(parseJniRules(rules));
+    if (command === readelf) return "Machine: AArch64\nLOAD 0x000000 0x000000 0x000000 0x1000 0x1000 R E 0x4000\nShared library: [libc.so]";
+    return "";
+  } }), /system zlib dependency/);
 });
 
 test("selects highest complete Android build-tools version", () => {

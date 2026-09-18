@@ -109,6 +109,18 @@ function decodedPcm(file) {
   return { samples, rate, channels, duration: samples.length / rate };
 }
 
+function wavPcmBytes(file) {
+  const bytes = readFileSync(file);
+  let offset = 12;
+  while (offset + 8 <= bytes.length) {
+    const id = bytes.toString("ascii", offset, offset + 4);
+    const size = bytes.readUInt32LE(offset + 4);
+    if (id === "data") return bytes.subarray(offset + 8, offset + 8 + size);
+    offset += 8 + size + (size % 2);
+  }
+  fail(`Invalid WAV data chunk: ${file}`);
+}
+
 function frequency(audio) {
   const samples = audio.samples.slice(0, 16_384);
   let bestFrequency = 0;
@@ -142,8 +154,12 @@ function assertNear(actual, expected, tolerance, label) {
   }
 }
 
-function render(harness, input, output, format, cents = 0, cancelMode = "never") {
-  return run(harness, [input, output, format, String(cents), cancelMode], {
+function render(
+  harness, input, output, format, cents = 0, cancelMode = "never", rate = 0, channels = 0,
+) {
+  return run(harness, [
+    input, output, format, String(cents), cancelMode, String(rate), String(channels),
+  ], {
     allowFailure: cancelMode !== "never",
     env: runtimeEnv,
   });
@@ -261,6 +277,22 @@ try {
     }
   }
 
+  const whisperWav = path.join(work, "whisper-16000-mono.wav");
+  const whisperReference = path.join(work, "whisper-16000-mono.s16le");
+  render(harness, stereo44, whisperWav, "wav", 0, "never", 16_000, 1);
+  run(ownedFfmpeg, [
+    "-nostdin", "-threads", "0", "-v", "error", "-y", "-i", stereo44,
+    "-f", "s16le", "-ac", "1", "-acodec", "pcm_s16le", "-ar", "16000",
+    whisperReference,
+  ], { env: runtimeEnv });
+  const whisperStream = probe(whisperWav);
+  if (Number(whisperStream.sample_rate) !== 16_000 || whisperStream.channels !== 1) {
+    fail("Whisper preprocessing did not produce 16 kHz mono audio");
+  }
+  if (!wavPcmBytes(whisperWav).equals(readFileSync(whisperReference))) {
+    fail("Whisper preprocessing PCM differs from the OpenAI FFmpeg command pipeline");
+  }
+
   for (const name of ["m4a.m4a", "audio.webm"]) {
     const source = path.join(work, name);
     const decoded = decodedPcm(source);
@@ -301,7 +333,9 @@ try {
   if (existsSync(cancelledMidway)) fail("Mid-operation cancellation left a partial output");
   const malformed = path.join(work, "malformed.mp3");
   writeFileSync(malformed, Buffer.from("not audio"));
-  const malformedResult = run(harness, [malformed, path.join(work, "bad.wav"), "wav", "0", "never"], {
+  const malformedResult = run(harness, [
+    malformed, path.join(work, "bad.wav"), "wav", "0", "never", "0", "0",
+  ], {
     allowFailure: true,
     env: runtimeEnv,
   });
@@ -313,7 +347,7 @@ try {
   const m4aBytes = readFileSync(path.join(work, "m4a.m4a"));
   writeFileSync(truncated, m4aBytes.subarray(0, Math.max(32, Math.floor(m4aBytes.length / 2))));
   const truncatedResult = run(harness, [
-    truncated, path.join(work, "truncated.wav"), "wav", "0", "never",
+    truncated, path.join(work, "truncated.wav"), "wav", "0", "never", "0", "0",
   ], { allowFailure: true, env: runtimeEnv });
   if (truncatedResult.status === 0) fail("Truncated input unexpectedly completed");
   if (existsSync(path.join(work, "truncated.wav"))) fail("Truncated input left a partial output");
@@ -321,8 +355,12 @@ try {
   const concurrentA = path.join(work, "concurrent-a.flac");
   const concurrentB = path.join(work, "concurrent-b.m4a");
   await Promise.all([
-    runAsync(harness, [stereo, concurrentA, "flac", "0", "never"], { env: runtimeEnv }),
-    runAsync(harness, [mono32, concurrentB, "m4a", "0", "never"], { env: runtimeEnv }),
+    runAsync(harness, [stereo, concurrentA, "flac", "0", "never", "0", "0"], {
+      env: runtimeEnv,
+    }),
+    runAsync(harness, [mono32, concurrentB, "m4a", "0", "never", "0", "0"], {
+      env: runtimeEnv,
+    }),
   ]);
   assertNear(decodedPcm(concurrentA).duration, 2, 0.03, "concurrent FLAC duration");
   assertNear(decodedPcm(concurrentB).duration, 2, 0.15, "concurrent M4A duration");
@@ -331,6 +369,7 @@ try {
     inputs: inputs.length,
     outputs: 4,
     rateChannelProfiles: 8,
+    whisperPcmParity: true,
     negotiatedMp3Profiles: 2,
     cancellation: ["immediate", "mid-operation"],
     concurrency: 2,

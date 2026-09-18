@@ -69,6 +69,7 @@ export function parseMode(argv) {
 }
 export function parseAndroidOptions(argv) {
   let modelBundle = false;
+  let profile = false;
   let testIdentity = false;
   let packageName;
   const modeArgs = [];
@@ -79,6 +80,9 @@ export function parseAndroidOptions(argv) {
     } else if (value === "--model-bundle") {
       if (modelBundle) throw new Error("--model-bundle may be supplied only once.");
       modelBundle = true;
+    } else if (value === "--profile") {
+      if (profile) throw new Error("--profile may be supplied only once.");
+      profile = true;
     } else if (value === "--test-identity") {
       if (testIdentity) throw new Error("--test-identity may be supplied only once.");
       testIdentity = true;
@@ -92,11 +96,14 @@ export function parseAndroidOptions(argv) {
     }
   }
   const mode = parseMode(modeArgs);
+  if (profile && mode !== "local-release") {
+    throw new Error("--profile is allowed only for the optimized local release-profile build.");
+  }
   if ((testIdentity || packageName !== undefined) && ["prepare", "publishable"].includes(mode)) {
     throw new Error("Android identity options are allowed only for local debug or release-profile builds.");
   }
   if (packageName !== undefined) validateLocalPackageName(packageName);
-  return { mode, modelBundle, testIdentity, packageName };
+  return { mode, modelBundle, profile, testIdentity, packageName };
 }
 
 export function validateLocalPackageName(value) {
@@ -294,6 +301,7 @@ export function preparedState(baseDir = androidDir) {
     "app/src/main/java/com/tuneforge/desktop/ModelAssetDescriptor.java",
     "app/src/main/java/com/tuneforge/desktop/BeatThisRunner.java",
     "app/src/main/java/com/tuneforge/desktop/CremaRunner.java",
+    "app/src/main/java/com/tuneforge/desktop/WhisperModelInstaller.java",
     "app/src/main/java/com/tuneforge/desktop/InferenceLock.java",
     "app/src/main/res/values/ic_launcher_background.xml",
     "app/src/main/jniLibs/arm64-v8a/libavcodec.so",
@@ -372,6 +380,26 @@ export function verifyPreparedSoxr(soxrRoot, baseDir = androidDir) {
     }
   }
 }
+export function verifyPreparedFfmpeg(ffmpegRoot, baseDir = androidDir) {
+  const pairs = [
+    ...["avcodec", "avfilter", "avformat", "avutil", "swresample", "mp3lame"]
+      .map((name) => [`lib/lib${name}.so`, `app/src/main/jniLibs/arm64-v8a/lib${name}.so`]),
+    ["provenance.json", "app/src/main/assets/ffmpeg/provenance.json"],
+  ];
+  for (const [sourceRelative, stagedRelative] of pairs) {
+    let matches = false;
+    try {
+      matches = fs.readFileSync(path.join(ffmpegRoot, sourceRelative))
+        .equals(fs.readFileSync(path.join(baseDir, stagedRelative)));
+    } catch {}
+    if (!matches) {
+      throw new Error(
+        `Generated Android FFmpeg staging does not match the selected verified runtime (${stagedRelative}). ` +
+        "Native Android preparation did not complete successfully.",
+      );
+    }
+  }
+}
 
 function prepareNativeProject({ env, ffmpegRoot, soxrRoot, sourceEnv = process.env }) {
   if (!sourceEnv.TUNEFORGE_ANDROID_FFMPEG_ROOT) {
@@ -395,6 +423,7 @@ function prepareNativeProject({ env, ffmpegRoot, soxrRoot, sourceEnv = process.e
     { cwd: desktopDir, env, label: "Android icon generation" });
   run("bash", [prepareGenerated], { env, label: "Generated Android preparation" });
   requirePrepared();
+  verifyPreparedFfmpeg(ffmpegRoot);
   verifyPreparedSoxr(soxrRoot);
 }
 export function soxrValidationOptions(env) {
@@ -508,6 +537,31 @@ export function configureLocalBuild(contents, applicationId) {
       "            // TUNEFORGE-LOCAL-RELEASE-END"].join("\n"));
   return configured;
 }
+export function configureProfileableManifest(contents) {
+  if (/<profileable\b/.test(contents)) {
+    throw new Error("Generated Android manifest already contains a profileable declaration.");
+  }
+  const application = /<application\b[\s\S]*?>/.exec(contents);
+  if (!application) throw new Error("Generated Android application manifest marker is missing.");
+  return contents.replace(application[0], `${application[0]}\n        <profileable android:shell="true" />`);
+}
+export function withTemporaryConfigurations(configurations, action, {
+  read = (file) => fs.readFileSync(file, "utf8"), write = fs.writeFileSync,
+} = {}) {
+  const snapshots = configurations.map(({ file, configure }) => ({
+    file, configure, contents: read(file),
+  }));
+  try {
+    for (const snapshot of snapshots) write(snapshot.file, snapshot.configure(snapshot.contents));
+    return action();
+  } finally {
+    let restoreError;
+    for (const snapshot of snapshots.reverse()) {
+      try { write(snapshot.file, snapshot.contents); } catch (error) { restoreError ??= error; }
+    }
+    if (restoreError) throw restoreError;
+  }
+}
 export function artifactFromMetadata(raw, debug, metadataPath) {
   const metadata = JSON.parse(raw);
   const mode = debug ? "debug" : "release";
@@ -570,6 +624,30 @@ export function verifyLocalSigner(apk, tools, expectedFingerprint, {
     throw new Error("Local Android APK signer does not match the persistent test certificate.");
   }
 }
+export function verifyProfileable(apk, tools, {
+  env = process.env, runCapture = capture,
+} = {}) {
+  const badging = runCapture(tools.aapt2, ["dump", "badging", apk], { env });
+  const manifest = runCapture(tools.aapt2,
+    ["dump", "xmltree", apk, "--file", "AndroidManifest.xml"], { env });
+  const profileable = /E:\s+profileable\b[\s\S]*?A:\s+(?:http:\/\/schemas\.android\.com\/apk\/res\/android:)?shell(?:\([^)]*\))?=(?:true|\(type 0x12\)0xffffffff)\b/;
+  if (!badging.ok || /\bapplication-debuggable\b/.test(badging.output) ||
+      !manifest.ok || !profileable.test(manifest.output)) {
+    throw new Error("Profile APK must be non-debuggable and profileable by the Android shell user.");
+  }
+}
+export function verifyProfileSymbols(symbols, mapping, readelf, {
+  runCapture = capture,
+} = {}) {
+  if (!fs.statSync(symbols, { throwIfNoEntry: false })?.size ||
+      !fs.statSync(mapping, { throwIfNoEntry: false })?.size) {
+    throw new Error("Profile build symbols or R8 mapping are missing.");
+  }
+  const sections = runCapture(readelf, ["--sections", symbols]);
+  if (!sections.ok || !/\s\.symtab\s/.test(sections.output)) {
+    throw new Error("Profile build host library does not retain a native symbol table.");
+  }
+}
 export function runPublishableTransaction({
   buildFile, configure, intermediates, metadataPath, staging, destination, tempHome, build, resolveRaw, validate,
 }, {
@@ -619,7 +697,7 @@ function verifySpecific(debug, tools, env) {
   return { apk, metadataPath };
 }
 export function main(argv = process.argv.slice(2)) {
-  const { mode, modelBundle, packageName } = parseAndroidOptions(argv);
+  const { mode, modelBundle, profile, packageName } = parseAndroidOptions(argv);
   const debug = mode === "debug";
   const publishable = mode === "publishable";
   const sourceEnv = { ...process.env };
@@ -627,8 +705,6 @@ export function main(argv = process.argv.slice(2)) {
   console.log(`[android package] start (${mode})`);
   const lock = acquirePackagingLock();
   let isolatedHome;
-  let localBuildFile;
-  let localBuildSnapshot;
   try {
     const config = publishable ? readPublishableConfig(sourceEnv) : undefined;
     const java = resolveJava({ env: cleanEnv });
@@ -663,12 +739,6 @@ export function main(argv = process.argv.slice(2)) {
       return;
     }
     const buildFile = path.join(androidDir, "app/build.gradle.kts");
-    if (!publishable) {
-      localBuildFile = buildFile;
-      localBuildSnapshot = fs.readFileSync(buildFile, "utf8");
-      fs.writeFileSync(buildFile, configureLocalBuild(
-        localBuildSnapshot, packageName ?? "com.tuneforge.desktop.test"));
-    }
     if (modelBundle) run(process.execPath, [prepareModelAssets], { env, label: "Android model bundle preparation" });
     else fs.rmSync(path.join(androidDir, "app/src/main/assets/models"), { recursive: true, force: true });
     const rawApk = path.join(androidDir, "app/build/outputs/apk/universal/release/app-universal-release.apk");
@@ -706,29 +776,41 @@ export function main(argv = process.argv.slice(2)) {
       console.log(`[android package] publishable APK: ${output}`);
       console.log("[android package] completion (publishable, release-key signed)");
     } else {
-      console.log(`[android package] build (${mode})`);
-      const args = [androidEnv, tauriCli, "android", "build", "--ci", "--target", "aarch64", "--apk"];
-      if (debug) args.push("--debug");
-      run("bash", args, { cwd: desktopDir, env: buildEnv, label: `Tauri Android ${mode} build` });
-      if (!fs.readFileSync(buildFile, "utf8").includes("TUNEFORGE-LOCAL-BUILD-BEGIN")) {
-        throw new Error("Generated Android build replaced the temporary local signing configuration.");
-      }
-      verifyExecutorchAar(buildEnv.GRADLE_USER_HOME);
-      verifyOnnxRuntimeAar(buildEnv.GRADLE_USER_HOME);
-      requireExecutables(debug ? [tools.aapt2, tools.apksigner] : [tools.aapt2, tools.apksigner, tools.dexdump]);
-      const artifact = verifySpecific(debug, tools, buildEnv);
-      verifyApplicationId(artifact.apk, tools, packageName ?? "com.tuneforge.desktop.test", { env: buildEnv });
-      verifyLocalSigner(artifact.apk, tools, localSigning.fingerprint, { env: buildEnv });
-      if (!debug) run(process.execPath, [path.join(scriptDir, "validate-android-release-jni.mjs")],
-        { env, label: "Android release JNI validation" });
-      console.log(`[android package] ${debug ? "debug" : "optimized release-profile"} APK: ${artifact.apk}`);
-      console.log(`[android package] completion (${mode}, debug-key signed)`);
+      const configurations = [{ file: buildFile, configure: (contents) => configureLocalBuild(
+        contents, packageName ?? "com.tuneforge.desktop.test") }];
+      if (profile) configurations.push({
+        file: path.join(androidDir, "app/src/main/AndroidManifest.xml"),
+        configure: configureProfileableManifest,
+      });
+      withTemporaryConfigurations(configurations, () => {
+        console.log(`[android package] build (${profile ? "profile" : mode})`);
+        const args = [androidEnv, tauriCli, "android", "build", "--ci", "--target", "aarch64", "--apk"];
+        if (debug) args.push("--debug");
+        run("bash", args, { cwd: desktopDir, env: buildEnv, label: `Tauri Android ${mode} build` });
+        if (!fs.readFileSync(buildFile, "utf8").includes("TUNEFORGE-LOCAL-BUILD-BEGIN")) {
+          throw new Error("Generated Android build replaced the temporary local signing configuration.");
+        }
+        verifyExecutorchAar(buildEnv.GRADLE_USER_HOME);
+        verifyOnnxRuntimeAar(buildEnv.GRADLE_USER_HOME);
+        requireExecutables(debug ? [tools.aapt2, tools.apksigner] : [tools.aapt2, tools.apksigner, tools.dexdump]);
+        const artifact = verifySpecific(debug, tools, buildEnv);
+        verifyApplicationId(artifact.apk, tools, packageName ?? "com.tuneforge.desktop.test", { env: buildEnv });
+        verifyLocalSigner(artifact.apk, tools, localSigning.fingerprint, { env: buildEnv });
+        if (!debug) run(process.execPath, [path.join(scriptDir, "validate-android-release-jni.mjs")],
+          { env, label: "Android release JNI validation" });
+        if (profile) {
+          const symbols = path.join(buildEnv.CARGO_TARGET_DIR, "aarch64-linux-android/release/libtuneforge.so");
+          verifyProfileable(artifact.apk, tools, { env: buildEnv });
+          verifyProfileSymbols(symbols, mapping, llvmReadelf);
+          console.log(`[android package] native profile symbols: ${symbols}`);
+          console.log(`[android package] R8 mapping: ${mapping}`);
+        }
+        console.log(`[android package] ${debug ? "debug" : "optimized release-profile"} APK: ${artifact.apk}`);
+        console.log(`[android package] completion (${profile ? "profile, " : ""}${mode}, debug-key signed)`);
+      });
     }
   } finally {
     try {
-      if (localBuildFile && localBuildSnapshot !== undefined) {
-        fs.writeFileSync(localBuildFile, localBuildSnapshot);
-      }
       if (isolatedHome) fs.rmSync(isolatedHome, { recursive: true, force: true });
     } finally {
       lock.release();

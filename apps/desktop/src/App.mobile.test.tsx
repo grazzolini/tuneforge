@@ -8,7 +8,9 @@ import {
   findAudioByArtifactId,
   emitMockNativePlaybackPosition,
   markAudioReady,
+  mockCancelJob,
   mockCreateStems,
+  mockConfirm,
   mockGetChords,
   mockGetAnalysis,
   mockGetProject,
@@ -44,6 +46,7 @@ function enableAndroidRuntime() {
     cremaAvailable: true,
     cremaModelStatus: "ready",
     whisperAvailable: false,
+    whisperModelStatus: "unavailable",
     stemSeparationAvailable: false,
     generationTestingAvailable: true,
     maxRecommendedModel: null,
@@ -76,6 +79,7 @@ function enableIOSRuntime() {
     analysisAvailable: false,
     basicChordsAvailable: false,
     whisperAvailable: false,
+    whisperModelStatus: "unavailable",
     stemSeparationAvailable: false,
     generationTestingAvailable: false,
     maxRecommendedModel: null,
@@ -446,6 +450,7 @@ describe("Desktop app mobile capability gates", () => {
       cremaAvailable: false,
       cremaModelStatus: "unavailable",
       whisperAvailable: false,
+      whisperModelStatus: "unavailable",
       stemSeparationAvailable: false,
       generationTestingAvailable: false,
       maxRecommendedModel: null,
@@ -458,7 +463,7 @@ describe("Desktop app mobile capability gates", () => {
     expect(await screen.findByRole("heading", { name: "Processing" })).toBeInTheDocument();
     expect(
       await screen.findByText(
-        "Side-load a Whisper model to enable local lyrics. Stem generation is unavailable on this device.",
+        "Whisper Turbo is unavailable in this build.",
       ),
     ).toBeInTheDocument();
     expect(await screen.findByRole("button", { name: "Analyze Track" })).toBeDisabled();
@@ -488,6 +493,7 @@ describe("Desktop app mobile capability gates", () => {
       cremaAvailable: true,
       cremaModelStatus,
       whisperAvailable: false,
+      whisperModelStatus: "unavailable",
       stemSeparationAvailable: false,
       generationTestingAvailable: false,
       maxRecommendedModel: null,
@@ -511,6 +517,7 @@ describe("Desktop app mobile capability gates", () => {
       cremaAvailable: true,
       cremaModelStatus: "ready",
       whisperAvailable: false,
+      whisperModelStatus: "unavailable",
       stemSeparationAvailable: false,
       generationTestingAvailable: false,
       maxRecommendedModel: null,
@@ -542,6 +549,7 @@ describe("Desktop app mobile capability gates", () => {
       cremaAvailable: false,
       cremaModelStatus: "unavailable",
       whisperAvailable: false,
+      whisperModelStatus: "unavailable",
       stemSeparationAvailable: false,
       generationTestingAvailable: false,
       maxRecommendedModel: null,
@@ -572,6 +580,30 @@ describe("Desktop app mobile capability gates", () => {
     expect(within(chordProgress).getByRole("link", { name: "Activity" })).toHaveAttribute("href", "/activity");
   });
 
+  it("shows one Whisper setup percentage and forwards inline cancellation", async () => {
+    const user = userEvent.setup();
+    enableAndroidRuntime();
+    setJobs([{
+      id: "job_whisper_setup",
+      project_id: "proj_123",
+      type: "lyrics",
+      status: "running",
+      progress: 14,
+      stage: "verifying",
+      stage_label: "Installing and verifying Whisper Turbo · 47%",
+    }]);
+    renderApp(["/projects/proj_123"]);
+
+    const progress = await screen.findByText(/Installing and verifying Whisper Turbo · 47%/);
+    expect(progress).not.toHaveTextContent("14%");
+    expect(within(progress).getByRole("link", { name: "Activity" })).toHaveAttribute(
+      "href",
+      "/activity",
+    );
+    await user.click(within(progress).getByRole("button", { name: "Cancel" }));
+    expect(mockCancelJob).toHaveBeenCalledWith("job_whisper_setup");
+  });
+
   it("disables a stale desktop-only chord backend selection on Android", async () => {
     window.localStorage.setItem(
       "tuneforge.ui-preferences",
@@ -600,6 +632,7 @@ describe("Desktop app mobile capability gates", () => {
       analysisAvailable: true,
       basicChordsAvailable: true,
       whisperAvailable: false,
+      whisperModelStatus: "unavailable",
       stemSeparationAvailable: false,
       generationTestingAvailable: false,
       maxRecommendedModel: null,
@@ -650,7 +683,8 @@ describe("Desktop app mobile capability gates", () => {
     );
   });
 
-  it("allows emulator lyrics flow testing while keeping stems disabled", async () => {
+  it("offers and confirms a verified Turbo download from the normal lyrics action", async () => {
+    const user = userEvent.setup();
     mockGetMobileCapabilities.mockResolvedValue({
       platform: "android",
       mediaBackend: "android_media_codec",
@@ -659,6 +693,7 @@ describe("Desktop app mobile capability gates", () => {
       analysisAvailable: true,
       basicChordsAvailable: true,
       whisperAvailable: false,
+      whisperModelStatus: "download-required",
       stemSeparationAvailable: false,
       generationTestingAvailable: true,
       maxRecommendedModel: null,
@@ -669,14 +704,53 @@ describe("Desktop app mobile capability gates", () => {
 
     expect(
       await screen.findByText(
-        "Emulator lyrics actions are enabled for flow testing; stem generation is unavailable on this device.",
+        "Whisper Turbo · Full 1.62 GB model download required. Installs once, then works offline.",
       ),
     ).toBeInTheDocument();
-    expect(await screen.findByRole("button", { name: "Refresh Lyrics" })).toBeEnabled();
+    expect(await screen.findByRole("button", { name: "Download & Refresh Lyrics" })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "Download & Refresh Lyrics" }));
+    expect(mockConfirm).toHaveBeenCalledWith(
+      expect.stringContaining("then refresh lyrics"),
+      expect.objectContaining({ okLabel: "Download & Refresh" }),
+    );
     expect(await screen.findByRole("button", { name: "Generate Stems" })).toBeDisabled();
   });
 
-  it("enables local lyrics when a side-loaded Whisper model is available", async () => {
+  it("offers a full fresh retry after Whisper setup cancellation", async () => {
+    mockGetMobileCapabilities.mockResolvedValue({
+      platform: "android",
+      mediaBackend: "android_media_codec",
+      isEmulator: true,
+      gpuBackend: null,
+      analysisAvailable: true,
+      basicChordsAvailable: true,
+      whisperAvailable: false,
+      whisperModelStatus: "download-required",
+      stemSeparationAvailable: false,
+      generationTestingAvailable: true,
+      maxRecommendedModel: "large-v3-turbo",
+      cpuFallbackAllowed: true,
+    });
+    setJobs([{
+      id: "job_whisper_cancelled",
+      project_id: "proj_123",
+      type: "lyrics",
+      status: "cancelled",
+      progress: 0,
+      stage: "downloading",
+      stage_label: "Downloading Whisper Turbo · 23%",
+    }]);
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByText(
+      "Whisper Turbo setup stopped. Retry downloads the full model from the beginning.",
+    )).toBeInTheDocument();
+    expect(await screen.findByRole("button", {
+      name: "Retry Download & Refresh Lyrics",
+    })).toBeEnabled();
+  });
+
+  it("shows the verified full Turbo model ready offline", async () => {
     mockGetMobileCapabilities.mockResolvedValue({
       platform: "android",
       mediaBackend: "android_media_codec",
@@ -685,16 +759,17 @@ describe("Desktop app mobile capability gates", () => {
       analysisAvailable: true,
       basicChordsAvailable: true,
       whisperAvailable: true,
+      whisperModelStatus: "ready",
       stemSeparationAvailable: false,
       generationTestingAvailable: false,
-      maxRecommendedModel: "base",
-      cpuFallbackAllowed: false,
+      maxRecommendedModel: "large-v3-turbo",
+      cpuFallbackAllowed: true,
     });
 
     renderApp(["/projects/proj_123"]);
 
     expect(
-      await screen.findByText("Local lyrics are available. Stem generation is unavailable on this device."),
+      await screen.findByText("Whisper Turbo · Verified full model ready offline."),
     ).toBeInTheDocument();
     expect(await screen.findByRole("button", { name: "Refresh Lyrics" })).toBeEnabled();
     expect(await screen.findByRole("button", { name: "Generate Stems" })).toBeDisabled();

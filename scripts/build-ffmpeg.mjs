@@ -49,7 +49,7 @@ const COMMON_COMPONENTS = [
   "--enable-libmp3lame",
   "--enable-protocol=file,pipe",
   "--enable-demuxer=aac,flac,matroska,mov,mp3,ogg,wav",
-  "--enable-muxer=adts,flac,ipod,mp3,mp4,ogg,wav",
+  "--enable-muxer=adts,flac,ipod,mp3,mp4,ogg,pcm_s16le,wav",
   "--enable-decoder=aac,aac_fixed,alac,flac,mp3,mp3float,opus,vorbis",
   "--enable-decoder=pcm_alaw,pcm_f32be,pcm_f32le,pcm_f64be,pcm_f64le,pcm_mulaw",
   "--enable-decoder=pcm_s16be,pcm_s16le,pcm_s24be,pcm_s24le,pcm_s32be,pcm_s32le",

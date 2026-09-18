@@ -19,6 +19,9 @@ download, installation, verification, signature, and publication instructions.
   model bundling, cancellable job progress, and guarded beat, bar, and tempo persistence.
 - Added desktop-compatible Android key, confidence, and tuning analysis plus local Crema 0.2.0
   Advanced Chords with verified first-use assets, cancellable jobs, and optional offline bundling.
+- Added full Whisper Turbo lyrics on Android with verified first-use weights, DTW-aligned words,
+  owned FFmpeg input preparation, durable language provenance, automatic Vulkan selection, and CPU
+  retry.
 
 ### Changed
 

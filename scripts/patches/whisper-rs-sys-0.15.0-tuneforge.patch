@@ -1,0 +1,1310 @@
+diff -ruN original/build.rs modified/build.rs
+--- original/build.rs	2026-09-17 11:40:10
++++ modified/build.rs	2026-09-17 11:40:25
+@@ -1,5 +1,3 @@
+-#![allow(clippy::uninlined_format_args)]
+-
+ extern crate bindgen;
+ extern crate semver;
+
+@@ -9,7 +7,8 @@
+ use std::io::{BufRead, BufReader};
+ use std::path::PathBuf;
+
+-fn main() {
++#[allow(clippy::uninlined_format_args)]
++pub fn build() {
+     let target = env::var("TARGET").unwrap();
+     // Link C++ standard library
+     if let Some(cpp_stdlib) = get_cpp_link_stdlib(&target) {
+@@ -163,13 +162,7 @@
+                 b.write_to_file(out_path.join("bindings.rs"))
+                     .expect("Couldn't write bindings!");
+             }
+-            Err(e) => {
+-                println!("cargo:warning=Unable to generate bindings: {}", e);
+-                println!("cargo:warning=Using bundled bindings.rs, which may be out of date");
+-                // copy src/bindings.rs to OUT_DIR
+-                std::fs::copy("src/bindings.rs", out.join("bindings.rs"))
+-                    .expect("Unable to copy bindings.rs");
+-            }
++            Err(e) => panic!("Unable to generate patched native bindings: {e}"),
+         }
+     };
+
+@@ -229,7 +222,20 @@
+             };
+             let vulkan_lib_path = vulkan_path.join("Lib");
+             println!("cargo:rustc-link-search={}", vulkan_lib_path.display());
+-        } else if cfg!(target_os = "macos") {
++        } else if target.contains("android") {
++            let ndk = PathBuf::from(env::var("ANDROID_NDK_HOME")
++                .expect("ANDROID_NDK_HOME is required for Android Vulkan builds"));
++            let host = if cfg!(target_os = "macos") { "darwin-x86_64" } else { "linux-x86_64" };
++            let sysroot = ndk.join("toolchains/llvm/prebuilt").join(host).join("sysroot");
++            let vulkan_include = env::current_dir().unwrap().join("vulkan-headers/include");
++            config.define("Vulkan_INCLUDE_DIR", vulkan_include);
++            config.define(
++                "Vulkan_LIBRARY",
++                sysroot.join("usr/lib").join(&target).join("26/libvulkan.so"),
++            );
++            config.define("Vulkan_GLSLC_EXECUTABLE", ndk.join("shader-tools").join(host).join("glslc"));
++            println!("cargo:rustc-link-lib=vulkan");
++        } else if target.contains("apple") {
+             println!("cargo:rerun-if-env-changed=VULKAN_SDK");
+             println!("cargo:rustc-link-lib=vulkan");
+             let vulkan_path = match env::var("VULKAN_SDK") {
+@@ -314,7 +320,8 @@
+         println!("cargo:rustc-link-lib=static=ggml-base");
+         println!("cargo:rustc-link-lib=static=ggml-cpu");
+     }
+-    if cfg!(target_os = "macos") || cfg!(feature = "openblas") {
++    println!("cargo:rustc-link-lib=z");
++    if target.contains("apple") || cfg!(feature = "openblas") {
+         println!("cargo:rustc-link-lib=static=ggml-blas");
+     }
+     if cfg!(feature = "vulkan") {
+diff -ruN original/whisper.cpp/ggml/src/ggml-backend-reg.cpp modified/whisper.cpp/ggml/src/ggml-backend-reg.cpp
+--- original/whisper.cpp/ggml/src/ggml-backend-reg.cpp	2026-09-17 11:40:10
++++ modified/whisper.cpp/ggml/src/ggml-backend-reg.cpp	2026-09-17 11:40:25
+@@ -196,7 +196,15 @@
+         register_backend(ggml_backend_sycl_reg());
+ #endif
+ #ifdef GGML_USE_VULKAN
+-        register_backend(ggml_backend_vk_reg());
++        const size_t backend_count_before_vulkan = backends.size();
++        const size_t device_count_before_vulkan = devices.size();
++        try {
++            register_backend(ggml_backend_vk_reg());
++        } catch (...) {
++            backends.resize(backend_count_before_vulkan);
++            devices.resize(device_count_before_vulkan);
++            GGML_LOG_ERROR("%s: native Vulkan registration failed\n", __func__);
++        }
+ #endif
+ #ifdef GGML_USE_WEBGPU
+         register_backend(ggml_backend_webgpu_reg());
+diff -ruN original/whisper.cpp/ggml/src/ggml-vulkan/ggml-vulkan.cpp modified/whisper.cpp/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+--- original/whisper.cpp/ggml/src/ggml-vulkan/ggml-vulkan.cpp	2026-09-17 11:40:10
++++ modified/whisper.cpp/ggml/src/ggml-vulkan/ggml-vulkan.cpp	2026-09-17 11:40:50
+@@ -84,6 +84,12 @@
+ } VkPhysicalDeviceShaderBfloat16FeaturesKHR;
+ #endif
+
++#if defined(__ANDROID__)
++static constexpr bool TUNEFORGE_ANDROID_DISABLE_F16 = true;
++#else
++static constexpr bool TUNEFORGE_ANDROID_DISABLE_F16 = false;
++#endif
++
+ #define ROUNDUP_POW2(M, N) (((M) + (N) - 1) & ~((N) - 1))
+ #define CEIL_DIV(M, N) (((M) + (N)-1) / (N))
+ static bool is_pow2(uint32_t x) { return x > 1 && (x & (x-1)) == 0; }
+@@ -828,6 +834,10 @@
+     ~vk_device_struct() {
+         VK_LOG_DEBUG("destroy device " << name);
+
++        if (!device) {
++            return;
++        }
++
+         device.destroyFence(fence);
+
+         ggml_vk_destroy_buffer(sync_staging);
+@@ -4467,7 +4477,6 @@
+     if (vk_instance.devices[idx] == nullptr) {
+         VK_LOG_DEBUG("Initializing new vk_device");
+         vk_device device = std::make_shared<vk_device_struct>();
+-        vk_instance.devices[idx] = device;
+
+         device->memory_logger = std::unique_ptr<vk_memory_logger>(new vk_memory_logger());
+
+@@ -4702,7 +4711,8 @@
+         device->subgroup_vote = (vk11_props.subgroupSupportedStages & vk::ShaderStageFlagBits::eCompute) &&
+                                 (vk11_props.subgroupSupportedOperations & vk::SubgroupFeatureFlagBits::eVote);
+
+-        const bool force_disable_f16 = getenv("GGML_VK_DISABLE_F16") != nullptr;
++        const bool force_disable_f16 = TUNEFORGE_ANDROID_DISABLE_F16 ||
++                                       getenv("GGML_VK_DISABLE_F16") != nullptr;
+
+         device->fp16 = !force_disable_f16 && fp16_storage && fp16_compute;
+
+@@ -5192,12 +5202,6 @@
+             device->transfer_queue.cmd_pool.init(device, &device->transfer_queue);
+         }
+
+-        device->buffer_type = {
+-            /* .iface    = */ ggml_backend_vk_buffer_type_interface,
+-            /* .device   = */ ggml_backend_reg_dev_get(ggml_backend_vk_reg(), idx),
+-            /* .context  = */ new ggml_backend_vk_buffer_type_context{ device->name, device },
+-        };
+-
+         device->fence = device->device.createFence({});
+
+         device->idx = idx;
+@@ -5217,6 +5221,13 @@
+             device->mmvq_mode = 1;
+         }
+
++        device->buffer_type = {
++            /* .iface    = */ ggml_backend_vk_buffer_type_interface,
++            /* .device   = */ ggml_backend_reg_dev_get(ggml_backend_vk_reg(), idx),
++            /* .context  = */ new ggml_backend_vk_buffer_type_context{ device->name, device },
++        };
++
++        vk_instance.devices[idx] = device;
+         return device;
+     }
+
+@@ -5277,7 +5288,8 @@
+     const vk_device_architecture device_architecture = get_device_architecture(physical_device);
+
+     const char* GGML_VK_DISABLE_F16 = getenv("GGML_VK_DISABLE_F16");
+-    bool force_disable_f16 = GGML_VK_DISABLE_F16 != nullptr;
++    bool force_disable_f16 = TUNEFORGE_ANDROID_DISABLE_F16 ||
++                             GGML_VK_DISABLE_F16 != nullptr;
+
+     bool fp16 = !force_disable_f16 && fp16_storage && fp16_compute;
+
+diff -ruN original/whisper.cpp/include/whisper.h modified/whisper.cpp/include/whisper.h
+--- original/whisper.cpp/include/whisper.h	2026-09-17 11:40:10
++++ modified/whisper.cpp/include/whisper.h	2026-09-17 11:40:25
+@@ -146,6 +146,8 @@
+         // do not use if you haven't computed token-level timestamps with dtw
+         // Roughly corresponds to the moment in audio in which the token was output
+         int64_t t_dtw;
++        int64_t t_dtw_end; // exclusive DTW boundary for this text token
++        int32_t backend_type; // 0 CPU, 1 GPU/IGPU
+
+         float vlen;        // voice length of the token
+     } whisper_token_data;
+@@ -666,6 +668,9 @@
+     // This contains probabilities, timestamps, etc.
+     WHISPER_API whisper_token_data whisper_full_get_token_data           (struct whisper_context * ctx, int i_segment, int i_token);
+     WHISPER_API whisper_token_data whisper_full_get_token_data_from_state(struct whisper_state * state, int i_segment, int i_token);
++
++    // Backend used by the most recent serialized whisper_full_with_state call.
++    WHISPER_API int32_t whisper_last_full_backend_type(void);
+
+     // Get the probability of the specified token in the specified segment
+     WHISPER_API float whisper_full_get_token_p           (struct whisper_context * ctx, int i_segment, int i_token);
+diff -ruN original/whisper.cpp/src/whisper.cpp modified/whisper.cpp/src/whisper.cpp
+--- original/whisper.cpp/src/whisper.cpp	2026-09-17 11:40:10
++++ modified/whisper.cpp/src/whisper.cpp	2026-09-17 11:41:44
+@@ -5,6 +5,8 @@
+ #include "ggml-cpp.h"
+ #include "ggml-alloc.h"
+ #include "ggml-backend.h"
++#include "tuneforge_dtw.h"
++#include "tuneforge_text.h"
+
+ #ifdef WHISPER_USE_COREML
+ #include "coreml/whisper-encoder.h"
+@@ -33,6 +35,7 @@
+ #include <string>
+ #include <thread>
+ #include <vector>
++#include <zlib.h>
+
+ #ifdef _MSC_VER
+ #include <codecvt>
+@@ -187,11 +190,85 @@
+     return ggml_backend_graph_compute(backend.get(), graph) == GGML_STATUS_SUCCESS;
+ }
+
++static constexpr int32_t WHISPER_BACKEND_MASK_CPU = 1 << 0;
++static constexpr int32_t WHISPER_BACKEND_MASK_GPU = 1 << 1;
++static constexpr int32_t WHISPER_BACKEND_MASK_UNKNOWN = 1 << 2;
++
++static bool whisper_is_inference_compute_op(enum ggml_op op) {
++    switch (op) {
++        case GGML_OP_NONE:
++        case GGML_OP_DUP:
++        case GGML_OP_SET:
++        case GGML_OP_CPY:
++        case GGML_OP_CONT:
++        case GGML_OP_RESHAPE:
++        case GGML_OP_VIEW:
++        case GGML_OP_PERMUTE:
++        case GGML_OP_TRANSPOSE:
++            return false;
++        default:
++            return true;
++    }
++}
++
++static int32_t whisper_graph_backend_mask(
++    ggml_backend_sched_t   sched,
++        struct ggml_cgraph * graph) {
++    int32_t mask = 0;
++    for (int index = 0; index < ggml_graph_n_nodes(graph); ++index) {
++        struct ggml_tensor * node = ggml_graph_node(graph, index);
++        if (!whisper_is_inference_compute_op(node->op)) {
++            continue;
++        }
++        ggml_backend_t backend = ggml_backend_sched_get_tensor_backend(sched, node);
++        if (backend == nullptr) {
++            mask |= WHISPER_BACKEND_MASK_UNKNOWN;
++            continue;
++        }
++        ggml_backend_dev_t device = ggml_backend_get_device(backend);
++        if (device == nullptr) {
++            mask |= WHISPER_BACKEND_MASK_UNKNOWN;
++            continue;
++        }
++        const enum ggml_backend_dev_type type = ggml_backend_dev_type(device);
++        if (type == GGML_BACKEND_DEVICE_TYPE_GPU || type == GGML_BACKEND_DEVICE_TYPE_IGPU) {
++            mask |= WHISPER_BACKEND_MASK_GPU;
++        } else {
++            mask |= WHISPER_BACKEND_MASK_CPU;
++        }
++    }
++    return mask;
++}
++
++static int32_t whisper_backend_type_from_mask(int32_t mask) {
++    if ((mask & WHISPER_BACKEND_MASK_GPU) != 0) {
++        return 1;
++    }
++    if ((mask & WHISPER_BACKEND_MASK_UNKNOWN) != 0) {
++        return -1;
++    }
++    if ((mask & WHISPER_BACKEND_MASK_CPU) != 0) {
++        return 0;
++    }
++    return -1;
++}
++
++static void whisper_record_completed_graph(
++                        bool   completed,
++        ggml_backend_sched_t   sched,
++          struct ggml_cgraph * graph,
++                   int32_t * completed_backend_mask) {
++    if (completed && completed_backend_mask != nullptr) {
++        *completed_backend_mask |= whisper_graph_backend_mask(sched, graph);
++    }
++}
++
+ static bool ggml_graph_compute_helper(
+       ggml_backend_sched_t   sched,
+         struct ggml_cgraph * graph,
+                        int   n_threads,
+-                      bool   sched_reset = true) {
++                      bool   sched_reset = true,
++                  int32_t * completed_backend_mask = nullptr) {
+     for (int i = 0; i < ggml_backend_sched_get_n_backends(sched); ++i) {
+         ggml_backend_t backend = ggml_backend_sched_get_backend(sched, i);
+         ggml_backend_dev_t dev = ggml_backend_get_device(backend);
+@@ -205,6 +282,8 @@
+
+     const bool t = (ggml_backend_sched_graph_compute(sched, graph) == GGML_STATUS_SUCCESS);
+
++    whisper_record_completed_graph(t, sched, graph, completed_backend_mask);
++
+     if (!t || sched_reset) {
+         ggml_backend_sched_reset(sched);
+     }
+@@ -789,6 +868,7 @@
+     double sum_logprobs_all; // the sum of the log probabilities of the tokens
+     double sum_logprobs;     // the sum of the log probabilities of the tokens (first result_len tokens)
+     double avg_logprobs;     // the average log probability of the tokens
++    double compression_ratio;// OpenAI-compatible UTF-8/zlib repetition score
+     double entropy;          // the entropy of the tokens
+     double score;            // likelihood rank score
+ };
+@@ -868,6 +948,11 @@
+
+     std::vector<ggml_backend_t> backends;
+
++    // Backends that completed actual Whisper inference graph operations during
++    // the current full call. DTW postprocessing uses a separate CPU helper.
++    int32_t inference_backend_mask = 0;
++    int32_t completed_backend_type = -1;
++
+     // - stores meta info about the intermediate tensors into the `meta` buffers
+     whisper_sched sched_conv;
+     whisper_sched sched_encode;
+@@ -2403,7 +2488,7 @@
+         }
+
+         if (!whisper_encode_external(wstate)) {
+-            if (!ggml_graph_compute_helper(sched, gf, n_threads)) {
++            if (!ggml_graph_compute_helper(sched, gf, n_threads, true, &wstate.inference_backend_mask)) {
+                 return false;
+             }
+         } else {
+@@ -2428,7 +2513,7 @@
+             return false;
+         }
+
+-        if (!ggml_graph_compute_helper(sched, gf, n_threads)) {
++        if (!ggml_graph_compute_helper(sched, gf, n_threads, true, &wstate.inference_backend_mask)) {
+             return false;
+         }
+     }
+@@ -2444,7 +2529,7 @@
+             return false;
+         }
+
+-        if (!ggml_graph_compute_helper(sched, gf, n_threads)) {
++        if (!ggml_graph_compute_helper(sched, gf, n_threads, true, &wstate.inference_backend_mask)) {
+             return false;
+         }
+     }
+@@ -2941,7 +3026,7 @@
+
+         logits = ggml_graph_node(gf, -1);
+
+-        if (!ggml_graph_compute_helper(sched, gf, n_threads)) {
++        if (!ggml_graph_compute_helper(sched, gf, n_threads, true, &wstate.inference_backend_mask)) {
+             return false;
+         }
+     }
+@@ -3372,7 +3457,9 @@
+ #endif
+
+ struct whisper_state * whisper_init_state(whisper_context * ctx) {
+-    whisper_state * state = new whisper_state;
++    whisper_state * state = nullptr;
++    try {
++    state = new whisper_state{};
+
+     state->backends = whisper_backend_init(ctx->params);
+     if (state->backends.empty()) {
+@@ -3542,6 +3629,13 @@
+     }
+
+     return state;
++    } catch (...) {
++        WHISPER_LOG_ERROR("%s: native backend initialization failed\n", __func__);
++        if (state != nullptr) {
++            whisper_free_state(state);
++        }
++        return nullptr;
++    }
+ }
+
+ int whisper_ctx_init_openvino_encoder_with_state(
+@@ -3703,6 +3797,30 @@
+ }
+
+ struct whisper_context * whisper_init_with_params_no_state(struct whisper_model_loader * loader, struct whisper_context_params params) {
++    whisper_context * ctx = nullptr;
++    bool loader_closed = false;
++    const auto close_loader = [&]() noexcept {
++        if (!loader_closed) {
++            loader_closed = true;
++            try {
++                loader->close(loader->context);
++            } catch (...) {
++                WHISPER_LOG_ERROR("%s: native model loader cleanup failed\n", __func__);
++            }
++        }
++    };
++    const auto free_context = [&]() noexcept {
++        whisper_context * failed_ctx = ctx;
++        ctx = nullptr;
++        if (failed_ctx != nullptr) {
++            try {
++                whisper_free(failed_ctx);
++            } catch (...) {
++                WHISPER_LOG_ERROR("%s: native model cleanup failed\n", __func__);
++            }
++        }
++    };
++    try {
+     ggml_time_init();
+
+     if (params.flash_attn && params.dtw_token_timestamps) {
+@@ -3717,19 +3835,25 @@
+     WHISPER_LOG_INFO("%s: devices    = %zu\n", __func__, ggml_backend_dev_count());
+     WHISPER_LOG_INFO("%s: backends   = %zu\n", __func__, ggml_backend_reg_count());
+
+-    whisper_context * ctx = new whisper_context;
++    ctx = new whisper_context;
+     ctx->params = params;
+
+     if (!whisper_model_load(loader, *ctx)) {
+-        loader->close(loader->context);
++        close_loader();
+         WHISPER_LOG_ERROR("%s: failed to load model\n", __func__);
+-        delete ctx;
++        free_context();
+         return nullptr;
+     }
+
+-    loader->close(loader->context);
++    close_loader();
+
+     return ctx;
++    } catch (...) {
++        WHISPER_LOG_ERROR("%s: native model initialization failed\n", __func__);
++        close_loader();
++        free_context();
++        return nullptr;
++    }
+ }
+
+ struct whisper_context * whisper_init_from_file_with_params(const char * path_model, struct whisper_context_params params) {
+@@ -6026,7 +6150,7 @@
+     return txt[0] == ' ';
+ }
+
+-static void whisper_exp_compute_token_level_timestamps_dtw(
++static bool whisper_exp_compute_token_level_timestamps_dtw(
+             struct whisper_context * ctx,
+               struct whisper_state * state,
+         struct whisper_full_params   params,
+@@ -6037,6 +6161,14 @@
+                                int   medfilt_width,
+                                int   n_threads);
+
++static int64_t whisper_exp_adjust_word_timestamps_dtw(
++            struct whisper_context * ctx,
++              struct whisper_state * state,
++                               int   i_segment,
++                            size_t   n_segments,
++                       const char * language,
++                           int64_t   last_speech_timestamp);
++
+ // wrap the last segment to max_len characters
+ // returns the number of new segments
+ static int whisper_wrap_segment(struct whisper_context & ctx, struct whisper_state & state, int max_len, bool split_on_word) {
+@@ -6250,6 +6382,21 @@
+             if (vocab.token_to_id.find(" '") != vocab.token_to_id.end()) {
+                 logits[vocab.token_to_id.at(" '")] = -INFINITY;
+             }
++
++            // OpenAI suppresses the first token for multi-token miscellaneous
++            // music symbols. These byte-prefix tokens cover the exact Turbo
++            // multilingual tokenizer cases that cannot be found as complete
++            // UTF-8 strings in token_to_id.
++            const std::string miscellaneous_prefixes[] = {
++                std::string("\xE2\x99", 2),
++                std::string(" \xE2\x99", 3),
++            };
++            for (const std::string & prefix : miscellaneous_prefixes) {
++                const auto token = vocab.token_to_id.find(prefix);
++                if (token != vocab.token_to_id.end()) {
++                    logits[token->second] = -INFINITY;
++                }
++            }
+         }
+
+         // timestamps have to appear in pairs, except directly before EOT; mask logits accordingly
+@@ -6427,7 +6574,7 @@
+       const whisper_decoder & decoder,
+                        bool   best) {
+     whisper_token_data result = {
+-        0, 0, 0.0f, 0.0f, 0.0f, 0.0f, -1, -1, -1, 0.0f,
++        0, 0, 0.0f, 0.0f, 0.0f, 0.0f, -1, -1, -1, -1, -1, 0.0f,
+     };
+
+     const auto & vocab = ctx.vocab;
+@@ -6545,7 +6692,7 @@
+         const auto id = dist(decoder.rng);
+         //printf("XXX %d %d %f %f %f %f\n", id, tid, probs[id], logprobs[id], pt, ptsum);
+
+-        result.push_back({ id, tid, probs[id], logprobs[id], pt, ptsum, -1, -1, -1, 0.0f, });
++        result.push_back({ id, tid, probs[id], logprobs[id], pt, ptsum, -1, -1, -1, -1, -1, 0.0f, });
+
+         if (result[i].id >= vocab.token_beg) {
+             result[i].tid = result[i].id;
+@@ -6571,7 +6718,7 @@
+     }
+
+     sequence.sum_logprobs = result;
+-    sequence.avg_logprobs = result/sequence.result_len;
++    sequence.avg_logprobs = result/(sequence.result_len + 1);
+
+     double penalty = sequence.result_len;
+
+@@ -6605,6 +6752,19 @@
+     }
+ }
+
++static double whisper_openai_compression_ratio(
++              struct whisper_context * ctx,
++              const whisper_sequence & sequence) {
++    std::string text;
++    for (int index = 0; index < sequence.result_len; ++index) {
++        const auto token = sequence.tokens[index].id;
++        if (token < whisper_token_beg(ctx)) {
++            text += whisper_token_to_str(ctx, token);
++        }
++    }
++    return tuneforge::compression_ratio(text);
++}
++
+ static bool whisper_vad(
+         struct whisper_context * ctx,
+           struct whisper_state * state,
+@@ -6789,12 +6949,21 @@
+     return true;
+ }
+
++static std::atomic<int32_t> g_last_full_backend_type{-1};
++static int32_t whisper_state_backend_type(const struct whisper_state * state);
++static void whisper_publish_backend_type(struct whisper_state * state);
++
+ int whisper_full_with_state(
+         struct whisper_context * ctx,
+           struct whisper_state * state,
+     struct whisper_full_params   params,
+                    const float * samples,
+                            int   n_samples) {
++    try {
++    g_last_full_backend_type.store(-1);
++    state->inference_backend_mask = 0;
++    state->completed_backend_type = -1;
++
+     // clear old results
+     auto & result_all = state->result_all;
+
+@@ -6822,6 +6991,7 @@
+
+         WHISPER_LOG_INFO("%s: auto-detected language: %s (p = %f)\n", __func__, params.language, probs[whisper_lang_id(params.language)]);
+         if (params.detect_language) {
++            whisper_publish_backend_type(state);
+             return 0;
+         }
+     }
+@@ -6845,6 +7015,7 @@
+
+     if (seek_end < seek_start + delta_min) {
+         WHISPER_LOG_WARN("%s: input is too short - %d ms < 100 ms. consider padding the input audio with silence\n", __func__, (seek_end - seek_start)*10);
++        whisper_publish_backend_type(state);
+         return 0;
+     }
+
+@@ -6978,6 +7149,7 @@
+     }
+
+     int seek = seek_start;
++    int64_t dtw_last_word_end = 0;
+
+     std::vector<whisper_token> prompt;
+     prompt.reserve(whisper_n_text_ctx(ctx));
+@@ -7066,6 +7238,7 @@
+                 decoder.sequence.sum_logprobs_all = 0.0;
+                 decoder.sequence.sum_logprobs     = -INFINITY;
+                 decoder.sequence.avg_logprobs     = -INFINITY;
++                decoder.sequence.compression_ratio = 0.0;
+                 decoder.sequence.entropy          = 0.0;
+                 decoder.sequence.score            = -INFINITY;
+
+@@ -7520,20 +7693,12 @@
+
+                     decoder.sequence.tokens.resize(decoder.sequence.result_len);
+                     whisper_sequence_score(params, decoder.sequence);
++                    decoder.sequence.compression_ratio = whisper_openai_compression_ratio(ctx, decoder.sequence);
+
+-                    WHISPER_LOG_DEBUG("%s: decoder %2d: score = %8.5f, result_len = %3d, avg_logprobs = %8.5f, entropy = %8.5f\n",
+-                            __func__, j, decoder.sequence.score, decoder.sequence.result_len, decoder.sequence.avg_logprobs, decoder.sequence.entropy);
++                    WHISPER_LOG_DEBUG("%s: decoder %2d: score = %8.5f, result_len = %3d, avg_logprobs = %8.5f, compression_ratio = %8.5f\n",
++                            __func__, j, decoder.sequence.score, decoder.sequence.result_len,
++                            decoder.sequence.avg_logprobs, decoder.sequence.compression_ratio);
+
+-                    if (decoder.sequence.result_len > 32 && decoder.sequence.entropy < params.entropy_thold) {
+-                        WHISPER_LOG_DEBUG("%s: decoder %2d: failed due to entropy %8.5f < %8.5f\n",
+-                                __func__, j, decoder.sequence.entropy, params.entropy_thold);
+-
+-                        decoder.failed = true;
+-                        state->n_fail_h++;
+-
+-                        continue;
+-                    }
+-
+                     if (best_score < decoder.sequence.score) {
+                         best_score = decoder.sequence.score;
+                         best_decoder_id = j;
+@@ -7550,12 +7715,18 @@
+             // - we are not at the last temperature
+             if (it != (int) temperatures.size() - 1) {
+                 const auto & decoder = state->decoders[best_decoder_id];
++                const bool low_logprob = decoder.sequence.avg_logprobs < params.logprob_thold;
++                const bool high_compression = params.entropy_thold >= 0.0f &&
++                        decoder.sequence.compression_ratio > params.entropy_thold;
++                const bool silence = state->no_speech_prob > params.no_speech_thold && low_logprob;
+
+-                if (decoder.failed ||
+-                    (decoder.sequence.avg_logprobs < params.logprob_thold && state->no_speech_prob < params.no_speech_thold)) {
+-                    WHISPER_LOG_DEBUG("%s: failed due to avg_logprobs %8.5f < %8.5f and no_speech_prob %8.5f < %8.5f\n", __func__, decoder.sequence.avg_logprobs, params.logprob_thold, state->no_speech_prob, params.no_speech_thold);
++                if (decoder.failed || ((high_compression || low_logprob) && !silence)) {
++                    WHISPER_LOG_DEBUG("%s: fallback: avg_logprobs = %8.5f, compression_ratio = %8.5f, no_speech_prob = %8.5f\n",
++                            __func__, decoder.sequence.avg_logprobs,
++                            decoder.sequence.compression_ratio, state->no_speech_prob);
+                     success = false;
+-                    state->n_fail_p++;
++                    state->n_fail_h += high_compression;
++                    state->n_fail_p += low_logprob;
+                 }
+             }
+
+@@ -7711,8 +7882,14 @@
+                 const int n_segments = state->result_all.size() - n_segments_before;
+                 if (ctx->params.dtw_token_timestamps && n_segments) {
+                     const int n_frames = std::min(std::min(WHISPER_CHUNK_SIZE * 100, seek_delta), seek_end - seek);
+-                    whisper_exp_compute_token_level_timestamps_dtw(
+-                            ctx, state, params, result_all.size() - n_segments, n_segments, seek, n_frames, 7, params.n_threads);
++                    if (!whisper_exp_compute_token_level_timestamps_dtw(
++                                ctx, state, params, result_all.size() - n_segments, n_segments,
++                                seek, n_frames, 7, params.n_threads)) {
++                        return -10;
++                    }
++                    dtw_last_word_end = whisper_exp_adjust_word_timestamps_dtw(
++                            ctx, state, result_all.size() - n_segments, n_segments,
++                            params.language, dtw_last_word_end);
+                     if (params.new_segment_callback) {
+                         for (int seg = (int) result_all.size() - n_segments; seg < n_segments; seg++) {
+                             params.new_segment_callback(ctx, state, seg, params.new_segment_callback_user_data);
+@@ -7725,6 +7902,17 @@
+             const bool single_timestamp_ending = tokens_cur.size() > 1 &&
+                 tokens_cur[tokens_cur.size() - 2].id < whisper_token_beg(ctx) &&
+                 tokens_cur[tokens_cur.size() - 1].id > whisper_token_beg(ctx);
++            if (ctx->params.dtw_token_timestamps && !single_timestamp_ending) {
++                // OpenAI's word-timestamp path advances the next window from
++                // the normalized aligned last word, rather than the decoder timestamp.
++                // This must happen before the single-timestamp override and
++                // before seek is advanced below.
++                if (dtw_last_word_end > seek) {
++                    seek_delta = std::min(
++                            seek_end - seek,
++                            static_cast<int>(dtw_last_word_end - seek));
++                }
++            }
+             if (single_timestamp_ending) {
+                 WHISPER_LOG_DEBUG("single timestamp ending - skip entire chunk\n");
+                 seek_delta = std::min(seek_end - seek, WHISPER_CHUNK_SIZE * 100);
+@@ -7737,7 +7925,12 @@
+         }
+     }
+
++    whisper_publish_backend_type(state);
+     return 0;
++    } catch (...) {
++        WHISPER_LOG_ERROR("%s: native inference failed\n", __func__);
++        return -99;
++    }
+ }
+
+ int whisper_full(
+@@ -7746,6 +7939,10 @@
+                    const float * samples,
+                            int   n_samples) {
+
++    g_last_full_backend_type.store(-1);
++    ctx->state->inference_backend_mask = 0;
++    ctx->state->completed_backend_type = -1;
++
+     std::vector<float> vad_samples;
+     if (params.vad) {
+         WHISPER_LOG_INFO("%s: VAD is enabled, processing speech segments only\n", __func__);
+@@ -8038,12 +8235,29 @@
+     return ctx->state->result_all[i_segment].tokens[i_token].id;
+ }
+
++static int32_t whisper_state_backend_type(const struct whisper_state * state) {
++    return state->completed_backend_type;
++}
++
++static void whisper_publish_backend_type(struct whisper_state * state) {
++    state->completed_backend_type = whisper_backend_type_from_mask(state->inference_backend_mask);
++    g_last_full_backend_type.store(state->completed_backend_type);
++}
++
++int32_t whisper_last_full_backend_type(void) {
++    return g_last_full_backend_type.load();
++}
++
+ struct whisper_token_data whisper_full_get_token_data_from_state(struct whisper_state * state, int i_segment, int i_token) {
+-    return state->result_all[i_segment].tokens[i_token];
++    struct whisper_token_data token = state->result_all[i_segment].tokens[i_token];
++    token.backend_type = whisper_state_backend_type(state);
++    return token;
+ }
+
+ struct whisper_token_data whisper_full_get_token_data(struct whisper_context * ctx, int i_segment, int i_token) {
+-    return ctx->state->result_all[i_segment].tokens[i_token];
++    struct whisper_token_data token = ctx->state->result_all[i_segment].tokens[i_token];
++    token.backend_type = whisper_state_backend_type(ctx->state);
++    return token;
+ }
+
+ float whisper_full_get_token_p_from_state(struct whisper_state * state, int i_segment, int i_token) {
+@@ -8679,84 +8893,15 @@
+
+     int64_t N = x->ne[0];
+     int64_t M = x->ne[1];
+-    struct ggml_tensor * cost = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, N + 1, M + 1);
+-    struct ggml_tensor * trace = ggml_new_tensor_2d(ctx, GGML_TYPE_I32, N + 1, M + 1);
+-
+-    cost = whisper_set_f32(cost, INFINITY);
+-    trace = whisper_set_i32(trace, -1);
+-    whisper_set_f32_nd(cost, 0, 0, 0, 0, 0.0);
+-
+-    // dtw
+-    // supposedly can be optmized by computing diagonals in parallel ?
+-    // Not sure it is worth it since x will be GENERATED_TOKENS*1500 size at most.
+-    for (int64_t j = 1; j < M + 1; ++j) {
+-        for (int64_t i = 1; i < N + 1; ++i) {
+-            float c0 = whisper_get_f32_nd(cost, i - 1, j - 1, 0, 0);
+-            float c1 = whisper_get_f32_nd(cost, i - 1, j, 0, 0);
+-            float c2 = whisper_get_f32_nd(cost, i, j - 1, 0, 0);
+-
+-            float c;
+-            int32_t t;
+-            if (c0 < c1 && c0 < c2) {
+-                c = c0;
+-                t = 0;
+-            } else if (c1 < c0 && c1 < c2) {
+-                c = c1;
+-                t = 1;
+-            } else {
+-                c = c2;
+-                t = 2;
+-            }
+-
+-            c = whisper_get_f32_nd(x, i - 1, j - 1, 0, 0) + c;
+-            whisper_set_f32_nd(cost, i, j, 0, 0, c);
+-            whisper_set_i32_nd(trace, i, j, 0, 0, t);
+-        }
++    const auto path = tuneforge::dtw_path(N, M, [x](int64_t token, int64_t frame) {
++        return whisper_get_f32_nd(x, token, frame, 0, 0);
++    });
++    ggml_tensor * r = ggml_new_tensor_2d(ctx, GGML_TYPE_I32, 2, path.size());
++    for (size_t row = 0; row < path.size(); ++row) {
++        whisper_set_i32_nd(r, 0, row, 0, 0, path[row].token);
++        whisper_set_i32_nd(r, 1, row, 0, 0, path[row].frame);
+     }
+
+-    // Backtrace
+-    const int64_t BT_MAX_ROWS = N + M - 1;
+-    struct ggml_tensor * bt = ggml_new_tensor_2d(ctx, GGML_TYPE_I32, BT_MAX_ROWS, 2);
+-    // trace[0, :] = 2;
+-    for (int64_t i = 0; i < M + 1; ++i)
+-        whisper_set_i32_nd(trace, 0, i, 0, 0, 2);
+-    //trace[:, 0] = 1;
+-    for (int64_t i = 0; i < N + 1; ++i)
+-        whisper_set_i32_nd(trace, i, 0, 0, 0, 1);
+-    int bt_row_idx = BT_MAX_ROWS - 1;
+-    int64_t i = N;
+-    int64_t j = M;
+-    while (i > 0 || j > 0) {
+-        whisper_set_i32_nd(bt, bt_row_idx, 0, 0, 0, i - 1);
+-        whisper_set_i32_nd(bt, bt_row_idx, 1, 0, 0, j - 1);
+-        --bt_row_idx;
+-
+-        int32_t t = whisper_get_i32_nd(trace, i, j, 0, 0);
+-        if (t == 0) {
+-            --i;
+-            --j;
+-        } else if (t == 1) {
+-            --i;
+-        } else if (t == 2) {
+-            --j;
+-        } else {
+-            WHISPER_ASSERT(0);
+-        }
+-    }
+-
+-    // FIXME: manual clip/transpose might not be the most efficient way? (e.g. use ggml funcs)
+-    // Clip + transpose
+-    // This might not be entirely necessary for our case, but leaving it for now so output matrix
+-    // is identical to dtw on openAI timing.py
+-    const int64_t result_n_cols = BT_MAX_ROWS-bt_row_idx-1;
+-    ggml_tensor * r = ggml_new_tensor_2d(ctx, GGML_TYPE_I32, 2, result_n_cols);
+-    for (int64_t i = 0; i < 2; ++i) {
+-        for (int64_t j = 0; j < result_n_cols; ++j) {
+-            int32_t v = whisper_get_i32_nd(bt, j+bt_row_idx+1, i, 0, 0);
+-            whisper_set_i32_nd(r, i, j, 0, 0, v);
+-        }
+-    }
+-
+     return r;
+ }
+
+@@ -8799,7 +8944,7 @@
+     }
+ }
+
+-static void whisper_exp_compute_token_level_timestamps_dtw(
++static bool whisper_exp_compute_token_level_timestamps_dtw(
+             struct whisper_context * ctx,
+               struct whisper_state * state,
+         struct whisper_full_params   params,
+@@ -8823,24 +8968,32 @@
+         /*.mem_buffer =*/ NULL,
+         /*.no_alloc   =*/ false,
+     };
+-    struct ggml_context * gctx = ggml_init(gparams);
++    ggml_context_ptr gctx { ggml_init(gparams) };
++    if (!gctx) {
++        WHISPER_LOG_ERROR("%s: failed to allocate DTW context\n", __func__);
++        return false;
++    }
++    struct ggml_context * gctx_raw = gctx.get();
+
+-    // Build token sequence that will be passed to decoder
+-    // sot + [lang] + text result + eot
++    // Match OpenAI's forced-alignment decoder input exactly:
++    // sot + [lang] + task + no_timestamps + text result + eot.
+     std::vector<whisper_token> tokens = { whisper_token_sot(ctx), };
+     if (whisper_is_multilingual(ctx)) {
+         const int lang_id = whisper_lang_id(params.language);
+         state->lang_id = lang_id;
+         tokens.push_back(whisper_token_lang(ctx, lang_id));
+     }
++    tokens.push_back(params.translate ? whisper_token_translate(ctx) : whisper_token_transcribe(ctx));
+     const size_t sot_sequence_length = tokens.size();
+     tokens.push_back(whisper_token_not(ctx));
++    std::vector<whisper_token_data *> text_tokens;
+     for (size_t i = i_segment; i < i_segment + n_segments; ++i) {
+         auto & segment = state->result_all[i];
+         for (auto &t: segment.tokens) {
+             // Only text tokens
+             if (t.id < whisper_token_eot(ctx)) {
+                 tokens.push_back(t.id);
++                text_tokens.push_back(&t);
+             }
+         }
+     }
+@@ -8852,13 +9005,48 @@
+     // one tensor.
+     whisper_kv_cache_clear(state->kv_self);
+     whisper_batch_prep_legacy(state->batch, tokens.data(), tokens.size(), 0, 0);
++    for (int i = 0; i < state->batch.n_tokens; ++i) {
++        state->batch.logits[i] = 1;
++    }
+     whisper_kv_cache_seq_rm(state->kv_self, 0, 0, -1);
+-    if (!whisper_decode_internal(*ctx, *state, state->batch, n_threads, true, nullptr, nullptr)) {
+-        WHISPER_LOG_INFO("DECODER FAILED\n");
+-        WHISPER_ASSERT(0);
++    if (!whisper_decode_internal(*ctx, *state, state->batch, n_threads, true,
++                                 params.abort_callback, params.abort_callback_user_data)) {
++        WHISPER_LOG_ERROR("%s: forced-alignment decoder failed\n", __func__);
++        for (auto * token : text_tokens) {
++            token->t_dtw = -1;
++            token->t_dtw_end = -1;
++        }
++        return false;
+     }
+-    WHISPER_ASSERT(state->aheads_cross_QKs != nullptr);
++    if (state->aheads_cross_QKs == nullptr) {
++        WHISPER_LOG_ERROR("%s: forced-alignment decoder returned no attention data\n", __func__);
++        for (auto * token : text_tokens) {
++            token->t_dtw = -1;
++            token->t_dtw_end = -1;
++        }
++        return false;
++    }
+
++    // OpenAI reports word confidence from this forced-alignment pass, with the
++    // softmax restricted to ordinary text tokens below EOT.
++    const int n_vocab = ctx->model.hparams.n_vocab;
++    const int text_vocab = whisper_token_eot(ctx);
++    for (size_t i = 0; i < text_tokens.size(); ++i) {
++        const float * row = state->logits.data() + (sot_sequence_length + i) * n_vocab;
++        float maximum = -INFINITY;
++        for (int token_id = 0; token_id < text_vocab; ++token_id) {
++            maximum = std::max(maximum, row[token_id]);
++        }
++        double total = 0.0;
++        for (int token_id = 0; token_id < text_vocab; ++token_id) {
++            total += std::exp(static_cast<double>(row[token_id] - maximum));
++        }
++        const int token_id = text_tokens[i]->id;
++        text_tokens[i]->p = total > 0.0
++                ? static_cast<float>(std::exp(static_cast<double>(row[token_id] - maximum)) / total)
++                : 0.0f;
++    }
++
+     const auto n_audio_tokens = n_frames/2;
+     WHISPER_ASSERT(state->aheads_cross_QKs != NULL);
+     WHISPER_ASSERT(n_audio_tokens <= state->aheads_cross_QKs->ne[1]);
+@@ -8871,7 +9059,7 @@
+     // OUT: Tensor with N_TOKENS*N_AUDIO_TOKENS*N_ALIGNMENT_HEADS dims
+     WHISPER_ASSERT(state->aheads_cross_QKs->type == GGML_TYPE_F32);
+     WHISPER_ASSERT(ggml_is_contiguous(state->aheads_cross_QKs));
+-    ggml_tensor * w = ggml_new_tensor_3d(gctx, GGML_TYPE_F32, n_tokens, n_audio_tokens, n_heads);
++    ggml_tensor * w = ggml_new_tensor_3d(gctx_raw, GGML_TYPE_F32, n_tokens, n_audio_tokens, n_heads);
+     auto & data = state->aheads_cross_QKs_data;
+     data.resize(n_tokens * n_audio_ctx * n_heads);
+     ggml_backend_tensor_get(state->aheads_cross_QKs, data.data(), 0, sizeof(float) * n_tokens * n_audio_ctx * n_heads);
+@@ -8885,81 +9073,338 @@
+         }
+     }
+
+-    // Normalize - in original OpenAI code, this is done over dim=-2. In this case,
+-    // we already permuted N_TOKENS dimension to columns on last loop, becase ggml_norm
+-    // operates over columns. Afterwards, permute to a shape that facilitates mean
+-    // operation (after median filter)
++    // Match OpenAI's ordering: restrict attention to usable frames, restore the
++    // clipped softmax mass, then standardize each head/frame over text tokens.
+     // IN: Tensor with N_TOKENS*N_AUDIO_TOKENS*N_ALIGNMENT_HEADS dims
+     // OUT: Tensor with N_ALIGNMENT_HEADS*N_TOKENS*N_AUDIO_TOKENS dims
+-    w = ggml_norm(gctx, w, 1e-9f);
+-    w = ggml_permute(gctx, ggml_permute(gctx, w, 2, 1, 0 ,3), 0, 2, 1, 3);
++    if (!tuneforge::normalize_clipped_attention(
++                static_cast<float *>(w->data), n_tokens, n_audio_tokens, n_heads)) {
++        WHISPER_LOG_ERROR("%s: invalid clipped attention normalization\n", __func__);
++        for (auto * token : text_tokens) {
++            token->t_dtw = -1;
++            token->t_dtw_end = -1;
++        }
++        return false;
++    }
++    w = ggml_permute(gctx_raw, ggml_permute(gctx_raw, w, 2, 1, 0 ,3), 0, 2, 1, 3);
+
+     // Pass median filter - this is done over AUDIO_TOKENS dimension.
+     // IN: Tensor with N_ALIGNMENT_HEADS*N_TOKENS*N_AUDIO_TOKENS dims
+     // OUT: Same dims
+     median_filter_user_data mf_user_data = {medfilt_width};
+-    w = ggml_map_custom1(gctx, w, median_filter, 1, &mf_user_data);
++    w = ggml_map_custom1(gctx_raw, w, median_filter, 1, &mf_user_data);
+
+     // Take mean over columns, scale by -1, reshape to 2D tensor, remove SOT sequence and EOT
+     // IN: Tensor with N_ALIGNMENT_HEADS*N_TOKENS*N_AUDIO_TOKENS dims
+     // OUT: Tensor with N_TOKENS*N_AUDIO_TOKENS dims
+-    w = ggml_mean(gctx, w);
+-    w = ggml_scale(gctx, w, -1.0);
+-    w = ggml_reshape_2d(gctx, w, w->ne[1], w->ne[2]);
++    w = ggml_mean(gctx_raw, w);
++    w = ggml_scale(gctx_raw, w, -1.0);
++    w = ggml_reshape_2d(gctx_raw, w, w->ne[1], w->ne[2]);
+
+     // Remove SOT sequence and EOT
+     // Out dimension is (N_TOKENS-sot_sequence_length-1)*N_AUDIO_TOKENS
+-    w = ggml_view_2d(gctx, w, w->ne[0] - sot_sequence_length - 1, w->ne[1], w->nb[1], sot_sequence_length * w->nb[0]);
++    w = ggml_view_2d(gctx_raw, w, w->ne[0] - sot_sequence_length - 1, w->ne[1], w->nb[1], sot_sequence_length * w->nb[0]);
+
+     // Compute
+-    struct ggml_cgraph * gf = ggml_new_graph(gctx);
++    struct ggml_cgraph * gf = ggml_new_graph(gctx_raw);
+     ggml_build_forward_expand(gf, w);
+
+     ggml_backend_ptr backend { ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr) };
+-    ggml_backend_graph_compute(backend.get(), gf);
++    if (!backend || ggml_backend_graph_compute(backend.get(), gf) != GGML_STATUS_SUCCESS) {
++        WHISPER_LOG_ERROR("%s: DTW graph computation failed\n", __func__);
++        for (auto * token : text_tokens) {
++            token->t_dtw = -1;
++            token->t_dtw_end = -1;
++        }
++        return false;
++    }
+
+-    ggml_tensor * alignment = dtw_and_backtrace(gctx, w);
++    ggml_tensor * alignment = dtw_and_backtrace(gctx_raw, w);
+
+-    // Place timestamps on segments
+-    int32_t last_v = 0;
+-    auto seg_i = state->result_all.begin() + i_segment;
+-    auto tok_i = seg_i->tokens.begin();
++    // Preserve every DTW jump. OpenAI word timing indexes this complete boundary
++    // sequence, including the initial no-timestamps row and terminal text row.
++    std::vector<int64_t> boundaries;
++    int32_t last_v = -1;
+     for (int i = 0; i < alignment->ne[1]; ++i) {
+         int32_t v = whisper_get_i32_nd(alignment, 0, i, 0, 0);
+         if (v != last_v) {
+             int32_t time_index = whisper_get_i32_nd(alignment, 1, i, 0, 0);
+             int64_t timestamp = (time_index * 2) + seek; // Each index on DTW result = 20mS audio
+             last_v = v;
++            boundaries.push_back(timestamp);
++        }
++    }
+
+-            // Skip non-text tokens
+-            while (!(tok_i->id < whisper_token_eot(ctx))) {
+-                ++tok_i;
+-                if (tok_i == seg_i->tokens.end()) {
+-                    ++seg_i;
+-                    tok_i = seg_i->tokens.begin();
++    size_t text_token_count = 0;
++    for (size_t i = i_segment; i < i_segment + n_segments; ++i) {
++        for (const auto & token : state->result_all[i].tokens) {
++            text_token_count += token.id < whisper_token_eot(ctx);
++        }
++    }
++    const auto invalidate_text_boundaries = [&]() {
++        for (size_t i = i_segment; i < i_segment + n_segments; ++i) {
++            for (auto & token : state->result_all[i].tokens) {
++                if (token.id < whisper_token_eot(ctx)) {
++                    token.t_dtw = -1;
++                    token.t_dtw_end = -1;
+                 }
+             }
+-
+-            tok_i->t_dtw = timestamp;
+-            ++tok_i;
+-            if (tok_i == seg_i->tokens.end()) {
+-                ++seg_i;
+-                tok_i = seg_i->tokens.begin();
+-            }
+         }
++    };
++    const auto boundary_validation =
++            tuneforge::validate_dtw_boundaries(boundaries, text_token_count);
++    if (!boundary_validation.valid()) {
++        WHISPER_LOG_ERROR(
++                "%s: invalid DTW boundaries expected=%zu emitted=%zu first_jump=%lld missing=%zu reversed=%zu\n",
++                __func__, boundary_validation.expected, boundary_validation.emitted,
++                static_cast<long long>(boundary_validation.first_jump),
++                boundary_validation.missing, boundary_validation.reversed);
++        invalidate_text_boundaries();
++        return false;
+     }
+
+-    // Print DTW timestamps
+-    /*for (size_t i = i_segment; i < i_segment + n_segments; ++i) {
++    size_t boundary_index = 0;
++    for (size_t i = i_segment; i < i_segment + n_segments; ++i) {
+         auto & segment = state->result_all[i];
+         for (auto &t: segment.tokens) {
+-            const char * tok = whisper_token_to_str(ctx, t.id);
+-            fprintf(stderr, "|%s|(%.2f) ", tok, (float)t.t_dtw/100);
++            if (t.id >= whisper_token_eot(ctx)) {
++                continue;
++            }
++            if (boundary_index + 1 >= boundaries.size()) {
++                WHISPER_LOG_ERROR("%s: incomplete DTW token boundary sequence\n", __func__);
++                t.t_dtw = -1;
++                t.t_dtw_end = -1;
++                continue;
++            }
++            t.t_dtw = boundaries[boundary_index];
++            t.t_dtw_end = boundaries[boundary_index + 1];
++            ++boundary_index;
+         }
+-        fprintf(stderr, "\n");
+-    }*/
++    }
+
+-    ggml_free(gctx);
++    return true;
++}
++
++struct whisper_dtw_word {
++    whisper_token_data * first;
++    whisper_token_data * last;
++    size_t token_count;
++    std::string text;
++};
++
++static bool whisper_dtw_ascii_punctuation(const std::string & text) {
++    size_t start = text.find_first_not_of(" \t\r\n");
++    if (start == std::string::npos) {
++        return false;
++    }
++    size_t end = text.find_last_not_of(" \t\r\n");
++    const std::string stripped = text.substr(start, end - start + 1);
++    const std::string punctuation = "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~";
++    return punctuation.find(stripped) != std::string::npos;
++}
++
++static bool whisper_dtw_valid_utf8(const std::string & text) {
++    size_t index = 0;
++    while (index < text.size()) {
++        const unsigned char lead = text[index++];
++        size_t continuation = 0;
++        if (lead <= 0x7f) {
++            continue;
++        } else if (lead >= 0xc2 && lead <= 0xdf) {
++            continuation = 1;
++        } else if (lead >= 0xe0 && lead <= 0xef) {
++            continuation = 2;
++        } else if (lead >= 0xf0 && lead <= 0xf4) {
++            continuation = 3;
++        } else {
++            return false;
++        }
++        if (index + continuation > text.size()) {
++            return false;
++        }
++        while (continuation-- > 0) {
++            if ((static_cast<unsigned char>(text[index++]) & 0xc0) != 0x80) {
++                return false;
++            }
++        }
++    }
++    return true;
++}
++
++static std::string whisper_dtw_trim_ascii(const std::string & text) {
++    const size_t start = text.find_first_not_of(" \t\r\n");
++    if (start == std::string::npos) {
++        return "";
++    }
++    return text.substr(start, text.find_last_not_of(" \t\r\n") - start + 1);
++}
++
++static int64_t whisper_exp_adjust_word_timestamps_dtw(
++            struct whisper_context * ctx,
++              struct whisper_state * state,
++                               int   i_segment,
++                            size_t   n_segments,
++                       const char * language,
++                           int64_t   last_speech_timestamp) {
++    const bool split_on_unicode = language && (
++            strcmp(language, "zh") == 0 || strcmp(language, "ja") == 0 ||
++            strcmp(language, "th") == 0 || strcmp(language, "lo") == 0 ||
++            strcmp(language, "my") == 0 || strcmp(language, "yue") == 0);
++    std::vector<whisper_dtw_word> words;
++    std::vector<size_t> segment_token_counts;
++    whisper_token_data * pending_first = nullptr;
++    whisper_token_data * pending_last = nullptr;
++    size_t pending_token_count = 0;
++    std::string pending_piece;
++    for (size_t segment_index = i_segment; segment_index < i_segment + n_segments; ++segment_index) {
++        auto & segment = state->result_all[segment_index];
++        size_t segment_token_count = 0;
++        for (auto & token : segment.tokens) {
++            if (token.id >= whisper_token_eot(ctx) || token.t_dtw < 0 || token.t_dtw_end < token.t_dtw) {
++                continue;
++            }
++            segment_token_count += 1;
++            if (pending_first == nullptr) {
++                pending_first = &token;
++            }
++            pending_last = &token;
++            pending_token_count += 1;
++            pending_piece += whisper_token_to_str(ctx, token.id);
++            if (!whisper_dtw_valid_utf8(pending_piece)) {
++                continue;
++            }
++            const std::string piece = pending_piece;
++            const bool starts_word = words.empty() || split_on_unicode ||
++                    (!piece.empty() && piece[0] == ' ') ||
++                    whisper_dtw_ascii_punctuation(piece);
++            if (starts_word) {
++                words.push_back({ pending_first, pending_last, pending_token_count, piece });
++            } else {
++                words.back().last = pending_last;
++                words.back().token_count += pending_token_count;
++                words.back().text += piece;
++            }
++            pending_first = nullptr;
++            pending_last = nullptr;
++            pending_token_count = 0;
++            pending_piece.clear();
++        }
++        segment_token_counts.push_back(segment_token_count);
++    }
++    if (words.empty() || pending_first != nullptr) {
++        return last_speech_timestamp;
++    }
++
++    std::vector<int64_t> durations;
++    for (const auto & word : words) {
++        const int64_t duration = word.last->t_dtw_end - word.first->t_dtw;
++        if (duration > 0) {
++            durations.push_back(duration);
++        }
++    }
++    int64_t median_duration = 0;
++    if (!durations.empty()) {
++        std::sort(durations.begin(), durations.end());
++        const size_t middle = durations.size() / 2;
++        median_duration = durations.size() % 2 == 0
++                ? (durations[middle - 1] + durations[middle]) / 2
++                : durations[middle];
++        median_duration = std::min<int64_t>(70, median_duration);
++    }
++    const int64_t max_duration = median_duration * 2;
++    const std::string sentence_end_marks = ".。!！?？";
++    for (size_t index = 1; median_duration > 0 && index < words.size(); ++index) {
++        auto & word = words[index];
++        if (word.last->t_dtw_end - word.first->t_dtw > max_duration) {
++            if (!word.text.empty() && sentence_end_marks.find(word.text) != std::string::npos) {
++                word.last->t_dtw_end = word.first->t_dtw + max_duration;
++            } else if (!words[index - 1].text.empty() && sentence_end_marks.find(words[index - 1].text) != std::string::npos) {
++                word.first->t_dtw = word.last->t_dtw_end - max_duration;
++            }
++        }
++    }
++
++    const std::string prepended = "\"'“¿([{-";
++    const std::string appended = "\"'.。,，!！?？:：”)]}、";
++    size_t following = words.size() - 1;
++    for (size_t cursor = words.size() - 1; cursor-- > 0;) {
++        auto & previous = words[cursor];
++        auto & next = words[following];
++        const std::string stripped = whisper_dtw_trim_ascii(previous.text);
++        if (!previous.text.empty() && previous.text[0] == ' ' &&
++                !stripped.empty() && prepended.find(stripped) != std::string::npos) {
++            next.text = previous.text + next.text;
++            next.token_count += previous.token_count;
++            previous.token_count = 0;
++            previous.text.clear();
++        } else {
++            following = cursor;
++        }
++    }
++    size_t previous = 0;
++    for (size_t following_index = 1; following_index < words.size(); ++following_index) {
++        auto & before = words[previous];
++        auto & after = words[following_index];
++        if (!before.text.empty() && before.text.back() != ' ' &&
++                !after.text.empty() && appended.find(after.text) != std::string::npos) {
++            before.text += after.text;
++            before.token_count += after.token_count;
++            after.token_count = 0;
++            after.text.clear();
++        } else {
++            previous = following_index;
++        }
++    }
++    words.erase(std::remove_if(words.begin(), words.end(), [](const whisper_dtw_word & word) {
++        return word.text.empty();
++    }), words.end());
++
++    size_t word_index = 0;
++    for (size_t segment_index = i_segment; segment_index < i_segment + n_segments; ++segment_index) {
++        auto & segment = state->result_all[segment_index];
++        std::vector<whisper_dtw_word *> segment_words;
++        size_t saved_tokens = 0;
++        const size_t token_budget = segment_token_counts[segment_index - i_segment];
++        while (word_index < words.size() && saved_tokens < token_budget) {
++            auto & word = words[word_index++];
++            saved_tokens += word.token_count;
++            segment_words.push_back(&word);
++        }
++        if (segment_words.empty()) {
++            continue;
++        }
++        auto & first = *segment_words.front();
++        auto & last = *segment_words.back();
++        if (median_duration > 0 &&
++                first.last->t_dtw_end - last_speech_timestamp > median_duration * 4 &&
++                (first.last->t_dtw_end - first.first->t_dtw > max_duration ||
++                 (segment_words.size() > 1 && segment_words[1]->last->t_dtw_end - first.first->t_dtw > max_duration * 2))) {
++            if (segment_words.size() > 1) {
++                auto & second = *segment_words[1];
++                if (second.last->t_dtw_end - second.first->t_dtw > max_duration) {
++                    const int64_t boundary = std::max(second.last->t_dtw_end / 2,
++                                                      second.last->t_dtw_end - max_duration);
++                    first.last->t_dtw_end = boundary;
++                    second.first->t_dtw = boundary;
++                }
++            }
++            first.first->t_dtw = std::max<int64_t>(0, first.last->t_dtw_end - max_duration);
++        }
++        if (segment.t0 < first.last->t_dtw_end && segment.t0 - 50 > first.first->t_dtw) {
++            first.first->t_dtw = std::max<int64_t>(
++                    0, std::min(first.last->t_dtw_end - median_duration, segment.t0));
++        } else {
++            segment.t0 = first.first->t_dtw;
++        }
++        if (segment.t1 > last.first->t_dtw && segment.t1 + 50 < last.last->t_dtw_end) {
++            last.last->t_dtw_end = std::max(
++                    last.first->t_dtw + median_duration, segment.t1);
++        } else {
++            segment.t1 = last.last->t_dtw_end;
++        }
++        last_speech_timestamp = segment.t1;
++    }
++    return last_speech_timestamp;
+ }
+
+ void whisper_log_set(ggml_log_callback log_callback, void * user_data) {

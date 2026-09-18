@@ -42,6 +42,8 @@ struct TfFfmpegRenderRequest {
     output_path: *const c_char,
     output_format: *const c_char,
     pitch_cents: f64,
+    output_sample_rate: c_int,
+    output_channels: c_int,
     callback_opaque: *mut c_void,
     should_cancel: Option<unsafe extern "C" fn(*mut c_void) -> c_int>,
     on_progress: Option<unsafe extern "C" fn(*mut c_void, c_int)>,
@@ -115,6 +117,51 @@ pub(crate) fn render_audio(
     should_cancel_callback: &mut dyn FnMut() -> bool,
     progress_callback: &mut dyn FnMut(i32),
 ) -> Result<RenderedAudio, String> {
+    render_audio_with_properties(
+        input,
+        output,
+        format,
+        pitch_cents,
+        0,
+        0,
+        should_cancel_callback,
+        progress_callback,
+    )
+}
+
+pub(crate) fn render_whisper_audio(
+    input: &Path,
+    output: &Path,
+    should_cancel_callback: &mut dyn FnMut() -> bool,
+    progress_callback: &mut dyn FnMut(i32),
+) -> Result<RenderedAudio, String> {
+    let rendered = render_audio_with_properties(
+        input,
+        output,
+        AudioOutputFormat::Wav,
+        0.0,
+        16_000,
+        1,
+        should_cancel_callback,
+        progress_callback,
+    )?;
+    if rendered.sample_rate != 16_000 || rendered.channels != 1 {
+        return Err("Android FFmpeg did not produce 16 kHz mono lyrics audio.".to_string());
+    }
+    Ok(rendered)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_audio_with_properties(
+    input: &Path,
+    output: &Path,
+    format: AudioOutputFormat,
+    pitch_cents: f64,
+    output_sample_rate: c_int,
+    output_channels: c_int,
+    should_cancel_callback: &mut dyn FnMut() -> bool,
+    progress_callback: &mut dyn FnMut(i32),
+) -> Result<RenderedAudio, String> {
     if !pitch_cents.is_finite() || pitch_cents.abs() > 4800.0 {
         return Err(
             "Android audio conversion received an invalid pitch transformation.".to_string(),
@@ -134,6 +181,8 @@ pub(crate) fn render_audio(
         output_path: output.as_ptr(),
         output_format: format.as_ptr(),
         pitch_cents,
+        output_sample_rate,
+        output_channels,
         callback_opaque: (&mut callbacks as *mut Callbacks<'_>).cast(),
         should_cancel: Some(should_cancel),
         on_progress: Some(on_progress),

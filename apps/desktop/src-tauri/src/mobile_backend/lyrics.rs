@@ -1,10 +1,20 @@
+use super::audio::{request_audio_job_cancellation, AudioJobCancellation};
+use super::storage_cleanup::{
+    capture_owned_project_file, cleanup_owned_project_files, prepare_owned_project_file,
+};
 use super::*;
+use std::ffi::c_void;
+use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 
-#[derive(Clone)]
-pub(super) struct WhisperModel {
-    pub(super) path: PathBuf,
-    pub(super) name: &'static str,
-    pub(super) max_recommended_model: &'static str,
+const WHISPER_MODEL_NAME: &str = "large-v3-turbo";
+
+pub(crate) fn request_lyrics_job_cancellation(job_id: &str) {
+    request_audio_job_cancellation(job_id);
+    crate::native_audio::whisper_model::cancel(job_id);
 }
 
 struct MobileLyricsTranscription {
@@ -18,22 +28,112 @@ struct MobileLyricsTranscription {
     segments: Vec<Value>,
 }
 
-pub(super) fn find_whisper_model(root: &Path) -> Option<WhisperModel> {
-    [
-        ("ggml-base.bin", "base", "base"),
-        ("ggml-base.en.bin", "base.en", "base"),
-        ("ggml-tiny.bin", "tiny", "tiny"),
-        ("ggml-tiny.en.bin", "tiny.en", "tiny"),
-    ]
-    .into_iter()
-    .find_map(|(file_name, name, max_recommended_model)| {
-        let path = root.join(WHISPER_MODEL_DIR).join(file_name);
-        path.is_file().then_some(WhisperModel {
-            path,
-            name,
-            max_recommended_model,
-        })
-    })
+struct WhisperCallbacks {
+    cancellation: Arc<AtomicBool>,
+    root: PathBuf,
+    job_id: String,
+}
+
+struct LyricsPreparedAudio {
+    root: PathBuf,
+    project_root: PathBuf,
+    path: PathBuf,
+}
+
+impl LyricsPreparedAudio {
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for LyricsPreparedAudio {
+    fn drop(&mut self) {
+        if let Ok(file) = capture_owned_project_file(&self.root, &self.project_root, &self.path) {
+            cleanup_owned_project_files(&[file]);
+        }
+    }
+}
+
+unsafe extern "C" fn whisper_abort_callback(user_data: *mut c_void) -> bool {
+    catch_unwind(AssertUnwindSafe(|| unsafe {
+        (&*(user_data as *const WhisperCallbacks))
+            .cancellation
+            .load(Ordering::Relaxed)
+    }))
+    .unwrap_or(true)
+}
+
+unsafe extern "C" fn whisper_progress_callback(
+    _context: *mut whisper_rs::whisper_rs_sys::whisper_context,
+    _state: *mut whisper_rs::whisper_rs_sys::whisper_state,
+    native_progress: i32,
+    user_data: *mut c_void,
+) {
+    let _ = catch_unwind(AssertUnwindSafe(|| unsafe {
+        let callbacks = &*(user_data as *const WhisperCallbacks);
+        if let Ok(connection) = db_at_root(&callbacks.root) {
+            let progress = 35 + (i64::from(native_progress).clamp(0, 100) * 50 / 100);
+            let _ = update_job_stage(
+                &connection,
+                &callbacks.job_id,
+                progress,
+                "transcribing",
+                "Transcribing lyrics",
+            );
+        }
+    }));
+}
+
+fn aligned_tokens(
+    segment: &WhisperSegment<'_>,
+    text_token_eot: i32,
+) -> Result<(Vec<AlignedTextToken>, usize), String> {
+    let mut aligned = Vec::new();
+    let mut text_token_count = 0;
+    let mut missing_boundary_count = 0;
+    let mut reversed_boundary_count = 0;
+    for index in 0..segment.n_tokens() {
+        let token = segment
+            .get_token(index)
+            .ok_or_else(|| "Whisper token index was out of bounds.".to_string())?;
+        let data = token.token_data();
+        if token.token_id() >= text_token_eot {
+            continue;
+        }
+        text_token_count += 1;
+        if data.t_dtw < 0 || data.t_dtw_end < 0 {
+            missing_boundary_count += 1;
+        } else if data.t_dtw_end < data.t_dtw {
+            // Desktop's long-word correction can shorten the last token below
+            // its own start while the regrouped multi-token word remains valid.
+            reversed_boundary_count += 1;
+        }
+        aligned.push(AlignedTextToken {
+            text: token
+                .to_bytes()
+                .map_err(|error| format!("Whisper returned invalid token text: {error}"))?
+                .to_vec(),
+            start_centiseconds: data.t_dtw,
+            end_centiseconds: data.t_dtw_end,
+            confidence: f64::from(data.p).clamp(0.0, 1.0),
+        });
+    }
+    if missing_boundary_count > 0 {
+        eprintln!(
+            "Whisper DTW validation failed: missing={} reversed={} expected={} emitted={}",
+            missing_boundary_count,
+            reversed_boundary_count,
+            text_token_count,
+            aligned.len()
+        );
+        return Err("Whisper returned an incomplete DTW boundary sequence.".to_string());
+    }
+    let segment_text = segment
+        .to_bytes()
+        .map_err(|error| format!("Whisper returned invalid segment text: {error}"))?;
+    validate_aligned_token_coverage(&aligned, text_token_count, segment_text)
+        .map_err(ToString::to_string)?;
+    Ok((aligned, reversed_boundary_count))
 }
 
 fn payload_force(payload: &Value) -> bool {
@@ -50,28 +150,58 @@ fn get_lyrics_response(
     mobile_lyrics_response(connection, project_id)
 }
 
-fn write_lyrics_snapshot(root: &Path, lyrics: &LyricsResponse) -> Result<(), String> {
+fn active_lyrics_job(
+    connection: &Connection,
+    project_id: &str,
+) -> Result<Option<JobSchema>, String> {
+    connection
+        .query_row(
+            &format!("SELECT {JOB_COLUMNS} FROM jobs WHERE project_id = ?1 AND type = 'lyrics' AND status IN ('pending', 'running') ORDER BY created_at DESC LIMIT 1"),
+            params![project_id],
+            row_job,
+        )
+        .optional()
+        .map_err(|error| error.to_string())
+}
+
+fn stage_lyrics_snapshot(
+    root: &Path,
+    lyrics: &LyricsResponse,
+) -> Result<(PathBuf, PathBuf), String> {
     let lyrics_path = project_root_path(root, &lyrics.project_id)?
         .join("analysis")
         .join("lyrics.json");
     if let Some(parent) = lyrics_path.parent() {
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
+    let staging_path = lyrics_path.with_file_name(format!(".lyrics-{}.tmp", new_id("snapshot")));
     fs::write(
-        lyrics_path,
+        &staging_path,
         serde_json::to_vec_pretty(lyrics).map_err(|error| error.to_string())?,
     )
     .map_err(|error| error.to_string())?;
+    Ok((staging_path, lyrics_path))
+}
+
+fn promote_lyrics_snapshot(staged: &(PathBuf, PathBuf)) -> Result<(), String> {
+    fs::rename(&staged.0, &staged.1).map_err(|error| error.to_string())
+}
+
+fn write_lyrics_snapshot(root: &Path, lyrics: &LyricsResponse) -> Result<(), String> {
+    let staged = stage_lyrics_snapshot(root, lyrics)?;
+    if let Err(error) = promote_lyrics_snapshot(&staged) {
+        let _ = fs::remove_file(&staged.0);
+        return Err(error);
+    }
     Ok(())
 }
 
-fn store_lyrics_transcript(
+fn upsert_lyrics_transcript(
     connection: &Connection,
-    root: &Path,
     project: &ProjectSchema,
     source_artifact: &ArtifactSchema,
-    transcription: MobileLyricsTranscription,
-) -> Result<LyricsResponse, String> {
+    transcription: &MobileLyricsTranscription,
+) -> Result<(), String> {
     let timestamp = now_iso();
     let source_segments_json =
         serde_json::to_string(&transcription.segments).map_err(|error| error.to_string())?;
@@ -97,8 +227,27 @@ fn store_lyrics_transcript(
             ],
         )
         .map_err(|error| error.to_string())?;
-    let response = get_lyrics_response(connection, project.id.clone())?;
-    write_lyrics_snapshot(root, &response)?;
+    Ok(())
+}
+
+fn store_lyrics_transcript(
+    connection: &Connection,
+    root: &Path,
+    project: &ProjectSchema,
+    source_artifact: &ArtifactSchema,
+    transcription: MobileLyricsTranscription,
+) -> Result<LyricsResponse, String> {
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(|error| error.to_string())?;
+    upsert_lyrics_transcript(&transaction, project, source_artifact, &transcription)?;
+    let response = get_lyrics_response(&transaction, project.id.clone())?;
+    let staged = stage_lyrics_snapshot(root, &response)?;
+    if let Err(error) = transaction.commit().map_err(|error| error.to_string()) {
+        let _ = fs::remove_file(&staged.0);
+        return Err(error);
+    }
+    promote_lyrics_snapshot(&staged)?;
     Ok(response)
 }
 
@@ -211,17 +360,34 @@ fn update_lyrics_transcript(
 
 fn transcribe_project_lyrics(
     source_path: &Path,
-    model: &WhisperModel,
+    model_path: &Path,
     language_override: Option<&str>,
+    use_gpu: bool,
+    root: &Path,
+    job_id: &str,
+    cancellation: &AudioJobCancellation,
 ) -> Result<MobileLyricsTranscription, String> {
-    let audio = read_resampled_mono_audio(source_path, WHISPER_SAMPLE_RATE)?;
+    let audio = read_mobile_audio(source_path)?;
     if audio.samples.is_empty() {
         return Err("Imported audio did not contain samples for lyrics transcription.".to_string());
     }
-
+    if audio.sample_rate != WHISPER_SAMPLE_RATE || audio.channels != 1 {
+        return Err("Prepared lyrics audio was not 16 kHz mono PCM.".to_string());
+    }
     install_logging_hooks();
-    let context = WhisperContext::new_with_params(&model.path, WhisperContextParameters::default())
+    let mut context_params = WhisperContextParameters::default();
+    context_params
+        .use_gpu(use_gpu)
+        .flash_attn(false)
+        .dtw_parameters(DtwParameters {
+            mode: DtwMode::ModelPreset {
+                model_preset: DtwModelPreset::LargeV3Turbo,
+            },
+            ..DtwParameters::default()
+        });
+    let context = WhisperContext::new_with_params(model_path, context_params)
         .map_err(|error| format!("Whisper model could not be loaded: {error}"))?;
+    let text_token_eot = context.token_eot();
     let mut state = context
         .create_state()
         .map_err(|error| format!("Whisper state could not be created: {error}"))?;
@@ -233,19 +399,59 @@ fn transcribe_project_lyrics(
     params.set_translate(false);
     params.set_language(language_override);
     params.set_no_context(true);
-    params.set_token_timestamps(false);
+    params.set_token_timestamps(true);
     params.set_print_special(false);
     params.set_print_progress(false);
     params.set_print_realtime(false);
     params.set_print_timestamps(false);
     params.set_temperature(0.0);
+    params.set_temperature_inc(0.2);
+    params.set_entropy_thold(2.4);
+    params.set_logprob_thold(-1.0);
+    params.set_no_speech_thold(0.6);
+    params.set_suppress_blank(true);
+    params.set_suppress_nst(true);
+    let mut callbacks = Box::new(WhisperCallbacks {
+        cancellation: cancellation.token(),
+        root: root.to_path_buf(),
+        job_id: job_id.to_string(),
+    });
+    let callback_ptr = (&mut *callbacks) as *mut WhisperCallbacks as *mut c_void;
+    unsafe {
+        params.set_abort_callback(Some(whisper_abort_callback));
+        params.set_abort_callback_user_data(callback_ptr);
+        params.set_progress_callback(Some(whisper_progress_callback));
+        params.set_progress_callback_user_data(callback_ptr);
+    }
 
-    state
-        .full(params, &audio.samples)
-        .map_err(|error| format!("Whisper transcription failed: {error}"))?;
+    if let Err(error) = state.full(params, &audio.samples) {
+        return if cancellation.requested() {
+            Err("LYRICS_CANCELLED".to_string())
+        } else {
+            Err(format!("Whisper transcription failed: {error}"))
+        };
+    }
+    if cancellation.requested() {
+        return Err("LYRICS_CANCELLED".to_string());
+    }
 
-    let mut segments = Vec::new();
+    // Native execution is serialized by the existing inference exclusion. The
+    // native query remains truthful for successful silence with zero tokens.
+    let actual_backend_type =
+        unsafe { whisper_rs::whisper_rs_sys::whisper_last_full_backend_type() };
+
+    let effective_language = whisper_rs::get_lang_str(state.full_lang_id_from_state())
+        .map(ToString::to_string)
+        .filter(|value| !value.is_empty());
+    let detected_language = effective_language
+        .clone()
+        .filter(|_| language_override.is_none());
+    let mut raw_segments = Vec::new();
+    let mut all_tokens = Vec::new();
+    let mut reversed_boundary_count = 0;
     for segment in state.as_iter() {
+        let (tokens, segment_reversed_boundary_count) = aligned_tokens(&segment, text_token_eot)?;
+        reversed_boundary_count += segment_reversed_boundary_count;
         let text = segment
             .to_str_lossy()
             .map_err(|error| format!("Whisper returned invalid transcript text: {error}"))?
@@ -254,24 +460,73 @@ fn transcribe_project_lyrics(
         if text.is_empty() {
             continue;
         }
-        segments.push(json!({
-            "start_seconds": segment.start_timestamp() as f64 / 100.0,
-            "end_seconds": segment.end_timestamp() as f64 / 100.0,
-            "text": text,
-        }));
+        if tokens.is_empty() {
+            return Err(
+                "Lyrics could not be generated because word timing was unavailable. Retry lyrics."
+                    .to_string(),
+            );
+        }
+        raw_segments.push((
+            segment.start_timestamp() as f64 / 100.0,
+            segment.end_timestamp() as f64 / 100.0,
+            text,
+            tokens.len(),
+        ));
+        all_tokens.extend(tokens);
     }
 
-    let language = whisper_rs::get_lang_str(state.full_lang_id_from_state())
-        .map(ToString::to_string)
-        .or_else(|| language_override.map(ToString::to_string));
+    let words = split_aligned_words(&all_tokens, effective_language.as_deref())
+        .map_err(ToString::to_string)?;
+    if let Err(error) = validate_aligned_word_boundaries(&words) {
+        eprintln!(
+            "Whisper DTW validation failed after word grouping: missing=0 reversed={} tokens={} words={}",
+            reversed_boundary_count,
+            all_tokens.len(),
+            words.len()
+        );
+        return Err(error.to_string());
+    }
+    if !raw_segments.is_empty() && words.is_empty() {
+        return Err(
+            "Lyrics could not be generated because word timing was unavailable. Retry lyrics."
+                .to_string(),
+        );
+    }
+    let word_partitions = partition_aligned_words(
+        words,
+        &raw_segments
+            .iter()
+            .map(|segment| segment.3)
+            .collect::<Vec<_>>(),
+    )
+    .map_err(ToString::to_string)?;
+    let segments = raw_segments
+        .into_iter()
+        .zip(word_partitions)
+        .map(|((start_seconds, end_seconds, text, _), words)| {
+            json!({
+                "start_seconds": start_seconds,
+                "end_seconds": end_seconds,
+                "text": text,
+                "words": words.into_iter().map(|word| json!({
+                    "text": word.text,
+                    "start_seconds": word.start_centiseconds as f64 / 100.0,
+                    "end_seconds": word.end_centiseconds as f64 / 100.0,
+                    "confidence": word.confidence,
+                })).collect::<Vec<_>>(),
+            })
+        })
+        .collect::<Vec<_>>();
 
+    let actual_device =
+        crate::native_audio::whisper_model::completed_backend_device(actual_backend_type)?;
     Ok(MobileLyricsTranscription {
         backend: "whisper.cpp",
         source_kind: LYRICS_SOURCE_KIND_AI,
-        requested_device: Some("cpu"),
-        device: Some("cpu"),
-        model_name: Some(model.name.to_string()),
-        language,
+        requested_device: Some(if use_gpu { "vulkan" } else { "cpu" }),
+        device: actual_device,
+        model_name: Some(WHISPER_MODEL_NAME.to_string()),
+        language: detected_language,
         language_override: language_override.map(ToString::to_string),
         segments,
     })
@@ -282,8 +537,8 @@ fn run_lyrics_job(
     job_id: String,
     project: ProjectSchema,
     source_artifact: ArtifactSchema,
-    model: WhisperModel,
     language_override: Option<String>,
+    expected_lyrics_revision: Option<String>,
 ) {
     let started = Instant::now();
     let connection = match db_at_root(&root) {
@@ -291,35 +546,281 @@ fn run_lyrics_job(
         Err(_) => return,
     };
 
+    let cancellation = AudioJobCancellation::begin(&job_id);
     let result = (|| {
-        update_job_progress(&connection, &job_id, 15)?;
-        let transcription = transcribe_project_lyrics(
-            Path::new(&project.imported_path),
-            &model,
-            language_override.as_deref(),
-        )?;
-        update_job_progress(&connection, &job_id, 90)?;
-        store_lyrics_transcript(
+        let setup_status = crate::native_audio::whisper_model::status();
+        let (stage, label) = match setup_status.as_str() {
+            "ready" => ("verifying", "Verifying Whisper Turbo"),
+            "corrupt" => ("repairing", "Repairing and verifying Whisper Turbo"),
+            _ => ("downloading", "Downloading Whisper Turbo"),
+        };
+        update_job_stage(&connection, &job_id, 1, stage, label)?;
+        let model_path = prepare_whisper_model(&connection, &job_id, stage, label, &cancellation)?;
+        if lyrics_cancel_requested(&connection, &job_id)? || cancellation.requested() {
+            return Err("LYRICS_CANCELLED".to_string());
+        }
+        update_job_stage(&connection, &job_id, 20, "preparing", "Preparing audio")?;
+        let prepared_audio = prepare_lyrics_audio(
             &connection,
             &root,
             &project,
+            Path::new(&project.imported_path),
+            &job_id,
+            &cancellation,
+        )?;
+        ensure_source_unchanged(&connection, &project.id, &source_artifact.id)?;
+        update_job_stage(&connection, &job_id, 30, "loading", "Loading Whisper Turbo")?;
+        let (mut transcription, runtime_detail) =
+            crate::native_audio::whisper_model::with_inference_lock(|| {
+                if cancellation.requested() || lyrics_cancel_requested(&connection, &job_id)? {
+                    return Err("LYRICS_CANCELLED".to_string());
+                }
+                crate::native_audio::whisper_model::transcribe_with_cpu_fallback(
+                    |use_gpu| {
+                        transcribe_project_lyrics(
+                            prepared_audio.path(),
+                            Path::new(&model_path),
+                            language_override.as_deref(),
+                            use_gpu,
+                            &root,
+                            &job_id,
+                            &cancellation,
+                        )
+                    },
+                    || cancellation.requested(),
+                    || {
+                        update_job_stage(
+                            &connection,
+                            &job_id,
+                            32,
+                            "fallback",
+                            "Vulkan failed; retrying transcription on CPU",
+                        )
+                    },
+                )
+            })?;
+        let runtime_detail = runtime_detail.or_else(|| {
+            (transcription.requested_device == Some("vulkan")
+                && transcription.device == Some("cpu"))
+            .then_some("CPU execution; Vulkan was not used.")
+        });
+        transcription.requested_device = Some("auto");
+        if lyrics_cancel_requested(&connection, &job_id)? || cancellation.requested() {
+            return Err("LYRICS_CANCELLED".to_string());
+        }
+        ensure_source_unchanged(&connection, &project.id, &source_artifact.id)?;
+        update_job_stage(&connection, &job_id, 90, "saving", "Saving lyrics")?;
+        let device = transcription.device;
+        finish_lyrics_job(
+            &connection,
+            &root,
+            &job_id,
+            &project,
             &source_artifact,
             transcription,
+            started.elapsed().as_secs_f64(),
+            device,
+            runtime_detail,
+            &cancellation,
+            expected_lyrics_revision.as_deref(),
         )?;
-        Ok::<(), String>(())
+        Ok::<Option<&'static str>, String>(device)
     })();
 
     let duration_seconds = started.elapsed().as_secs_f64();
     match result {
-        Ok(()) => {
-            if complete_running_job(&connection, &job_id, duration_seconds).is_ok() {
-                reconcile_project_storage_after_commit(&connection, &root, &project.id);
-            }
+        Ok(_) => {
+            reconcile_project_storage_after_commit(&connection, &root, &project.id);
         }
+        Err(message) if message == "LYRICS_CANCELLED" => {}
         Err(message) => {
             let _ = fail_running_job(&connection, &job_id, &message, duration_seconds);
         }
     }
+}
+
+fn prepare_lyrics_audio(
+    connection: &Connection,
+    root: &Path,
+    project: &ProjectSchema,
+    source_path: &Path,
+    job_id: &str,
+    cancellation: &AudioJobCancellation,
+) -> Result<LyricsPreparedAudio, String> {
+    let project_root = project_root_path(root, &project.id)?;
+    let requested_path = project_root
+        .join("analysis")
+        .join(format!(".lyrics-{job_id}.wav"));
+    let path = prepare_owned_project_file(root, &project_root, &requested_path)?;
+    register_job_staging_path(connection, job_id, &path)?;
+    // Registration makes this path visible to concurrent storage reconciliation.
+    // Prepare it again in case reconciliation removed an empty parent before the
+    // job payload was updated.
+    let path = prepare_owned_project_file(root, &project_root, &path)?;
+    let prepared = LyricsPreparedAudio {
+        root: root.to_path_buf(),
+        project_root,
+        path,
+    };
+    let mut should_cancel =
+        || cancellation.requested() || lyrics_cancel_requested(connection, job_id).unwrap_or(true);
+    let mut on_progress = |native_progress: i32| {
+        let progress = 20 + i64::from(native_progress.clamp(0, 100)) * 9 / 100;
+        let _ = update_job_stage(connection, job_id, progress, "preparing", "Preparing audio");
+    };
+    if let Err(error) = render_whisper_audio(
+        source_path,
+        prepared.path(),
+        &mut should_cancel,
+        &mut on_progress,
+    ) {
+        return if cancellation.requested() || lyrics_cancel_requested(connection, job_id)? {
+            Err("LYRICS_CANCELLED".to_string())
+        } else {
+            Err(format!("Lyrics audio preparation failed: {error}"))
+        };
+    }
+    probe_mobile_durable_audio(prepared.path(), "wav")?;
+    Ok(prepared)
+}
+
+fn prepare_whisper_model(
+    connection: &Connection,
+    job_id: &str,
+    stage: &str,
+    label: &str,
+    cancellation: &AudioJobCancellation,
+) -> Result<String, String> {
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    let prepare_job_id = job_id.to_string();
+    thread::spawn(move || {
+        let _ = sender.send(crate::native_audio::whisper_model::prepare(&prepare_job_id));
+    });
+    loop {
+        match receiver.recv_timeout(std::time::Duration::from_millis(250)) {
+            Ok(result) => {
+                crate::native_audio::whisper_model::clear_progress(job_id);
+                return result;
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                if cancellation.requested() || lyrics_cancel_requested(connection, job_id)? {
+                    crate::native_audio::whisper_model::cancel(job_id);
+                }
+                if let Some(download_progress) =
+                    crate::native_audio::whisper_model::progress(job_id)
+                {
+                    let verifying = download_progress >= 100;
+                    let stage_progress = if verifying {
+                        download_progress.saturating_sub(100).clamp(0, 100)
+                    } else {
+                        download_progress.clamp(0, 100)
+                    };
+                    let progress = if verifying {
+                        10 + i64::from(stage_progress) * 9 / 100
+                    } else {
+                        1 + i64::from(stage_progress) * 9 / 100
+                    };
+                    update_job_stage(
+                        connection,
+                        job_id,
+                        progress,
+                        if verifying { "verifying" } else { stage },
+                        &format!(
+                            "{} · {stage_progress}%",
+                            if verifying {
+                                "Installing and verifying Whisper Turbo"
+                            } else {
+                                label
+                            }
+                        ),
+                    )?;
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                crate::native_audio::whisper_model::clear_progress(job_id);
+                return Err("Whisper Turbo setup stopped unexpectedly. Retry downloads the full model from the beginning.".to_string());
+            }
+        }
+    }
+}
+
+fn lyrics_cancel_requested(connection: &Connection, job_id: &str) -> Result<bool, String> {
+    connection
+        .query_row(
+            "SELECT cancel_requested != 0 OR status = 'cancelled' FROM jobs WHERE id = ?1",
+            params![job_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())
+}
+
+fn ensure_source_unchanged(
+    connection: &Connection,
+    project_id: &str,
+    expected_source_id: &str,
+) -> Result<(), String> {
+    let current = get_source_artifact(connection, project_id)?;
+    if current.id != expected_source_id {
+        return Err(
+            "Project audio changed while lyrics were being generated. Retry lyrics.".to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn finish_lyrics_job(
+    connection: &Connection,
+    root: &Path,
+    job_id: &str,
+    project: &ProjectSchema,
+    source_artifact: &ArtifactSchema,
+    transcription: MobileLyricsTranscription,
+    duration_seconds: f64,
+    device: Option<&str>,
+    detail: Option<&str>,
+    cancellation: &AudioJobCancellation,
+    expected_lyrics_revision: Option<&str>,
+) -> Result<(), String> {
+    if cancellation.requested() {
+        return Err("LYRICS_CANCELLED".to_string());
+    }
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(|error| error.to_string())?;
+    if lyrics_cancel_requested(&transaction, job_id)? {
+        return Err("LYRICS_CANCELLED".to_string());
+    }
+    ensure_source_unchanged(&transaction, &project.id, &source_artifact.id)?;
+    if lyrics_transcript_revision(&transaction, &project.id)?.as_deref() != expected_lyrics_revision
+    {
+        return Err(
+            "Saved lyrics changed while this generation was running. The newer lyrics were preserved."
+                .to_string(),
+        );
+    }
+    upsert_lyrics_transcript(&transaction, project, source_artifact, &transcription)?;
+    let timestamp = now_iso();
+    let payload = json!({
+        "stage": "complete",
+        "stage_label": "Lyrics ready",
+        "runtime_device": device,
+        "runtime_detail": detail,
+    });
+    let updated = transaction.execute(
+        "UPDATE jobs SET status = 'completed', progress = 100, payload_json = ?1, runtime_device = ?2, error_message = NULL, completed_at = ?3, duration_seconds = ?4, updated_at = ?3 WHERE id = ?5 AND status = 'running' AND cancel_requested = 0",
+        params![payload.to_string(), device, timestamp, duration_seconds, job_id],
+    ).map_err(|error| error.to_string())?;
+    if updated != 1 || cancellation.requested() {
+        return Err("LYRICS_CANCELLED".to_string());
+    }
+    let response = get_lyrics_response(&transaction, project.id.clone())?;
+    let staged = stage_lyrics_snapshot(root, &response)?;
+    if let Err(error) = transaction.commit().map_err(|error| error.to_string()) {
+        let _ = fs::remove_file(&staged.0);
+        return Err(error);
+    }
+    promote_lyrics_snapshot(&staged)?;
+    Ok(())
 }
 pub fn mobile_submit_lyrics(
     app: AppHandle,
@@ -338,13 +839,15 @@ pub fn mobile_submit_lyrics(
             });
         }
     };
+    if let Some(job) = active_lyrics_job(&connection, &project_id)? {
+        return Ok(JobResponse { job });
+    }
     let existing = get_lyrics_response(&connection, project_id.clone())?;
     if !force && !existing.segments.is_empty() {
         return Ok(JobResponse {
-            job: create_completed_job(
+            job: create_lyrics_completed_job(
                 &connection,
                 &project_id,
-                "lyrics",
                 existing.source_artifact_id,
             )?,
         });
@@ -376,25 +879,31 @@ pub fn mobile_submit_lyrics(
                 segments: Vec::new(),
             },
         )?;
-        let job =
-            create_completed_job(&connection, &project_id, "lyrics", Some(source_artifact.id))?;
+        let job = create_lyrics_completed_job(&connection, &project_id, Some(source_artifact.id))?;
         reconcile_project_storage_after_commit(&connection, &root, &project_id);
         return Ok(JobResponse { job });
     }
-    let model = match find_whisper_model(&root) {
-        Some(model) => model,
-        None => {
-            return Ok(JobResponse {
-                job: create_failed_job(&connection, &project_id, "lyrics", WHISPER_MODEL_MISSING)?,
-            });
-        }
-    };
-    let job = create_running_job(
-        &connection,
-        &project_id,
-        "lyrics",
-        Some(source_artifact.id.clone()),
-    )?;
+    let transaction =
+        rusqlite::Transaction::new_unchecked(&connection, rusqlite::TransactionBehavior::Immediate)
+            .map_err(|error| error.to_string())?;
+    if let Some(job) = active_lyrics_job(&transaction, &project_id)? {
+        transaction.commit().map_err(|error| error.to_string())?;
+        return Ok(JobResponse { job });
+    }
+    let expected_lyrics_revision = lyrics_transcript_revision(&transaction, &project_id)?;
+    let job =
+        create_lyrics_running_job(&transaction, &project_id, Some(source_artifact.id.clone()))?;
+    let job_payload = json!({
+        "language_override": language_override,
+        "lyrics_revision": expected_lyrics_revision,
+    });
+    transaction
+        .execute(
+            "UPDATE jobs SET payload_json = ?1, updated_at = ?2 WHERE id = ?3",
+            params![job_payload.to_string(), job.updated_at, job.id],
+        )
+        .map_err(|error| error.to_string())?;
+    transaction.commit().map_err(|error| error.to_string())?;
     let job_id = job.id.clone();
     thread::spawn(move || {
         run_lyrics_job(
@@ -402,8 +911,8 @@ pub fn mobile_submit_lyrics(
             job_id,
             project,
             source_artifact,
-            model,
             language_override,
+            expected_lyrics_revision,
         )
     });
     Ok(JobResponse { job })

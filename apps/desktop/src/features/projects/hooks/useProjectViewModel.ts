@@ -162,15 +162,20 @@ function formatLyricsLanguageMetadata(lyrics: LyricsResponse | undefined) {
   if (lyrics?.language_override === "none") {
     return "No lyrics";
   }
-  const overrideLabel = lyricsLanguageLabel(lyrics?.language_override);
-  const effectiveLabel = lyricsLanguageLabel(lyrics?.language);
-  if (overrideLabel) {
-    if (effectiveLabel && effectiveLabel !== overrideLabel) {
-      return `Override: ${overrideLabel} (effective ${effectiveLabel})`;
-    }
-    return `Override: ${overrideLabel}`;
+  if (!lyrics || ((lyrics.segments?.length ?? 0) === 0 && !lyrics.model_name)) {
+    return null;
   }
-  return effectiveLabel ? `Language: ${effectiveLabel}` : null;
+  const model = lyrics.model_name === "large-v3-turbo"
+    ? "Whisper Turbo"
+    : lyrics.model_name ?? "Whisper";
+  const device = lyrics.device === "cpu"
+    ? "CPU"
+    : lyrics.device === "vulkan"
+      ? "Vulkan"
+      : "Not reported";
+  const requested = lyricsLanguageLabel(lyrics.language_override) ?? "Auto-detect";
+  const detected = lyricsLanguageLabel(lyrics.language) ?? "Not reported";
+  return `${model} · ${device} · Requested: ${requested} · Detected: ${detected}`;
 }
 
 function iosPlaybackSource(artifact: ArtifactSchema) {
@@ -590,6 +595,13 @@ export function useProjectViewModel() {
     },
   });
 
+  const lyricsCancelMutation = useMutation({
+    mutationFn: async (jobId: string) => api.cancelJob(jobId),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["jobs"] });
+    },
+  });
+
   const lyricsSaveMutation = useMutation({
     mutationFn: async () => {
       assertProjectEditable();
@@ -939,16 +951,32 @@ export function useProjectViewModel() {
   const isAnyExportJobRunning = exportJobs.some((job) =>
     ["pending", "running"].includes(job.status),
   );
-  const mobileGenerationTestingAvailable =
-    mobileCapabilities?.generationTestingAvailable === true;
+  const whisperModelStatus = mobileCapabilities?.whisperModelStatus;
+  const lyricsSetupStopped = Boolean(
+    whisperModelStatus !== "ready" &&
+    lyricsJob &&
+    ["cancelled", "failed"].includes(lyricsJob.status) &&
+    ["downloading", "repairing", "verifying", "interrupted"].includes(lyricsJob.stage ?? ""),
+  );
+  const lyricsSetupFailure = lyricsJob?.status === "failed" &&
+    lyricsJob.error_message &&
+    (lyricsJob.error_message.startsWith("Not enough free space to install Whisper Turbo.") ||
+      lyricsJob.error_message.startsWith("Whisper Turbo could not be downloaded.") ||
+      lyricsJob.error_message.startsWith("Whisper Turbo failed verification."))
+    ? lyricsJob.error_message
+    : null;
   const mobileGenerationMessage = isMobileRuntime
-    ? mobileCapabilities?.whisperAvailable === true
-      ? mobileCapabilities.stemSeparationAvailable === true
-        ? null
-        : "Local lyrics are available. Stem generation is unavailable on this device."
-      : mobileGenerationTestingAvailable
-        ? "Emulator lyrics actions are enabled for flow testing; stem generation is unavailable on this device."
-        : "Side-load a Whisper model to enable local lyrics. Stem generation is unavailable on this device."
+    ? lyricsSetupFailure
+      ? lyricsSetupFailure
+      : lyricsSetupStopped
+        ? "Whisper Turbo setup stopped. Retry downloads the full model from the beginning."
+      : whisperModelStatus === "ready"
+      ? "Whisper Turbo · Verified full model ready offline."
+      : whisperModelStatus === "download-required"
+        ? "Whisper Turbo · Full 1.62 GB model download required. Installs once, then works offline."
+        : whisperModelStatus === "corrupt"
+          ? "Whisper Turbo failed verification. Repair downloads and verifies the full 1.62 GB model again."
+          : "Whisper Turbo is unavailable in this build."
     : null;
   const mobileAdvancedAnalysisUnavailable =
     isMobileRuntime &&
@@ -971,9 +999,7 @@ export function useProjectViewModel() {
     !mobileAdvancedAnalysisUnavailable;
   const canGenerateLyrics =
     !projectEditLocked &&
-    (!isMobileRuntime ||
-      mobileCapabilities?.whisperAvailable === true ||
-      mobileGenerationTestingAvailable);
+    (!isMobileRuntime || whisperModelStatus !== "unavailable");
   const canGenerateStems =
     !projectEditLocked &&
     (!isMobileRuntime || mobileCapabilities?.stemSeparationAvailable === true);
@@ -1585,7 +1611,33 @@ export function useProjectViewModel() {
       return;
     }
 
-    if (hasExistingLyrics) {
+    const requiresModelSetup = isMobileRuntime
+      && (whisperModelStatus === "download-required" || whisperModelStatus === "corrupt");
+
+    if (requiresModelSetup) {
+      const setupAction = hasExistingLyrics ? "refresh lyrics" : "generate lyrics";
+      const setupCopy = whisperModelStatus === "corrupt"
+        ? `TuneForge will download and verify the full 1.62 GB model again, then ${setupAction}.`
+        : `TuneForge will download and verify the full 1.62 GB model, then ${setupAction}. Once installed, lyrics work offline.`;
+      const replacementCopy = hasExistingLyrics
+        ? lyricsQuery.data?.has_user_edits
+          ? " This replaces the current transcript and discards your edits, including accepted tab suggestions."
+          : " This replaces the current transcript and clears the current tab import."
+        : "";
+      const approved = await confirm(`${setupCopy}${replacementCopy}`, {
+        title: whisperModelStatus === "corrupt" ? "Repair Whisper Turbo?" : "Download Whisper Turbo?",
+        kind: "warning",
+        okLabel: whisperModelStatus === "corrupt"
+          ? hasExistingLyrics ? "Repair & Refresh" : "Repair & Generate"
+          : hasExistingLyrics ? "Download & Refresh" : "Download & Generate",
+        cancelLabel: "Cancel",
+      });
+      if (!approved) {
+        return;
+      }
+    }
+
+    if (hasExistingLyrics && !requiresModelSetup) {
       const approved = await confirm(
         lyricsQuery.data?.has_user_edits
           ? "Refresh lyrics? This replaces the current transcript and discards your edits, including accepted tab suggestions."
@@ -2686,6 +2738,7 @@ export function useProjectViewModel() {
     lyricsLanguageOptions: LYRICS_LANGUAGE_OPTIONS,
     lyricsDraft,
     lyricsJob,
+    lyricsCancelMutation,
     lyricsMutation,
     lyricsSaveMutation,
     lyricsSegmentRefs,

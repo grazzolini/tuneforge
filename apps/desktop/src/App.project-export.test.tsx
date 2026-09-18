@@ -1,7 +1,12 @@
 import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";
-import type { ExportCapabilitiesResponse, ExportRequest, HealthResponse } from "./lib/api";
+import type { MobileCapabilities } from "@tuneforge/shared-types";
+import type {
+  ExportCapabilitiesResponse,
+  ExportRequest,
+  HealthResponse,
+} from "./lib/api";
 import {
   mockCreateExport,
   mockCancelJob,
@@ -68,6 +73,27 @@ function health(defaultExportFormat: string): HealthResponse {
     data_root: "/tmp/tuneforge",
     default_export_format: defaultExportFormat,
     preview_format: "wav",
+  };
+}
+
+function androidCapabilities(): MobileCapabilities {
+  return {
+    platform: "android",
+    mediaBackend: "android_media_codec",
+    isEmulator: true,
+    gpuBackend: null,
+    analysisAvailable: true,
+    beatThisAvailable: false,
+    beatThisModelStatus: "unavailable",
+    basicChordsAvailable: true,
+    cremaAvailable: false,
+    cremaModelStatus: "unavailable",
+    whisperAvailable: false,
+    whisperModelStatus: "unavailable",
+    stemSeparationAvailable: false,
+    generationTestingAvailable: true,
+    maxRecommendedModel: "large-v3-turbo",
+    cpuFallbackAllowed: true,
   };
 }
 
@@ -929,7 +955,7 @@ describe("project export workspace", () => {
       },
     }));
     mockGetHealth.mockResolvedValueOnce(health("wav"));
-    mockGetMobileCapabilities.mockResolvedValue({ platform: "android" });
+    mockGetMobileCapabilities.mockResolvedValue(androidCapabilities());
     mockGetExportCapabilities.mockResolvedValue({
       capabilities: {
         platform: "android",
@@ -970,7 +996,7 @@ describe("project export workspace", () => {
     const user = userEvent.setup();
     installExportArtifacts();
     mockGetHealth.mockResolvedValueOnce(health("wav"));
-    mockGetMobileCapabilities.mockResolvedValue({ platform: "android" });
+    mockGetMobileCapabilities.mockResolvedValue(androidCapabilities());
     mockGetExportCapabilities.mockResolvedValue({
       capabilities: {
         platform: "android",

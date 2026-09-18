@@ -12,6 +12,7 @@ pub struct MobileCapabilities {
     crema_available: bool,
     crema_model_status: String,
     whisper_available: bool,
+    whisper_model_status: String,
     stem_separation_available: bool,
     generation_testing_available: bool,
     max_recommended_model: Option<&'static str>,

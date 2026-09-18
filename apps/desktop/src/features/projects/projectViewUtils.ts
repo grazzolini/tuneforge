@@ -150,6 +150,11 @@ const SAFE_RUNTIME_DETAIL_PHRASES = new Set([
   "MPS failed, retrying CPU.",
   "Whisper switched to CPU after the accelerator attempt failed.",
   "Whisper switched to CPU because the requested accelerator is unavailable.",
+  "CPU retry after Vulkan was unavailable.",
+  "CPU retry after Vulkan model initialization failed.",
+  "CPU retry after Vulkan state initialization failed.",
+  "CPU retry after Vulkan inference failed.",
+  "CPU execution; Vulkan was not used.",
   "Whisper switched to a smaller model after CUDA memory pressure.",
 ]);
 

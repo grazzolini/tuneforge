@@ -584,7 +584,9 @@ describe("Desktop app project analysis mix", () => {
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
     await openStudioPanel(user);
 
-    expect(screen.getByText("Language: English")).toBeInTheDocument();
+    expect(
+      screen.getByText("Whisper · Not reported · Requested: Auto-detect · Detected: English"),
+    ).toBeInTheDocument();
   });
 
   it("shows lyrics override metadata when effective language differs", async () => {
@@ -596,6 +598,7 @@ describe("Desktop app project analysis mix", () => {
       source_kind: "ai",
       language: "en",
       language_override: "pt",
+      device: "cpu",
       source_segments: [
         {
           start_seconds: 0,
@@ -622,7 +625,9 @@ describe("Desktop app project analysis mix", () => {
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
     await openStudioPanel(user);
 
-    expect(screen.getByText("Override: Portuguese (effective English)")).toBeInTheDocument();
+    expect(
+      screen.getByText("Whisper · CPU · Requested: Portuguese · Detected: English"),
+    ).toBeInTheDocument();
   });
 
   it("renders active lyrics and saves in-app edits", async () => {

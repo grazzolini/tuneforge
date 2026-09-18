@@ -22,9 +22,9 @@ static void on_progress(void *opaque, int progress) {
 }
 
 int main(int argc, char **argv) {
-  if (argc != 6) {
+  if (argc != 8) {
     fprintf(stderr,
-            "usage: bridge-test INPUT OUTPUT FORMAT CENTS CANCEL_MODE\n");
+            "usage: bridge-test INPUT OUTPUT FORMAT CENTS CANCEL_MODE RATE CHANNELS\n");
     return 64;
   }
   TestCallbacks callbacks = {
@@ -39,6 +39,8 @@ int main(int argc, char **argv) {
       .output_path = argv[2],
       .output_format = argv[3],
       .pitch_cents = strtod(argv[4], NULL),
+      .output_sample_rate = atoi(argv[6]),
+      .output_channels = atoi(argv[7]),
       .callback_opaque = &callbacks,
       .should_cancel = should_cancel,
       .on_progress = on_progress,
@@ -46,8 +48,9 @@ int main(int argc, char **argv) {
   TfFfmpegJob *job = tf_ffmpeg_job_create();
   if (!job) return 70;
   int result = tf_ffmpeg_render(job, &request);
-  fprintf(stderr, "result=%d progress=%d error=%s\n", result,
-          callbacks.last_progress, tf_ffmpeg_job_error(job));
+  fprintf(stderr, "result=%d progress=%d rate=%d channels=%d error=%s\n", result,
+          callbacks.last_progress, tf_ffmpeg_job_output_sample_rate(job),
+          tf_ffmpeg_job_output_channels(job), tf_ffmpeg_job_error(job));
   tf_ffmpeg_job_destroy(job);
   if (result < 0) remove(argv[2]);
   return result < 0 ? 1 : 0;

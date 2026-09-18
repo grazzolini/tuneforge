@@ -12,6 +12,9 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 cc = "=1.2.57"
 tauri-build = { version = "2.6.3", features = [] }
 
+[patch.crates-io]
+whisper-rs-sys = { path = "native/whisper-rs-sys" }
+
 [features]
 default = []
 custom-protocol = ["tauri/custom-protocol"]
@@ -78,4 +81,4 @@ sha2 = "0.11.0"
 snow = "0.10.0"
 tauri-plugin-barcode-scanner = "2.4.5"
 tokio = { version = "1.53.1", features = ["time"] }
-whisper-rs = "0.16.0"
+whisper-rs = { version = "0.16.0", features = ["raw-api", "vulkan"] }

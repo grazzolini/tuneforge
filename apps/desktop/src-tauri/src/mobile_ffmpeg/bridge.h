@@ -16,6 +16,8 @@ typedef struct TfFfmpegRenderRequest {
   const char *output_path;
   const char *output_format;
   double pitch_cents;
+  int output_sample_rate;
+  int output_channels;
   void *callback_opaque;
   TfFfmpegCancelCallback should_cancel;
   TfFfmpegProgressCallback on_progress;

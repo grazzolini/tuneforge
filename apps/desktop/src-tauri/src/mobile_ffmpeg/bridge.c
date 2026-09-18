@@ -122,7 +122,9 @@ static int tf_open_output(TfFfmpegJob *job, TfPipeline *pipeline) {
   if (!codec) return AVERROR_ENCODER_NOT_FOUND;
   pipeline->encoder = avcodec_alloc_context3(codec);
   if (!pipeline->encoder) return AVERROR(ENOMEM);
-  int desired_rate = pipeline->decoder->sample_rate;
+  int desired_rate = job->request->output_sample_rate > 0
+                         ? job->request->output_sample_rate
+                         : pipeline->decoder->sample_rate;
   if (desired_rate <= 0) return AVERROR(EINVAL);
   const int *sample_rates = NULL;
   int sample_rate_count = 0;
@@ -133,17 +135,22 @@ static int tf_open_output(TfFfmpegJob *job, TfPipeline *pipeline) {
   pipeline->encoder->sample_rate = desired_rate;
   if (sample_rate_count > 0) {
     int best_distance = INT_MAX;
+    int exact_rate = 0;
     for (int index = 0; index < sample_rate_count; index += 1) {
       if (sample_rates[index] <= 0) continue;
+      if (sample_rates[index] == desired_rate) exact_rate = 1;
       int distance = abs(sample_rates[index] - desired_rate);
       if (distance < best_distance) {
         pipeline->encoder->sample_rate = sample_rates[index];
         best_distance = distance;
       }
     }
+    if (job->request->output_sample_rate > 0 && !exact_rate) return AVERROR(EINVAL);
   }
   AVChannelLayout desired_layout = {0};
-  if (pipeline->decoder->ch_layout.order == AV_CHANNEL_ORDER_UNSPEC) {
+  if (job->request->output_channels > 0) {
+    av_channel_layout_default(&desired_layout, job->request->output_channels);
+  } else if (pipeline->decoder->ch_layout.order == AV_CHANNEL_ORDER_UNSPEC) {
     av_channel_layout_default(&desired_layout, pipeline->decoder->ch_layout.nb_channels);
   } else {
     result = av_channel_layout_copy(&desired_layout, &pipeline->decoder->ch_layout);
@@ -161,17 +168,23 @@ static int tf_open_output(TfFfmpegJob *job, TfPipeline *pipeline) {
   const AVChannelLayout *selected_layout = &desired_layout;
   if (channel_layout_count > 0) {
     int best_distance = INT_MAX;
+    int exact_layout = 0;
     for (int index = 0; index < channel_layout_count; index += 1) {
       if (channel_layouts[index].nb_channels <= 0) continue;
       int distance = abs(channel_layouts[index].nb_channels - desired_layout.nb_channels);
       if (av_channel_layout_compare(&channel_layouts[index], &desired_layout) == 0) {
         selected_layout = &channel_layouts[index];
+        exact_layout = 1;
         break;
       }
       if (distance < best_distance) {
         selected_layout = &channel_layouts[index];
         best_distance = distance;
       }
+    }
+    if (job->request->output_channels > 0 && !exact_layout) {
+      av_channel_layout_uninit(&desired_layout);
+      return AVERROR(EINVAL);
     }
   }
   result = av_channel_layout_copy(&pipeline->encoder->ch_layout, selected_layout);
@@ -370,7 +383,8 @@ int64_t tf_ffmpeg_job_output_samples(const TfFfmpegJob *job) {
 int tf_ffmpeg_render(TfFfmpegJob *job, const TfFfmpegRenderRequest *request) {
   if (!job || !request || !request->input_path || !request->output_path ||
       !request->output_format || !tf_encoder_name(request->output_format) ||
-      !isfinite(request->pitch_cents) || fabs(request->pitch_cents) > 4800.0) {
+      !isfinite(request->pitch_cents) || fabs(request->pitch_cents) > 4800.0 ||
+      request->output_sample_rate < 0 || request->output_channels < 0) {
     return AVERROR(EINVAL);
   }
   memset(job->error, 0, sizeof(job->error));

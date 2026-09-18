@@ -18,6 +18,7 @@ function enableAndroidRuntime() {
     analysisAvailable: true,
     basicChordsAvailable: true,
     whisperAvailable: false,
+    whisperModelStatus: "unavailable",
     stemSeparationAvailable: false,
     generationTestingAvailable: true,
     maxRecommendedModel: null,

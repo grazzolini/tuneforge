@@ -12,6 +12,13 @@
     public float[][] runTuneForgeCrema(float[],int,java.lang.String);
     public java.lang.String takeTuneForgeCremaError(java.lang.String);
     public void cancelTuneForgeCrema(java.lang.String);
+    public java.lang.String getTuneForgeWhisperStatus();
+    public java.lang.String prepareTuneForgeWhisper(java.lang.String);
+    public java.lang.String takeTuneForgeWhisperError(java.lang.String);
+    public void cancelTuneForgeWhisper(java.lang.String);
+    public int getTuneForgeWhisperProgress(java.lang.String);
+    public void clearTuneForgeWhisperProgress(java.lang.String);
+    public java.lang.Object getTuneForgeInferenceLock();
 }
 
 # Keep the pinned ExecuTorch JNI surface and its fbjni exception bridge stable under R8.

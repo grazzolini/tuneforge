@@ -243,7 +243,19 @@ This file is the source of truth for dependency and model-weight distribution po
 
 - **License:** Unlicense for whisper-rs; MIT for whisper.cpp
 - **Source:** <https://codeberg.org/tazz4843/whisper-rs> and <https://github.com/ggml-org/whisper.cpp>
-- **Notes:** Used by the embedded Android backend for side-loaded local lyrics transcription. Tuneforge does not redistribute Whisper model weights.
+- **Notes:** Android builds prepare checksum-pinned `whisper-rs-sys` 0.15.0 source in isolated build storage and apply the maintained DTW/Vulkan patch. Local lyrics use the full upstream `large-v3-turbo` GGML artifact at immutable revision `98aa99a0a9db05ae2342309f5096248665f7cba3`, expected size 1,624,555,275 bytes and SHA-256 `1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69`. Default packages do not redistribute these weights; the app downloads and verifies them on first use.
+
+### Khronos Vulkan-Headers 1.4.357.0
+
+- **License:** Apache-2.0
+- **Source:** <https://github.com/KhronosGroup/Vulkan-Headers/tree/vulkan-sdk-1.4.357.0>
+- **Notes:** Checksum-pinned build input for Android whisper.cpp Vulkan compilation. The source archive SHA-256 is `e87dce08116151f6b6d7de6b6faf41498e87e6cf848ff16fa3bd5402190ad4a3`; shader compilation requires the `glslc` shipped by Android NDK `29.0.14206865`, and runtime loading uses Android's system Vulkan loader.
+
+### zlib
+
+- **License:** zlib License
+- **Source:** <https://zlib.net/>
+- **Notes:** Android whisper.cpp links the platform `libz` supplied by Android. It computes the same UTF-8 repetition ratio used by the pinned desktop Whisper decode fallback. APK validation verifies the emitted system-library dependency; TuneForge does not redistribute zlib.
 
 ### qrcode.react
 

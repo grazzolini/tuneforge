@@ -17,6 +17,7 @@ pub fn mobile_capabilities() -> Result<MobileCapabilities, String> {
         crema_available: false,
         crema_model_status: "unavailable".to_string(),
         whisper_available: false,
+        whisper_model_status: "unavailable".to_string(),
         stem_separation_available: false,
         generation_testing_available: false,
         max_recommended_model: None,

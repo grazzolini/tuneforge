@@ -24,6 +24,13 @@ const requiredMethods = new Map([
   ["runTuneForgeCrema", "([FILjava/lang/String;)[[F"],
   ["takeTuneForgeCremaError", "(Ljava/lang/String;)Ljava/lang/String;"],
   ["cancelTuneForgeCrema", "(Ljava/lang/String;)V"],
+  ["getTuneForgeWhisperStatus", "()Ljava/lang/String;"],
+  ["prepareTuneForgeWhisper", "(Ljava/lang/String;)Ljava/lang/String;"],
+  ["takeTuneForgeWhisperError", "(Ljava/lang/String;)Ljava/lang/String;"],
+  ["cancelTuneForgeWhisper", "(Ljava/lang/String;)V"],
+  ["getTuneForgeWhisperProgress", "(Ljava/lang/String;)I"],
+  ["clearTuneForgeWhisperProgress", "(Ljava/lang/String;)V"],
+  ["getTuneForgeInferenceLock", "()Ljava/lang/Object;"],
 ]);
 
 export function parseJniRules(source) {
@@ -212,8 +219,12 @@ export function validateReleaseJni({ root = workspaceRoot, run = runCommand, apk
       if (!alignments.length || alignments.some((alignment) => alignment < 0x4000)) {
         throw new Error(`APK native library lacks 16 KB LOAD alignment: ${entry}`);
       }
-      for (const match of elf.matchAll(/Shared library: \[([^\]]+)\]/g)) {
-        const dependency = match[1];
+      const dependencies = [...elf.matchAll(/Shared library: \[([^\]]+)\]/g)]
+        .map((match) => match[1]);
+      if (entry === "lib/arm64-v8a/libtuneforge.so" && !dependencies.includes("libz.so")) {
+        throw new Error("TuneForge native library is missing its Android system zlib dependency.");
+      }
+      for (const dependency of dependencies) {
         if (/^(?:libav|libswresample|libmp3lame)/.test(dependency) && !ownedNames.has(dependency)) {
           throw new Error(`APK native dependency is outside owned codec closure: ${dependency}`);
         }

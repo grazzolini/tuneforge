@@ -29,6 +29,8 @@ pub mod system_input;
 mod test_support;
 pub mod timeline;
 pub mod transport;
+pub(crate) mod whisper_alignment;
+pub(crate) mod whisper_model;
 
 pub const AUDIO_EVENT_STATE: &str = "audio://state";
 pub const AUDIO_EVENT_POSITION: &str = "audio://position";

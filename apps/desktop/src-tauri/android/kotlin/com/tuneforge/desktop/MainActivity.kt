@@ -63,6 +63,20 @@ class MainActivity : TauriActivity() {
 
   fun cancelTuneForgeCrema(jobId: String) = CremaRunner.cancel(jobId)
 
+  fun getTuneForgeWhisperStatus(): String = WhisperModelInstaller.status(this)
+
+  fun prepareTuneForgeWhisper(jobId: String): String = WhisperModelInstaller.prepare(this, jobId)
+
+  fun takeTuneForgeWhisperError(jobId: String): String = WhisperModelInstaller.takeError(jobId)
+
+  fun cancelTuneForgeWhisper(jobId: String) = WhisperModelInstaller.cancel(jobId)
+
+  fun getTuneForgeWhisperProgress(jobId: String): Int = WhisperModelInstaller.progress(jobId)
+
+  fun clearTuneForgeWhisperProgress(jobId: String) = WhisperModelInstaller.clearProgress(jobId)
+
+  fun getTuneForgeInferenceLock(): Any = InferenceLock.LOCK
+
   fun applyTuneForgeScreenProtection(expectedRevision: Long) {
     window.decorView.post {
       val requestedMask = PowerInhibitionService

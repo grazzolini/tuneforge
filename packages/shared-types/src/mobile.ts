@@ -16,8 +16,9 @@ export type MobileCapabilities = {
   cremaAvailable?: boolean;
   cremaModelStatus?: "ready" | "download-required" | "corrupt" | "unavailable";
   whisperAvailable: boolean;
+  whisperModelStatus: "ready" | "download-required" | "corrupt" | "unavailable";
   stemSeparationAvailable: boolean;
   generationTestingAvailable: boolean;
-  maxRecommendedModel: "tiny" | "base" | "small" | null;
+  maxRecommendedModel: "tiny" | "base" | "small" | "large-v3-turbo" | null;
   cpuFallbackAllowed: boolean;
 };

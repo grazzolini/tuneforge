@@ -114,6 +114,7 @@ const androidCapabilities: MobileCapabilities = {
   analysisAvailable: true,
   basicChordsAvailable: true,
   whisperAvailable: false,
+  whisperModelStatus: "unavailable",
   stemSeparationAvailable: false,
   generationTestingAvailable: false,
   maxRecommendedModel: null,

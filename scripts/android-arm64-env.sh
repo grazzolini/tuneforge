@@ -81,6 +81,10 @@ export CMAKE_ANDROID_ARCH_ABI="arm64-v8a"
 export CMAKE_SYSTEM_PROCESSOR="aarch64"
 export CMAKE_SYSTEM_VERSION="26"
 
+export TUNEFORGE_WHISPER_RS_SYS_SOURCE="$(
+  node "$SCRIPT_DIR/prepare-whisper-native-source.mjs"
+)"
+
 if command -v make >/dev/null 2>&1; then
   export CMAKE_MAKE_PROGRAM="$(command -v make)"
 fi

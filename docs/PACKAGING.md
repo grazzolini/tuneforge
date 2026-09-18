@@ -250,12 +250,35 @@ pnpm package:android
 pnpm package:android:release
 ```
 
+For an optimized local APK eligible for Android process CPU profiling, add the opt-in flag:
+
+```sh
+pnpm package:android -- --profile
+```
+
+This keeps release optimizations and the local test identity/signature, leaves the APK non-debuggable,
+and temporarily enables shell profiling. Generated files are restored even when the build fails. Keep
+the matching
+`apps/desktop/src-tauri/target/android-ndk-*/aarch64-linux-android/release/libtuneforge.so` and
+`apps/desktop/src-tauri/gen/android/app/build/outputs/mapping/universalRelease/mapping.txt`; they
+provide native function names and Java/Kotlin deobfuscation for that exact build. Source-line symbols
+are not enabled.
+
 All four commands run the same preparation under one packaging lock: toolchain validation, verified
 FFmpeg/LAME/libsoxr build or reuse, conditional Tauri Android initialization, icon generation,
 generated-project preparation, and staging the seven audited shared libraries plus notices and
 provenance. `package:android:prepare` stops before APK creation; build commands run preparation
 automatically. Explicit runtime-root overrides remain validate-only. The owned target is arm64-v8a,
 API 26+, and every ELF LOAD segment must be aligned to at least 16 KB.
+The same owned FFmpeg bridge prepares Whisper input as signed 16-bit PCM at 16 kHz mono.
+
+The Android Rust build prepares its Whisper native source from a verified, pinned crate archive in
+isolated target storage, applies the maintained TuneForge DTW/Vulkan patch, and compiles shaders with
+the pinned Android NDK `glslc`. The build fails if another NDK revision is selected. It uses
+checksum-pinned Khronos Vulkan headers and never edits the shared Cargo cache. APK validation checks
+the emitted JNI/native dependency closure, including Android's system `libz` used for the
+desktop-compatible Whisper repetition fallback, and 16 KB alignment. The full Turbo weights remain
+a verified first-use download and are not part of the default APK.
 
 Preparation stores no application identity and rejects `--package-name`. Debug and optimized local
 builds default to `com.tuneforge.desktop.test`; either accepts one valid non-production

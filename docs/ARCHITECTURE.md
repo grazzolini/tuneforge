@@ -241,6 +241,11 @@ Validation failures return `INVALID_REQUEST` with serialized validation details.
 - Android general analysis computes desktop-compatible HPSS, tuning, CQT/CENS, key, and confidence.
   Advanced Chords stays separate and runs the verified Crema 0.2.0 pair through ONNX Runtime 1.29.0
   FP32 CPU inference with guarded asynchronous persistence.
+- Android lyrics run full `large-v3-turbo` through patched, pinned whisper.cpp with DTW word timing.
+  Its selected source is first converted through the owned FFmpeg bridge to signed 16-bit PCM at
+  16 kHz mono, matching the desktop Whisper input pipeline.
+  The runtime prefers Vulkan, retries once with a fresh CPU context after recoverable GPU failure,
+  and atomically persists only source-current, uncancelled results.
 - Mobile does not run the desktop Python/FastAPI backend today.
 
 ## Extensibility Rules

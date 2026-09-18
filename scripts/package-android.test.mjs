@@ -9,6 +9,7 @@ import {
   acquirePackagingLock,
   artifactFromMetadata,
   configureLocalBuild,
+  configureProfileableManifest,
   configurePublishableSigning,
   configureReleaseDebugSigning,
   generatedState,
@@ -33,26 +34,29 @@ import {
   verifyPublishable,
   verifyExecutorchAar,
   verifyOnnxRuntimeAar,
+  verifyPreparedFfmpeg,
   verifyPreparedSoxr,
   verifyApplicationId,
   verifyLocalSigner,
+  verifyProfileable,
+  withTemporaryConfigurations,
 } from "./package-android.mjs";
 
 test("Android model bundle remains explicit and composes with build modes", () => {
   assert.deepEqual(parseAndroidOptions([]), {
-    mode: "local-release", modelBundle: false, testIdentity: false, packageName: undefined,
+    mode: "local-release", modelBundle: false, profile: false, testIdentity: false, packageName: undefined,
   });
   assert.deepEqual(parseAndroidOptions(["--debug", "--model-bundle"]), {
-    mode: "debug", modelBundle: true, testIdentity: false, packageName: undefined,
+    mode: "debug", modelBundle: true, profile: false, testIdentity: false, packageName: undefined,
   });
   assert.deepEqual(parseAndroidOptions(["--debug", "--", "--model-bundle"]), {
-    mode: "debug", modelBundle: true, testIdentity: false, packageName: undefined,
+    mode: "debug", modelBundle: true, profile: false, testIdentity: false, packageName: undefined,
   });
   assert.deepEqual(parseAndroidOptions(["--model-bundle", "--prepare"]), {
-    mode: "prepare", modelBundle: true, testIdentity: false, packageName: undefined,
+    mode: "prepare", modelBundle: true, profile: false, testIdentity: false, packageName: undefined,
   });
   assert.deepEqual(parseAndroidOptions(["--debug", "--test-identity"]), {
-    mode: "debug", modelBundle: false, testIdentity: true, packageName: undefined,
+    mode: "debug", modelBundle: false, profile: false, testIdentity: true, packageName: undefined,
   });
   assert.throws(() => parseAndroidOptions(["--publishable", "--test-identity"]), /only for local/);
   assert.equal(parseAndroidOptions(["--debug", "--package-name", "com.example.fixture"]).packageName,
@@ -64,6 +68,39 @@ test("Android model bundle remains explicit and composes with build modes", () =
     ["--package-name", "com.one", "--package-name", "com.two"]]) {
     assert.throws(() => parseAndroidOptions(args));
   }
+});
+test("profiling is limited to a temporary optimized local build", (t) => {
+  assert.equal(parseAndroidOptions(["--profile"]).profile, true);
+  for (const args of [["--profile", "--prepare"], ["--profile", "--debug"],
+    ["--profile", "--publishable"], ["--profile", "--profile"]]) {
+    assert.throws(() => parseAndroidOptions(args), /--profile/);
+  }
+  const root = temp(t);
+  const build = path.join(root, "build.gradle.kts");
+  const manifest = path.join(root, "AndroidManifest.xml");
+  fs.writeFileSync(build, "original build\n");
+  fs.writeFileSync(manifest, '<manifest xmlns:android="http://schemas.android.com/apk/res/android">\n' +
+    "    <application android:label=\"TuneForge\">\n    </application>\n</manifest>\n");
+  assert.throws(() => withTemporaryConfigurations([
+    { file: build, configure: (contents) => `${contents}temporary build\n` },
+    { file: manifest, configure: configureProfileableManifest },
+  ], () => {
+    assert.match(fs.readFileSync(manifest, "utf8"), /<profileable android:shell="true" \/>/);
+    throw new Error("synthetic build failure");
+  }), /synthetic build failure/);
+  assert.equal(fs.readFileSync(build, "utf8"), "original build\n");
+  assert.doesNotMatch(fs.readFileSync(manifest, "utf8"), /profileable/);
+  assert.throws(() => configureProfileableManifest("<application><profileable /></application>"),
+    /already contains/);
+});
+test("profile APK verification requires shell profiling and rejects debuggable output", () => {
+  const verify = (badging, manifest) => verifyProfileable("app.apk", { aapt2: "/aapt2" }, {
+    runCapture: (_command, args) => ({ ok: true, output: args.includes("badging") ? badging : manifest }),
+  });
+  const manifest = "E: profileable\n  A: http://schemas.android.com/apk/res/android:shell(0x0101054d)=true";
+  assert.doesNotThrow(() => verify("package: name='com.tuneforge.desktop.test'", manifest));
+  assert.throws(() => verify("application-debuggable", manifest), /non-debuggable/);
+  assert.throws(() => verify("package: name='com.tuneforge.desktop.test'", "E: application"), /profileable/);
 });
 
 test("Android packaging verifies the pinned ExecuTorch AAR", (t) => {
@@ -179,6 +216,7 @@ test("prepared state requires outputs owned by the explicit preparation command"
     "app/src/main/java/com/tuneforge/desktop/ModelAssetDescriptor.java",
     "app/src/main/java/com/tuneforge/desktop/BeatThisRunner.java",
     "app/src/main/java/com/tuneforge/desktop/CremaRunner.java",
+    "app/src/main/java/com/tuneforge/desktop/WhisperModelInstaller.java",
     "app/src/main/java/com/tuneforge/desktop/InferenceLock.java",
     "app/src/main/res/values/ic_launcher_background.xml",
     "app/src/main/jniLibs/arm64-v8a/libavcodec.so",
@@ -217,6 +255,28 @@ test("Android builds reject stale staged libsoxr artifacts", (t) => {
   assert.doesNotThrow(() => verifyPreparedSoxr(soxr, android));
   fs.writeFileSync(path.join(android, pairs[0][1]), "stale PFFFT-disabled runtime");
   assert.throws(() => verifyPreparedSoxr(soxr, android), /preparation did not complete/);
+});
+test("Android builds reject stale staged FFmpeg artifacts", (t) => {
+  const root = temp(t);
+  const ffmpeg = path.join(root, "owned-ffmpeg");
+  const android = path.join(root, "android");
+  const pairs = [
+    ...["avcodec", "avfilter", "avformat", "avutil", "swresample", "mp3lame"]
+      .map((name) => [`lib/lib${name}.so`, `app/src/main/jniLibs/arm64-v8a/lib${name}.so`]),
+    ["provenance.json", "app/src/main/assets/ffmpeg/provenance.json"],
+  ];
+  for (const [sourceRelative, stagedRelative] of pairs) {
+    const source = path.join(ffmpeg, sourceRelative);
+    const staged = path.join(android, stagedRelative);
+    fs.mkdirSync(path.dirname(source), { recursive: true });
+    fs.mkdirSync(path.dirname(staged), { recursive: true });
+    fs.writeFileSync(source, sourceRelative);
+    fs.writeFileSync(staged, sourceRelative);
+  }
+  assert.doesNotThrow(() => verifyPreparedFfmpeg(ffmpeg, android));
+  fs.writeFileSync(path.join(android, pairs[2][1]), "stale FFmpeg runtime");
+  assert.throws(() => verifyPreparedFfmpeg(ffmpeg, android),
+    /preparation did not complete/);
 });
 test("release debug signing is marker-based and idempotent", (t) => {
   const buildFile = path.join(temp(t), "build.gradle.kts");
@@ -568,6 +628,8 @@ test("all Android package modes share one native preparation path", () => {
   assert.match(source, /build-ffmpeg\.mjs"\),\s+"--target", "android-arm64-v8a", "--ensure"/);
   assert.match(source, /build-soxr\.mjs"\),\s+"--target", "android-arm64-v8a", "--ensure"/);
   assert.match(source, /validateSoxrOutput\(soxrRoot, "android-arm64-v8a", soxrValidationOptions\(env\)\)/);
+  assert.ok(source.indexOf("verifyPreparedFfmpeg(ffmpegRoot)") > source.indexOf("[prepareGenerated]"));
+  assert.ok(source.indexOf("verifyPreparedSoxr(soxrRoot)") > source.indexOf("[prepareGenerated]"));
   assert.match(source, /validate-android-release-jni\.mjs"\), "--apk", apk/);
   assert.match(source, /\.android.*tuneforge-test\.keystore|tuneforge-test\.keystore/);
   assert.match(source, /run\("bash", args, \{ cwd: desktopDir, env: buildEnv,/);

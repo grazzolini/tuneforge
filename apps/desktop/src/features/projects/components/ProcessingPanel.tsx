@@ -25,7 +25,10 @@ export function ProcessingPanel() {
     isStemRunning,
     lyricsLanguageMetadata,
     lyricsLanguageOptions,
+    lyricsCancelMutation,
+    lyricsJob,
     lyricsMutation,
+    mobileCapabilities,
     mobileGenerationMessage,
     mobileBeatAnalysisMessage,
     mobileChordBackendMessage,
@@ -60,6 +63,11 @@ export function ProcessingPanel() {
     ? "Advanced Beat Analysis is unavailable on this device. Choose Built-in Beat Analysis in Settings."
     : editLockTitle;
   const selectedLyricsLanguageValue = selectedLyricsLanguageOverride ?? "auto";
+  const lyricsSetupStopped =
+    mobileCapabilities?.whisperModelStatus !== "ready" &&
+    lyricsJob != null &&
+    ["cancelled", "failed"].includes(lyricsJob.status) &&
+    ["downloading", "repairing", "verifying", "interrupted"].includes(lyricsJob.stage ?? "");
   const lyricsActionLabel =
     lyricsMutation.isPending || isLyricsRunning
       ? noLyricsSelected
@@ -69,9 +77,21 @@ export function ProcessingPanel() {
         ? hasLyricsTranscript
           ? "Clear Lyrics"
           : "Mark Instrumental"
-        : hasLyricsTranscript
-          ? "Refresh Lyrics"
-          : "Generate Lyrics";
+        : lyricsSetupStopped
+          ? hasLyricsTranscript
+            ? "Retry Download & Refresh Lyrics"
+            : "Retry Download & Generate Lyrics"
+        : mobileCapabilities?.whisperModelStatus === "download-required"
+          ? hasLyricsTranscript
+            ? "Download & Refresh Lyrics"
+            : "Download & Generate Lyrics"
+          : mobileCapabilities?.whisperModelStatus === "corrupt"
+            ? hasLyricsTranscript
+              ? "Repair & Refresh Lyrics"
+              : "Repair & Generate Lyrics"
+            : hasLyricsTranscript
+              ? "Refresh Lyrics"
+              : "Generate Lyrics";
 
   function handleLyricsLanguageChange(event: ChangeEvent<HTMLSelectElement>) {
     const nextValue = event.target.value;
@@ -93,7 +113,12 @@ export function ProcessingPanel() {
       </div>
 
       {isMobileRuntime && mobileGenerationMessage ? (
-        <p className="inline-error">{mobileGenerationMessage}</p>
+        <p
+          aria-live="polite"
+          className={mobileCapabilities?.whisperModelStatus === "ready" ? "subpanel__copy" : "inline-error"}
+        >
+          {mobileGenerationMessage}
+        </p>
       ) : null}
 
       {isMobileRuntime && mobileBeatAnalysisMessage ? (
@@ -168,6 +193,23 @@ export function ProcessingPanel() {
           </label>
           {lyricsLanguageMetadata ? (
             <span className="processing-panel__lyrics-meta">{lyricsLanguageMetadata}</span>
+          ) : null}
+          {isLyricsRunning && lyricsJob ? (
+            <p aria-live="polite" className="subpanel__copy">
+              {lyricsJob.stage_label ?? "Preparing lyrics"}
+              {lyricsJob.stage_label?.includes("%")
+                ? ""
+                : ` · ${Math.max(0, Math.min(100, Math.round(lyricsJob.progress)))}%`} ·{" "}
+              <Link to="/activity">Activity</Link>{" "}
+              <button
+                className="button button--small"
+                disabled={lyricsCancelMutation.isPending}
+                onClick={() => lyricsCancelMutation.mutate(lyricsJob.id)}
+                type="button"
+              >
+                Cancel
+              </button>
+            </p>
           ) : null}
         </div>
         <button

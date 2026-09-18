@@ -12,13 +12,13 @@ use std::sync::{
 static AUDIO_JOB_CANCELLATIONS: LazyLock<Mutex<HashMap<String, Arc<AtomicBool>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-struct AudioJobCancellation {
+pub(super) struct AudioJobCancellation {
     job_id: String,
     token: Arc<AtomicBool>,
 }
 
 impl AudioJobCancellation {
-    fn begin(job_id: &str) -> Self {
+    pub(super) fn begin(job_id: &str) -> Self {
         let mut cancellations = AUDIO_JOB_CANCELLATIONS.lock().unwrap();
         let token = cancellations
             .entry(job_id.to_string())
@@ -30,8 +30,12 @@ impl AudioJobCancellation {
         }
     }
 
-    fn requested(&self) -> bool {
+    pub(super) fn requested(&self) -> bool {
         self.token.load(Ordering::Relaxed)
+    }
+
+    pub(super) fn token(&self) -> Arc<AtomicBool> {
+        self.token.clone()
     }
 }
 

@@ -490,6 +490,24 @@ describe("formatJobRuntimeSummary", () => {
         }),
       ),
     ).toBe("MPS / CPU fallback after accelerator became unavailable.");
+    expect(
+      formatJobRuntimeSummary(
+        testJob({
+          runtime_detail: "CPU retry after Vulkan inference failed.",
+          runtime_device: "cpu",
+          type: "lyrics",
+        }),
+      ),
+    ).toBe("CPU / CPU retry after Vulkan inference failed.");
+    expect(
+      formatJobRuntimeSummary(
+        testJob({
+          runtime_detail: "CPU execution; Vulkan was not used.",
+          runtime_device: "cpu",
+          type: "lyrics",
+        }),
+      ),
+    ).toBe("CPU / CPU execution; Vulkan was not used.");
   });
 
   it("omits unsafe or unknown runtime details", () => {
@@ -579,6 +597,17 @@ describe("dependency diagnostic formatting", () => {
     ).toBe(
       "Whisper model cache is unreadable, so TuneForge cannot generate lyrics. Model/cache: Whisper. Next: Fix local cache permissions or re-run setup from an account that can read the model cache.",
     );
+  });
+
+  it.each([
+    "Whisper Turbo download timed out. Check your connection; retry starts from the beginning.",
+    "Whisper Turbo could not reach the download server. Check your connection; retry starts from the beginning.",
+    "Whisper Turbo could not establish a secure download connection. Check the device date and network security; retry starts from the beginning.",
+    "Whisper Turbo setup failed. Retry downloads and verifies the full model from the beginning.",
+  ])("keeps Android Whisper setup recovery without desktop dependency advice for %s", (message) => {
+    const formatted = formatJobErrorMessage(message, testJob({ type: "lyrics" }));
+    expect(formatted).toContain(message);
+    expect(formatted).not.toContain("Install local backend lyrics dependencies");
   });
 
   it("keeps non-dependency job errors unchanged", () => {

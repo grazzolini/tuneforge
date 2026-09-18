@@ -29,6 +29,7 @@ const mobileCapabilities: MobileCapabilities = {
   cremaAvailable: true,
   cremaModelStatus: "download-required",
   whisperAvailable: false,
+  whisperModelStatus: "unavailable",
   stemSeparationAvailable: false,
   generationTestingAvailable: false,
   maxRecommendedModel: null,

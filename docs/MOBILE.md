@@ -55,18 +55,16 @@ Analyze and basic chord detection may run on CPU. Lyrics transcription may also 
 - `cremaAvailable`
 - `cremaModelStatus`: `ready`, `download-required`, `corrupt`, or `unavailable`
 - `whisperAvailable`
+- `whisperModelStatus`: `ready`, `download-required`, `corrupt`, or `unavailable`
 - `stemSeparationAvailable`
 - `generationTestingAvailable`
 - `maxRecommendedModel`
-- `cpuFallbackAllowed: false`
+- `cpuFallbackAllowed`
 
-If the local Whisper model is missing, the UI disables lyrics generation and shows:
-
-```text
-Side-load a Whisper model to enable local lyrics. Stem generation is unavailable on this device.
-```
-
-Debug Android emulator builds may set `generationTestingAvailable` so the lyrics action can submit jobs during UI flow testing. This does not report Whisper or stem separation as available. Once a Whisper model is side-loaded, lyrics use the real local transcription path; stems stay disabled and still fail closed if invoked directly.
+Android lyrics use the exact full `large-v3-turbo` GGML weights. First use downloads them from the
+pinned upstream revision, verifies their SHA-256, and atomically promotes them into app-private
+storage. Interrupted or failed replacement keeps a previously verified model. Retry and repair start
+with fresh staging; TuneForge does not claim byte resume. A verified installation works offline.
 
 Advanced Beat Analysis runs locally through ExecuTorch 1.4 XNNPACK. The first use downloads the
 pinned `small0` program into app-private storage unless the local/dev APK was prepared with
@@ -83,18 +81,23 @@ job. Built-in Chords is always selectable. Advanced Chords runs Crema 0.2.0 thro
 through the existing job UI, and never switches to Built-in after an explicit Crema failure. Failed,
 cancelled, or interrupted refreshes retain the previously readable and edited chord timeline.
 
-Lyrics generation accepts the same nullable `language_override` payload as desktop. `null`, omission, or blank text keeps Whisper language detection on auto. Mobile validates explicit overrides against `none`, `en`, `pt`, `es`, `fr`, `de`, `it`, `ja`, `ko`, `zh`, and `hi`. `none` records an empty lyrics transcript without running `whisper.cpp`; other explicit codes are passed to `whisper.cpp`.
+Lyrics generation accepts the same nullable `language_override` payload as desktop. `null`, omission,
+or blank text keeps Whisper language detection on auto. Mobile validates explicit overrides against
+`none`, `en`, `pt`, `es`, `fr`, `de`, `it`, `ja`, `ko`, `zh`, and `hi`. `none` records an empty lyrics
+transcript without model setup. Other values run Turbo with desktop decoding thresholds, DTW word
+alignment, no carried context, and real word boundaries. Missing alignment fails without replacing
+saved lyrics.
 
-For local lyrics testing, side-load one of these files before launching the app:
+Android prefers a usable Vulkan backend and records the backend that actually ran. A recoverable
+Vulkan initialization or inference failure releases that context and retries the full transcription
+once on CPU. Cancellation never starts fallback. Model setup, inference, and saving report progress
+through the existing lyrics job; cancellation and source-revision checks happen before transactional
+replacement.
 
-```sh
-adb push ggml-base.bin /data/local/tmp/ggml-base.bin
-adb shell run-as com.tuneforge.desktop mkdir -p models/whisper
-adb shell run-as com.tuneforge.desktop cp /data/local/tmp/ggml-base.bin models/whisper/ggml-base.bin
-```
-
-The supported lookup priority is `ggml-base.bin`, `ggml-base.en.bin`, `ggml-tiny.bin`, then
-`ggml-tiny.en.bin`.
+Before Whisper runs, Android uses the owned FFmpeg bridge to decode, downmix, and resample the
+selected source to signed 16-bit PCM at 16 kHz mono, matching the desktop Whisper input pipeline.
+The hidden job-owned WAV is removed after success, failure, or cancellation; interrupted-job
+reconciliation removes it after a process restart.
 
 ## FFmpeg Policy
 
@@ -107,6 +110,8 @@ cancellation, staging, validation, and persistence; a narrow C shim owns opaque 
   Signalsmith paths. The conversion engine does not replace them.
 - Preview, retune, and transpose use bounded in-process conversion on background workers, validate
   before promotion, and compensate failed or interrupted filesystem/database work.
+- Lyrics preparation uses the same bridge for its job-owned 16 kHz mono PCM input without changing
+  the analysis or realtime playback decoders.
 - Source hashes identify the selected input; artifact hashes always describe the converted bytes.
 - Network, GPL, nonfree, version3, and unused FFmpeg features are disabled.
 

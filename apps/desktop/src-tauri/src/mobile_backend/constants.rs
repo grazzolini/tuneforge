@@ -41,8 +41,5 @@ const LYRICS_BACKEND_NONE: &str = "none";
 #[cfg(target_os = "android")]
 const GPU_REQUIRED: &str = "Local generation requires GPU acceleration on this device.";
 #[cfg(target_os = "android")]
-const LYRICS_NOT_WIRED: &str =
-    "Mobile lyrics transcription is not wired yet; emulator mode only tests the submit flow.";
-#[cfg(target_os = "android")]
 const STEMS_NOT_WIRED: &str =
     "Mobile stem separation is not wired yet; emulator mode only tests the submit flow.";

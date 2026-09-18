@@ -490,7 +490,7 @@ fn mark_interrupted_jobs_on_first_open(root: &Path, connection: &Connection) -> 
     if opened.insert(database_path) {
         let mut statement = connection
             .prepare(
-                "SELECT DISTINCT project_id FROM jobs WHERE project_id IS NOT NULL AND status IN ('pending', 'running') AND type IN ('analyze', 'chords', 'export', 'preview', 'retune', 'transpose')",
+                "SELECT DISTINCT project_id FROM jobs WHERE project_id IS NOT NULL AND status IN ('pending', 'running') AND type IN ('analyze', 'chords', 'lyrics', 'export', 'preview', 'retune', 'transpose')",
             )
             .map_err(|error| error.to_string())?;
         let project_ids = statement
@@ -502,6 +502,7 @@ fn mark_interrupted_jobs_on_first_open(root: &Path, connection: &Connection) -> 
         super::export::fail_interrupted_exports(connection)?;
         fail_interrupted_analyses(connection)?;
         fail_interrupted_chords(connection)?;
+        fail_interrupted_lyrics(connection)?;
         fail_interrupted_audio_transforms(connection)?;
         for project_id in project_ids {
             reconcile_project_storage_after_commit(connection, root, &project_id);
@@ -558,6 +559,33 @@ fn fail_interrupted_chords(connection: &Connection) -> Result<(), String> {
         payload["stage_label"] = json!("Chord generation interrupted");
         connection.execute(
             "UPDATE jobs SET status = 'failed', progress = 0, payload_json = ?1, error_message = 'TuneForge restarted before chord generation finished. Retry chord generation.', completed_at = ?2, updated_at = ?2 WHERE id = ?3 AND status IN ('pending', 'running')",
+            params![payload.to_string(), timestamp, job_id],
+        ).map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+fn fail_interrupted_lyrics(connection: &Connection) -> Result<(), String> {
+    let timestamp = now_iso();
+    let jobs = {
+        let mut statement = connection.prepare(
+            "SELECT id, payload_json FROM jobs WHERE status IN ('pending', 'running') AND type = 'lyrics'",
+        ).map_err(|error| error.to_string())?;
+        let mapped = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|error| error.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?;
+        mapped
+    };
+    for (job_id, payload_raw) in jobs {
+        let mut payload = serde_json::from_str::<Value>(&payload_raw).unwrap_or_else(|_| json!({}));
+        payload["stage"] = json!("interrupted");
+        payload["stage_label"] = json!("Whisper Turbo setup stopped");
+        connection.execute(
+            "UPDATE jobs SET status = 'failed', progress = 0, payload_json = ?1, error_message = 'Whisper Turbo setup stopped. Retry downloads the full model from the beginning.', completed_at = ?2, updated_at = ?2 WHERE id = ?3 AND status IN ('pending', 'running')",
             params![payload.to_string(), timestamp, job_id],
         ).map_err(|error| error.to_string())?;
     }
@@ -1152,6 +1180,84 @@ pub(super) fn create_running_job(
         )
         .map_err(|error| error.to_string())?;
     Ok(job)
+}
+
+pub(super) fn set_job_runtime_device(
+    connection: &Connection,
+    job: &mut JobSchema,
+    runtime_device: Option<&str>,
+) -> Result<(), String> {
+    let timestamp = now_iso();
+    let updated = connection
+        .execute(
+            "UPDATE jobs SET runtime_device = ?1, updated_at = ?2 WHERE id = ?3",
+            params![runtime_device, timestamp, job.id],
+        )
+        .map_err(|error| error.to_string())?;
+    if updated != 1 {
+        return Err("Job runtime device could not be updated.".to_string());
+    }
+    job.runtime_device = runtime_device.map(ToString::to_string);
+    job.updated_at = timestamp;
+    Ok(())
+}
+
+pub(super) fn create_lyrics_running_job(
+    connection: &Connection,
+    project_id: &str,
+    source_artifact_id: Option<String>,
+) -> Result<JobSchema, String> {
+    let mut job = create_running_job(connection, project_id, "lyrics", source_artifact_id)?;
+    set_job_runtime_device(connection, &mut job, None)?;
+    Ok(job)
+}
+
+pub(super) fn create_lyrics_completed_job(
+    connection: &Connection,
+    project_id: &str,
+    source_artifact_id: Option<String>,
+) -> Result<JobSchema, String> {
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(|error| error.to_string())?;
+    let mut job = create_completed_job(&transaction, project_id, "lyrics", source_artifact_id)?;
+    set_job_runtime_device(&transaction, &mut job, None)?;
+    transaction.commit().map_err(|error| error.to_string())?;
+    Ok(job)
+}
+
+pub(super) fn lyrics_transcript_revision(
+    connection: &Connection,
+    project_id: &str,
+) -> Result<Option<String>, String> {
+    let revision = connection
+        .query_row(
+            "SELECT source_segments_json, segments_json, has_user_edits, updated_at FROM lyrics_transcripts WHERE project_id = ?1",
+            params![project_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    Ok(revision.map(|(source, current, edited, updated)| {
+        let mut digest = Sha256::new();
+        for value in [source.as_bytes(), current.as_bytes(), updated.as_bytes()] {
+            digest.update((value.len() as u64).to_le_bytes());
+            digest.update(value);
+        }
+        digest.update(edited.to_le_bytes());
+        digest
+            .finalize()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    }))
 }
 
 pub(super) fn register_job_staging_path(
@@ -2444,6 +2550,10 @@ pub fn mobile_cancel_job(app: AppHandle, job_id: String) -> Result<JobResponse, 
         super::audio::request_audio_job_cancellation(&job_id);
     }
     #[cfg(target_os = "android")]
+    if job_type.as_deref() == Some("lyrics") {
+        super::android::request_lyrics_job_cancellation(&job_id);
+    }
+    #[cfg(target_os = "android")]
     if job_type.as_deref() == Some("analyze") {
         crate::native_audio::beat_this::cancel_android_model(&job_id);
     }
@@ -2705,6 +2815,159 @@ mod mobile_media_tests {
                 .status,
             "running",
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn restart_recovery_fails_lyrics_job_without_replacing_saved_words() {
+        let root = std::env::temp_dir().join(format!(
+            "tuneforge-mobile-lyrics-restart-{}",
+            new_id("test")
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let connection = db_at_root(&root).unwrap();
+        let project_id = source_hash_to_project_id(&"c".repeat(64)).unwrap();
+        let timestamp = now_iso();
+        connection.execute(
+            "INSERT INTO projects (id, display_name, source_path, imported_path, sync_status, created_at, updated_at) VALUES (?1, 'Restart', 'source.wav', 'source.wav', 'local', ?2, ?2)",
+            params![project_id, timestamp],
+        ).unwrap();
+        let saved_segments = json!([{
+            "start_seconds": 0.0,
+            "end_seconds": 0.5,
+            "text": "saved",
+            "words": [{
+                "text": "saved",
+                "start_seconds": 0.0,
+                "end_seconds": 0.5,
+                "confidence": 0.9,
+            }],
+        }])
+        .to_string();
+        connection.execute(
+            "INSERT INTO lyrics_transcripts (project_id, backend, source_kind, requested_device, device, model_name, source_segments_json, segments_json, has_user_edits, created_at, updated_at) VALUES (?1, 'whisper.cpp', 'generated', 'auto', 'cpu', 'large-v3-turbo', ?2, ?2, 0, ?3, ?3)",
+            params![project_id, saved_segments, timestamp],
+        ).unwrap();
+        let job =
+            create_running_job(&connection, &project_id, "lyrics", Some("source".into())).unwrap();
+        connection
+            .execute(
+                "UPDATE jobs SET payload_json = ?1 WHERE id = ?2",
+                params![json!({ "stage": "downloading" }).to_string(), job.id],
+            )
+            .unwrap();
+        let interrupted_audio = root
+            .join("projects")
+            .join(&project_id)
+            .join("analysis")
+            .join(format!(".lyrics-{}.wav", job.id));
+        fs::create_dir_all(interrupted_audio.parent().unwrap()).unwrap();
+        register_job_staging_path(&connection, &job.id, &interrupted_audio).unwrap();
+        fs::write(&interrupted_audio, b"partial").unwrap();
+
+        reconcile_project_storage_after_commit(&connection, &root, &project_id);
+        assert!(interrupted_audio.exists());
+
+        fail_interrupted_lyrics(&connection).unwrap();
+        reconcile_project_storage_after_commit(&connection, &root, &project_id);
+
+        let recovered: (String, String, String) = connection
+            .query_row(
+                "SELECT status, payload_json, error_message FROM jobs WHERE id = ?1",
+                params![job.id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(recovered.0, "failed");
+        let payload: Value = serde_json::from_str(&recovered.1).unwrap();
+        assert_eq!(payload["stage"], "interrupted");
+        assert!(recovered.2.contains("full model from the beginning"));
+        let persisted: String = connection
+            .query_row(
+                "SELECT segments_json FROM lyrics_transcripts WHERE project_id = ?1",
+                params![project_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(persisted, saved_segments);
+        assert!(!interrupted_audio.exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn lyrics_jobs_preserve_unknown_runtime_device_in_responses_and_storage() {
+        let root = std::env::temp_dir().join(format!(
+            "tuneforge-mobile-lyrics-runtime-device-{}",
+            new_id("test")
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let connection = db_at_root(&root).unwrap();
+        let project_id = source_hash_to_project_id(&"b".repeat(64)).unwrap();
+        let timestamp = now_iso();
+        connection.execute(
+            "INSERT INTO projects (id, display_name, source_path, imported_path, sync_status, created_at, updated_at) VALUES (?1, 'Runtime', 'source.wav', 'source.wav', 'local', ?2, ?2)",
+            params![project_id, timestamp],
+        ).unwrap();
+
+        let failed =
+            create_lyrics_running_job(&connection, &project_id, Some("source".into())).unwrap();
+        assert_eq!(failed.runtime_device, None);
+        fail_running_job(&connection, &failed.id, "failed", 1.0).unwrap();
+
+        let cancelled =
+            create_lyrics_running_job(&connection, &project_id, Some("source".into())).unwrap();
+        connection
+            .execute(
+                "UPDATE jobs SET status = 'cancelled', cancel_requested = 1 WHERE id = ?1",
+                params![cancelled.id],
+            )
+            .unwrap();
+
+        let completed =
+            create_lyrics_completed_job(&connection, &project_id, Some("source".into())).unwrap();
+        assert_eq!(completed.runtime_device, None);
+
+        drop(connection);
+        let reopened = db_at_root(&root).unwrap();
+        for job_id in [&failed.id, &cancelled.id, &completed.id] {
+            let persisted: Option<String> = reopened
+                .query_row(
+                    "SELECT runtime_device FROM jobs WHERE id = ?1",
+                    params![job_id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(persisted, None);
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn lyrics_revision_changes_when_saved_edits_change_at_same_timestamp() {
+        let root = std::env::temp_dir().join(format!(
+            "tuneforge-mobile-lyrics-revision-{}",
+            new_id("test")
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let connection = db_at_root(&root).unwrap();
+        let project_id = source_hash_to_project_id(&"b".repeat(64)).unwrap();
+        let timestamp = now_iso();
+        connection.execute(
+            "INSERT INTO projects (id, display_name, source_path, imported_path, sync_status, created_at, updated_at) VALUES (?1, 'Revision', 'source.wav', 'source.wav', 'local', ?2, ?2)",
+            params![project_id, timestamp],
+        ).unwrap();
+        connection.execute(
+            r#"INSERT INTO lyrics_transcripts (project_id, backend, source_kind, source_segments_json, segments_json, has_user_edits, created_at, updated_at) VALUES (?1, 'whisper.cpp', 'generated', '[{"text":"source"}]', '[{"text":"first"}]', 0, ?2, ?2)"#,
+            params![project_id, timestamp],
+        ).unwrap();
+        let before = lyrics_transcript_revision(&connection, &project_id).unwrap();
+        connection.execute(
+            r#"UPDATE lyrics_transcripts SET segments_json = '[{"text":"newer edit"}]', has_user_edits = 1 WHERE project_id = ?1"#,
+            params![project_id],
+        ).unwrap();
+        let after = lyrics_transcript_revision(&connection, &project_id).unwrap();
+
+        assert_ne!(before, after);
         let _ = fs::remove_dir_all(root);
     }
 

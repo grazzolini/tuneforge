@@ -53,7 +53,7 @@ const playwrightNoblePackages = [
 ];
 
 const ciImageReference =
-  "ghcr.io/grazzolini/tuneforge-ci@sha256:dbd9580c617995c2db85ec94a114568b408b312a6392b620f2b5a9dccde0e542";
+  "ghcr.io/grazzolini/tuneforge-ci@sha256:1ae2b125d00a62c858ebf7f2038ce75637e0664baebf6f1ec002491328d3c7b1";
 const ciImageConsumers = ["backend", "e2e", "desktop_tauri"];
 function read(root, relativePath) {
   return fs.readFileSync(path.join(root, relativePath), "utf8");
@@ -375,12 +375,17 @@ export function validateCiImagePolicy(root) {
       dockerignore === expectedDockerignore,
     "CI image repository context must allow and copy only reviewed SoXR inputs and its image README",
   );
+  const soxrNoticeLines = buildSoxr.split("\n")
+    .filter((line) => line.includes("THIRD_PARTY_NOTICES.md"));
   check(
     buildSoxr.includes('"scripts/build-soxr.mjs", "scripts/flatpak-source-snapshots.mjs"];') &&
       buildSoxr.includes(
+        '...(target === "android-arm64-v8a" ? ["THIRD_PARTY_NOTICES.md"] : [])',
+      ) &&
+      buildSoxr.includes(
         'if (target === "android-arm64-v8a") correspondingSourceFiles.push("THIRD_PARTY_NOTICES.md");',
       ) &&
-      (buildSoxr.match(/THIRD_PARTY_NOTICES\.md/g) ?? []).length === 1 &&
+      soxrNoticeLines.every((line) => line.includes('target === "android-arm64-v8a"')) &&
       buildSoxr.includes('"node scripts/build-soxr.mjs --target host-test"'),
     "SoXR host corresponding sources must include the helper and rebuild command without repository-wide notices",
   );

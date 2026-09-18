@@ -222,8 +222,8 @@ BlackHole capture are release checks, not default `pnpm test` coverage.
 | Stop semantics | returns transport to expected idle state | same | same |
 | Pause/Resume | no drift on resume at least for short cycle | no drift on resume at least for short cycle | no drift on resume at least for short cycle |
 | Loop | loop boundaries and loop duration stable; clearing at a boundary cancels the pending wrap | same | same |
-| Song count-in | only runs from absolute song start | same | same |
-| Loop count-in | runs at loop start and on loop wrap, never on pause/resume | same | same |
+| Song count-in | runs from absolute song start on initial play and each fresh replay after natural end or Stop; never on pause/resume | same | same |
+| Loop count-in | runs once at loop start and once per loop wrap, including natural lane end; never on pause/resume | same | same |
 | Tempo control | tempo change applies and stays stable | tempo change applies and stays stable | tempo change applies and stays stable |
 | Metronome follow | follows active track tempo while BPM changes | follows active track tempo while BPM changes | follows active track tempo while BPM changes |
 | Media keys / headset controls | system media controls play/pause/stop/seek native transport only | MPRIS controls play/pause/stop/seek native transport only | system media controls play/pause/stop/seek browser transport only |

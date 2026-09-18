@@ -162,6 +162,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.unstubAllEnvs();
   delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
   vi.restoreAllMocks();
@@ -635,22 +636,55 @@ describe("native playback race regressions", () => {
     expect(playback.isPlaying).toBe(true);
   });
 
-  it("restarts a native EOF loop after stopped then ended events", async () => {
+  it("restarts three native EOF loops after each stopped then ended pair", async () => {
     enableNativePlayback();
     await setup(session({ loopRange: { startSeconds: 5, endSeconds: 30 } }));
     await act(async () => playback.playPlayback());
-    const snapshot = await getMockInvoke()("audio_get_snapshot") as Record<string, unknown>;
-    const ended = { ...snapshot, state: "stopped", positionSeconds: 30 };
-
-    act(() => {
-      emitMockNativePlaybackPosition(ended as Parameters<typeof emitMockNativePlaybackPosition>[0]);
-    });
     const listener = mockListen.mock.calls
       .find(([name]) => name === "audio://ended")?.[1];
-    act(() => listener?.({ event: "audio://ended", id: 1, payload: ended }));
+
+    for (let wrap = 1; wrap <= 3; wrap += 1) {
+      const snapshot = await getMockInvoke()("audio_get_snapshot") as Record<string, unknown>;
+      const ended = { ...snapshot, state: "stopped", positionSeconds: 30 };
+      act(() => {
+        emitMockNativePlaybackPosition(
+          ended as Parameters<typeof emitMockNativePlaybackPosition>[0],
+        );
+        listener?.({ event: "audio://ended", id: wrap, payload: ended });
+      });
+      await flush();
+
+      expect(calls("audio_play")).toHaveLength(wrap + 1);
+    }
+  });
+
+  it("does not re-arm song count-in from a native stopped position alone", async () => {
+    enableNativePlayback();
+    await setup(session({ precountEnabled: true }));
+    await act(async () => playback.playPlayback());
+    const snapshot = await getMockInvoke()("audio_get_snapshot") as Record<string, unknown>;
+    act(() => emitMockNativeAudioCue({
+      generation: snapshot.generation,
+      revision: snapshot.timelineRevision,
+      cueIndex: 4,
+      kind: "precount_completion",
+      accent: false,
+      gain: 1,
+      scheduledNativeTimeUs: 2_000_000,
+      actualNativeTimeUs: 2_000_000,
+      insertionSequence: 5,
+    }));
+    act(() => emitMockNativePlaybackPosition({
+      ...snapshot,
+      state: "stopped",
+      positionSeconds: 0,
+    } as Parameters<typeof emitMockNativePlaybackPosition>[0]));
     await flush();
+    expect(playback.playbackTimeSeconds).toBe(0);
+    await act(async () => playback.playPlayback());
 
     expect(calls("audio_play")).toHaveLength(2);
+    expect(calls("audio_play")[1]?.[1]).toMatchObject({ payload: { precount: null } });
   });
 
   it("restarts a native EOF loop with loop count-in and followed metronome active", async () => {
@@ -695,6 +729,34 @@ describe("native playback race regressions", () => {
     } | undefined;
     expect(replay?.payload?.precount?.intervalsSeconds).toHaveLength(4);
     expect(metronome.isRunning).toBe(true);
+  });
+
+  it("runs one buffered loop count-in on each of three natural wraps", async () => {
+    vi.useFakeTimers();
+    await setup(bufferedSession({
+      loopRange: { startSeconds: 5, endSeconds: 30 },
+      precountLoopEnabled: true,
+    }));
+    await act(async () => playback.playPlayback());
+
+    const context = getMockAudioContexts()[0]!;
+    expect(context.createdOscillators).toHaveLength(4);
+    await act(async () => vi.advanceTimersByTimeAsync(2_035));
+    await flush();
+
+    for (let wrap = 1; wrap <= 3; wrap += 1) {
+      const source = context.createdSources[context.createdSources.length - 1]!;
+      act(() => source.onended?.call(
+        source as unknown as AudioBufferSourceNode,
+        new Event("ended"),
+      ));
+      await flush();
+
+      expect(context.createdOscillators).toHaveLength((wrap + 1) * 4);
+      await act(async () => vi.advanceTimersByTimeAsync(2_035));
+      await flush();
+      expect(context.createdSources).toHaveLength(wrap + 1);
+    }
   });
 
   it("stops old native ownership when switching projects", async () => {
@@ -829,6 +891,32 @@ describe("native playback race regressions", () => {
 });
 
 describe("buffered Web playback race regressions", () => {
+  it("re-arms song count-in after natural EOF across three plays", async () => {
+    vi.useFakeTimers();
+    await setup(bufferedSession({ precountEnabled: true }));
+
+    const context = getMockAudioContexts()[0]!;
+    for (let playIndex = 0; playIndex < 3; playIndex += 1) {
+      await act(async () => playback.playPlayback());
+      await flush();
+
+      expect(playback.isPrecounting).toBe(true);
+      expect(context.createdOscillators).toHaveLength((playIndex + 1) * 4);
+      await act(async () => vi.advanceTimersByTimeAsync(2_035));
+      await flush();
+
+      expect(context.createdSources).toHaveLength(playIndex + 1);
+      const source = context.createdSources[context.createdSources.length - 1]!;
+      act(() => source.onended?.call(
+        source as unknown as AudioBufferSourceNode,
+        new Event("ended"),
+      ));
+      await flush();
+      expect(playback.isPlaying).toBe(false);
+      expect(playback.playbackTimeSeconds).toBe(0);
+    }
+  });
+
   for (const action of ["stop", "pause", "seek"] as const) {
     it(`${action} cancels pending buffer preparation`, async () => {
       const response = deferred<Response>();

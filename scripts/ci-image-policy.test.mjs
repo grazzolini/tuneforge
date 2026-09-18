@@ -109,12 +109,20 @@ test("SoXR build-input manifest requires every reviewed input", () =>
     ["      packaging/soxr/patches/android-unversioned-soname.patch \\\n", ""],
   ], /build-input manifest must hash the exact reviewed recipe, helper, lock, and patch/));
 
-test("SoXR corresponding sources require helper and host rebuild instructions", () =>
+test("SoXR host recipe and corresponding sources exclude repository-wide notices", () =>
   assertMutationsFail("scripts/build-soxr.mjs", [
     [', "scripts/flatpak-source-snapshots.mjs"];', "];"],
     [
+      '...(target === "android-arm64-v8a" ? ["THIRD_PARTY_NOTICES.md"] : [])',
+      '"THIRD_PARTY_NOTICES.md"',
+    ],
+    [
       'if (target === "android-arm64-v8a") correspondingSourceFiles.push("THIRD_PARTY_NOTICES.md");',
       'correspondingSourceFiles.push("THIRD_PARTY_NOTICES.md");',
+    ],
+    [
+      "const correspondingSourceFiles = [lock.patch.path,",
+      'const correspondingSourceFiles = ["THIRD_PARTY_NOTICES.md", lock.patch.path,',
     ],
     ['"node scripts/build-soxr.mjs --target host-test"', '"node scripts/build-soxr.mjs --target android-arm64-v8a"'],
   ], /host corresponding sources must include/));

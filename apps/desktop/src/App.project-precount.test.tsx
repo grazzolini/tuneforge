@@ -6,6 +6,7 @@ import {
   getMockAudioContexts,
   getMockInvoke,
   markAudioReady,
+  mockListen,
   emitMockNativePlaybackPosition,
   emitMockNativeAudioCue,
   emitMockNativeAudioTerminal,
@@ -276,6 +277,91 @@ describe("Desktop app project playback pre-count", () => {
       trigger: "song-start",
     });
     expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument();
+  });
+
+  it("runs the native song count-in after natural EOF across three plays", async () => {
+    const restoreTauriRuntime = enableNativePlayback();
+    const user = userEvent.setup();
+    setupTempoAnalysis();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openPlaybackWorkspace(user);
+    await user.click(screen.getByLabelText("Enable pre-count"));
+    const endedListener = mockListen.mock.calls
+      .find(([name]) => name === "audio://ended")?.[1];
+
+    for (let playIndex = 0; playIndex < 3; playIndex += 1) {
+      await user.click(screen.getByRole("button", { name: "Play playback" }));
+      await waitFor(() => expect(invokeCalls("audio_play")).toHaveLength(playIndex + 1));
+      expect(invokeCalls("audio_play")[playIndex]?.[1]).toMatchObject({
+        payload: { precount: { intervalsSeconds: [0.5, 0.5, 0.5, 0.5] } },
+      });
+
+      const snapshot = await getMockInvoke()("audio_get_snapshot") as Record<string, unknown>;
+      act(() => emitMockNativeAudioCue({
+        generation: snapshot.generation,
+        revision: snapshot.timelineRevision,
+        cueIndex: 4,
+        kind: "precount_completion",
+        accent: false,
+        gain: 1,
+        scheduledNativeTimeUs: 2_000_000,
+        actualNativeTimeUs: 2_000_000,
+        insertionSequence: 5,
+      }));
+      const ended = { ...snapshot, state: "stopped", positionSeconds: 182 };
+      act(() => {
+        emitMockNativePlaybackPosition(
+          ended as Parameters<typeof emitMockNativePlaybackPosition>[0],
+        );
+        endedListener?.({ event: "audio://ended", id: 1, payload: ended });
+      });
+      await flushMicrotasks();
+      expect(screen.getByRole("button", { name: "Play playback" })).toBeInTheDocument();
+    }
+    restoreTauriRuntime();
+  });
+
+  it("runs loop count-in when a loop is configured after natural song EOF", async () => {
+    const user = userEvent.setup();
+    setupTempoAnalysis();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openPlaybackWorkspace(user);
+    const sourceAudio = findAudioByArtifactId("art_source");
+    markAudioReady(sourceAudio);
+    vi.useFakeTimers();
+    fireEvent.click(screen.getByLabelText("Enable pre-count"));
+    fireEvent.click(screen.getByRole("button", { name: "Play playback" }));
+    await flushMicrotasks();
+
+    const context = getMockAudioContexts()[0]!;
+    await act(async () => vi.advanceTimersByTimeAsync(2_035));
+    await flushMicrotasks();
+    const firstSource = context.createdSources[0]!;
+    act(() => firstSource.onended?.call(
+      firstSource as unknown as AudioBufferSourceNode,
+      new Event("ended"),
+    ));
+    await flushMicrotasks();
+    expect(screen.getByRole("button", { name: "Play playback" })).toBeInTheDocument();
+
+    setPlaybackPosition("12.25");
+    fireEvent.click(screen.getByRole("button", { name: "Set loop start" }));
+    setPlaybackPosition("24.5");
+    fireEvent.click(screen.getByRole("button", { name: "Set loop end" }));
+    fireEvent.click(screen.getByLabelText("Enable loop pre-count"));
+    fireEvent.click(screen.getByRole("button", { name: "Play playback" }));
+    await flushMicrotasks();
+
+    expect(context.createdOscillators).toHaveLength(8);
+    expect(readPlaybackE2ETelemetry().countIn.lastScheduled).toMatchObject({
+      clickCount: 4,
+      startTimeSeconds: 12.25,
+      trigger: "loop-start",
+    });
   });
 
   it("cancels pre-count without starting playback", async () => {

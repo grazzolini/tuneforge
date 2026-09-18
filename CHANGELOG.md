@@ -25,6 +25,10 @@ download, installation, verification, signature, and publication instructions.
 - Android Settings and Export now expose the same four durable audio formats while keeping export
   limited to existing saved artifacts and leaving playback tempo/tuning out of export.
 
+### Fixed
+
+- Restored project count-ins on every fresh replay after playback reaches the natural end.
+
 ## [1.5.0] - 2026-09-08
 
 ### Added

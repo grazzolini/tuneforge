@@ -1769,6 +1769,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       return;
     }
 
+    allowFreshPlaybackRef.current = true;
     clearStemClock(targetPlaybackState);
     targetPlaybackState.isPlaying = false;
     targetPlaybackState.offsetSeconds = 0;
@@ -4017,6 +4018,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
         if (restartActiveLoopPlayback(activeSession)) {
           return;
         }
+        allowFreshPlaybackRef.current = true;
         const resetTime = playbackResetTimeForSession(activeSession);
         setPlaybackTimeSeconds(resetTime);
         clearPlaybackControlBackend();

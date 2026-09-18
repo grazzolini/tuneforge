@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildModelBundlePlan, DEFAULT_LYRICS_MODEL } from "./model-bundle-metadata.mjs";
+import { ffmpegCorrespondingSourcesFileName } from "./build-ffmpeg.mjs";
 import { onnxRuntimeAndroidArtifact } from "./package-android.mjs";
 import { cremaAndroidAssets } from "./prepare-android-model-assets.mjs";
 import {
@@ -22,8 +23,7 @@ const soxrSourceLockPath = path.join(workspaceRoot, "packaging", "soxr", "source
 
 function buildOwnedCodecPolicy() {
   const sourceLock = JSON.parse(readFileSync(ffmpegSourceLockPath, "utf8"));
-  const sourceArchiveName =
-    `TuneForge_${sourceLock.runtimeVersion}_corresponding-sources.tar`;
+  const sourceArchiveName = ffmpegCorrespondingSourcesFileName();
   return {
     runtimeVersion: sourceLock.runtimeVersion,
     ownedTargets: Object.keys(sourceLock.targets),

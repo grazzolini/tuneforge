@@ -28,6 +28,7 @@ import {
   resolveSdk,
   runPublishableTransaction,
   sanitizedEnv,
+  soxrValidationOptions,
   validatePublishableCredentials,
   verifyPublishable,
   verifyExecutorchAar,
@@ -141,6 +142,11 @@ test("NDK discovery delegates selection to the shared helper", (t) => {
   assert.equal(invocation[2].env.ANDROID_HOME, root);
   assert.equal(invocation[2].env.ANDROID_NDK_HOME, ndk);
 });
+
+test("resolved Android environment selects llvm-readelf for libsoxr validation", () => {
+  assert.deepEqual(soxrValidationOptions({ LLVM_READELF: "/selected/ndk/bin/llvm-readelf" }),
+    { readelf: "/selected/ndk/bin/llvm-readelf" });
+});
 function completeGenerated(root) {
   for (const relative of [
     "app/build.gradle.kts", "app/src/main/AndroidManifest.xml",
@@ -210,7 +216,7 @@ test("Android builds reject stale staged libsoxr artifacts", (t) => {
   }
   assert.doesNotThrow(() => verifyPreparedSoxr(soxr, android));
   fs.writeFileSync(path.join(android, pairs[0][1]), "stale PFFFT-disabled runtime");
-  assert.throws(() => verifyPreparedSoxr(soxr, android), /Run pnpm package:android:prepare/);
+  assert.throws(() => verifyPreparedSoxr(soxr, android), /preparation did not complete/);
 });
 test("release debug signing is marker-based and idempotent", (t) => {
   const buildFile = path.join(temp(t), "build.gradle.kts");
@@ -553,11 +559,15 @@ test("Android preference homes and tool executability are deterministic", (t) =>
   fs.chmodSync(tool, 0o644);
   assert.throws(() => requireExecutables([tool]), /apksigner/);
 });
-test("only the explicit prepare mode initializes, generates icons, and prepares generated Android", () => {
+test("all Android package modes share one native preparation path", () => {
   const source = fs.readFileSync(new URL("./package-android.mjs", import.meta.url), "utf8");
   for (const pattern of [/"android", "init"/g, /Android icon generation/g, /\[prepareGenerated\]/g]) {
     assert.equal(source.match(pattern)?.length, 1);
   }
+  assert.ok(source.indexOf("prepareNativeProject({ env") < source.indexOf('if (mode === "prepare")'));
+  assert.match(source, /build-ffmpeg\.mjs"\),\s+"--target", "android-arm64-v8a", "--ensure"/);
+  assert.match(source, /build-soxr\.mjs"\),\s+"--target", "android-arm64-v8a", "--ensure"/);
+  assert.match(source, /validateSoxrOutput\(soxrRoot, "android-arm64-v8a", soxrValidationOptions\(env\)\)/);
   assert.match(source, /validate-android-release-jni\.mjs"\), "--apk", apk/);
   assert.match(source, /\.android.*tuneforge-test\.keystore|tuneforge-test\.keystore/);
   assert.match(source, /run\("bash", args, \{ cwd: desktopDir, env: buildEnv,/);

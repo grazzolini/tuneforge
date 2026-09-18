@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   chmodSync,
   copyFileSync,
@@ -13,12 +13,17 @@ import {
   statSync,
   lstatSync,
   writeFileSync,
+  renameSync,
+  createWriteStream,
 } from "node:fs";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { createFlatpakSourceSnapshot } from "./flatpak-source-snapshots.mjs";
+import { validateOwnedFfmpeg } from "./validate-packaged-ffmpeg.mjs";
 
 const scriptPath = fileURLToPath(import.meta.url);
 const workspaceRoot = path.resolve(path.dirname(scriptPath), "..");
@@ -88,6 +93,8 @@ function parseArgs(argv) {
   let cacheDir = path.join(workspaceRoot, "packaging", "ffmpeg", "cache");
   let outputDir = null;
   let sourceOnly = false;
+  let download = false;
+  let ensure = false;
   let jobs = String(Math.max(1, Number(process.env.TUNEFORGE_FFMPEG_BUILD_JOBS ?? 4)));
   for (let index = 0; index < args.length; index += 1) {
     const value = args[index];
@@ -96,12 +103,16 @@ function parseArgs(argv) {
     else if (value === "--output-dir") outputDir = path.resolve(args[++index]);
     else if (value === "--jobs") jobs = args[++index];
     else if (value === "--source-only") sourceOnly = true;
+    else if (value === "--download") download = true;
+    else if (value === "--ensure") ensure = true;
     else fail(`Unknown option: ${value}`);
   }
   if (!sourceOnly && !Object.hasOwn(lock.targets, target)) {
     fail("--target must be macos-arm64 or android-arm64-v8a");
   }
   if (sourceOnly && (target || outputDir)) fail("--source-only cannot be combined with --target or --output-dir");
+  if (download && !sourceOnly) fail("--download is only valid with --source-only");
+  if (ensure && sourceOnly) fail("--ensure cannot be combined with --source-only");
   return {
     target,
     cacheDir,
@@ -114,6 +125,8 @@ function parseArgs(argv) {
     ),
     jobs,
     sourceOnly,
+    download,
+    ensure,
   };
 }
 
@@ -121,8 +134,66 @@ function archivePath(cacheDir, source) {
   return path.join(cacheDir, new URL(source.url).pathname.split("/").pop());
 }
 
-function materializeCorrespondingSources(cacheDir, outputParent) {
-  const fileName = `TuneForge_${lock.runtimeVersion}_corresponding-sources.tar`;
+function recipeIdentity() {
+  const files = [
+    "packaging/ffmpeg/sources.lock.json",
+    "scripts/build-ffmpeg.mjs",
+    "scripts/validate-packaged-ffmpeg.mjs",
+    "scripts/flatpak-source-snapshots.mjs",
+    "THIRD_PARTY_NOTICES.md",
+    "package.json",
+    ...(lock.patches ?? []).map((entry) => entry.path),
+  ];
+  const hash = createHash("sha256");
+  for (const relative of files) hash.update(relative).update("\0").update(readFileSync(path.join(workspaceRoot, relative)));
+  return hash.digest("hex");
+}
+
+export function ffmpegCorrespondingSourcesFileName() {
+  return `TuneForge_${lock.runtimeVersion}_${recipeIdentity().slice(0, 16)}_corresponding-sources.tar`;
+}
+
+function sourceInputs() {
+  const ffmpeg = lock.sources.ffmpeg;
+  return [
+    { url: ffmpeg.url, sha256: ffmpeg.sha256, name: path.basename(new URL(ffmpeg.url).pathname), label: "FFmpeg source" },
+    { url: ffmpeg.signatureUrl, sha256: ffmpeg.signatureSha256,
+      name: path.basename(new URL(ffmpeg.signatureUrl).pathname), label: "FFmpeg signature" },
+    { url: ffmpeg.signingKeyUrl, sha256: ffmpeg.signingKeySha256,
+      name: "ffmpeg-devel.asc", label: "FFmpeg signing key" },
+    { url: lock.sources.lame.url, sha256: lock.sources.lame.sha256,
+      name: path.basename(new URL(lock.sources.lame.url).pathname), label: "LAME source" },
+  ];
+}
+
+export async function acquireSourceInputs(cacheDir, { download = false, fetchImpl = fetch } = {}) {
+  mkdirSync(cacheDir, { recursive: true });
+  for (const input of sourceInputs()) await acquirePinnedFile(cacheDir, input, { download, fetchImpl });
+}
+
+export async function acquirePinnedFile(cacheDir, input, { download = false, fetchImpl = fetch } = {}) {
+  const destination = path.join(cacheDir, input.name);
+  if (existsSync(destination)) {
+    verifyFile(destination, input.sha256, input.label);
+    return destination;
+  }
+  if (!download) fail(`${input.label} missing: ${destination}. Run pnpm ffmpeg:sources -- --download.`);
+  mkdirSync(cacheDir, { recursive: true });
+  const temporary = path.join(cacheDir, `.${input.name}.${randomUUID()}.tmp`);
+  try {
+    const response = await fetchImpl(input.url, { redirect: "follow" });
+    if (!response.ok || !response.body) fail(`${input.label} download failed with HTTP ${response.status}`);
+    await pipeline(Readable.fromWeb(response.body), createWriteStream(temporary, { flags: "wx" }));
+    verifyFile(temporary, input.sha256, `Downloaded ${input.label}`);
+    renameSync(temporary, destination);
+    return destination;
+  } finally {
+    rmSync(temporary, { force: true });
+  }
+}
+
+function materializeCorrespondingSources(cacheDir, outputParent, recipeDigest) {
+  const fileName = ffmpegCorrespondingSourcesFileName();
   const output = path.join(outputParent, fileName);
   mkdirSync(outputParent, { recursive: true });
   const staging = mkdtempSync(path.join(outputParent, ".tuneforge-ffmpeg-sources-"));
@@ -181,17 +252,58 @@ function materializeCorrespondingSources(cacheDir, outputParent) {
       files: inventoryFiles(payload),
     };
     writeFileSync(path.join(payload, "MANIFEST.json"), `${JSON.stringify(manifest, null, 2)}\n`);
+    const stagedOutput = path.join(staging, fileName);
     createFlatpakSourceSnapshot({
       root: staging,
-      outputPath: output,
+      outputPath: stagedOutput,
       inputs: [{ source: "payload", destination: `TuneForge-${lock.runtimeVersion}-sources` }],
       sourceDateEpoch: "1",
     });
-    const metadata = { fileName, sha256: sha256(output), size: statSync(output).size };
+    const metadata = { fileName, sha256: sha256(stagedOutput), size: statSync(stagedOutput).size };
+    renameSync(stagedOutput, output);
     writeFileSync(`${output}.sha256`, `${metadata.sha256}  ${fileName}\n`);
     return metadata;
   } finally {
     rmSync(staging, { recursive: true, force: true });
+  }
+}
+
+function toolchainIdentity(tc) {
+  const version = (tool) => run(tool, ["--version"], { capture: true }).split(/\r?\n/)[0];
+  const identity = { cc: version(tc.cc), ar: path.basename(tc.ar), ranlib: path.basename(tc.ranlib) };
+  if (tc.provenanceRoot) {
+    identity.androidNdkRevision = readFileSync(path.join(tc.provenanceRoot, "source.properties"), "utf8")
+      .match(/^Pkg\.Revision\s*=\s*(.+)$/m)?.[1]?.trim();
+  } else {
+    identity.sdk = run("xcrun", ["--sdk", "macosx", "--show-sdk-version"], { capture: true }).trim();
+  }
+  return identity;
+}
+
+function buildIdentity(target, recipeDigest, tc) {
+  return createHash("sha256").update(JSON.stringify({ target, recipeDigest, toolchain: toolchainIdentity(tc) })).digest("hex");
+}
+
+export function reusableOutput(outputDir, target, identity, { validate = validateOwnedFfmpeg } = {}) {
+  try {
+    validate({ root: outputDir, target });
+    const provenance = JSON.parse(readFileSync(path.join(outputDir, "provenance.json"), "utf8"));
+    return provenance.buildIdentity === identity;
+  } catch {
+    return false;
+  }
+}
+
+function promoteDirectory(staging, destination) {
+  const backup = `${destination}.previous-${randomUUID()}`;
+  const hadDestination = existsSync(destination);
+  try {
+    if (hadDestination) renameSync(destination, backup);
+    renameSync(staging, destination);
+    if (hadDestination) rmSync(backup, { recursive: true, force: true });
+  } catch (error) {
+    if (!existsSync(destination) && hadDestination && existsSync(backup)) renameSync(backup, destination);
+    throw error;
   }
 }
 
@@ -264,6 +376,7 @@ function toolchain(target) {
     cc: path.join(bin, `${triple}-clang`),
     ar: path.join(bin, "llvm-ar"),
     ranlib: path.join(bin, "llvm-ranlib"),
+    readelf: path.join(bin, "llvm-readelf"),
     cflags: "-fPIC -D__ANDROID_API__=26",
     ldflags: "-Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384",
     ffmpegCross: [
@@ -279,6 +392,14 @@ function toolchain(target) {
     programs: false,
     provenanceRoot: ndk,
   };
+}
+
+function validateWithToolchain(options, tc) {
+  const previous = process.env.LLVM_READELF;
+  if (!previous && tc.readelf) process.env.LLVM_READELF = tc.readelf;
+  try { return validateOwnedFfmpeg(options); } finally {
+    if (!previous && tc.readelf) delete process.env.LLVM_READELF;
+  }
 }
 
 function relocateMacBinaries(installRoot) {
@@ -370,29 +491,42 @@ function materializeSymlinks(root) {
   }
 }
 
-function main(argv) {
+export async function main(argv) {
   const options = parseArgs(argv);
-  mkdirSync(options.cacheDir, { recursive: true });
+  await acquireSourceInputs(options.cacheDir, { download: options.sourceOnly ? options.download : true });
   verifyFfmpegSignature(options.cacheDir);
   const lameArchive = archivePath(options.cacheDir, lock.sources.lame);
   verifyFile(lameArchive, lock.sources.lame.sha256, "LAME source");
-  const correspondingSources = materializeCorrespondingSources(
-    options.cacheDir,
-    path.dirname(options.outputDir),
-  );
+  const recipeDigest = recipeIdentity();
   if (options.sourceOnly) {
+    const correspondingSources = materializeCorrespondingSources(
+      options.cacheDir, path.dirname(options.outputDir), recipeDigest,
+    );
     process.stdout.write(`${JSON.stringify(correspondingSources)}\n`);
     return;
   }
 
+  const tc = toolchain(options.target);
+  const identity = buildIdentity(options.target, recipeDigest, tc);
+  if (options.ensure && reusableOutput(options.outputDir, options.target, identity, {
+    validate: (validation) => validateWithToolchain(validation, tc),
+  })) {
+    process.stdout.write(`${JSON.stringify({ target: options.target, reused: true })}\n`);
+    return;
+  }
+  const correspondingSources = materializeCorrespondingSources(
+    options.cacheDir, path.dirname(options.outputDir), recipeDigest,
+  );
   const work = mkdtempSync(path.join(tmpdir(), "tuneforge-ffmpeg-build-"));
   const installRoot = path.join(work, "install");
   const sourceRoot = path.join(work, "src");
+  const outputParent = path.dirname(options.outputDir);
+  mkdirSync(outputParent, { recursive: true });
+  const stagedOutput = mkdtempSync(path.join(outputParent, `.${path.basename(options.outputDir)}-`));
   try {
     extract(archivePath(options.cacheDir, lock.sources.ffmpeg), sourceRoot);
     extract(lameArchive, sourceRoot);
     applyPatches(sourceRoot);
-    const tc = toolchain(options.target);
     const lameConfigure = buildLame(path.join(sourceRoot, lock.sources.lame.sourceDirectory), installRoot, tc, options.jobs);
     const ffmpegConfigure = buildFfmpeg(path.join(sourceRoot, lock.sources.ffmpeg.sourceDirectory), installRoot, tc, options.jobs);
     if (options.target === "macos-arm64") relocateMacBinaries(installRoot);
@@ -410,18 +544,16 @@ function main(argv) {
       path.join(sourceRoot, lock.sources.lame.sourceDirectory, "LICENSE"),
       path.join(licenseRoot, "LAME-LICENSE.txt"),
     );
-    rmSync(options.outputDir, { recursive: true, force: true });
-    mkdirSync(options.outputDir, { recursive: true });
     for (const directory of ["bin", "include", "lib", "licenses", "share"]) {
       const source = path.join(installRoot, directory);
       if (existsSync(source)) {
-        cpSync(source, path.join(options.outputDir, directory), {
+        cpSync(source, path.join(stagedOutput, directory), {
           recursive: true,
           dereference: true,
         });
       }
     }
-    materializeSymlinks(options.outputDir);
+    materializeSymlinks(stagedOutput);
     const replacements = [
       [installRoot, "${INSTALL_ROOT}"],
       ...(tc.provenanceRoot ? [[tc.provenanceRoot, "${ANDROID_NDK_HOME}"]] : []),
@@ -432,6 +564,8 @@ function main(argv) {
     );
     const provenance = {
       schemaVersion: 1,
+      buildIdentity: identity,
+      recipeDigest,
       runtimeVersion: lock.runtimeVersion,
       target: options.target,
       sources: lock.sources,
@@ -450,19 +584,21 @@ function main(argv) {
           cflags: sanitize(`${tc.cflags} -O2`), ldflags: sanitize(tc.ldflags),
         },
       },
-      files: inventoryFiles(options.outputDir),
+      files: inventoryFiles(stagedOutput),
     };
-    writeFileSync(path.join(options.outputDir, "provenance.json"), `${JSON.stringify(provenance, null, 2)}\n`);
+    writeFileSync(path.join(stagedOutput, "provenance.json"), `${JSON.stringify(provenance, null, 2)}\n`);
+    validateWithToolchain({ root: stagedOutput, target: options.target }, tc);
+    promoteDirectory(stagedOutput, options.outputDir);
+    process.stdout.write(`${JSON.stringify({ target: options.target, reused: false })}\n`);
   } finally {
     rmSync(work, { recursive: true, force: true });
+    rmSync(stagedOutput, { recursive: true, force: true });
   }
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === scriptPath) {
-  try {
-    main(process.argv.slice(2));
-  } catch (error) {
+  main(process.argv.slice(2)).catch((error) => {
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
     process.exitCode = 1;
-  }
+  });
 }

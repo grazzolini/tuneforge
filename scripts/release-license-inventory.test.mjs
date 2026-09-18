@@ -76,11 +76,8 @@ test("owned codec policy records audited payloads and platform ownership", () =>
   assert.match(checklist.ownedCodecPolicy.sources.lame.verification, /no detached signature/);
   assert.match(checklist.ownedCodecPolicy.developmentResolution, /Host FFmpeg/);
   assert.match(checklist.ownedCodecPolicy.flatpakResolution, /zero owned/);
-  assert.equal(
-    checklist.ownedCodecPolicy.correspondingSources,
-    "packaging/ffmpeg/generated/" +
-      "TuneForge_ffmpeg-9.0.1-lame-4.0-1_corresponding-sources.tar",
-  );
+  assert.match(checklist.ownedCodecPolicy.correspondingSources,
+    /^packaging\/ffmpeg\/generated\/TuneForge_ffmpeg-9\.0\.1-lame-4\.0-1_[0-9a-f]{16}_corresponding-sources\.tar$/);
 
   const rendered = formatReleaseLicenseInventory(checklist);
   assert.match(rendered, /Owned codec policy:/);

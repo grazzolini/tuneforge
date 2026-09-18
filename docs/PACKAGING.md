@@ -163,6 +163,7 @@ and codec profiles. Build and validate a target with:
 
 ```sh
 pnpm ffmpeg:sources
+pnpm ffmpeg:sources -- --download
 pnpm ffmpeg:build -- --target macos-arm64
 pnpm ffmpeg:validate -- --target macos-arm64 --root packaging/ffmpeg/generated/macos-arm64
 ANDROID_NDK_HOME=/path/to/android-ndk pnpm ffmpeg:build -- --target android-arm64-v8a
@@ -171,6 +172,9 @@ LLVM_READELF=/path/to/android-ndk/toolchains/llvm/prebuilt/darwin-x86_64/bin/llv
   --root packaging/ffmpeg/generated/android-arm64-v8a
 ```
 
+`ffmpeg:sources` uses an already-populated cache and remains offline. Add `--download` to fetch any
+missing pinned archive, signature, or signing key. Target builds perform that same verified
+acquisition automatically. Existing corrupt cache entries fail closed instead of being replaced.
 The recipe verifies every archive before extraction and verifies FFmpeg's detached signature in an
 isolated keyring against the signing key pinned by the source lock. LAME publishes no
 signature/checksum sidecar; its official HTTPS archive is pinned by reviewed SHA-256. Generated
@@ -178,8 +182,8 @@ payload provenance records exact sources, flags, file hashes, sizes, architectur
 Validators reject symlinks, unrecorded files, GPL/nonfree/version3/network flags, extra libraries,
 and dependencies outside the owned/system closure.
 
-Every target build also writes the corresponding-sources archive and its SHA-256 sidecar under
-`packaging/ffmpeg/generated/`. The deterministic companion contains the complete pinned upstream archives,
+Every target build also writes a content-addressed corresponding-sources archive and its SHA-256
+sidecar under `packaging/ffmpeg/generated/`. The deterministic companion contains the complete pinned upstream archives,
 FFmpeg signature and key, TuneForge patch, exact recipe, source lock, validation code, notices, and
 an internal file manifest. Its hash is bound into each target's provenance. Distribute this
 companion with owned-runtime binaries and retain it for the LGPL offer period required by the
@@ -191,6 +195,10 @@ Build the app bundle and DMG with:
 ```sh
 pnpm package:mac
 ```
+
+macOS packaging downloads verified missing sources and builds the owned runtime when absent,
+outdated, or invalid. A current validated runtime is reused. `pnpm setup:dev` performs none of this.
+An explicit `TUNEFORGE_FFMPEG_RUNTIME_DIR` remains validate-only and is never rebuilt.
 
 macOS packaging requires uv-managed Python matching the repository's backend packaging
 configuration. Bundle preparation rejects non-relocatable system or Homebrew layouts, then starts
@@ -232,7 +240,7 @@ By default, Demucs, Whisper, and beat-this weights are read from their normal ca
 
 ## Android
 
-Prepare the generated project, then choose a debug, optimized local release-profile, or stable-key
+Choose a preparation-only run, debug build, optimized local release-profile build, or stable-key
 GitHub Release APK build:
 
 ```sh
@@ -242,10 +250,12 @@ pnpm package:android
 pnpm package:android:release
 ```
 
-Preparation owns toolchain validation, conditional Tauri Android initialization, icon generation,
-generated-project preparation, and staging the seven audited FFmpeg/LAME/libsoxr shared libraries plus notices and
-provenance. All three build commands require this state and never prepare it. The owned target is
-arm64-v8a, API 26+, and every ELF LOAD segment must be aligned to at least 16 KB.
+All four commands run the same preparation under one packaging lock: toolchain validation, verified
+FFmpeg/LAME/libsoxr build or reuse, conditional Tauri Android initialization, icon generation,
+generated-project preparation, and staging the seven audited shared libraries plus notices and
+provenance. `package:android:prepare` stops before APK creation; build commands run preparation
+automatically. Explicit runtime-root overrides remain validate-only. The owned target is arm64-v8a,
+API 26+, and every ELF LOAD segment must be aligned to at least 16 KB.
 
 Preparation stores no application identity and rejects `--package-name`. Debug and optimized local
 builds default to `com.tuneforge.desktop.test`; either accepts one valid non-production

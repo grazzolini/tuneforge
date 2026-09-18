@@ -40,10 +40,19 @@ function main() {
     printModelBundleWarning();
   }
 
+  const configuredFfmpeg = process.env.TUNEFORGE_FFMPEG_RUNTIME_DIR;
+  if (!configuredFfmpeg) {
+    run(process.execPath, [
+      path.join("scripts", "build-ffmpeg.mjs"),
+      "--target", "macos-arm64",
+      "--ensure",
+    ]);
+  }
+
   run(process.execPath, [
     path.join("scripts", "validate-packaged-ffmpeg.mjs"),
     "--target", "macos-arm64",
-    "--root", process.env.TUNEFORGE_FFMPEG_RUNTIME_DIR
+    "--root", configuredFfmpeg
       ?? path.join("packaging", "ffmpeg", "generated", "macos-arm64"),
   ]);
 

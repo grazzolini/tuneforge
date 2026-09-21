@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { parsePnpmLock } from "../packaging/flatpak/seed-pnpm-store.mjs";
 import { buildModelBundlePlan } from "./model-bundle-metadata.mjs";
 import { parsePackageOptions } from "./package-options.mjs";
-import { generateFlatpakSourceSnapshots } from "./flatpak-source-snapshots.mjs";
+import { createFlatpakSourceSnapshot, flatpakSourceSnapshotInputs } from "./flatpak-source-snapshots.mjs";
 import { assertPythonVersionCompatibility, readPythonVersion } from "./python-version.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -69,6 +69,10 @@ const selectedPythonExtras = [
   ...(packageOptions.lvChordia ? ["lv-chordia"] : []),
 ];
 export const flatpakPythonBuildRequirementNames = Object.freeze(["setuptools", "wheel", "hatchling"]);
+export const flatpakDesktopSourceSnapshotInputs = Object.freeze([
+  ...flatpakSourceSnapshotInputs.desktop,
+  "apps/desktop/src-tauri/native/whisper-rs-sys",
+]);
 
 function readRequiredFile(filePath) {
   return readFileSync(filePath, "utf8");
@@ -878,6 +882,27 @@ export function cremaOnlyModelBundlePlan(plan) {
       whisper_models: [],
     },
   };
+}
+
+export function createFlatpakDesktopSourceSnapshot({ root, outputPath, sourceDateEpoch }) {
+  return createFlatpakSourceSnapshot({
+    root,
+    inputs: flatpakDesktopSourceSnapshotInputs.map((source) => ({ source })),
+    outputPath,
+    sourceDateEpoch,
+  });
+}
+
+export function generateFlatpakSourceSnapshots({ root, generatedRoot: snapshotRoot, sourceDateEpoch }) {
+  const createSnapshot = (name, inputs) => createFlatpakSourceSnapshot({
+    root, inputs: inputs.map((input) => typeof input === "string" ? { source: input } : input),
+    outputPath: path.join(snapshotRoot, `${name}-snapshot.tar`), sourceDateEpoch,
+  });
+  return [
+    createSnapshot("frontend", flatpakSourceSnapshotInputs.frontend),
+    createFlatpakDesktopSourceSnapshot({ root, outputPath: path.join(snapshotRoot, "desktop-snapshot.tar"), sourceDateEpoch }),
+    createSnapshot("backend", flatpakSourceSnapshotInputs.backend),
+  ];
 }
 
 function main() {

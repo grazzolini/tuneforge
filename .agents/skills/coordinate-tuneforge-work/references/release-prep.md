@@ -109,9 +109,9 @@ for the actions after that stop. Merge authority is always separate.
    the CPU-only Flatpak runtime gate, optional accelerator evidence, and known
    limitations. Tell Linux users that Flatpak support is x86_64 only, the CPU
    app installs first, and accelerator extensions install only as a complete
-   matching Core/Runtime pair. State that FFmpeg remains host-provided and must
-   be available through the Flatpak runtime/extension paths. Keep operational
-   details out of `CHANGELOG.md`.
+   matching Core/Runtime pair. State that macOS and Android bundle the audited
+   LGPL FFmpeg runtime, while Flatpak uses only runtime/extension codecs and
+   never searches host `PATH`. Keep operational details out of `CHANGELOG.md`.
 3. Stop with the notes preview and exact
    `gh release create v<version> --draft --verify-tag --notes-file ...`
    command; do not run it.

@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { createServer } from "node:net";
 import test from "node:test";
@@ -46,12 +47,27 @@ import {
 } from "./package-flatpak.mjs";
 import { parsePackageOptions } from "./package-options.mjs";
 import { compareUtf8, createFlatpakSourceSnapshot, flatpakSourceSnapshotInputs } from "./flatpak-source-snapshots.mjs";
+import { createFlatpakDesktopSourceSnapshot, flatpakDesktopSourceSnapshotInputs, generateFlatpakSourceSnapshots } from "./generate-flatpak-sources.mjs";
 
 const manifest = readFileSync(
   new URL("../packaging/flatpak/com.tuneforge.desktop.yml", import.meta.url),
   "utf8",
 );
 const packageScript = readFileSync(new URL("./package-flatpak.mjs", import.meta.url), "utf8");
+const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
+
+function tarMembers(archive) {
+  const members = [];
+  for (let offset = 0; offset < archive.length - 1024;) {
+    const name = archive.subarray(offset, offset + 100).toString("utf8").replace(/\0.*$/, "");
+    const prefix = archive.subarray(offset + 345, offset + 500).toString("utf8").replace(/\0.*$/, "");
+    const size = Number.parseInt(archive.subarray(offset + 124, offset + 136).toString("utf8"), 8);
+    if (!name) break;
+    members.push({ name: prefix ? `${prefix}/${name}` : name, mode: archive.subarray(offset + 100, offset + 108).toString("utf8"), type: String.fromCharCode(archive[offset + 156]), link: archive.subarray(offset + 157, offset + 257).toString("utf8").replace(/\0.*$/, "") });
+    offset += 512 + Math.ceil(size / 512) * 512;
+  }
+  return members;
+}
 
 function runGit(root, ...args) {
   const result = spawnSync("git", args, { cwd: root, encoding: "utf8" });
@@ -281,15 +297,7 @@ test("source snapshots are deterministic and preserve files, modes, empty direct
     symlinkSync("b", path.join(root, "input", "link"));
     createFlatpakSourceSnapshot({ root, outputPath: second, inputs: [{ source: "input" }], sourceDateEpoch: "123" });
     assert.notDeepEqual(readFileSync(second), readFileSync(first));
-    const archive = readFileSync(first);
-    const members = [];
-    for (let offset = 0; offset < archive.length - 1024;) {
-      const name = archive.subarray(offset, offset + 100).toString("utf8").replace(/\0.*$/, "");
-      const size = Number.parseInt(archive.subarray(offset + 124, offset + 136).toString("utf8"), 8);
-      if (!name) break;
-      members.push({ name, mode: archive.subarray(offset + 100, offset + 108).toString("utf8"), type: String.fromCharCode(archive[offset + 156]), link: archive.subarray(offset + 157, offset + 257).toString("utf8").replace(/\0.*$/, "") });
-      offset += 512 + Math.ceil(size / 512) * 512;
-    }
+    const members = tarMembers(readFileSync(first));
     assert.deepEqual(members.map(({ name }) => name), ["input/", "input/a", "input/b", "input/empty/", "input/link"]);
     assert.match(members.find(({ name }) => name === "input/a").mode, /^0000755/);
     assert.deepEqual(members.find(({ name }) => name === "input/link"), { name: "input/link", mode: "0000777\u0000", type: "2", link: "a" });
@@ -334,6 +342,39 @@ test("source snapshots use byte ordering and retain the exact Flatpak input mapp
       "apps/desktop/src-tauri/icons/32x32.png:icons/32x32.png", "apps/desktop/src-tauri/icons/128x128.png:icons/128x128.png",
       "apps/desktop/src-tauri/icons/512x512.png:icons/512x512.png",
     ]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Flatpak generator desktop snapshot includes the complete local whisper crate and tracks its files", () => {
+  const source = "apps/desktop/src-tauri/native/whisper-rs-sys";
+  assert.deepEqual(flatpakDesktopSourceSnapshotInputs, [...flatpakSourceSnapshotInputs.desktop, source]);
+  const root = mkdtempSync(path.join(os.tmpdir(), "tuneforge-whisper-snapshot-"));
+  try {
+    const generated = path.join(root, "generated");
+    generateFlatpakSourceSnapshots({ root: repositoryRoot, generatedRoot: generated, sourceDateEpoch: "1" });
+    const archive = path.join(generated, "desktop-snapshot.tar");
+    const required = ["Cargo.toml", "build.rs", "build_support.rs", "build_support_test.rs", "src/lib.rs", "tuneforge_dtw.h", "tuneforge_text.h"]
+      .map((file) => `${source}/${file}`);
+    const names = tarMembers(readFileSync(archive)).map(({ name }) => name);
+    for (const file of required) assert.ok(names.includes(file), `missing ${file}`);
+
+    const fixture = path.join(root, "fixture");
+    for (const snapshotSource of flatpakDesktopSourceSnapshotInputs) {
+      mkdirSync(path.dirname(path.join(fixture, snapshotSource)), { recursive: true });
+      cpSync(path.join(repositoryRoot, snapshotSource), path.join(fixture, snapshotSource), { recursive: true });
+    }
+    createFlatpakDesktopSourceSnapshot({ root: fixture, outputPath: archive, sourceDateEpoch: "1" });
+    let previous = readFileSync(archive);
+    for (const file of ["Cargo.toml", "build.rs", "src/lib.rs", "tuneforge_text.h"]) {
+      const target = path.join(fixture, source, file);
+      writeFileSync(target, `${readFileSync(target, "utf8")}\n// snapshot change\n`);
+      createFlatpakDesktopSourceSnapshot({ root: fixture, outputPath: archive, sourceDateEpoch: "1" });
+      const current = readFileSync(archive);
+      assert.notDeepEqual(current, previous, `${file} must invalidate the snapshot`);
+      previous = current;
+    }
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

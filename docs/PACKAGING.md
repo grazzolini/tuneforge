@@ -1,6 +1,6 @@
 # Packaging
 
-TuneForge packaging creates local unsigned desktop builds. Packaged builds launch the bundled backend locally and include Advanced Chords, Advanced Beat Analysis, and LV Chordia by default. LV Chordia includes five dependency-owned MIT checkpoints (28,730,939 bytes); other external model weights remain excluded by default. macOS arm64 and Android arm64 own the pinned LGPL FFmpeg/LAME runtime. Flatpak owns no codec payload and routes lookup through sandbox wrappers.
+TuneForge packaging creates local unsigned desktop builds. Packaged builds launch the bundled backend locally and include Advanced Chords, Advanced Beat Analysis, and LV Chordia by default. LV Chordia includes five dependency-owned MIT checkpoints (28,730,939 bytes); other external model weights remain excluded by default. macOS arm64 and Android arm64 package the audited, repository-pinned LGPL FFmpeg/LAME runtime. Flatpak packages no codec payload and routes lookup only through sandbox runtime/extension paths.
 
 See [Third-party notices](../THIRD_PARTY_NOTICES.md) for the dependency and model-weight distribution policy.
 
@@ -69,9 +69,8 @@ the approved `release-key.asc` fingerprint.
 | `Tuneforge_<version>_Torch_LegacyNvidia_Runtime_x86_64.flatpak` | Frozen tagged SHA and OSTree commit | Recorded, below 2 GiB | Sorted manifest entry + matching `.asc` | LegacyNvidia Runtime inventory + notices | `x86_64` / `stable` | `runtime/com.tuneforge.desktop.Torch.Stack.LegacyNvidia.Runtime/x86_64/stable` |
 
 Public release notes must say that Flatpak support is x86_64 only, the CPU app installs first, and
-an accelerator installs only as a complete matching Core/Runtime pair. FFmpeg remains host-provided
-and must be available through the Flatpak runtime/extension paths; Flatpak never searches host
-`PATH` directly.
+an accelerator installs only as a complete matching Core/Runtime pair. Flatpak FFmpeg must be
+available through its runtime/extension paths; Flatpak never searches host `PATH` directly.
 
 All seven payloads are mandatory. Manual steps build the five Flatpaks on Linux, run
 `pnpm package:android:release` with the externally managed release key, create the eight detached

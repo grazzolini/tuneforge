@@ -98,11 +98,20 @@ Use at most two only when responsibilities and owned files or evidence streams
 are independent; assign clear ownership. Use one implementation worker across
 dependent stack layers.
 
-Select model and effort explicitly: Terra Medium for exploration; Terra High
-for bounded implementation; Sol High for ambiguity, cross-layer architecture,
-sync/concurrency, transactions, migrations, privacy/security/data-loss risk, or
-ambiguous test failures. Use the contract guard only at an actual contract
-boundary and Product Design only for UI work.
+For this skill, select model and effort explicitly by task: GPT-6 Luna
+(`gpt-6-luna`) Medium for narrow lookup, extraction, and summarization with
+explicit sources and bounded factual deliverables; GPT-6 Sol (`gpt-6-sol`)
+Medium for broader exploration and research; GPT-6 Sol High for bounded or
+complex implementation, including ambiguity, cross-layer
+architecture, sync/concurrency, transactions, migrations,
+privacy/security/data-loss risk, or ambiguous test failures and findings. Use
+the contract guard on GPT-6 Luna High only at an actual contract boundary and
+Product Design on GPT-6 Sol High only for UI work.
+
+Honor fixed role model/effort settings; do not pass unsupported overrides. If a
+preferred model is unavailable, use an available model under applicable
+`AGENTS.md` routing and report the substitution. Change agent configuration
+only when explicitly requested.
 
 For implementation, treat production source as the scope tripwire, excluding
 tests, generated files, and lockfiles. Stop and re-plan if work reaches an
@@ -145,10 +154,12 @@ must check methodology, reproducibility, unsupported generalization, licensing,
 and evidence-to-conclusion fit. Release-safety review must check the exact platform
 payload/checksum/signature matrix, provenance, checkpoint authority, manual-only
 operations, and fail-closed gates. Add contract and Product Design review only when
-applicable. Route reviews to Sol High normally, Sol XHigh only for declared high risk,
-and Sol Max only for a focused unresolved critical dispute. Send actionable findings to the original
-worker for one remediation pass, then perform one focused re-review. Stop on
-unresolved critical findings.
+applicable. Route reviews to GPT-6 Sol High normally; GPT-6 Astra
+(`gpt-6-astra`) High for security, data-loss, migration, concurrency, or complex
+cross-layer review; and
+GPT-6 Astra XHigh only for a focused unresolved critical review dispute. Send
+actionable findings to the original worker for one remediation pass, then
+perform one focused re-review. Stop on unresolved critical findings.
 
 Finish with the selected scope, work kind, delivery/report target, envelope,
 agents and lanes used, validation/evidence, unverified boundaries, remaining

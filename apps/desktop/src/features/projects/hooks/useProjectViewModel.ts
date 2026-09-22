@@ -392,6 +392,9 @@ export function useProjectViewModel() {
     null,
   );
   const [stemControls, setStemControls] = useState<Record<string, StemControlState>>({});
+  const [projectOutputGain, setProjectOutputGainState] = useState(1);
+  const [projectOutputMuted, setProjectOutputMuted] = useState(false);
+  const [projectOutputSaveError, setProjectOutputSaveError] = useState<string | null>(null);
   const [dismissedStemJobIds, setDismissedStemJobIds] = useState<string[]>([]);
   const [exportWorkspace, setExportWorkspace] = useState<ExportWorkspaceState | null>(null);
   const [exportRecoveryNoticeId, setExportRecoveryNoticeId] = useState(0);
@@ -1699,14 +1702,14 @@ export function useProjectViewModel() {
 
   function toggleStemControl(
     artifact: ArtifactSchema,
-    mode: keyof StemControlState,
+    mode: "muted" | "solo",
   ) {
     if (!isStemPlayback) {
       handleSelectStemArtifact(artifact);
     }
 
     setStemControls((current) => {
-      const previous = current[artifact.id] ?? { muted: false, solo: false };
+      const previous = current[artifact.id] ?? { muted: false, solo: false, gain: 1 };
       return {
         ...current,
         [artifact.id]: {
@@ -1727,12 +1730,29 @@ export function useProjectViewModel() {
         if (!state?.muted && !state?.solo) {
           return;
         }
-        next[artifact.id] = { muted: false, solo: false };
+        next[artifact.id] = { ...state, muted: false, solo: false };
         changed = true;
       });
 
       return changed ? next : current;
     });
+  }
+
+  function setStemGain(artifactId: string, gain: number) {
+    if (!Number.isFinite(gain)) return;
+    const normalizedGain = Math.min(1, Math.max(0, gain));
+    setStemControls((current) => ({
+      ...current,
+      [artifactId]: {
+        ...(current[artifactId] ?? { muted: false, solo: false }),
+        gain: normalizedGain,
+      },
+    }));
+  }
+
+  function setProjectOutputGain(gain: number) {
+    if (!Number.isFinite(gain)) return;
+    setProjectOutputGainState(Math.min(1, Math.max(0, gain)));
   }
 
   function stemOutputLabel(artifactId: string) {
@@ -2067,6 +2087,9 @@ export function useProjectViewModel() {
         : defaultChordsFollowEnabled,
     );
     setStemControls(storedPlaybackState.stemControls);
+    setProjectOutputGainState(storedPlaybackState.projectOutputGain);
+    setProjectOutputMuted(storedPlaybackState.projectOutputMuted);
+    setProjectOutputSaveError(null);
     setDismissedStemJobIds(storedPlaybackState.dismissedStemJobIds);
     setExportWorkspace(storedPlaybackState.exportWorkspace);
     setHydratedProjectId(projectId);
@@ -2220,14 +2243,16 @@ export function useProjectViewModel() {
       const validStemIds = new Set(stemArtifacts.map((artifact) => artifact.id));
       const next: Record<string, StemControlState> = {};
       validStemIds.forEach((artifactId) => {
-        next[artifactId] = current[artifactId] ?? { muted: false, solo: false };
+        next[artifactId] = current[artifactId] ?? { muted: false, solo: false, gain: 1 };
       });
 
       const didChange =
         Object.keys(current).length !== Object.keys(next).length ||
         Object.entries(next).some(
           ([artifactId, state]) =>
-            current[artifactId]?.muted !== state.muted || current[artifactId]?.solo !== state.solo,
+            current[artifactId]?.muted !== state.muted ||
+            current[artifactId]?.solo !== state.solo ||
+            current[artifactId]?.gain !== state.gain,
         );
       return didChange ? next : current;
     });
@@ -2263,7 +2288,8 @@ export function useProjectViewModel() {
     }
 
     persistedStemSourceArtifactId.current = selectedStemSourceArtifactId;
-    writeProjectPlaybackState(projectId, {
+    try {
+      writeProjectPlaybackState(projectId, {
       selectedArtifactId,
       selectedPrimaryArtifactId,
       selectedStemSourceArtifactId,
@@ -2280,9 +2306,15 @@ export function useProjectViewModel() {
       lyricsFollowEnabled,
       chordsFollowEnabled,
       stemControls,
+      projectOutputGain,
+      projectOutputMuted,
       dismissedStemJobIds,
       exportWorkspace,
-    });
+      });
+      setProjectOutputSaveError(null);
+    } catch {
+      setProjectOutputSaveError("Project volume changed, but could not be saved for the next launch.");
+    }
   }, [
     activeProjectPanel,
     activeWorkspace,
@@ -2303,6 +2335,8 @@ export function useProjectViewModel() {
     selectedPrimaryArtifactId,
     selectedStemSourceArtifactId,
     stemControls,
+    projectOutputGain,
+    projectOutputMuted,
     tempoTargetBpm,
   ]);
 
@@ -2542,6 +2576,8 @@ export function useProjectViewModel() {
       ])),
       visibleStemArtifactIds: visibleStemArtifacts.map((artifact) => artifact.id),
       stemControls,
+      projectOutputGain,
+      projectOutputMuted,
       durationHintSeconds: projectQuery.data?.duration_seconds ?? 0,
       precountEnabled: isIOSRuntime ? false : precountEnabled,
       precountLoopEnabled: isIOSRuntime ? false : precountLoopEnabled,
@@ -2573,6 +2609,8 @@ export function useProjectViewModel() {
     stageSummary,
     stageTitle,
     stemControls,
+    projectOutputGain,
+    projectOutputMuted,
     tempoOriginalBpm,
     tempoTargetBpmForPlayback,
     visibleStemArtifacts,
@@ -2815,6 +2853,12 @@ export function useProjectViewModel() {
     stageSummary,
     stageTitle,
     stemControls,
+    projectOutputGain,
+    projectOutputMuted,
+    projectOutputSaveError,
+    setProjectOutputGain,
+    setProjectOutputMuted,
+    setStemGain,
     stemErrorMessage,
     stemJob,
     stemMutation,

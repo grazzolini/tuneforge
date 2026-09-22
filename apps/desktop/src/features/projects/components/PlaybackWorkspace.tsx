@@ -24,10 +24,15 @@ export function PlaybackWorkspace({
     playbackDurationSeconds,
     playbackTransportRef,
     playbackTimeSeconds,
+    projectOutputGain,
+    projectOutputMuted,
+    projectOutputSaveError,
     pendingLoopStartSeconds,
     projectQuery,
     seekAnimationRevision,
     stopPlayback,
+    setProjectOutputGain,
+    setProjectOutputMuted,
     tempoDisplayBpm,
     tempoTargetBpm,
     togglePlayback,
@@ -51,13 +56,18 @@ export function PlaybackWorkspace({
           seekAnimationRevision={seekAnimationRevision}
           tempoDisplayBpm={tempoDisplayBpm}
           tempoTargetBpm={tempoTargetBpm}
+          projectOutputGain={projectOutputGain}
+          projectOutputMuted={projectOutputMuted}
           onSeek={handleSeek}
           onSeekTo={handleSeekTo}
           onResetTempo={handleResetPlaybackTempo}
           onStop={stopPlayback}
           onToggleLoop={handleTogglePlaybackLoop}
           onTogglePlayback={togglePlayback}
+          onProjectOutputGainChange={setProjectOutputGain}
+          onProjectOutputMutedChange={setProjectOutputMuted}
         />
+        {projectOutputSaveError ? <p className="field-error" role="alert">{projectOutputSaveError}</p> : null}
       </div>
       {isMobileRuntime ? (
         <PlaybackPracticeControlsDrawer

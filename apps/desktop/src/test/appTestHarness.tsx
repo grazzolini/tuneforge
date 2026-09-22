@@ -928,6 +928,10 @@ const {
         availabilityReason: "native_audio_unavailable",
         lanes: [],
         bufferHealth: [],
+        appOutput: { configuredGain: 1, muted: false, targetGain: 1, currentGain: 1 },
+        projectOutput: { configuredGain: 1, muted: false, targetGain: 1, currentGain: 1 },
+        countInOutput: { configuredGain: 1, muted: false, targetGain: 1, currentGain: 1 },
+        metronomeOutput: { configuredGain: 0.8, muted: false, targetGain: 0.8, currentGain: 0.8 },
         leaseId: "project-playback",
         generation: 1,
         timelineRevision: 1,
@@ -1363,6 +1367,54 @@ const {
       return clone(state.nativeAudioInputPermission);
     }
 
+    if (command === "audio_set_app_output") {
+      const payload = (args?.payload ?? {}) as { gain?: number; muted?: boolean };
+      const gain = Math.min(1, Math.max(0, payload.gain ?? 1));
+      const muted = payload.muted ?? false;
+      state.nativeAudioSnapshot = {
+        ...state.nativeAudioSnapshot,
+        appOutput: {
+          configuredGain: gain,
+          muted,
+          targetGain: muted ? 0 : gain,
+          currentGain: muted ? 0 : gain,
+        },
+      };
+      return clone(state.nativeAudioSnapshot);
+    }
+
+    if (command === "audio_set_cue_outputs") {
+      const payload = (args?.payload ?? {}) as {
+        countInGain?: number;
+        countInMuted?: boolean;
+        metronomeGain?: number;
+        metronomeMuted?: boolean;
+      };
+      const countInGain = Math.min(1, Math.max(0, payload.countInGain ?? 1));
+      const countInMuted = payload.countInMuted ?? false;
+      const metronomeGain = Math.min(1, Math.max(0, payload.metronomeGain ?? 0.8));
+      const metronomeMuted = payload.metronomeMuted ?? false;
+      state.nativeAudioSnapshot = {
+        ...state.nativeAudioSnapshot,
+        countInOutput: {
+          configuredGain: countInGain,
+          muted: countInMuted,
+          targetGain: countInMuted ? 0 : countInGain,
+          currentGain: countInMuted ? 0 : countInGain,
+        },
+        metronomeOutput: {
+          configuredGain: metronomeGain,
+          muted: metronomeMuted,
+          targetGain: metronomeMuted ? 0 : metronomeGain,
+          currentGain: metronomeMuted ? 0 : metronomeGain,
+        },
+      };
+      return {
+        countIn: clone(state.nativeAudioSnapshot.countInOutput),
+        metronome: clone(state.nativeAudioSnapshot.metronomeOutput),
+      };
+    }
+
     if (command === "audio_prepare_session") {
       const payload = validateNativeAcquisitionControl(args?.payload) as {
         leaseId: string;
@@ -1370,6 +1422,7 @@ const {
         sessionId?: string;
         durationSeconds?: number | null;
         playbackRate?: number | null;
+        projectOutput?: { gain: number; muted: boolean };
         lanes?: Array<{
           id: string;
           artifactId?: string | null;
@@ -1385,6 +1438,8 @@ const {
           ? null
           : String(state.nativeAudioCapabilities.availabilityReason ?? "native_audio_unavailable");
       const lanes = effectiveNativeAudioLanes(payload.lanes ?? []);
+      const projectGain = Math.min(1, Math.max(0, payload.projectOutput?.gain ?? 1));
+      const projectMuted = payload.projectOutput?.muted ?? false;
       state.nativeAudioSnapshot = {
         ...state.nativeAudioSnapshot,
         sessionId: payload.sessionId ?? null,
@@ -1395,6 +1450,12 @@ const {
         nativePlaybackSupported,
         availabilityReason,
         lanes,
+        projectOutput: {
+          configuredGain: projectGain,
+          muted: projectMuted,
+          targetGain: projectMuted ? 0 : projectGain,
+          currentGain: projectMuted ? 0 : projectGain,
+        },
         leaseId: payload.leaseId,
         bufferHealth: (payload.lanes ?? []).map((lane) => ({
           laneId: lane.id,
@@ -1469,6 +1530,7 @@ const {
       validateNativeOutputControl(args?.control);
       const payload = (args?.payload ?? {}) as {
         playbackRate?: number | null;
+        projectOutput?: { gain: number; muted: boolean };
         lanes?: Array<{
           id: string;
           artifactId?: string | null;
@@ -1479,10 +1541,18 @@ const {
         }>;
       };
       const lanes = effectiveNativeAudioLanes(payload.lanes ?? []);
+      const projectGain = Math.min(1, Math.max(0, payload.projectOutput?.gain ?? 1));
+      const projectMuted = payload.projectOutput?.muted ?? false;
       state.nativeAudioSnapshot = {
         ...state.nativeAudioSnapshot,
         playbackRate: payload.playbackRate ?? Number(state.nativeAudioSnapshot.playbackRate ?? 1),
         lanes,
+        projectOutput: {
+          configuredGain: projectGain,
+          muted: projectMuted,
+          targetGain: projectMuted ? 0 : projectGain,
+          currentGain: projectMuted ? 0 : projectGain,
+        },
         bufferHealth: (payload.lanes ?? []).map((lane) => ({
           laneId: lane.id,
           artifactId: lane.artifactId ?? null,

@@ -663,6 +663,7 @@ describe("Desktop app project playback tempo", () => {
     expect(vocalAudio.playbackRate).toBeCloseTo(119 / 120, 4);
     expect(instrumentalAudio.playbackRate).toBeCloseTo(119 / 120, 4);
     await user.click(screen.getByRole("button", { name: "Solo Vocals" }));
+    advanceMockAnimationFrames(1);
     expect(vocalAudio.volume).toBe(1);
     expect(instrumentalAudio.volume).toBe(0);
 

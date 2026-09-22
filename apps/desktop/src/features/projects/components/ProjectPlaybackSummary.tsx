@@ -13,6 +13,8 @@ export function ProjectPlaybackSummary() {
     loopStatusMessage,
     playbackDurationSeconds,
     playbackTimeSeconds,
+    projectOutputGain,
+    projectOutputMuted,
     pendingLoopStartSeconds,
     projectQuery,
     seekAnimationRevision,
@@ -22,6 +24,8 @@ export function ProjectPlaybackSummary() {
     stageSummary,
     stageTitle,
     stopPlayback,
+    setProjectOutputGain,
+    setProjectOutputMuted,
     tempoDisplayBpm,
     tempoTargetBpm,
     togglePlayback,
@@ -61,12 +65,16 @@ export function ProjectPlaybackSummary() {
           seekAnimationRevision={seekAnimationRevision}
           tempoDisplayBpm={tempoDisplayBpm}
           tempoTargetBpm={tempoTargetBpm}
+          projectOutputGain={projectOutputGain}
+          projectOutputMuted={projectOutputMuted}
           onSeek={handleSeek}
           onSeekTo={handleSeekTo}
           onResetTempo={handleResetPlaybackTempo}
           onStop={stopPlayback}
           onToggleLoop={handleTogglePlaybackLoop}
           onTogglePlayback={togglePlayback}
+          onProjectOutputGainChange={setProjectOutputGain}
+          onProjectOutputMutedChange={setProjectOutputMuted}
         />
 
         {showSupportingCopy ? (

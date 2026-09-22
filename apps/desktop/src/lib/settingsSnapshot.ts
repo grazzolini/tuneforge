@@ -13,10 +13,16 @@ import {
 import { isThemeVariableName, type ThemeOverrides } from "./themeTokens";
 
 export const SETTINGS_SNAPSHOT_KIND = "tuneforge.settings";
-export const SETTINGS_SNAPSHOT_VERSION = 3;
+export const SETTINGS_SNAPSHOT_VERSION = 4;
 const SETTINGS_PARSE_ERROR = "Could not parse the settings file.";
 const SETTINGS_UNSUPPORTED_ERROR = "Unsupported settings file.";
 const REQUIRED_PREFERENCE_KEYS = [
+  "appOutputGain",
+  "appOutputMuted",
+  "countInOutputGain",
+  "countInOutputMuted",
+  "metronomeOutputGain",
+  "metronomeOutputMuted",
   "informationDensity",
   "enharmonicDisplayMode",
   "defaultInspectorOpen",
@@ -89,13 +95,38 @@ function validateExportedAt(value: unknown): asserts value is string {
   requireSupported(Number.isFinite(Date.parse(value)));
 }
 
-function validatePreferences(value: unknown, version: 1 | 2 | 3): UiPreferences {
+function validatePreferences(value: unknown, version: 1 | 2 | 3 | 4): UiPreferences {
   requireSupported(isRecord(value));
   for (const key of REQUIRED_PREFERENCE_KEYS) {
+    if (
+      version <= 3 &&
+      (key === "appOutputGain" ||
+        key === "appOutputMuted" ||
+        key === "countInOutputGain" ||
+        key === "countInOutputMuted" ||
+        key === "metronomeOutputGain" ||
+        key === "metronomeOutputMuted")
+    ) {
+      continue;
+    }
     if (version === 1 && key === "defaultDurableAudioFormat") {
       continue;
     }
     requireSupported(hasOwn(value, key));
+  }
+  if (version >= 4) {
+    requireSupported(
+      typeof value.appOutputGain === "number" && Number.isFinite(value.appOutputGain),
+    );
+    requireSupported(typeof value.appOutputMuted === "boolean");
+    requireSupported(
+      typeof value.countInOutputGain === "number" && Number.isFinite(value.countInOutputGain),
+    );
+    requireSupported(typeof value.countInOutputMuted === "boolean");
+    requireSupported(
+      typeof value.metronomeOutputGain === "number" && Number.isFinite(value.metronomeOutputGain),
+    );
+    requireSupported(typeof value.metronomeOutputMuted === "boolean");
   }
   requireSupported(isOneOf(value.informationDensity, ["minimal", "balanced", "detailed"]));
   requireSupported(isOneOf(value.enharmonicDisplayMode, ["auto", "sharps", "flats", "neutral", "dual"]));
@@ -120,9 +151,17 @@ function validatePreferences(value: unknown, version: 1 | 2 | 3): UiPreferences 
       value.defaultTunerReferenceHz <= MAX_TUNER_REFERENCE_HZ,
   );
   requireSupported(isOneOf(value.defaultTunerVisualMode, ["simple", "wide-arc"]));
-  return normalizePreferences(
-    version === 1 ? { ...value, defaultDurableAudioFormat: "wav" } : value,
-  );
+  return normalizePreferences({
+    ...value,
+    ...(version === 1 ? { defaultDurableAudioFormat: "wav" } : {}),
+    ...(version <= 3 ? { appOutputGain: 1, appOutputMuted: false } : {}),
+    ...(version <= 3 ? {
+      countInOutputGain: 1,
+      countInOutputMuted: false,
+      metronomeOutputGain: 0.8,
+      metronomeOutputMuted: false,
+    } : {}),
+  });
 }
 
 function validateThemeOverrides(value: unknown): ThemeOverrides {
@@ -159,7 +198,7 @@ export function parseSettingsSnapshot(text: string): SettingsSnapshot {
   const version = candidate.version;
   if (
     candidate.kind !== SETTINGS_SNAPSHOT_KIND ||
-    (version !== 1 && version !== 2 && version !== SETTINGS_SNAPSHOT_VERSION)
+    (version !== 1 && version !== 2 && version !== 3 && version !== SETTINGS_SNAPSHOT_VERSION)
   ) {
     throw new Error(SETTINGS_UNSUPPORTED_ERROR);
   }

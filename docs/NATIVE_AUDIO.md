@@ -14,6 +14,10 @@ for browsers and non-Tauri runtimes, and for a Tauri build compiled with the for
 - One native output runtime mixes project lanes, count-in cues, and the standalone metronome. A
   separate native capture runtime can run tuner input at the same time; starting or stopping either
   resource does not replace the other.
+- Output gain is layered in the same order on native and browser paths: each stem gain feeds the
+  project gain and mute; independent count-in and metronome gain and mute control their click
+  categories; then the app gain and mute control the final output. Gain changes ramp over 15 ms.
+  Every mute keeps its configured level for restoration on unmute.
 - Native playback supports shared transport play/pause/seek, position events, mute/solo lane gains,
   project count-ins, and generated metronome click lanes for follow-playback mode. Project count-ins
   use a 760 Hz triangle click with a 2 ms attack, 45 ms duration, and exponential decay on both
@@ -66,6 +70,13 @@ cross-platform owner, backend, diagnostic, and validation rules.
 - Revision-dependent project playback mutations are serialized and stale responses cannot replace a
   newer session, position, or lane state. Pause and Stop remain prompt cancellation boundaries and
   are not held behind an unresolved Play response.
+- App output has an independent serialized controller shared by playback and the metronome. Their
+  acquisitions wait for its latest application, while project prepare and lane updates never write
+  app output. The configured app state remains authoritative when the native runtime is replaced.
+- Count-in and metronome output share a separate paired controller. Both gains validate before the
+  native engine atomically mutates either category's gain and mute state. Output changes never
+  rebuild scheduled cues or reset the standalone metronome clock. Category state survives output
+  runtime replacement.
 - Web Audio/HTML media playback owns the transport only after a `playing` event or confirmed media
   progress. This applies to browser, non-Tauri, and forced-Web Tauri builds. It uses the browser
   Screen Wake Lock while playing. Browser Screen Wake Lock protects the visible screen only; it does

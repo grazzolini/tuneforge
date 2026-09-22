@@ -357,11 +357,12 @@ pub fn audio_get_capabilities(state: State<'_, NativeAudioState>) -> AudioCapabi
 pub async fn audio_prepare_session(
     app: AppHandle,
     state: State<'_, NativeAudioState>,
-    payload: transport::AudioSessionRequest,
+    mut payload: transport::AudioSessionRequest,
 ) -> Result<transport::AudioSession, String> {
     if !state.capabilities.native_playback_supported {
         return Err("native_audio_unavailable".to_string());
     }
+    payload.project_output = payload.project_output.validate().map_err(str::to_string)?;
     #[cfg(target_os = "ios")]
     validate_ios_playback_rate(payload.playback_rate)?;
     #[cfg(target_os = "ios")]
@@ -639,9 +640,10 @@ pub fn audio_seek(
 pub fn audio_set_lanes(
     app: AppHandle,
     state: State<'_, NativeAudioState>,
-    payload: mixer::AudioLaneUpdate,
+    mut payload: mixer::AudioLaneUpdate,
     control: session::SessionCommand,
 ) -> Result<transport::AudioSnapshot, String> {
+    payload.project_output = payload.project_output.validate().map_err(str::to_string)?;
     #[cfg(target_os = "ios")]
     validate_ios_playback_rate(payload.playback_rate)?;
     #[cfg(target_os = "ios")]
@@ -652,6 +654,7 @@ pub fn audio_set_lanes(
     }
     let raw_lanes = payload.lanes;
     let playback_rate = payload.playback_rate;
+    let project_output = payload.project_output;
     engine.mixer.set_lanes(raw_lanes.clone());
     let effective_lanes = engine.mixer.effective_lanes();
     let operation_kind = if engine.transport.diagnostic_route_changed(&raw_lanes) {
@@ -678,10 +681,34 @@ pub fn audio_set_lanes(
     }
     engine
         .transport
-        .set_lanes(raw_lanes, effective_lanes, playback_rate);
+        .set_lanes(raw_lanes, effective_lanes, playback_rate, project_output);
     let snapshot = engine.transport.snapshot();
     engine.emit_session(&app, session::AudioResource::Output);
     engine.require_healthy_output(snapshot)
+}
+
+#[tauri::command]
+pub fn audio_set_app_output(
+    state: State<'_, NativeAudioState>,
+    payload: mixer::AudioOutputRequest,
+) -> Result<mixer::AudioOutputSnapshot, String> {
+    let mut engine = state.engine()?;
+    engine
+        .transport
+        .set_app_output(payload)
+        .map_err(str::to_string)
+}
+
+#[tauri::command]
+pub fn audio_set_cue_outputs(
+    state: State<'_, NativeAudioState>,
+    payload: mixer::CueOutputRequest,
+) -> Result<mixer::CueOutputSnapshot, String> {
+    let mut engine = state.engine()?;
+    engine
+        .transport
+        .set_cue_outputs(payload)
+        .map_err(str::to_string)
 }
 
 #[tauri::command]
@@ -1415,6 +1442,7 @@ mod tests {
                 duration_seconds: Some(10.0),
                 playback_rate: Some(1.0),
                 lanes: Vec::new(),
+                project_output: mixer::AudioOutputRequest { gain: 1.0, muted: false },
                 control: prepare_control,
                 owner: Some(session::SessionOwner::Playback),
             },

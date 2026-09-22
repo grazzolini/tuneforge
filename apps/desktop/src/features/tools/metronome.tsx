@@ -10,6 +10,7 @@ import {
   type NativeStandaloneMetronomeState,
 } from "../../lib/nativeAudio";
 import { useStableCallback } from "../../lib/useStableCallback";
+import { useAudioOutput } from "../../lib/audioOutputContext";
 import { nextTimedBeatIndex, type AnalysisTimingBeat } from "../../lib/timingGrid";
 import {
   activateWebAudioContext,
@@ -50,6 +51,13 @@ type NativeMetronomeCommand = {
 
 export function MetronomeProvider({ children }: { children: ReactNode }) {
   const {
+    ensureAppOutputReady,
+    metronomeOutputGain: volume,
+    metronomeOutputMuted: muted,
+    setMetronomeOutputGain,
+    setMetronomeOutputMuted,
+  } = useAudioOutput();
+  const {
     getPlaybackSnapshot,
     isPlaying,
     session,
@@ -60,7 +68,6 @@ export function MetronomeProvider({ children }: { children: ReactNode }) {
   const [beatsPerBar, setBeatsPerBar] = useState(DEFAULT_BEATS_PER_BAR);
   const [accentFirstBeat, setAccentFirstBeat] = useState(true);
   const [followPlayback, setFollowPlayback] = useState(true);
-  const [volume, setVolumeState] = useState(DEFAULT_METRONOME_VOLUME);
   const [isRunning, setIsRunning] = useState(false);
   const [activeBeat, setActiveBeat] = useState<number | null>(null);
   const [tapBpm, setTapBpm] = useState<number | null>(null);
@@ -85,7 +92,6 @@ export function MetronomeProvider({ children }: { children: ReactNode }) {
   const nextFreeRunBeatIndexRef = useRef(0);
   const schedulerIntervalRef = useRef<number | null>(null);
   const tapTempoStateRef = useRef<TapTempoState>(createTapTempoState());
-  const volumeRef = useRef(volume);
 
   useEffect(() => {
     bpmRef.current = bpm;
@@ -102,10 +108,6 @@ export function MetronomeProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     followPlaybackRef.current = followPlayback;
   }, [followPlayback]);
-
-  useEffect(() => {
-    volumeRef.current = volume;
-  }, [volume]);
 
   useEffect(() => {
     isRunningRef.current = isRunning;
@@ -180,7 +182,6 @@ export function MetronomeProvider({ children }: { children: ReactNode }) {
       audioContext,
       sound: DEFAULT_METRONOME_SOUND,
       startTimeSeconds,
-      volume: volumeRef.current,
     });
 
     const timeoutId = window.setTimeout(
@@ -306,6 +307,9 @@ export function MetronomeProvider({ children }: { children: ReactNode }) {
       if (!command.enabled && !current) {
         return null;
       }
+      if (command.enabled) {
+        await ensureAppOutputReady();
+      }
       if (current && !current.leaseId) {
         throw new Error("Native metronome ownership metadata is unavailable.");
       }
@@ -314,7 +318,7 @@ export function MetronomeProvider({ children }: { children: ReactNode }) {
         bpm: bpmRef.current,
         beatsPerBar: beatsPerBarRef.current,
         accentFirstBeat: accentFirstBeatRef.current,
-        gain: volumeRef.current,
+        gain: 1,
         followPlayback: followPlaybackRef.current,
         operationId: `standalone-metronome-${++nativeStandaloneOperationRef.current}`,
       };
@@ -455,11 +459,12 @@ export function MetronomeProvider({ children }: { children: ReactNode }) {
   });
 
   const setVolume = useStableCallback(function setVolume(value: number) {
-    setVolumeState(normalizeVolume(value));
+    if (!Number.isFinite(value)) return;
+    setMetronomeOutputGain(Math.max(0, Math.min(1, value)));
   });
 
   const resetVolume = useStableCallback(function resetVolume() {
-    setVolumeState(DEFAULT_METRONOME_VOLUME);
+    setMetronomeOutputGain(DEFAULT_METRONOME_VOLUME);
   });
 
   const handleTapTempo = useStableCallback(function handleTapTempo() {
@@ -620,7 +625,6 @@ export function MetronomeProvider({ children }: { children: ReactNode }) {
     followPlayback,
     isRunning,
     reconcileNativeMetronomeFailure,
-    volume,
   ]);
 
   const nativeCuePlan = useStableCallback((positionSeconds: number) => {
@@ -633,7 +637,7 @@ export function MetronomeProvider({ children }: { children: ReactNode }) {
     }));
     return beats.filter((beat) => beat.seconds >= positionSeconds).map((beat) => ({
       cueIndex: beat.index, positionSeconds: beat.seconds, kind: "metronome" as const,
-      accent: accentFirstBeat && beat.accent, gain: volume,
+      accent: accentFirstBeat && beat.accent, gain: 1,
     }));
   });
 
@@ -681,7 +685,6 @@ export function MetronomeProvider({ children }: { children: ReactNode }) {
     session?.tempoOriginalBpm,
     session?.tempoTargetBpm,
     updateFollowedMetronomeCues,
-    volume,
   ]);
 
   const tempoStatus = `${bpm.toFixed(1)} BPM`;
@@ -707,12 +710,14 @@ export function MetronomeProvider({ children }: { children: ReactNode }) {
       handleTapTempo,
       isRunning,
       launchMetronome,
+      muted,
       resetVolume,
       seedBpm,
       setAccentFirstBeat,
       setBeatsPerBarValue,
       setBpmDraftValue,
       setFollowPlaybackEnabled,
+      setMuted: setMetronomeOutputMuted,
       setVolume,
       startMetronome,
       stopMetronome,
@@ -732,11 +737,13 @@ export function MetronomeProvider({ children }: { children: ReactNode }) {
       handleTapTempo,
       isRunning,
       launchMetronome,
+      muted,
       resetVolume,
       seedBpm,
       setBeatsPerBarValue,
       setBpmDraftValue,
       setFollowPlaybackEnabled,
+      setMetronomeOutputMuted,
       setVolume,
       startMetronome,
       stopMetronome,
@@ -755,11 +762,4 @@ function isTauriRuntime() {
 
 function getCurrentMetronomeTimeMs() {
   return typeof performance !== "undefined" ? performance.now() : Date.now();
-}
-
-function normalizeVolume(value: number) {
-  if (!Number.isFinite(value)) {
-    return DEFAULT_METRONOME_VOLUME;
-  }
-  return Math.max(0, Math.min(1, value));
 }

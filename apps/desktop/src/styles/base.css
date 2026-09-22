@@ -350,6 +350,102 @@ a {
   color: var(--sidebar-text);
 }
 
+.sidebar__app-output {
+  display: grid;
+  gap: 0.45rem;
+  margin-top: auto;
+  padding-top: 0.85rem;
+  border-top: 1px solid color-mix(in srgb, var(--divider) 72%, transparent);
+}
+
+.sidebar__app-output-narrow {
+  display: none;
+}
+
+.output-volume {
+  display: grid;
+  grid-template-columns: auto minmax(3.5rem, 1fr) auto;
+  align-items: center;
+  gap: 0.55rem;
+  min-width: 0;
+}
+
+.output-volume[data-gain-only] {
+  grid-template-columns: minmax(3.5rem, 1fr) auto;
+}
+
+.output-volume__label {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.output-volume input[type="range"] {
+  min-width: 0;
+  accent-color: var(--playback-accent);
+  cursor: pointer;
+}
+
+.output-volume__mute,
+.output-volume__percentage,
+.sidebar__app-output-narrow summary {
+  display: inline-grid;
+  min-block-size: 2rem;
+  place-items: center;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid color-mix(in srgb, var(--focus-ring) 22%, var(--divider));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--panel-strong) 74%, transparent);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.output-volume__mute {
+  min-inline-size: 2.125rem;
+}
+
+.output-volume__percentage {
+  min-inline-size: 2.75rem;
+  padding-inline: 0.35rem;
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+.output-volume[data-muted] input[type="range"] {
+  accent-color: color-mix(in srgb, var(--muted) 72%, var(--divider));
+}
+
+.output-volume__mute svg {
+  inline-size: 1.1rem;
+  block-size: 1.1rem;
+}
+
+.output-volume__mute[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--playback-accent) 60%, var(--divider));
+  background: color-mix(in srgb, var(--playback-accent) 18%, var(--panel-strong));
+}
+
+.app-shell--compact .sidebar__app-output {
+  justify-items: center;
+}
+
+.app-shell--compact .sidebar__app-output-full .output-volume > :not(.output-volume__mute) {
+  display: none;
+}
+
+.app-shell--compact .sidebar__app-output-full .output-volume {
+  display: block;
+}
+
+.app-shell--compact .sidebar__app-output-full > .field-error {
+  display: none;
+}
+
 .main-content {
   min-height: 0;
   overflow: auto;

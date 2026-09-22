@@ -108,6 +108,21 @@ const releaseMediaCaptureCatalog = [
     capture: captureScreenshotEntry,
   },
   {
+    id: "playback-output-levels",
+    enabled: true,
+    kind: "screenshot",
+    fileName: "playback-output-levels.png",
+    title: "Muted metronome with saved level",
+    caption: "Mute the metronome without losing its level below the synthetic stem mixer.",
+    alt: "TuneForge Playback showing a muted Metronome at 62 percent above App volume",
+    fixture: "release-showcase-v1",
+    viewport: { width: 1600, height: 1000 },
+    route: "/projects/proj_release_showcase",
+    prepare: preparePlaybackOutputLevels,
+    ready: readyPlaybackOutputLevels,
+    capture: captureScreenshotEntry,
+  },
+  {
     id: "playback",
     enabled: true,
     kind: "screenshot",
@@ -119,6 +134,36 @@ const releaseMediaCaptureCatalog = [
     route: "/projects/proj_release_showcase",
     prepare: preparePlayback,
     ready: readyPlayback,
+    capture: captureScreenshotEntry,
+  },
+  {
+    id: "playback-mixer",
+    enabled: true,
+    kind: "screenshot",
+    fileName: "playback-mixer.png",
+    title: "Playback stem mixer",
+    caption: "Shape a synthetic practice mix with mute, solo, and volume for each stem.",
+    alt: "TuneForge Playback showing mute, solo, and volume controls for four synthetic stems",
+    fixture: "release-showcase-v1",
+    viewport: { width: 1600, height: 1400 },
+    route: "/projects/proj_release_showcase",
+    prepare: preparePlaybackMixer,
+    ready: readyPlaybackMixer,
+    capture: captureScreenshotEntry,
+  },
+  {
+    id: "background-playback-volume",
+    enabled: true,
+    kind: "screenshot",
+    fileName: "background-playback-volume.png",
+    title: "Background project playback",
+    caption: "Keep project playback and its volume control available while browsing the local library.",
+    alt: "TuneForge library with the Midnight Count-In background playback card and project volume control",
+    fixture: "release-showcase-v1",
+    viewport: { width: 1440, height: 1000 },
+    route: "/projects/proj_release_showcase",
+    prepare: prepareBackgroundPlaybackVolume,
+    ready: readyBackgroundPlaybackVolume,
     capture: captureScreenshotEntry,
   },
   {
@@ -135,6 +180,54 @@ const releaseMediaCaptureCatalog = [
     route: "/projects/proj_release_showcase",
     prepare: prepareMobilePlayback,
     ready: readyMobilePlayback,
+    capture: captureScreenshotEntry,
+  },
+  {
+    id: "mobile-playback-levels",
+    enabled: true,
+    kind: "screenshot",
+    fileName: "mobile-playback-levels.png",
+    title: "Mobile muted Count-in volume",
+    caption: "Mute Count-in while preserving its 68 percent level with the existing Count-in options.",
+    alt: "TuneForge mobile Practice Controls showing muted Count-in volume at 68 percent",
+    fixture: "release-showcase-mobile-playback-v1",
+    runtime: "mobile",
+    viewport: { width: 411, height: 891 },
+    route: "/projects/proj_release_showcase",
+    prepare: prepareMobilePlaybackLevels,
+    ready: readyMobilePlaybackLevels,
+    capture: captureScreenshotEntry,
+  },
+  {
+    id: "mobile-output-levels",
+    enabled: true,
+    kind: "screenshot",
+    fileName: "mobile-output-levels.png",
+    title: "Mobile muted Metronome and App volume",
+    caption: "Muted Metronome at 62 percent and App volume finish the Practice Controls drawer.",
+    alt: "TuneForge mobile Practice Controls showing muted Metronome at 62 percent above App volume at 100 percent",
+    fixture: "release-showcase-mobile-playback-v1",
+    runtime: "mobile",
+    viewport: { width: 411, height: 891 },
+    route: "/projects/proj_release_showcase",
+    prepare: prepareMobileOutputLevels,
+    ready: readyMobileOutputLevels,
+    capture: captureScreenshotEntry,
+  },
+  {
+    id: "mobile-stem-level",
+    enabled: true,
+    kind: "screenshot",
+    fileName: "mobile-stem-level.png",
+    title: "Mobile stem volume",
+    caption: "Scroll to a synced stem for its mute, solo, and volume controls.",
+    alt: "TuneForge mobile Practice Controls showing mute, solo, and volume for the synthetic Vocals stem",
+    fixture: "release-showcase-mobile-playback-v1",
+    runtime: "mobile",
+    viewport: { width: 411, height: 891 },
+    route: "/projects/proj_release_showcase",
+    prepare: prepareMobileStemLevel,
+    ready: readyMobileStemLevel,
     capture: captureScreenshotEntry,
   },
   {
@@ -184,6 +277,21 @@ const releaseMediaCaptureCatalog = [
     route: "/projects/proj_release_showcase",
     prepare: prepareExportWorkspace,
     ready: readyExportWorkspace,
+    capture: captureScreenshotEntry,
+  },
+  {
+    id: "tools-metronome-volume",
+    enabled: true,
+    kind: "screenshot",
+    fileName: "tools-metronome-volume.png",
+    title: "Muted standalone metronome level",
+    caption: "The standalone metronome shares its muted 62 percent output setting with Playback.",
+    alt: "TuneForge Tools Metronome showing a muted volume control at 62 percent",
+    fixture: "release-showcase-v1",
+    viewport: { width: 1440, height: 1000 },
+    route: "/tools?tool=metronome",
+    prepare: prepareToolsMetronomeVolume,
+    ready: readyToolsMetronomeVolume,
     capture: captureScreenshotEntry,
   },
   {
@@ -244,6 +352,21 @@ const releaseMediaCaptureCatalog = [
     capture: captureScreenshotEntry,
   },
   {
+    id: "settings-output-volume",
+    enabled: true,
+    kind: "screenshot",
+    fileName: "settings-output-volume.png",
+    title: "Output volume and mute defaults",
+    caption: "Settings keeps muted Count-in and Metronome categories at their configured levels.",
+    alt: "TuneForge Settings showing muted Count-in at 68 percent and Metronome at 62 percent",
+    fixture: "release-showcase-v1",
+    viewport: { width: 1440, height: 1000 },
+    route: "/settings",
+    prepare: prepareSettingsOutputVolume,
+    ready: readySettingsOutputVolume,
+    capture: captureScreenshotEntry,
+  },
+  {
     id: "overview-video",
     enabled: true,
     kind: "video",
@@ -257,6 +380,7 @@ const releaseMediaCaptureCatalog = [
       "library",
       "playback",
       "export-workspace",
+      "tools-metronome-volume",
       "tuner",
       "chord-dictionary",
       "jobs",
@@ -689,6 +813,10 @@ async function installPageStabilizers(
       ...nativeAudioMetadata,
       lanes: [],
       bufferHealth: [],
+      appOutput: { configuredGain: 1, muted: false, targetGain: 1, currentGain: 1 },
+      projectOutput: { configuredGain: 1, muted: false, targetGain: 1, currentGain: 1 },
+      countInOutput: { configuredGain: 1, muted: false, targetGain: 1, currentGain: 1 },
+      metronomeOutput: { configuredGain: 0.8, muted: false, targetGain: 0.8, currentGain: 0.8 },
     };
 
     try {
@@ -969,9 +1097,45 @@ async function installPageStabilizers(
       if (command === "audio_list_output_devices") {
         return { supported: true, devices: [], error: null };
       }
+      if (command === "audio_set_app_output") {
+        const payload = args?.payload ?? {};
+        const gain = Math.min(1, Math.max(0, Number(payload.gain ?? 1)));
+        const muted = Boolean(payload.muted);
+        return updatePlaybackSnapshot({
+          appOutput: {
+            configuredGain: gain,
+            muted,
+            targetGain: muted ? 0 : gain,
+            currentGain: muted ? 0 : gain,
+          },
+        });
+      }
+      if (command === "audio_set_cue_outputs") {
+        const payload = args?.payload ?? {};
+        const countInGain = Math.min(1, Math.max(0, Number(payload.countInGain ?? 1)));
+        const countInMuted = Boolean(payload.countInMuted);
+        const metronomeGain = Math.min(1, Math.max(0, Number(payload.metronomeGain ?? 0.8)));
+        const metronomeMuted = Boolean(payload.metronomeMuted);
+        return updatePlaybackSnapshot({
+          countInOutput: {
+            configuredGain: countInGain,
+            muted: countInMuted,
+            targetGain: countInMuted ? 0 : countInGain,
+            currentGain: countInMuted ? 0 : countInGain,
+          },
+          metronomeOutput: {
+            configuredGain: metronomeGain,
+            muted: metronomeMuted,
+            targetGain: metronomeMuted ? 0 : metronomeGain,
+            currentGain: metronomeMuted ? 0 : metronomeGain,
+          },
+        });
+      }
       if (command === "audio_prepare_session") {
         const payload = args?.payload ?? {};
         const lanes = playbackLanesFromRequests(payload.lanes ?? []);
+        const projectGain = Math.min(1, Math.max(0, Number(payload.projectOutput?.gain ?? 1)));
+        const projectMuted = Boolean(payload.projectOutput?.muted);
         updatePlaybackSnapshot({
           sessionId: payload.sessionId ?? "release-media-playback",
           state: "stopped",
@@ -981,6 +1145,12 @@ async function installPageStabilizers(
           nativePlaybackSupported: true,
           availabilityReason: null,
           lanes,
+          projectOutput: {
+            configuredGain: projectGain,
+            muted: projectMuted,
+            targetGain: projectMuted ? 0 : projectGain,
+            currentGain: projectMuted ? 0 : projectGain,
+          },
         });
         return {
           id: playbackSnapshot.sessionId,
@@ -1029,9 +1199,21 @@ async function installPageStabilizers(
       }
       if (command === "audio_set_lanes") {
         const payload = args?.payload ?? {};
+        const projectGain = Math.min(1, Math.max(0, Number(
+          payload.projectOutput?.gain ?? playbackSnapshot.projectOutput?.configuredGain ?? 1,
+        )));
+        const projectMuted = Boolean(
+          payload.projectOutput?.muted ?? playbackSnapshot.projectOutput?.muted,
+        );
         return updatePlaybackSnapshot({
           playbackRate: payload.playbackRate ?? playbackSnapshot.playbackRate,
           lanes: playbackLanesFromRequests(payload.lanes ?? []),
+          projectOutput: {
+            configuredGain: projectGain,
+            muted: projectMuted,
+            targetGain: projectMuted ? 0 : projectGain,
+            currentGain: projectMuted ? 0 : projectGain,
+          },
         });
       }
       if (command === "audio_get_snapshot") {
@@ -1488,12 +1670,87 @@ async function preparePlayback({ captureKind, page, timeoutMs }) {
   await playButton.click();
 }
 
+async function preparePlaybackMixer({ page, timeoutMs }) {
+  const practiceMix = page.getByRole("button", { name: /^Practice Mix/ }).first();
+  await practiceMix.waitFor({ state: "visible", timeout: timeoutMs });
+  await practiceMix.click();
+  const vocalsVolume = page.getByRole("slider", { name: "Vocals volume", exact: true });
+  await vocalsVolume.fill("0.65");
+  await page.getByRole("button", { name: "Mute Vocals", exact: true }).click();
+  await page.locator(".playback-stem-grid").scrollIntoViewIfNeeded();
+}
+
+async function preparePlaybackOutputLevels({ page, timeoutMs }) {
+  const practiceMix = page.getByRole("button", { name: /^Practice Mix/ }).first();
+  await practiceMix.waitFor({ state: "visible", timeout: timeoutMs });
+  await practiceMix.click();
+  const rail = page.locator(".playback-practice-rail--desktop");
+  await rail.getByRole("slider", { name: "Metronome volume", exact: true }).fill("0.62");
+  await rail.getByRole("button", { name: "Mute metronome volume", exact: true }).click();
+  await rail.getByRole("slider", { name: "App volume", exact: true }).scrollIntoViewIfNeeded();
+}
+
+async function prepareBackgroundPlaybackVolume({ page, timeoutMs }) {
+  const playButton = page.getByRole("button", { name: "Play playback" });
+  await playButton.waitFor({ state: "visible", timeout: timeoutMs });
+  await playButton.click();
+  await page.getByRole("button", { name: "Pause playback" })
+    .waitFor({ state: "visible", timeout: timeoutMs });
+  await page.locator("nav.nav").getByRole("link", { name: "Library", exact: true }).click();
+}
+
 async function prepareMobilePlayback({ page, timeoutMs }) {
   const bothMode = page.getByRole("button", { name: "Both", exact: true });
   await bothMode.waitFor({ state: "visible", timeout: timeoutMs });
   if (await bothMode.getAttribute("aria-pressed") !== "true") {
     await bothMode.click();
   }
+}
+
+async function prepareMobilePlaybackLevels({ page, timeoutMs }) {
+  await prepareMobilePlayback({ page, timeoutMs });
+  const controls = page.getByRole("button", { name: "Open Practice Controls" });
+  await controls.click();
+  const drawer = page.locator(".mobile-practice-controls");
+  await drawer.waitFor({ state: "visible", timeout: timeoutMs });
+  const countIn = drawer.getByRole("slider", { name: "Count-in volume", exact: true });
+  await countIn.fill("0.68");
+  await drawer.getByRole("button", { name: "Mute count-in volume", exact: true }).click();
+  await countIn.scrollIntoViewIfNeeded();
+}
+
+async function prepareMobileOutputLevels({ page, timeoutMs }) {
+  await prepareMobileStemLevel({ page, timeoutMs });
+  const drawer = page.locator(".mobile-practice-controls");
+  await drawer.getByRole("slider", { name: "Metronome volume", exact: true }).fill("0.62");
+  await drawer.getByRole("button", { name: "Mute metronome volume", exact: true }).click();
+  await drawer.getByRole("slider", { name: "App volume", exact: true })
+    .scrollIntoViewIfNeeded();
+}
+
+async function prepareToolsMetronomeVolume({ page }) {
+  await page.getByRole("slider", { name: "Metronome volume", exact: true }).fill("0.62");
+  await page.getByRole("button", { name: "Mute metronome volume", exact: true }).click();
+}
+
+async function prepareSettingsOutputVolume({ page }) {
+  const panel = page.locator('[aria-labelledby="output-volume-title"]');
+  await panel.getByRole("slider", { name: "Count-in volume", exact: true }).fill("0.68");
+  await panel.getByRole("button", { name: "Mute count-in volume", exact: true }).click();
+  await panel.getByRole("slider", { name: "Metronome volume", exact: true }).fill("0.62");
+  await panel.getByRole("button", { name: "Mute metronome volume", exact: true }).click();
+}
+
+async function prepareMobileStemLevel({ page, timeoutMs }) {
+  await prepareMobilePlayback({ page, timeoutMs });
+  const controls = page.getByRole("button", { name: "Open Practice Controls" });
+  await controls.click();
+  const drawer = page.locator(".mobile-practice-controls");
+  await drawer.waitFor({ state: "visible", timeout: timeoutMs });
+  const practiceMix = drawer.getByRole("button", { name: /^Practice Mix/ }).first();
+  await practiceMix.waitFor({ state: "visible", timeout: timeoutMs });
+  await practiceMix.click();
+  await drawer.locator(".playback-stem-card").first().scrollIntoViewIfNeeded();
 }
 
 async function prepareMobileAnalysisResults({ page, timeoutMs }) {
@@ -1587,6 +1844,63 @@ async function readyPlayback({ captureKind, page, timeoutMs }) {
   } else {
     await page.getByRole("button", { name: "Pause playback" }).waitFor({ timeout: timeoutMs });
   }
+}
+
+async function readyPlaybackMixer({ page, timeoutMs }) {
+  await page.getByRole("heading", { name: "Midnight Count-In" }).waitFor({ timeout: timeoutMs });
+  const rail = page.locator(".playback-practice-rail--desktop");
+  for (const stem of ["Vocals", "Drums", "Bass", "Guitar"]) {
+    await rail.getByRole("slider", { name: `${stem} volume`, exact: true })
+      .waitFor({ state: "visible", timeout: timeoutMs });
+    await rail.getByRole("button", { name: `Mute ${stem}`, exact: true })
+      .waitFor({ state: "visible", timeout: timeoutMs });
+    await rail.getByRole("button", { name: `Solo ${stem}`, exact: true })
+      .waitFor({ state: "visible", timeout: timeoutMs });
+  }
+  const selectedMix = page.getByRole("button", { name: /^Practice Mix/ }).first();
+  if (!(await selectedMix.getAttribute("class"))?.includes("artifact-pill--active")) {
+    throw new Error("Playback mixer capture requires the synthetic Practice Mix selected.");
+  }
+  const vocalsVolume = rail.getByRole("slider", { name: "Vocals volume", exact: true });
+  if (await vocalsVolume.inputValue() !== "0.65") {
+    throw new Error("Playback mixer capture requires Vocals volume at 65 percent.");
+  }
+  if (await rail.getByRole("button", { name: "Mute Vocals", exact: true })
+    .getAttribute("aria-pressed") !== "true") {
+    throw new Error("Playback mixer capture requires the nonzero Vocals level to be muted.");
+  }
+}
+
+async function readyPlaybackOutputLevels({ page, timeoutMs }) {
+  const rail = page.locator(".playback-practice-rail--desktop");
+  await rail.getByRole("heading", { name: "Stems", exact: true }).waitFor({ timeout: timeoutMs });
+  const metronome = rail.getByRole("slider", { name: "Metronome volume", exact: true });
+  const app = rail.getByRole("slider", { name: "App volume", exact: true });
+  await metronome.waitFor({ state: "visible", timeout: timeoutMs });
+  await app.waitFor({ state: "visible", timeout: timeoutMs });
+  const metronomeMute = rail.getByRole("button", {
+    name: "Unmute metronome volume",
+    exact: true,
+  });
+  if (
+    await metronome.inputValue() !== "0.62"
+    || await metronomeMute.getAttribute("aria-pressed") !== "true"
+    || await app.inputValue() !== "1"
+  ) {
+    throw new Error("Playback output capture requires muted Metronome 62 and App 100.");
+  }
+}
+
+async function readyBackgroundPlaybackVolume({ page, timeoutMs }) {
+  await page.getByRole("heading", { name: "Practice Projects" }).waitFor({ timeout: timeoutMs });
+  const card = page.locator(".background-playback");
+  await card.getByText("Background Playback", { exact: true }).waitFor({ timeout: timeoutMs });
+  await card.getByRole("link", { name: "Open Midnight Count-In project" })
+    .waitFor({ timeout: timeoutMs });
+  await card.getByRole("slider", { name: "Project volume", exact: true })
+    .waitFor({ state: "visible", timeout: timeoutMs });
+  await card.getByRole("button", { name: "Pause background playback" })
+    .waitFor({ state: "visible", timeout: timeoutMs });
 }
 
 async function readyExportWorkspace({ captureKind, page, timeoutMs }) {
@@ -1743,6 +2057,83 @@ async function readyMobilePlayback({ page, timeoutMs }) {
   if (value !== 0) {
     throw new Error(`Mobile Playback screenshot must stay stopped at 0 seconds; received ${value}.`);
   }
+}
+
+async function readyMobilePlaybackLevels({ page, timeoutMs }) {
+  const drawer = page.locator(".mobile-practice-controls");
+  await drawer.waitFor({ state: "visible", timeout: timeoutMs });
+  await drawer.getByRole("slider", { name: "Project volume", exact: true })
+    .waitFor({ state: "visible", timeout: timeoutMs });
+  await drawer.getByRole("slider", { name: "Count-in volume", exact: true })
+    .waitFor({ state: "visible", timeout: timeoutMs });
+  const countInSlider = drawer.getByRole("slider", { name: "Count-in volume", exact: true });
+  const countInMute = drawer.getByRole("button", { name: "Unmute count-in volume", exact: true });
+  const muteBounds = await countInMute.boundingBox();
+  if (
+    await countInSlider.inputValue() !== "0.68"
+    || await countInMute.getAttribute("aria-pressed") !== "true"
+    || !muteBounds
+    || muteBounds.width < 48
+    || muteBounds.height < 48
+  ) {
+    throw new Error("Mobile Count-in capture requires muted 68 percent with a 48px mute target.");
+  }
+  const firstLevel = await drawer
+    .getByRole("slider", { name: "Project volume", exact: true })
+    .boundingBox();
+  const countIn = await drawer.getByRole("slider", { name: "Count-in volume", exact: true })
+    .boundingBox();
+  if (!firstLevel || !countIn || firstLevel.y >= countIn.y) {
+    throw new Error("Mobile Project volume must precede the Count-in section.");
+  }
+}
+
+async function readyMobileOutputLevels({ page, timeoutMs }) {
+  const drawer = page.locator(".mobile-practice-controls");
+  await drawer.waitFor({ state: "visible", timeout: timeoutMs });
+  const metronome = drawer.getByRole("slider", { name: "Metronome volume", exact: true });
+  const app = drawer.getByRole("slider", { name: "App volume", exact: true });
+  await metronome.waitFor({ state: "visible", timeout: timeoutMs });
+  await app.waitFor({ state: "visible", timeout: timeoutMs });
+  const metronomeMute = drawer.getByRole("button", {
+    name: "Unmute metronome volume",
+    exact: true,
+  });
+  const muteBounds = await metronomeMute.boundingBox();
+  if (
+    await metronome.inputValue() !== "0.62"
+    || await metronomeMute.getAttribute("aria-pressed") !== "true"
+    || !muteBounds
+    || muteBounds.width < 48
+    || muteBounds.height < 48
+    || await app.inputValue() !== "1"
+  ) {
+    throw new Error("Mobile output capture requires muted Metronome 62 and App 100.");
+  }
+}
+
+async function readyToolsMetronomeVolume({ page, timeoutMs }) {
+  await page.getByRole("heading", { name: "Metronome", exact: true })
+    .waitFor({ state: "visible", timeout: timeoutMs });
+  const volume = page.getByRole("slider", { name: "Metronome volume", exact: true });
+  const mute = page.getByRole("button", { name: "Unmute metronome volume", exact: true });
+  if (
+    await volume.inputValue() !== "0.62"
+    || await mute.getAttribute("aria-pressed") !== "true"
+  ) {
+    throw new Error("Tools Metronome capture requires muted volume at 62 percent.");
+  }
+}
+
+async function readyMobileStemLevel({ page, timeoutMs }) {
+  const drawer = page.locator(".mobile-practice-controls");
+  await drawer.waitFor({ state: "visible", timeout: timeoutMs });
+  await drawer.getByRole("slider", { name: "Vocals volume", exact: true })
+    .waitFor({ state: "visible", timeout: timeoutMs });
+  await drawer.getByRole("button", { name: "Mute Vocals", exact: true })
+    .waitFor({ state: "visible", timeout: timeoutMs });
+  await drawer.getByRole("button", { name: "Solo Vocals", exact: true })
+    .waitFor({ state: "visible", timeout: timeoutMs });
 }
 
 async function readyMobileAnalysisResults({ page, timeoutMs }) {
@@ -1907,6 +2298,36 @@ async function readySettings({ page, timeoutMs }) {
     || panelBounds.y + panelBounds.height > viewport.height
   ) {
     throw new Error("Settings release media requires the full Audio Storage panel in frame.");
+  }
+}
+
+async function readySettingsOutputVolume({ page, timeoutMs }) {
+  await page.getByRole("heading", { name: "Control Room" }).waitFor({ timeout: timeoutMs });
+  const panel = page.locator('[aria-labelledby="output-volume-title"]');
+  await panel.waitFor({ state: "visible", timeout: timeoutMs });
+  await panel.scrollIntoViewIfNeeded();
+  await panel.getByRole("slider", { name: "App volume", exact: true })
+    .waitFor({ state: "visible", timeout: timeoutMs });
+  await panel.getByRole("button", { name: "Mute app volume" })
+    .waitFor({ state: "visible", timeout: timeoutMs });
+  await panel.getByRole("button", { name: "Reset app volume to 100%" })
+    .waitFor({ state: "visible", timeout: timeoutMs });
+  await panel.getByRole("slider", { name: "Count-in volume", exact: true })
+    .waitFor({ state: "visible", timeout: timeoutMs });
+  await panel.getByRole("slider", { name: "Metronome volume", exact: true })
+    .waitFor({ state: "visible", timeout: timeoutMs });
+  const countInMute = panel.getByRole("button", { name: "Unmute count-in volume", exact: true });
+  const metronomeMute = panel.getByRole("button", {
+    name: "Unmute metronome volume",
+    exact: true,
+  });
+  if (
+    await panel.getByRole("slider", { name: "Count-in volume", exact: true }).inputValue() !== "0.68"
+    || await countInMute.getAttribute("aria-pressed") !== "true"
+    || await panel.getByRole("slider", { name: "Metronome volume", exact: true }).inputValue() !== "0.62"
+    || await metronomeMute.getAttribute("aria-pressed") !== "true"
+  ) {
+    throw new Error("Settings output capture requires muted Count-in 68 and Metronome 62.");
   }
 }
 

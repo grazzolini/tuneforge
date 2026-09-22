@@ -1,3 +1,5 @@
+import { getCountInAudioOutputNode } from "../../lib/audioOutput";
+
 export const PRECOUNT_START_DELAY_SECONDS = 0.035;
 export const PRECOUNT_GAIN = 1;
 const PRECOUNT_FREQUENCY_HZ = 760;
@@ -47,7 +49,7 @@ export function schedulePrecountClaveClick({
   gainNode.gain.exponentialRampToValueAtTime(0.0001, stopTimeSeconds);
 
   oscillator.connect(gainNode);
-  gainNode.connect(audioContext.destination);
+  gainNode.connect(getCountInAudioOutputNode(audioContext));
   oscillator.onended = () => {
     disconnectNodes();
   };

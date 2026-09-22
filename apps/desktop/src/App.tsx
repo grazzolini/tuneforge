@@ -12,6 +12,9 @@ import { ChordDictionaryFollowArmProvider } from "./features/tools/chordDictiona
 import { MetronomeProvider } from "./features/tools/metronome";
 import { ToolsView } from "./features/tools/ToolsView";
 import { PreferencesProvider } from "./lib/preferences";
+import { AudioOutputProvider } from "./lib/AudioOutputProvider";
+import { useAudioOutput } from "./lib/audioOutputContext";
+import { OutputVolumeControl } from "./components/OutputVolumeControl";
 import { ThemeProvider } from "./lib/theme";
 
 function MiniMetallicGlyphDefs({ gradientId }: { gradientId: string }) {
@@ -104,7 +107,15 @@ function MiniStopGlyph() {
 
 function BackgroundPlaybackCard() {
   const location = useLocation();
-  const { dismissSession, isPlaying, session, togglePlayback } = usePlayback();
+  const {
+    dismissSession,
+    isPlaying,
+    projectOutputSaveError,
+    session,
+    setProjectOutputGain,
+    setProjectOutputMuted,
+    togglePlayback,
+  } = usePlayback();
   const routeProjectId =
     matchPath("/projects/:projectId", location.pathname)?.params.projectId ?? null;
 
@@ -123,6 +134,14 @@ function BackgroundPlaybackCard() {
         <strong>{session.projectName}</strong>
         <p className="artifact-meta">{session.stageTitle}</p>
       </Link>
+      <OutputVolumeControl
+        gain={session.projectOutputGain}
+        label="Project volume"
+        muted={session.projectOutputMuted}
+        onGainChange={setProjectOutputGain}
+        onMutedChange={setProjectOutputMuted}
+      />
+      {projectOutputSaveError ? <p className="field-error" role="alert">{projectOutputSaveError}</p> : null}
       <div className="background-playback__controls">
         <button
           aria-label={isPlaying ? "Pause background playback" : "Play background playback"}
@@ -151,6 +170,7 @@ function AppChrome() {
   const routeProjectId =
     matchPath("/projects/:projectId", location.pathname)?.params.projectId ?? null;
   const compactChrome = Boolean(routeProjectId);
+  const appOutput = useAudioOutput();
 
   useEffect(() => {
     if (!routeProjectId || !session || routeProjectId === session.projectId) {
@@ -212,6 +232,46 @@ function AppChrome() {
             <span className="nav__label">Settings</span>
           </NavLink>
         </nav>
+        <div className="sidebar__app-output">
+          <div className="sidebar__app-output-full">
+            <OutputVolumeControl
+              gain={appOutput.appOutputGain}
+              label="App volume"
+              muted={appOutput.appOutputMuted}
+              onGainChange={appOutput.setAppOutputGain}
+              onMutedChange={appOutput.setAppOutputMuted}
+              showLabel={!compactChrome}
+            />
+            {appOutput.outputSaveError ? (
+              <p className="field-error" role="alert">{appOutput.outputSaveError}</p>
+            ) : null}
+          </div>
+          <div className="sidebar__app-output-narrow">
+            <OutputVolumeControl
+              gain={appOutput.appOutputGain}
+              label="App volume"
+              muted={appOutput.appOutputMuted}
+              onGainChange={appOutput.setAppOutputGain}
+              onMutedChange={appOutput.setAppOutputMuted}
+              showLabel={false}
+            />
+            <details>
+              <summary aria-label="Open app volume">{Math.round(appOutput.appOutputGain * 100)}%</summary>
+              <div className="sidebar__app-output-popover">
+                <OutputVolumeControl
+                  gain={appOutput.appOutputGain}
+                  label="App volume"
+                  muted={appOutput.appOutputMuted}
+                  onGainChange={appOutput.setAppOutputGain}
+                  showLabel={false}
+                />
+                {appOutput.outputSaveError ? (
+                  <p className="field-error" role="alert">{appOutput.outputSaveError}</p>
+                ) : null}
+              </div>
+            </details>
+          </div>
+        </div>
       </aside>
       <main className="main-content">
         <Routes>
@@ -232,13 +292,15 @@ export default function App() {
   return (
     <ThemeProvider>
       <PreferencesProvider>
-        <PlaybackProvider>
-          <MetronomeProvider>
-            <ChordDictionaryFollowArmProvider>
-              <AppChrome />
-            </ChordDictionaryFollowArmProvider>
-          </MetronomeProvider>
-        </PlaybackProvider>
+        <AudioOutputProvider>
+          <PlaybackProvider>
+            <MetronomeProvider>
+              <ChordDictionaryFollowArmProvider>
+                <AppChrome />
+              </ChordDictionaryFollowArmProvider>
+            </MetronomeProvider>
+          </PlaybackProvider>
+        </AudioOutputProvider>
       </PreferencesProvider>
     </ThemeProvider>
   );

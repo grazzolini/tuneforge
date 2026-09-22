@@ -84,6 +84,10 @@ const snapshot: NativeAudioSnapshot = {
   availabilityReason: "native_audio_unavailable",
   lanes: [],
   bufferHealth: [],
+  appOutput: { configuredGain: 1, muted: false, targetGain: 1, currentGain: 1 },
+  projectOutput: { configuredGain: 1, muted: false, targetGain: 1, currentGain: 1 },
+  countInOutput: { configuredGain: 1, muted: false, targetGain: 1, currentGain: 1 },
+  metronomeOutput: { configuredGain: 0.8, muted: false, targetGain: 0.8, currentGain: 0.8 },
   leaseId: "project-playback",
   generation: 4,
   timelineRevision: 2,
@@ -218,6 +222,7 @@ describe("native audio adapter", () => {
       sessionId: "session-1",
       durationSeconds: 180,
       playbackRate: 1,
+      projectOutput: { gain: 1, muted: false },
       lanes: [
         {
           id: "vocals",
@@ -230,7 +235,7 @@ describe("native audio adapter", () => {
         },
       ],
     };
-    const laneUpdate = { lanes: sessionRequest.lanes };
+    const laneUpdate = { lanes: sessionRequest.lanes, projectOutput: { gain: 1, muted: false } };
     const control = {
       leaseId: "project-playback",
       operationId: "mutate-1",
@@ -328,12 +333,12 @@ describe("native audio adapter", () => {
     await playNativeAudio({
       ...control, startTimeSeconds: 0, precount: { intervalsSeconds: [0.5, 0.5] }, metronomeCues,
     });
-    await setNativeAudioLanes({ lanes: [] }, control);
+    await setNativeAudioLanes({ lanes: [], projectOutput: { gain: 1, muted: false } }, control);
     expect(mockInvoke.mock.calls).toEqual([
       ["audio_play", { payload: {
         ...control, startTimeSeconds: 0, precount: { intervalsSeconds: [0.5, 0.5] }, metronomeCues,
       } }],
-      ["audio_set_lanes", { payload: { lanes: [] }, control }],
+      ["audio_set_lanes", { payload: { lanes: [], projectOutput: { gain: 1, muted: false } }, control }],
     ]);
   });
 

@@ -24,6 +24,8 @@ import {
 } from "../projectViewUtils";
 import { TargetKeySelector } from "./TargetKeySelector";
 import { useProjectViewModelContext } from "./useProjectViewModelContext";
+import { OutputVolumeControl } from "../../../components/OutputVolumeControl";
+import { useAudioOutput } from "../../../lib/audioOutputContext";
 
 export type PlaybackPracticeRailHandle = {
   flushPendingTempo: () => void;
@@ -33,6 +35,7 @@ export const PlaybackPracticeRail = forwardRef<
   PlaybackPracticeRailHandle,
   { variant?: "desktop" | "drawer" }
 >(function PlaybackPracticeRail({ variant = "desktop" }, ref) {
+  const appOutput = useAudioOutput();
   const {
     capoKey,
     capoOptionRefs,
@@ -84,7 +87,11 @@ export const PlaybackPracticeRail = forwardRef<
     stageSummary,
     stageTitle,
     stemControls,
-    stemOutputLabel,
+    projectOutputGain,
+    projectOutputMuted,
+    setProjectOutputGain,
+    setProjectOutputMuted,
+    setStemGain,
     tempoDisplayBpm,
     tempoMaxBpm,
     tempoMinBpm,
@@ -261,6 +268,17 @@ export const PlaybackPracticeRail = forwardRef<
         </span>
       </div>
       <div className="playback-practice-rail__content">
+      {variant === "drawer" ? (
+        <section className="playback-picker-group playback-levels">
+          <OutputVolumeControl
+            gain={projectOutputGain}
+            label="Project volume"
+            muted={projectOutputMuted}
+            onGainChange={setProjectOutputGain}
+            onMutedChange={setProjectOutputMuted}
+          />
+        </section>
+      ) : null}
       <div className="playback-practice-rail__header">
         <p className="metric-label">Playback</p>
         <h2>{stageTitle}</h2>
@@ -362,6 +380,14 @@ export const PlaybackPracticeRail = forwardRef<
             ? `${precountClickCount} clicks at ${precountTempoBpm.toFixed(1)} BPM`
             : precountDisabledReason}
         </p>
+        <OutputVolumeControl
+          gain={appOutput.countInOutputGain}
+          label="Count-in volume"
+          muted={appOutput.countInOutputMuted}
+          onGainChange={appOutput.setCountInOutputGain}
+          onMutedChange={appOutput.setCountInOutputMuted}
+          showLabel={false}
+        />
       </section>
 
       <section className="playback-loop-alignment-control" aria-labelledby="playback-loop-alignment-heading">
@@ -528,7 +554,7 @@ export const PlaybackPracticeRail = forwardRef<
 
             <div className="playback-stem-grid playback-stem-grid--compact" role="group" aria-label="Playback stem list">
               {visibleStemArtifacts.map((artifact) => {
-                const state = stemControls[artifact.id] ?? { muted: false, solo: false };
+                const state = stemControls[artifact.id] ?? { muted: false, solo: false, gain: 1 };
                 return (
                   <div className="playback-stem-card" key={artifact.id}>
                     <button
@@ -539,7 +565,7 @@ export const PlaybackPracticeRail = forwardRef<
                       type="button"
                     >
                       <span className="artifact-pill__title">{artifactLabel(artifact)}</span>
-                      <span className="artifact-pill__meta">{stemOutputLabel(artifact.id)}</span>
+                      <span className="artifact-pill__meta">Live</span>
                     </button>
                     <div className="playback-stem-card__controls">
                       <button
@@ -549,7 +575,7 @@ export const PlaybackPracticeRail = forwardRef<
                         onClick={() => toggleStemControl(artifact, "muted")}
                         type="button"
                       >
-                        Mute
+                        M
                       </button>
                       <button
                         className={`chip${state.solo ? " chip--active" : ""}`}
@@ -558,8 +584,20 @@ export const PlaybackPracticeRail = forwardRef<
                         onClick={() => toggleStemControl(artifact, "solo")}
                         type="button"
                       >
-                        Solo
+                        S
                       </button>
+                      <OutputVolumeControl
+                        gain={state.gain ?? 1}
+                        label={`${artifactLabel(artifact)} volume`}
+                        muted={state.muted}
+                        onGainChange={(gain) => setStemGain(artifact.id, gain)}
+                        onInteractionStart={() => {
+                          if (selectedArtifactId !== artifact.id) {
+                            void handleSelectStemArtifact(artifact);
+                          }
+                        }}
+                        showLabel={false}
+                      />
                     </div>
                   </div>
                 );
@@ -569,6 +607,28 @@ export const PlaybackPracticeRail = forwardRef<
         ) : (
           <p className="artifact-meta">{stemEmptyCopy}</p>
         )}
+      </section>
+      <section className="playback-picker-group playback-global-level">
+        <OutputVolumeControl
+          gain={appOutput.metronomeOutputGain}
+          label="Metronome volume"
+          muted={appOutput.metronomeOutputMuted}
+          onGainChange={appOutput.setMetronomeOutputGain}
+          onMutedChange={appOutput.setMetronomeOutputMuted}
+          resetGain={0.8}
+        />
+      </section>
+      <section className="playback-picker-group playback-global-level">
+        <OutputVolumeControl
+          gain={appOutput.appOutputGain}
+          label="App volume"
+          muted={appOutput.appOutputMuted}
+          onGainChange={appOutput.setAppOutputGain}
+          onMutedChange={appOutput.setAppOutputMuted}
+        />
+        {appOutput.outputSaveError ? (
+          <p className="field-error" role="alert">{appOutput.outputSaveError}</p>
+        ) : null}
       </section>
       </div>
     </aside>

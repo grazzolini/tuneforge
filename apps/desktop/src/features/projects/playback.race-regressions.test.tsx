@@ -25,6 +25,7 @@ import {
   useMetronome,
   type MetronomeContextValue,
 } from "../tools/metronome-context";
+import { AudioOutputContext } from "../../lib/audioOutputContext";
 
 let playback: PlaybackContextValue;
 let metronome: MetronomeContextValue;
@@ -54,6 +55,8 @@ function session(
     artifactFormatsById: { sine: "wav" },
     visibleStemArtifactIds: [],
     stemControls: {},
+    projectOutputGain: 1,
+    projectOutputMuted: false,
     durationHintSeconds: 30,
     precountEnabled: false,
     precountLoopEnabled: false,
@@ -99,7 +102,10 @@ function activePlaybackContextValue(
     getPlaybackSnapshot: () => snapshot,
     activateStemPlayback: async () => undefined,
     primeWebAudioForGesture: async () => undefined,
+    projectOutputSaveError: null,
     registerProjectSession: () => undefined,
+    setProjectOutputGain: () => undefined,
+    setProjectOutputMuted: () => undefined,
     togglePlayback: async () => undefined,
     playPlayback: async () => undefined,
     pausePlayback: () => undefined,
@@ -557,6 +563,145 @@ describe("native playback race regressions", () => {
       expect(playback.playbackTimeSeconds).toBe(action === "seek" ? 12 : 0);
     });
   }
+
+  it("reconciles the latest project output after deferred prepare and corrective lanes", async () => {
+    enableNativePlayback();
+    await setup();
+    const invoke = getMockInvoke();
+    const originalInvoke = invoke.getMockImplementation()!;
+    const preparation = deferred<Record<string, unknown>>();
+    const correctiveLanes = deferred<Record<string, unknown>>();
+    let prepared: Record<string, unknown> | undefined;
+    let corrected: Record<string, unknown> | undefined;
+    let deferFirstLaneUpdate = true;
+    invoke.mockImplementation(async (command, args) => {
+      const result = await originalInvoke(command, args) as Record<string, unknown>;
+      if (command === "audio_prepare_session") {
+        prepared = result;
+        return preparation.promise;
+      }
+      if (command === "audio_set_lanes" && deferFirstLaneUpdate) {
+        deferFirstLaneUpdate = false;
+        corrected = result;
+        return correctiveLanes.promise;
+      }
+      return result;
+    });
+
+    let play!: Promise<void>;
+    act(() => {
+      play = playback.playPlayback();
+    });
+    await flush();
+    expect(prepared).toBeDefined();
+    act(() => playback.registerProjectSession(session({ projectOutputMuted: true })));
+    act(() => preparation.resolve(prepared!));
+    await flush();
+    expect(corrected).toBeDefined();
+    act(() => playback.registerProjectSession(session({
+      projectOutputGain: 0.4,
+      projectOutputMuted: true,
+    })));
+    await act(async () => {
+      correctiveLanes.resolve(corrected!);
+      await play;
+    });
+
+    const laneCallIndexes = invoke.mock.calls.flatMap(([command], index) =>
+      command === "audio_set_lanes" ? [index] : [],
+    );
+    const laneCallIndex = laneCallIndexes[laneCallIndexes.length - 1] ?? -1;
+    const playCallIndex = invoke.mock.calls.findIndex(([command]) => command === "audio_play");
+    expect(laneCallIndexes.length).toBeGreaterThanOrEqual(2);
+    expect(laneCallIndex).toBeLessThan(playCallIndex);
+    expect(invoke.mock.calls[laneCallIndex]?.[1]).toMatchObject({
+      payload: { projectOutput: { gain: 0.4, muted: true } },
+    });
+  });
+
+  it("queues project output changes made while native play is pending", async () => {
+    enableNativePlayback();
+    await setup();
+    const invoke = getMockInvoke();
+    const originalInvoke = invoke.getMockImplementation()!;
+    const pendingPlay = deferred<Record<string, unknown>>();
+    let played: Record<string, unknown> | undefined;
+    invoke.mockImplementation(async (command, args) => {
+      const result = await originalInvoke(command, args) as Record<string, unknown>;
+      if (command === "audio_play") {
+        played = result;
+        return pendingPlay.promise;
+      }
+      return result;
+    });
+
+    let play!: Promise<void>;
+    act(() => {
+      play = playback.playPlayback();
+    });
+    await flush();
+    expect(played).toBeDefined();
+    act(() => playback.registerProjectSession(session({ projectOutputGain: 0.3 })));
+    await act(async () => {
+      pendingPlay.resolve(played!);
+      await play;
+    });
+    await flush();
+
+    const laneCalls = calls("audio_set_lanes");
+    expect(laneCalls[laneCalls.length - 1]?.[1]).toMatchObject({
+      payload: { projectOutput: { gain: 0.3, muted: false } },
+    });
+  });
+
+  it("holds project and metronome acquisition on the shared app output barrier", async () => {
+    enableNativePlayback();
+    const ready = deferred<void>();
+    render(
+      <AudioOutputContext.Provider value={{
+        appOutputGain: 1,
+        appOutputMuted: false,
+        countInOutputGain: 1,
+        countInOutputMuted: false,
+        metronomeOutputGain: 0.8,
+        metronomeOutputMuted: false,
+        outputSaveError: null,
+        ensureAppOutputReady: () => ready.promise,
+        setAppOutputGain: () => undefined,
+        setAppOutputMuted: () => undefined,
+        setCountInOutputGain: () => undefined,
+        setCountInOutputMuted: () => undefined,
+        setMetronomeOutputGain: () => undefined,
+        setMetronomeOutputMuted: () => undefined,
+      }}>
+        <PlaybackProvider>
+          <MetronomeProvider>
+            <Harness />
+            <MetronomeHarness />
+          </MetronomeProvider>
+        </PlaybackProvider>
+      </AudioOutputContext.Provider>,
+    );
+    act(() => playback.registerProjectSession(session()));
+    await flush();
+
+    let projectStart!: Promise<void>;
+    let metronomeStart!: Promise<void>;
+    act(() => {
+      projectStart = playback.playPlayback();
+      metronomeStart = metronome.startMetronome();
+    });
+    await flush();
+    expect(calls("audio_prepare_session")).toHaveLength(0);
+    expect(calls("audio_set_standalone_metronome")).toHaveLength(0);
+
+    await act(async () => {
+      ready.resolve();
+      await Promise.all([projectStart, metronomeStart]);
+    });
+    expect(calls("audio_prepare_session")).toHaveLength(1);
+    expect(calls("audio_set_standalone_metronome")).toHaveLength(1);
+  });
 
   for (const precountEnabled of [false, true]) {
     it(`does not accept a Play reply after seek${precountEnabled ? " with count-in" : ""}`, async () => {

@@ -5,6 +5,12 @@ download, installation, verification, signature, and publication instructions.
 
 ## [Unreleased]
 
+### Added
+
+- Added persistent app, project, stem, count-in, and metronome volume controls with independent
+  app, project, count-in, and metronome mute, accessible level reset actions, and smooth native and
+  browser updates.
+
 ## [1.6.0] - 2026-09-21
 
 ### Added

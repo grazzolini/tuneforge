@@ -48,7 +48,9 @@ describe("precount sound", () => {
 
     const oscillator = audioContext.createdOscillators[0];
     const gainNode = audioContext.createGain.mock.results[0]?.value as MockGainNode | undefined;
-    if (!oscillator || !gainNode) {
+    const appOutputNode = audioContext.createGain.mock.results[1]?.value as MockGainNode | undefined;
+    const countInOutputNode = audioContext.createGain.mock.results[2]?.value as MockGainNode | undefined;
+    if (!oscillator || !gainNode || !countInOutputNode || !appOutputNode) {
       throw new Error("Expected precount click nodes to be created.");
     }
 
@@ -71,7 +73,9 @@ describe("precount sound", () => {
     const stopTimeSeconds = Number(releaseGainCall?.[1]);
     expect(stopTimeSeconds - safeStartTimeSeconds).toBeCloseTo(0.045, 6);
     expect(oscillator.connect).toHaveBeenCalledWith(gainNode);
-    expect(gainNode.connect).toHaveBeenCalledWith(audioContext.destination);
+    expect(gainNode.connect).toHaveBeenCalledWith(countInOutputNode);
+    expect(countInOutputNode.connect).toHaveBeenCalledWith(appOutputNode);
+    expect(appOutputNode.connect).toHaveBeenCalledWith(audioContext.destination);
 
     expect(oscillator.start).toHaveBeenCalledWith(1.25);
     expect(Number(oscillator.stop.mock.calls[0]?.[0]) - stopTimeSeconds).toBeCloseTo(0.004, 6);

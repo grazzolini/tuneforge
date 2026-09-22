@@ -39,6 +39,8 @@ function makePlaybackSession(
     artifactFormatsById: { [artifactId]: "wav" },
     visibleStemArtifactIds: [],
     stemControls: {},
+    projectOutputGain: 1,
+    projectOutputMuted: false,
     durationHintSeconds: 182,
     precountEnabled: false,
     precountLoopEnabled: false,

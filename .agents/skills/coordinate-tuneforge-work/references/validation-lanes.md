@@ -5,7 +5,7 @@ app lifecycle and installed state in every lane.
 
 ## UI and User-Facing Behavior
 
-Use Product Design on Sol High for a pre-implementation brief and final QA.
+Use Product Design on GPT-6 Sol High for a pre-implementation brief and final QA.
 Check screens/states, interaction model, truthfulness, brief consistency, and
 absence of fake or misleading data. Capture screenshots when they are useful
 evidence. Do not use this lane for code, backend contract, or music-theory
@@ -13,8 +13,9 @@ correctness.
 
 ## Contracts
 
-Use `tuneforge_contract_guard` on Terra High only if schemas, API routes,
-OpenAPI, generated types, or their callers could drift. Validate actual
+Use `tuneforge_contract_guard` on GPT-6 Luna High only if schemas, API routes,
+OpenAPI, generated types, or their callers could drift. Honor fixed role
+model/effort settings as described in the skill. Validate actual
 producer/consumer compatibility. Do not run this lane for unrelated internal
 refactors.
 

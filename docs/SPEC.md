@@ -149,6 +149,10 @@ Capo-relative display is a harmonic presentation feature. It should not alter au
 
 - Persist per-project playback session state.
 - Support source playback, saved mixes, and stem playback.
+- Persist app, count-in, and metronome output gain and mute per installation, plus per-project
+  project gain, project mute, and stem gains. Stem gain is applied before project gain; separate
+  count-in and metronome levels join after project audio; app gain controls the final output. Muting
+  preserves each configured gain.
 - Support playback-level tempo changes by BPM without rendering new audio files.
 - Support lyrics-only, chords-only, and combined practice displays.
 - Future practice work should build from beat/bar artifacts: current bar/beat highlight, count-in, loop-by-bars, and section practice.

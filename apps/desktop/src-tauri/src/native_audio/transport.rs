@@ -36,7 +36,10 @@ use super::{
     diagnostics::{
         self, DiagnosticCheckpoint, DiagnosticOutputStreamErrorKind, DiagnosticSafeCode,
     },
-    mixer::{AudioLaneRequest, AudioLaneRole, EffectiveAudioLane},
+    mixer::{
+        AudioLaneRequest, AudioLaneRole, AudioOutputRequest, AudioOutputSnapshot,
+        AudioOutputState, CueOutputRequest, CueOutputSnapshot, EffectiveAudioLane,
+    },
     session::{
         AudioResource, AudioSource, RuntimeReport, RuntimeReportKind, SessionCommand, SessionOwner,
     },
@@ -87,6 +90,7 @@ pub struct AudioSessionRequest {
     pub duration_seconds: Option<f64>,
     pub playback_rate: Option<f64>,
     pub lanes: Vec<AudioLaneRequest>,
+    pub project_output: AudioOutputRequest,
     #[serde(flatten)]
     pub control: SessionCommand,
     pub owner: Option<SessionOwner>,
@@ -237,6 +241,10 @@ pub struct AudioSnapshot {
     pub availability_reason: Option<String>,
     pub lanes: Vec<EffectiveAudioLane>,
     pub buffer_health: Vec<AudioBufferHealth>,
+    pub app_output: AudioOutputSnapshot,
+    pub project_output: AudioOutputSnapshot,
+    pub count_in_output: AudioOutputSnapshot,
+    pub metronome_output: AudioOutputSnapshot,
     pub lease_id: Option<String>,
     pub generation: u64,
     pub timeline_revision: u64,
@@ -460,6 +468,10 @@ struct PlaybackShared {
     channels: usize,
     lanes: Vec<PlaybackLane>,
     snapshot_lanes: Vec<EffectiveAudioLane>,
+    app_output: AudioOutputState,
+    project_output: AudioOutputState,
+    count_in_output: AudioOutputState,
+    metronome_output: AudioOutputState,
     click: ClickState,
     ended_pending: bool,
     error_pending: Option<NativeAudioErrorCode>,
@@ -484,6 +496,7 @@ struct CueVoice {
     frames: usize,
     frequency: f64,
     gain: f32,
+    kind: timeline::CueKind,
 }
 
 impl PlaybackShared {
@@ -508,6 +521,10 @@ impl PlaybackShared {
             availability_reason: availability_reason,
             lanes: self.snapshot_lanes.clone(),
             buffer_health: runtime_buffer_health(&self.snapshot_lanes, &self.lanes),
+            app_output: self.app_output.snapshot(),
+            project_output: self.project_output.snapshot(),
+            count_in_output: self.count_in_output.snapshot(),
+            metronome_output: self.metronome_output.snapshot(),
             lease_id: None,
             generation: self.generation,
             timeline_revision: self.timeline.lock().map_or(0, |state| state.revision()),
@@ -679,6 +696,10 @@ pub struct TransportState {
     availability_reason: Option<String>,
     raw_lanes: Vec<AudioLaneRequest>,
     lanes: Vec<EffectiveAudioLane>,
+    app_output: AudioOutputState,
+    project_output: AudioOutputState,
+    count_in_output: AudioOutputState,
+    metronome_output: AudioOutputState,
     click: ClickState,
     standalone_metronome: StandaloneMetronomeControl,
     diagnostics_generation: u64,
@@ -711,6 +732,10 @@ impl Default for TransportState {
             availability_reason: None,
             raw_lanes: Vec::new(),
             lanes: Vec::new(),
+            app_output: AudioOutputState::default(),
+            project_output: AudioOutputState::default(),
+            count_in_output: AudioOutputState::default(),
+            metronome_output: AudioOutputState::with_gain(0.8),
             click: ClickState::default(),
             standalone_metronome: StandaloneMetronomeControl::default(),
             diagnostics_generation: 0,
@@ -803,6 +828,10 @@ impl TransportState {
             channels: 1,
             lanes: Vec::new(),
             snapshot_lanes: Vec::new(),
+            app_output: self.app_output,
+            project_output: self.project_output,
+            count_in_output: self.count_in_output,
+            metronome_output: self.metronome_output,
             click: self.click.clone(),
             ended_pending: false,
             error_pending: None,
@@ -919,6 +948,9 @@ impl TransportState {
             .expect("session acquisition is validated before prepare");
         let duration_seconds = request.duration_seconds.unwrap_or(0.0).max(0.0);
         let playback_rate = normalize_playback_rate(request.playback_rate);
+        self.project_output
+            .set(request.project_output, false)
+            .expect("project output is validated before prepare");
         #[cfg(all(not(test), any(mobile, target_os = "linux", target_os = "macos")))]
         let runtime_unavailable_reason = (capabilities.native_playback_supported && app.is_none())
             .then(|| "Native audio runtime is unavailable.".to_string());
@@ -964,6 +996,7 @@ impl TransportState {
                         shared.duration_seconds = self.duration_seconds;
                         shared.playback_rate = self.playback_rate;
                         shared.snapshot_lanes = self.lanes.clone();
+                        shared.project_output = self.project_output;
                         shared.click = self.click.clone();
                         shared.ended_pending = false;
                         shared.buffering = false;
@@ -995,9 +1028,13 @@ impl TransportState {
         raw_lanes: Vec<AudioLaneRequest>,
         lanes: Vec<EffectiveAudioLane>,
         playback_rate: Option<f64>,
+        project_output: AudioOutputRequest,
     ) {
         self.raw_lanes = raw_lanes;
         self.lanes = lanes.clone();
+        self.project_output
+            .set(project_output, self.runtime.is_some())
+            .expect("project output is validated before lane update");
         let mut next_playback_rate = None;
         if playback_rate.is_some() {
             let rate = normalize_playback_rate(playback_rate);
@@ -1015,6 +1052,10 @@ impl TransportState {
             let mut should_prebuffer = false;
             if let Ok(mut shared) = runtime.shared.lock() {
                 update_shared_lanes(&mut shared, &lanes);
+                shared
+                    .project_output
+                    .set(project_output, true)
+                    .expect("project output is validated before lane update");
                 if let Some(rate) = next_playback_rate {
                     let position_seconds = shared.position_seconds;
                     self.position_seconds = position_seconds;
@@ -1500,6 +1541,10 @@ impl TransportState {
             availability_reason: self.availability_reason.clone(),
             lanes: self.lanes.clone(),
             buffer_health: empty_buffer_health(&self.lanes),
+            app_output: self.app_output.snapshot(),
+            project_output: self.project_output.snapshot(),
+            count_in_output: self.count_in_output.snapshot(),
+            metronome_output: self.metronome_output.snapshot(),
             lease_id: None,
             generation: self.generation,
             timeline_revision: self
@@ -1584,6 +1629,10 @@ impl TransportState {
             self.playback_rate,
             raw_lanes,
             lanes,
+            &self.app_output,
+            &self.project_output,
+            &self.count_in_output,
+            &self.metronome_output,
             &self.click,
             self.diagnostics_generation,
             self.timeline
@@ -1609,6 +1658,56 @@ impl TransportState {
                 Err(error)
             }
         }
+    }
+
+    pub fn set_app_output(
+        &mut self,
+        request: AudioOutputRequest,
+    ) -> Result<AudioOutputSnapshot, &'static str> {
+        request.validate()?;
+        let ramp = self.runtime.is_some();
+        self.app_output.set(request, ramp)?;
+        #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
+        if let Some(runtime) = &self.runtime {
+            if let Ok(mut shared) = runtime.shared.lock() {
+                shared.app_output.set(request, true)?;
+                return Ok(shared.app_output.snapshot());
+            }
+        }
+        Ok(self.app_output.snapshot())
+    }
+
+    pub fn set_cue_outputs(
+        &mut self,
+        request: CueOutputRequest,
+    ) -> Result<CueOutputSnapshot, &'static str> {
+        let request = request.validate()?;
+        let count_in = AudioOutputRequest {
+            gain: request.count_in_gain,
+            muted: request.count_in_muted,
+        };
+        let metronome = AudioOutputRequest {
+            gain: request.metronome_gain,
+            muted: request.metronome_muted,
+        };
+        let ramp = self.runtime.is_some();
+        self.count_in_output.set(count_in, ramp)?;
+        self.metronome_output.set(metronome, ramp)?;
+        #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
+        if let Some(runtime) = &self.runtime {
+            if let Ok(mut shared) = runtime.shared.lock() {
+                shared.count_in_output.set(count_in, true)?;
+                shared.metronome_output.set(metronome, true)?;
+                return Ok(CueOutputSnapshot {
+                    count_in: shared.count_in_output.snapshot(),
+                    metronome: shared.metronome_output.snapshot(),
+                });
+            }
+        }
+        Ok(CueOutputSnapshot {
+            count_in: self.count_in_output.snapshot(),
+            metronome: self.metronome_output.snapshot(),
+        })
     }
 
     #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
@@ -1852,7 +1951,7 @@ impl PlaybackLane {
 }
 
 fn click_sample(click: &ClickState, position_seconds: f64, channel: usize) -> f32 {
-    if !click.enabled || click.bpm <= 0.0 || click.gain <= 0.0 {
+    if !click.enabled || click.bpm <= 0.0 {
         return 0.0;
     }
 
@@ -1881,17 +1980,21 @@ fn click_sample(click: &ClickState, position_seconds: f64, channel: usize) -> f3
     let square = if phase < 0.5 { 1.0 } else { -1.0 };
     let envelope = (1.0 - beat_offset / duration).max(0.0);
     let pan = if channel == 0 { 1.0 } else { 0.92 };
-    (square * envelope * f64::from(click.gain) * pan * 0.35) as f32
+    (square * envelope * pan * 0.35) as f32
 }
 
 fn mix_shared_frame(shared: &mut PlaybackShared, channel: usize, sample_index: usize) -> f32 {
-    if shared.diagnostics_generation == 0 {
-        return mix_shared_frame_without_diagnostics(shared, channel, sample_index);
-    }
+    let _ = channel;
+    shared
+        .lanes
+        .iter()
+        .map(|lane| lane.scratch.get(sample_index).copied().unwrap_or(0.0) * lane.current_gain)
+        .sum::<f32>()
+}
 
-    let mut sample = 0.0;
-    let ramp_step = (1.0 / (shared.sample_rate as f64 * GAIN_RAMP_SECONDS)).max(0.0001) as f32;
-
+fn advance_output_gains(shared: &mut PlaybackShared) {
+    let ramp_step =
+        (1.0 / (shared.sample_rate as f64 * GAIN_RAMP_SECONDS)).max(0.0001) as f32;
     for lane in &mut shared.lanes {
         let was_ramping = (lane.current_gain - lane.target_gain).abs() > f32::EPSILON;
         if lane.current_gain < lane.target_gain {
@@ -1899,45 +2002,33 @@ fn mix_shared_frame(shared: &mut PlaybackShared, channel: usize, sample_index: u
         } else if lane.current_gain > lane.target_gain {
             lane.current_gain = (lane.current_gain - ramp_step).max(lane.target_gain);
         }
-        if was_ramping && !shared.diagnostics_gain_first_change_recorded {
+        if shared.diagnostics_generation != 0
+            && was_ramping
+            && !shared.diagnostics_gain_first_change_recorded
+        {
             diagnostics::record_gain_first_change(shared.diagnostics_generation);
             shared.diagnostics_gain_first_change_recorded = true;
         }
-        if was_ramping && (lane.current_gain - lane.target_gain).abs() <= f32::EPSILON {
+        if shared.diagnostics_generation != 0
+            && was_ramping
+            && (lane.current_gain - lane.target_gain).abs() <= f32::EPSILON
+        {
             diagnostics::record_gain_ramp_complete(shared.diagnostics_generation);
         }
 
-        let lane_sample = lane.scratch.get(sample_index).copied().unwrap_or(0.0);
-
-        if lane.current_gain > 0.0001 {
-            sample += lane_sample * lane.current_gain;
-        }
     }
-
-    sample.clamp(-1.0, 1.0)
-}
-
-fn mix_shared_frame_without_diagnostics(
-    shared: &mut PlaybackShared,
-    _channel: usize,
-    sample_index: usize,
-) -> f32 {
-    let mut sample = 0.0;
-    let ramp_step = (1.0 / (shared.sample_rate as f64 * GAIN_RAMP_SECONDS)).max(0.0001) as f32;
-
-    for lane in &mut shared.lanes {
-        if lane.current_gain < lane.target_gain {
-            lane.current_gain = (lane.current_gain + ramp_step).min(lane.target_gain);
-        } else if lane.current_gain > lane.target_gain {
-            lane.current_gain = (lane.current_gain - ramp_step).max(lane.target_gain);
-        }
-        let lane_sample = lane.scratch.get(sample_index).copied().unwrap_or(0.0);
-        if lane.current_gain > 0.0001 {
-            sample += lane_sample * lane.current_gain;
-        }
-    }
-
-    sample.clamp(-1.0, 1.0)
+    shared
+        .project_output
+        .advance_frame(shared.sample_rate, GAIN_RAMP_SECONDS);
+    shared
+        .count_in_output
+        .advance_frame(shared.sample_rate, GAIN_RAMP_SECONDS);
+    shared
+        .metronome_output
+        .advance_frame(shared.sample_rate, GAIN_RAMP_SECONDS);
+    shared
+        .app_output
+        .advance_frame(shared.sample_rate, GAIN_RAMP_SECONDS);
 }
 
 fn standalone_click_frame(shared: &mut PlaybackShared) -> f32 {
@@ -1973,7 +2064,7 @@ fn standalone_click_frame(shared: &mut PlaybackShared) -> f32 {
             kind: timeline::CueKind::Metronome,
             accent: shared.click.accent_first_beat
                 && beat_index % u64::from(shared.click.beats_per_bar) == 0,
-            gain: shared.click.gain,
+            gain: 1.0,
             scheduled_native_time_us: now,
             actual_native_time_us: now,
             insertion_sequence: beat_index,
@@ -2106,16 +2197,15 @@ fn timeline_start_offset(shared: &PlaybackShared, frames: usize, callback_time: 
     })
 }
 
-fn cue_frame_sample(shared: &mut PlaybackShared) -> f32 {
+fn cue_frame_samples(shared: &mut PlaybackShared) -> (f32, f32) {
     let sample_rate = f64::from(shared.sample_rate);
-    let sample = shared
-        .cue_voices
-        .iter()
-        .map(|voice| {
+    let mut count_in = 0.0;
+    let mut metronome = 0.0;
+    for voice in &shared.cue_voices {
             let progress = voice.phase as f64 / voice.frames as f64;
             let cycle = voice.frequency * voice.phase as f64 / sample_rate;
-            let metronome = voice.frequency != PRECOUNT_FREQUENCY_HZ;
-            let wave = if metronome {
+            let is_metronome = voice.kind == timeline::CueKind::Metronome;
+            let wave = if is_metronome {
                 if cycle.fract() < 0.5 {
                     1.0
                 } else {
@@ -2124,7 +2214,7 @@ fn cue_frame_sample(shared: &mut PlaybackShared) -> f32 {
             } else {
                 1.0 - 4.0 * (cycle.fract() - 0.5).abs()
             };
-            let attack_seconds = if metronome {
+            let attack_seconds = if is_metronome {
                 0.004
             } else {
                 PRECOUNT_ATTACK_SECONDS
@@ -2136,14 +2226,25 @@ fn cue_frame_sample(shared: &mut PlaybackShared) -> f32 {
                 (progress - attack) / (1.0 - attack)
             };
             let envelope = 0.0001_f64.powf(exponent);
-            (wave * envelope * f64::from(voice.gain)) as f32
-        })
-        .sum();
+            let sample = (wave * envelope * f64::from(voice.gain)) as f32;
+            if is_metronome {
+                metronome += sample;
+            } else {
+                count_in += sample;
+            }
+    }
     for voice in &mut shared.cue_voices {
         voice.phase += 1;
     }
     shared.cue_voices.retain(|voice| voice.phase < voice.frames);
-    sample
+    (count_in, metronome)
+}
+
+fn cue_output_sample(shared: &mut PlaybackShared) -> f32 {
+    let (count_in, followed_metronome) = cue_frame_samples(shared);
+    let standalone_metronome = standalone_click_frame(shared);
+    count_in * shared.count_in_output.gain()
+        + (followed_metronome + standalone_metronome) * shared.metronome_output.gain()
 }
 
 fn start_cue_voice(shared: &mut PlaybackShared, cue: &timeline::FiredCue) {
@@ -2162,6 +2263,7 @@ fn start_cue_voice(shared: &mut PlaybackShared, cue: &timeline::FiredCue) {
         frames: (f64::from(shared.sample_rate) * duration) as usize,
         frequency,
         gain: cue.event.gain * scale,
+        kind: cue.event.kind,
     });
 }
 
@@ -2185,26 +2287,29 @@ fn render_shared_output(shared: &mut PlaybackShared, output: &mut [f32]) {
     let (start_offset, ended, fired) =
         advance_timeline(shared, output.len() / shared.channels, callback_time);
     for (frame_index, frame) in output.chunks_mut(shared.channels).enumerate() {
+        advance_output_gains(shared);
         fired
             .iter()
             .filter(|cue| cue.frame_offset == frame_index)
             .for_each(|cue| start_cue_voice(shared, cue));
-        let cue_sample = cue_frame_sample(shared) + standalone_click_frame(shared);
+        let cue_sample = cue_output_sample(shared);
         if shared.status != TransportStatus::Playing
             || shared.buffering
             || frame_index < start_offset
         {
-            frame.fill(cue_sample);
+            frame.fill((cue_sample * shared.app_output.gain()).clamp(-1.0, 1.0));
             continue;
         }
 
         for (channel, sample) in frame.iter_mut().enumerate() {
             let click_pan = if channel == 0 { 1.0 } else { 0.92 };
-            *sample = (mix_shared_frame(
+            *sample = ((mix_shared_frame(
                 shared,
                 channel,
                 (frame_index - start_offset) * shared.channels + channel,
-            ) + cue_sample * click_pan)
+            ) * shared.project_output.gain()
+                + cue_sample * click_pan)
+                * shared.app_output.gain())
                 .clamp(-1.0, 1.0);
         }
     }
@@ -2258,17 +2363,20 @@ where
     let track_nonzero = shared.diagnostics_generation != 0;
     let mut any_nonzero = false;
     for (frame_index, frame) in output.chunks_mut(shared.channels).enumerate() {
+        advance_output_gains(shared);
         fired
             .iter()
             .filter(|cue| cue.frame_offset == frame_index)
             .for_each(|cue| start_cue_voice(shared, cue));
-        let cue_sample = cue_frame_sample(shared) + standalone_click_frame(shared);
+        let cue_sample = cue_output_sample(shared);
         if shared.status != TransportStatus::Playing
             || shared.buffering
             || frame_index < start_offset
         {
             for sample in frame {
-                *sample = T::from_sample(cue_sample);
+                *sample = T::from_sample(
+                    (cue_sample * shared.app_output.gain()).clamp(-1.0, 1.0),
+                );
             }
             continue;
         }
@@ -2276,7 +2384,10 @@ where
         for (channel, sample) in frame.iter_mut().enumerate() {
             let sample_index = (frame_index - start_offset) * shared.channels + channel;
             let click_pan = if channel == 0 { 1.0 } else { 0.92 };
-            let mixed = (mix_shared_frame(shared, channel, sample_index) + cue_sample * click_pan)
+            let mixed = ((mix_shared_frame(shared, channel, sample_index)
+                * shared.project_output.gain()
+                + cue_sample * click_pan)
+                * shared.app_output.gain())
                 .clamp(-1.0, 1.0);
             if track_nonzero {
                 any_nonzero |= mixed.abs() > AUDIBLE_GAIN_FLOOR;
@@ -2309,6 +2420,10 @@ fn start_native_runtime(
     playback_rate: f64,
     raw_lanes: &[AudioLaneRequest],
     effective_lanes: &[EffectiveAudioLane],
+    app_output: &AudioOutputState,
+    project_output: &AudioOutputState,
+    count_in_output: &AudioOutputState,
+    metronome_output: &AudioOutputState,
     click: &ClickState,
     diagnostics_generation: u64,
     timeline: Arc<Mutex<Timeline>>,
@@ -2356,6 +2471,10 @@ fn start_native_runtime(
         channels,
         lanes,
         snapshot_lanes,
+        app_output: app_output.settled(),
+        project_output: project_output.settled(),
+        count_in_output: count_in_output.settled(),
+        metronome_output: metronome_output.settled(),
         click: click.clone(),
         ended_pending: false,
         error_pending: None,
@@ -3695,6 +3814,10 @@ mod tests {
                 muted: false,
                 solo: false,
             }],
+            app_output: AudioOutputState::default(),
+            project_output: AudioOutputState::default(),
+            count_in_output: AudioOutputState::default(),
+            metronome_output: AudioOutputState::with_gain(0.8),
             click: ClickState::default(),
             ended_pending: false,
             error_pending: None,
@@ -3744,17 +3867,17 @@ mod tests {
         );
         assert_eq!(shared.cue_voices[0].frequency, PRECOUNT_FREQUENCY_HZ);
         assert_eq!(shared.cue_voices[0].frames, 2_160);
-        assert!(cue_frame_sample(&mut shared).abs() < 0.0002);
+        assert!(cue_frame_samples(&mut shared).0.abs() < 0.0002);
         shared.cue_voices[0].phase = 96;
-        assert!(cue_frame_sample(&mut shared).abs() > 0.8);
+        assert!(cue_frame_samples(&mut shared).0.abs() > 0.8);
         shared.cue_voices.remove(0);
         start_cue_voice(&mut shared, &cue(timeline::CueKind::Metronome, true, 0.25));
         assert_eq!(shared.cue_voices[0].frequency, CLICK_ACCENT_FREQUENCY_HZ);
         assert_eq!(shared.cue_voices[0].frames, 2_160);
         assert!((shared.cue_voices[0].gain - 0.105).abs() < f32::EPSILON);
-        assert!(cue_frame_sample(&mut shared).abs() < 0.00002);
+        assert!(cue_frame_samples(&mut shared).1.abs() < 0.00002);
         shared.cue_voices[0].phase = 192;
-        assert!(cue_frame_sample(&mut shared).abs() > 0.1);
+        assert!(cue_frame_samples(&mut shared).1.abs() > 0.1);
     }
 
     #[test]
@@ -4108,6 +4231,7 @@ mod tests {
                 duration_seconds: Some(30.0),
                 playback_rate: Some(1.0),
                 lanes: Vec::new(),
+                project_output: AudioOutputRequest { gain: 1.0, muted: false },
                 control: acquisition_control(),
                 owner: None,
             },
@@ -4134,6 +4258,7 @@ mod tests {
                 duration_seconds: Some(30.0),
                 playback_rate: Some(1.0),
                 lanes: Vec::new(),
+                project_output: AudioOutputRequest { gain: 1.0, muted: false },
                 control: acquisition_control(),
                 owner: None,
             },
@@ -4348,6 +4473,7 @@ mod tests {
                 duration_seconds: Some(30.0),
                 playback_rate: Some(1.0),
                 lanes: Vec::new(),
+                project_output: AudioOutputRequest { gain: 1.0, muted: false },
                 control: acquisition_control(),
                 owner: None,
             },
@@ -4373,6 +4499,7 @@ mod tests {
                 duration_seconds: Some(30.0),
                 playback_rate: Some(1.0),
                 lanes: Vec::new(),
+                project_output: AudioOutputRequest { gain: 1.0, muted: false },
                 control: acquisition_control(),
                 owner: None,
             },
@@ -4398,6 +4525,7 @@ mod tests {
                 duration_seconds: Some(30.0),
                 playback_rate: Some(1.0),
                 lanes: Vec::new(),
+                project_output: AudioOutputRequest { gain: 1.0, muted: false },
                 control: acquisition_control(),
                 owner: None,
             },
@@ -4513,6 +4641,7 @@ mod tests {
                 duration_seconds: Some(30.0),
                 playback_rate: Some(0.75),
                 lanes: Vec::new(),
+                project_output: AudioOutputRequest { gain: 1.0, muted: false },
                 control: acquisition_control(),
                 owner: None,
             },
@@ -4534,6 +4663,7 @@ mod tests {
                 duration_seconds: Some(30.0),
                 playback_rate: Some(1.0),
                 lanes: Vec::new(),
+                project_output: AudioOutputRequest { gain: 1.0, muted: false },
                 control: acquisition_control(),
                 owner: None,
             },
@@ -4541,7 +4671,12 @@ mod tests {
             capabilities(),
         );
 
-        state.set_lanes(Vec::new(), Vec::new(), Some(1.5));
+        state.set_lanes(
+            Vec::new(),
+            Vec::new(),
+            Some(1.5),
+            AudioOutputRequest { gain: 1.0, muted: false },
+        );
         let snapshot = state.snapshot();
 
         assert_eq!(snapshot.session_id.as_deref(), Some("session"));
@@ -4558,6 +4693,7 @@ mod tests {
                 duration_seconds: Some(30.0),
                 playback_rate: Some(1.0),
                 lanes: Vec::new(),
+                project_output: AudioOutputRequest { gain: 1.0, muted: false },
                 control: acquisition_control(),
                 owner: None,
             },
@@ -4612,6 +4748,84 @@ mod tests {
         assert_eq!(output[127], 0.25);
         assert_seconds_close(shared.position_seconds, 0.128);
         assert_eq!(shared.status, TransportStatus::Playing);
+    }
+
+    #[test]
+    fn project_gain_applies_after_unclamped_stem_sum() {
+        let first_ring = Arc::new(Mutex::new(RingBuffer::new(8)));
+        let second_ring = Arc::new(Mutex::new(RingBuffer::new(8)));
+        push_ring_samples(&first_ring, &[0.8]);
+        push_ring_samples(&second_ring, &[0.8]);
+        let mut shared = shared_with_lane(first_ring, 1_000, 1, 1.0);
+        shared.lanes.push(stream_lane("second", second_ring, 1.0));
+        shared
+            .project_output
+            .set(AudioOutputRequest { gain: 0.5, muted: false }, false)
+            .unwrap();
+        let mut output = [0.0];
+
+        render_shared_output(&mut shared, &mut output);
+
+        assert!((output[0] - 0.8).abs() < 0.0001);
+    }
+
+    #[test]
+    fn project_mute_preserves_clicks_until_app_output_scales_or_mutes_everything() {
+        let render = |app_gain: f32, app_muted: bool| {
+            let ring = Arc::new(Mutex::new(RingBuffer::new(8)));
+            push_ring_samples(&ring, &[0.2]);
+            let mut shared = shared_with_lane(ring, 1_000, 1, 1.0);
+            shared
+                .project_output
+                .set(AudioOutputRequest { gain: 1.0, muted: true }, false)
+                .unwrap();
+            shared
+                .app_output
+                .set(AudioOutputRequest { gain: app_gain, muted: app_muted }, false)
+                .unwrap();
+            shared.click = ClickState {
+                enabled: true,
+                bpm: 120.0,
+                beats_per_bar: 4,
+                accent_first_beat: true,
+                gain: 0.8,
+                follow_transport: false,
+                generation: 1,
+                revision: 1,
+                free_run_frame: 0,
+                following_playback: false,
+                last_emitted_beat: None,
+            };
+            let mut output = [0.0];
+            render_shared_output(&mut shared, &mut output);
+            output[0]
+        };
+
+        let click = render(1.0, false);
+        assert!(click.abs() > 0.01);
+        assert!((render(0.5, false) - click * 0.5).abs() < 0.0001);
+        assert_eq!(render(1.0, true), 0.0);
+    }
+
+    #[test]
+    fn output_ramps_advance_once_per_stereo_frame() {
+        let ring = Arc::new(Mutex::new(RingBuffer::new(8)));
+        push_ring_samples(&ring, &[0.5, 0.5]);
+        let mut shared = shared_with_lane(ring, 1_000, 2, 1.0);
+        shared
+            .app_output
+            .set(AudioOutputRequest { gain: 1.0, muted: true }, false)
+            .unwrap();
+        shared
+            .app_output
+            .set(AudioOutputRequest { gain: 1.0, muted: false }, true)
+            .unwrap();
+
+        render_shared_output(&mut shared, &mut [0.0; 2]);
+
+        let current = shared.app_output.snapshot().current_gain;
+        let one_frame_step = 1.0 / (1_000.0 * GAIN_RAMP_SECONDS as f32);
+        assert!((current - one_frame_step).abs() < 0.0001);
     }
 
     #[test]
@@ -4671,6 +4885,7 @@ mod tests {
                 duration_seconds: Some(30.0),
                 playback_rate: Some(1.0),
                 lanes: Vec::new(),
+                project_output: AudioOutputRequest { gain: 1.0, muted: false },
                 control: acquisition_control(),
                 owner: None,
             },
@@ -4708,6 +4923,7 @@ mod tests {
                 duration_seconds: Some(30.0),
                 playback_rate: Some(1.0),
                 lanes: Vec::new(),
+                project_output: AudioOutputRequest { gain: 1.0, muted: false },
                 control: acquisition_control(),
                 owner: None,
             },
@@ -4746,6 +4962,7 @@ mod tests {
                 duration_seconds: Some(loop_end),
                 playback_rate: Some(1.0),
                 lanes: Vec::new(),
+                project_output: AudioOutputRequest { gain: 1.0, muted: false },
                 control: acquisition_control(),
                 owner: None,
             },
@@ -4982,6 +5199,84 @@ mod tests {
         assert!(output.iter().all(|sample| *sample == 0.0));
         assert_eq!(shared.position_seconds, 0.0);
         assert_eq!(shared.lanes[0].underrun_count, 0);
+    }
+
+    #[test]
+    fn cue_output_update_is_atomic_and_clamps_finite_gains() {
+        let mut transport = TransportState::default();
+        let updated = transport
+            .set_cue_outputs(CueOutputRequest {
+                count_in_gain: 1.5,
+                count_in_muted: true,
+                metronome_gain: 0.65,
+                metronome_muted: true,
+            })
+            .expect("finite cue gains");
+        assert_eq!(updated.count_in.configured_gain, 1.0);
+        assert!(updated.count_in.muted);
+        assert_eq!(updated.count_in.target_gain, 0.0);
+        assert_eq!(updated.metronome.configured_gain, 0.65);
+        assert!(updated.metronome.muted);
+        assert_eq!(updated.metronome.current_gain, 0.0);
+
+        assert_eq!(
+            transport.set_cue_outputs(CueOutputRequest {
+                count_in_gain: 0.25,
+                count_in_muted: false,
+                metronome_gain: f32::NAN,
+                metronome_muted: true,
+            }),
+            Err("invalid_cue_output_gain")
+        );
+        let snapshot = transport.snapshot();
+        assert_eq!(snapshot.count_in_output.configured_gain, 1.0);
+        assert!(snapshot.count_in_output.muted);
+        assert_eq!(snapshot.metronome_output.configured_gain, 0.65);
+        assert!(snapshot.metronome_output.muted);
+
+        let changed_while_muted = transport
+            .set_cue_outputs(CueOutputRequest {
+                count_in_gain: 0.25,
+                count_in_muted: true,
+                metronome_gain: 0.55,
+                metronome_muted: true,
+            })
+            .expect("muted cue gains");
+        assert_eq!(changed_while_muted.count_in.configured_gain, 0.25);
+        assert_eq!(changed_while_muted.count_in.current_gain, 0.0);
+        assert_eq!(changed_while_muted.metronome.configured_gain, 0.55);
+        assert_eq!(changed_while_muted.metronome.current_gain, 0.0);
+
+        let restored = transport
+            .set_cue_outputs(CueOutputRequest {
+                count_in_gain: 0.25,
+                count_in_muted: false,
+                metronome_gain: 0.55,
+                metronome_muted: false,
+            })
+            .expect("unmuted cue gains");
+        assert_eq!(restored.count_in.current_gain, 0.25);
+        assert_eq!(restored.metronome.current_gain, 0.55);
+    }
+
+    #[test]
+    fn cue_category_gains_ramp_once_per_frame() {
+        let ring = Arc::new(Mutex::new(RingBuffer::new(1_000)));
+        let mut shared = shared_with_lane(ring, 1_000, 2, 1.0);
+        shared
+            .count_in_output
+            .set(AudioOutputRequest { gain: 0.0, muted: false }, true)
+            .unwrap();
+        shared
+            .metronome_output
+            .set(AudioOutputRequest { gain: 0.0, muted: false }, true)
+            .unwrap();
+
+        advance_output_gains(&mut shared);
+
+        let step = (1.0 / (1_000.0 * GAIN_RAMP_SECONDS)) as f32;
+        assert!((shared.count_in_output.gain() - (1.0 - step)).abs() < f32::EPSILON);
+        assert!((shared.metronome_output.gain() - (0.8 - step)).abs() < f32::EPSILON);
     }
 
     fn standalone_request(
@@ -5364,6 +5659,7 @@ mod tests {
                 duration_seconds: Some(10.0),
                 playback_rate: Some(1.0),
                 lanes: Vec::new(),
+                project_output: AudioOutputRequest { gain: 1.0, muted: false },
                 control: acquisition_control(),
                 owner: None,
             },
@@ -5376,6 +5672,50 @@ mod tests {
         let runtime = state.runtime.as_ref().expect("standalone runtime retained");
         assert!(runtime.auxiliary_only);
         assert!(Arc::ptr_eq(&runtime.shared, &retained_shared));
+    }
+
+    #[test]
+    #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
+    fn playback_prepare_preserves_settled_app_mute_on_standalone_runtime() {
+        let ring = Arc::new(Mutex::new(RingBuffer::new(1_000)));
+        let mut shared = shared_with_lane(ring, 1_000, 1, 1.0);
+        shared.click.enabled = true;
+        shared
+            .app_output
+            .set(AudioOutputRequest { gain: 1.0, muted: true }, false)
+            .unwrap();
+        let (runtime, _exits) = stoppable_runtime(shared);
+        let mut state = TransportState::default();
+        state.click = runtime.shared.lock().unwrap().click.clone();
+        state.runtime = Some(runtime);
+
+        state.prepare(
+            None,
+            AudioSessionRequest {
+                session_id: "project".into(),
+                duration_seconds: Some(10.0),
+                playback_rate: Some(1.0),
+                lanes: Vec::new(),
+                project_output: AudioOutputRequest { gain: 1.0, muted: false },
+                control: acquisition_control(),
+                owner: None,
+            },
+            Vec::new(),
+            capabilities(),
+        );
+
+        let app_output = state
+            .runtime
+            .as_ref()
+            .unwrap()
+            .shared
+            .lock()
+            .unwrap()
+            .app_output
+            .snapshot();
+        assert!(app_output.muted);
+        assert_eq!(app_output.target_gain, 0.0);
+        assert_eq!(app_output.current_gain, 0.0);
     }
 
     #[test]

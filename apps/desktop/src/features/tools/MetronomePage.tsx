@@ -7,6 +7,7 @@ import {
   MIN_BEATS_PER_BAR,
   MIN_METRONOME_BPM,
 } from "./metronomeUtils";
+import { OutputVolumeControl } from "../../components/OutputVolumeControl";
 
 export function MetronomePage() {
   const [searchParams] = useSearchParams();
@@ -22,12 +23,13 @@ export function MetronomePage() {
     handleTapTempo,
     isRunning,
     launchMetronome,
-    resetVolume,
+    muted,
     seedBpm,
     setAccentFirstBeat,
     setBeatsPerBarValue,
     setBpmDraftValue,
     setFollowPlaybackEnabled,
+    setMuted,
     setVolume,
     startMetronome,
     stopMetronome,
@@ -40,7 +42,6 @@ export function MetronomePage() {
   const queryFollowPlayback = searchParams.get("followPlayback");
   const lastQueryKeyRef = useRef<string | null>(null);
   const seededFromAnalysis = queryBpm !== null && queryProjectId !== null;
-  const volumePercent = Math.round(volume * 100);
 
   useEffect(() => {
     const queryKey = `${queryBpm ?? ""}|${queryProjectId ?? ""}|${queryFollowPlayback ?? ""}`;
@@ -113,25 +114,13 @@ export function MetronomePage() {
             />
           </label>
           <div className="metronome-field">
-            <div className="metronome-field__label-row">
-              <span>Metronome volume</span>
-              <button
-                aria-label={`Metronome volume ${volumePercent}%`}
-                className="metronome-volume-value"
-                onDoubleClick={resetVolume}
-                type="button"
-              >
-                {volumePercent}%
-              </button>
-            </div>
-            <input
-              aria-label="Metronome volume"
-              max="1"
-              min="0"
-              onChange={(event) => setVolume(Number(event.target.value))}
-              step="0.01"
-              type="range"
-              value={volume}
+            <OutputVolumeControl
+              gain={volume}
+              label="Metronome volume"
+              muted={muted}
+              onGainChange={setVolume}
+              onMutedChange={setMuted}
+              resetGain={0.8}
             />
           </div>
         </div>

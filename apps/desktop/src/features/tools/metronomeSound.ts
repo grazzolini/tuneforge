@@ -29,19 +29,17 @@ export function scheduleMetronomeClick({
   audioContext,
   sound = DEFAULT_METRONOME_SOUND,
   startTimeSeconds,
-  volume,
 }: {
   accent: boolean;
   audioContext: AudioContext;
   sound?: MetronomeSound;
   startTimeSeconds: number;
-  volume: number;
 }) {
   const oscillator = audioContext.createOscillator();
   const gainNode = audioContext.createGain();
   const durationSeconds = accent ? sound.accentDurationSeconds : sound.durationSeconds;
   const frequencyHz = accent ? sound.accentFrequencyHz : sound.frequencyHz;
-  const peakGain = Math.min(1, Math.max(0, volume)) * (accent ? 0.42 : 0.32);
+  const peakGain = accent ? 0.42 : 0.32;
   const safeStartTimeSeconds = Math.max(audioContext.currentTime, startTimeSeconds);
   const stopTimeSeconds = safeStartTimeSeconds + durationSeconds;
 
@@ -55,7 +53,7 @@ export function scheduleMetronomeClick({
   gainNode.gain.exponentialRampToValueAtTime(0.0001, stopTimeSeconds);
 
   oscillator.connect(gainNode);
-  gainNode.connect(audioContext.destination);
+  gainNode.connect(getMetronomeAudioOutputNode(audioContext));
   oscillator.onended = () => {
     oscillator.disconnect();
     gainNode.disconnect();
@@ -63,3 +61,4 @@ export function scheduleMetronomeClick({
   oscillator.start(safeStartTimeSeconds);
   oscillator.stop(stopTimeSeconds + 0.004);
 }
+import { getMetronomeAudioOutputNode } from "../../lib/audioOutput";

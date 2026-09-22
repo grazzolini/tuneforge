@@ -2,6 +2,7 @@
 import {
   createContext,
   useContext,
+  useEffect,
   useLayoutEffect,
   useMemo,
   useState,
@@ -33,6 +34,12 @@ export const MIN_TUNER_REFERENCE_HZ = 400;
 export const MAX_TUNER_REFERENCE_HZ = 480;
 
 export type UiPreferences = {
+  appOutputGain: number;
+  appOutputMuted: boolean;
+  countInOutputGain: number;
+  countInOutputMuted: boolean;
+  metronomeOutputGain: number;
+  metronomeOutputMuted: boolean;
   informationDensity: InformationDensity;
   enharmonicDisplayMode: EnharmonicDisplayMode;
   defaultInspectorOpen: boolean;
@@ -74,7 +81,14 @@ export type VisibilityPreferences = Pick<
 >;
 
 type PreferencesContextValue = UiPreferences & {
+  preferencesSaveError: string | null;
   setInformationDensity: (value: InformationDensity) => void;
+  setAppOutputGain: (value: number) => void;
+  setAppOutputMuted: (value: boolean) => void;
+  setCountInOutputGain: (value: number) => void;
+  setCountInOutputMuted: (value: boolean) => void;
+  setMetronomeOutputGain: (value: number) => void;
+  setMetronomeOutputMuted: (value: boolean) => void;
   setEnharmonicDisplayMode: (value: EnharmonicDisplayMode) => void;
   setDefaultInspectorOpen: (value: boolean) => void;
   setDefaultSourcesRailCollapsed: (value: boolean) => void;
@@ -137,6 +151,12 @@ export const DEFAULT_VISIBILITY_PREFERENCES: VisibilityPreferences = {
 };
 
 export const DEFAULT_PREFERENCES: UiPreferences = {
+  appOutputGain: 1,
+  appOutputMuted: false,
+  countInOutputGain: 1,
+  countInOutputMuted: false,
+  metronomeOutputGain: 0.8,
+  metronomeOutputMuted: false,
   ...DEFAULT_APPEARANCE_PREFERENCES,
   ...DEFAULT_NOTATION_PREFERENCES,
   ...DEFAULT_ANALYSIS_PREFERENCES,
@@ -205,6 +225,12 @@ export function normalizeTunerReferenceHz(value: unknown): number {
   return Math.round(numericValue * 10) / 10;
 }
 
+export function normalizeOutputGain(value: unknown, fallback = 1): number {
+  return typeof value === "number" && Number.isFinite(value)
+    ? Math.min(1, Math.max(0, value))
+    : fallback;
+}
+
 export function normalizePreferences(value: unknown): UiPreferences {
   if (!value || typeof value !== "object") {
     return DEFAULT_PREFERENCES;
@@ -212,6 +238,15 @@ export function normalizePreferences(value: unknown): UiPreferences {
 
   const candidate = value as Partial<UiPreferences>;
   return {
+    appOutputGain: normalizeOutputGain(candidate.appOutputGain),
+    appOutputMuted:
+      typeof candidate.appOutputMuted === "boolean" ? candidate.appOutputMuted : false,
+    countInOutputGain: normalizeOutputGain(candidate.countInOutputGain, 1),
+    countInOutputMuted:
+      typeof candidate.countInOutputMuted === "boolean" ? candidate.countInOutputMuted : false,
+    metronomeOutputGain: normalizeOutputGain(candidate.metronomeOutputGain, 0.8),
+    metronomeOutputMuted:
+      typeof candidate.metronomeOutputMuted === "boolean" ? candidate.metronomeOutputMuted : false,
     informationDensity: isInformationDensity(candidate.informationDensity)
       ? candidate.informationDensity
       : DEFAULT_PREFERENCES.informationDensity,
@@ -285,7 +320,20 @@ function persistPreferences(preferences: UiPreferences) {
   if (typeof window === "undefined") {
     return;
   }
-  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(preferences));
+  try {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(preferences));
+    window.queueMicrotask(() =>
+      window.dispatchEvent(new CustomEvent("tuneforge:preferences-save", { detail: null })),
+    );
+  } catch {
+    window.queueMicrotask(() =>
+      window.dispatchEvent(
+        new CustomEvent("tuneforge:preferences-save", {
+          detail: "Audio settings changed, but could not be saved for the next launch.",
+        }),
+      ),
+    );
+  }
 }
 
 function mergePreferences(current: UiPreferences, partial: Partial<UiPreferences>) {
@@ -296,6 +344,15 @@ function mergePreferences(current: UiPreferences, partial: Partial<UiPreferences
 
 export function PreferencesProvider({ children }: { children: ReactNode }) {
   const [preferences, setPreferences] = useState<UiPreferences>(readStoredPreferences);
+  const [preferencesSaveError, setPreferencesSaveError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const handleSave = (event: Event) => {
+      setPreferencesSaveError((event as CustomEvent<string | null>).detail);
+    };
+    window.addEventListener("tuneforge:preferences-save", handleSave);
+    return () => window.removeEventListener("tuneforge:preferences-save", handleSave);
+  }, []);
 
   useLayoutEffect(() => {
     persistPreferences(preferences);
@@ -304,6 +361,34 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
   const value = useMemo<PreferencesContextValue>(
     () => ({
       ...preferences,
+      preferencesSaveError,
+      setAppOutputGain: (appOutputGain) => {
+        if (!Number.isFinite(appOutputGain)) return;
+        setPreferences((current) =>
+          mergePreferences(current, { appOutputGain: normalizeOutputGain(appOutputGain) }),
+        );
+      },
+      setAppOutputMuted: (appOutputMuted) => {
+        setPreferences((current) => mergePreferences(current, { appOutputMuted }));
+      },
+      setCountInOutputGain: (countInOutputGain) => {
+        if (!Number.isFinite(countInOutputGain)) return;
+        setPreferences((current) => mergePreferences(current, {
+          countInOutputGain: normalizeOutputGain(countInOutputGain),
+        }));
+      },
+      setCountInOutputMuted: (countInOutputMuted) => {
+        setPreferences((current) => mergePreferences(current, { countInOutputMuted }));
+      },
+      setMetronomeOutputGain: (metronomeOutputGain) => {
+        if (!Number.isFinite(metronomeOutputGain)) return;
+        setPreferences((current) => mergePreferences(current, {
+          metronomeOutputGain: normalizeOutputGain(metronomeOutputGain, 0.8),
+        }));
+      },
+      setMetronomeOutputMuted: (metronomeOutputMuted) => {
+        setPreferences((current) => mergePreferences(current, { metronomeOutputMuted }));
+      },
       setInformationDensity: (informationDensity) => {
         setPreferences((current) => mergePreferences(current, { informationDensity }));
       },
@@ -388,7 +473,7 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
         setPreferences(DEFAULT_PREFERENCES);
       },
     }),
-    [preferences],
+    [preferences, preferencesSaveError],
   );
 
   return <PreferencesContext.Provider value={value}>{children}</PreferencesContext.Provider>;

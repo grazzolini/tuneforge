@@ -42,6 +42,8 @@ import {
   type NativeAudioInputPermissionStatus,
 } from "../../lib/nativeAudio";
 import { TunerPreferenceControls } from "../tools/TunerPreferenceControls";
+import { OutputVolumeControl } from "../../components/OutputVolumeControl";
+import { useAudioOutput } from "../../lib/audioOutputContext";
 import {
   usePreferences,
   type DefaultBeatAnalysisBackend,
@@ -710,6 +712,15 @@ export function SettingsView() {
     resetPreferences,
     replacePreferences,
   } = usePreferences();
+  const appOutput = useAudioOutput();
+  const {
+    appOutputGain,
+    appOutputMuted,
+    countInOutputGain,
+    countInOutputMuted,
+    metronomeOutputGain,
+    metronomeOutputMuted,
+  } = appOutput;
   const [isSnapshotBusy, setIsSnapshotBusy] = useState(false);
   const [snapshotStatus, setSnapshotStatus] = useState<SnapshotStatus | null>(null);
   const [chordAvailabilityStatus, setChordAvailabilityStatus] = useState<string | null>(null);
@@ -889,6 +900,12 @@ export function SettingsView() {
       const defaultFileName = `tuneforge-settings-${new Date().toISOString().slice(0, 10)}.json`;
       const contents = serializeSettingsSnapshot({
         preferences: {
+          appOutputGain,
+          appOutputMuted,
+          countInOutputGain,
+          countInOutputMuted,
+          metronomeOutputGain,
+          metronomeOutputMuted,
           defaultChordsFollowEnabled,
           defaultBeatAnalysisBackend,
           defaultChordBackend,
@@ -1118,6 +1135,38 @@ export function SettingsView() {
             </dd>
           </div>
         </dl>
+      </div>
+
+      <div className="panel settings-panel settings-output-volume" aria-labelledby="output-volume-title">
+        <div className="panel-heading">
+          <div>
+            <h2 id="output-volume-title">Output volume</h2>
+            <p className="subpanel__copy">Control playback and click volumes across TuneForge.</p>
+          </div>
+        </div>
+        <OutputVolumeControl
+          gain={appOutputGain}
+          label="App volume"
+          muted={appOutputMuted}
+          onGainChange={appOutput.setAppOutputGain}
+          onMutedChange={appOutput.setAppOutputMuted}
+        />
+        <OutputVolumeControl
+          gain={countInOutputGain}
+          label="Count-in volume"
+          muted={countInOutputMuted}
+          onGainChange={appOutput.setCountInOutputGain}
+          onMutedChange={appOutput.setCountInOutputMuted}
+        />
+        <OutputVolumeControl
+          gain={metronomeOutputGain}
+          label="Metronome volume"
+          muted={metronomeOutputMuted}
+          onGainChange={appOutput.setMetronomeOutputGain}
+          onMutedChange={appOutput.setMetronomeOutputMuted}
+          resetGain={0.8}
+        />
+        {appOutput.outputSaveError ? <p className="field-error" role="alert">{appOutput.outputSaveError}</p> : null}
       </div>
 
       {showAudioStoragePanel ? (

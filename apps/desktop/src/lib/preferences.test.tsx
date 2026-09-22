@@ -46,3 +46,38 @@ describe("durable audio preferences", () => {
     expect(screen.getByText("wav")).toBeInTheDocument();
   });
 });
+
+describe("click output preferences", () => {
+  it("defaults missing or corrupt values and clamps finite gains", () => {
+    expect(normalizePreferences({})).toMatchObject({
+      countInOutputGain: 1,
+      countInOutputMuted: false,
+      metronomeOutputGain: 0.8,
+      metronomeOutputMuted: false,
+    });
+    for (const invalid of [null, false, "", Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(normalizePreferences({
+        countInOutputGain: invalid,
+        countInOutputMuted: invalid,
+        metronomeOutputGain: invalid,
+        metronomeOutputMuted: invalid,
+      })).toMatchObject({
+        countInOutputGain: 1,
+        countInOutputMuted: false,
+        metronomeOutputGain: 0.8,
+        metronomeOutputMuted: false,
+      });
+    }
+    expect(normalizePreferences({
+      countInOutputGain: -1,
+      countInOutputMuted: true,
+      metronomeOutputGain: 2,
+      metronomeOutputMuted: true,
+    })).toMatchObject({
+      countInOutputGain: 0,
+      countInOutputMuted: true,
+      metronomeOutputGain: 1,
+      metronomeOutputMuted: true,
+    });
+  });
+});

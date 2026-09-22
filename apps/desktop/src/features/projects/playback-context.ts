@@ -16,6 +16,8 @@ export type ProjectPlaybackSession = {
   artifactFormatsById: Record<string, string>;
   visibleStemArtifactIds: string[];
   stemControls: Record<string, StemControlState>;
+  projectOutputGain: number;
+  projectOutputMuted: boolean;
   durationHintSeconds: number;
   precountEnabled: boolean;
   precountLoopEnabled: boolean;
@@ -42,6 +44,7 @@ export type PlaybackContextValue = {
   playbackDurationSeconds: number;
   isPrecounting: boolean;
   isPlaying: boolean;
+  projectOutputSaveError: string | null;
   activateStemPlayback: () => Promise<void>;
   primeWebAudioForGesture: () => Promise<void>;
   getPlaybackSnapshot: () => PlaybackSnapshot;
@@ -57,6 +60,8 @@ export type PlaybackContextValue = {
   dismissSession: () => void;
   seekBy: (secondsDelta: number) => void;
   seekTo: (timeSeconds: number) => void;
+  setProjectOutputGain: (gain: number) => void;
+  setProjectOutputMuted: (muted: boolean) => void;
 };
 
 export const PlaybackContext = createContext<PlaybackContextValue | null>(null);

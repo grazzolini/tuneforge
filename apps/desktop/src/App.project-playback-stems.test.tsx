@@ -42,7 +42,7 @@ function readStoredProjectPlaybackState() {
         startSeconds: number;
         endSeconds: number;
       } | null;
-      stemControls?: Record<string, { muted: boolean; solo: boolean }>;
+      stemControls?: Record<string, { gain?: number; muted: boolean; solo: boolean }>;
     }
   >;
 }
@@ -270,6 +270,7 @@ describe("Desktop app project playback stems", () => {
         "true",
       );
       expect(readStoredProjectPlaybackState().proj_123?.stemControls?.art_source_drums).toEqual({
+        gain: 1,
         muted: true,
         solo: false,
       });
@@ -341,6 +342,68 @@ describe("Desktop app project playback stems", () => {
       "aria-pressed",
       "true",
     );
+  });
+
+  it("selects a stem when its gain changes or resets and preserves its mute", async () => {
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+    await screen.findByRole("heading", { name: "Demo Song" });
+    await generateStems(user);
+    await openPlaybackWorkspace(user);
+
+    const stemList = await screen.findByRole("group", { name: "Playback stem list" });
+    const vocalsVolume = within(stemList).getByRole("slider", { name: "Vocals volume" });
+    fireEvent.pointerDown(vocalsVolume);
+    fireEvent.change(vocalsVolume, { target: { value: "0.42" } });
+    expect(await screen.findByRole("heading", { name: "Vocals" })).toBeInTheDocument();
+
+    await user.click(within(stemList).getByRole("button", { name: "Mute Vocals" }));
+    expect(vocalsVolume).toHaveValue("0.42");
+    expect(vocalsVolume.closest(".output-volume")).toHaveAttribute("data-muted", "true");
+
+    await user.click(within(stemList).getAllByRole("button", { name: /Drums/i })[0] as HTMLElement);
+    await user.click(within(stemList).getByRole("button", {
+      name: "Reset vocals volume to 100%",
+    }));
+    expect(await screen.findByRole("heading", { name: "Vocals" })).toBeInTheDocument();
+    expect(vocalsVolume).toHaveValue("1");
+    expect(within(stemList).getByRole("button", { name: "Mute Vocals" }))
+      .toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("places count-in, metronome, and app levels in practice order with persisted defaults", async () => {
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+    await screen.findByRole("heading", { name: "Demo Song" });
+    await generateStems(user);
+    await openPlaybackWorkspace(user);
+
+    const countIn = screen.getByRole("slider", { name: "Count-in volume" });
+    const stems = screen.getByRole("group", { name: "Playback stem list" });
+    const metronome = screen.getByRole("slider", { name: "Metronome volume" });
+    const appVolumes = screen.getAllByRole("slider", { name: "App volume" });
+    const app = appVolumes[appVolumes.length - 1];
+    if (!app) throw new Error("Expected practice app volume.");
+    expect(countIn).toHaveValue("1");
+    expect(metronome).toHaveValue("0.8");
+    expect(stems.compareDocumentPosition(metronome) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(metronome.compareDocumentPosition(app) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    fireEvent.change(countIn, { target: { value: "0.35" } });
+    fireEvent.change(metronome, { target: { value: "0.55" } });
+    await user.click(screen.getByRole("button", { name: "Mute count-in volume" }));
+    await user.click(screen.getByRole("button", { name: "Mute metronome volume" }));
+    expect(countIn).toHaveValue("0.35");
+    expect(countIn.closest(".output-volume")).toHaveAttribute("data-muted", "true");
+    expect(metronome).toHaveValue("0.55");
+    expect(metronome.closest(".output-volume")).toHaveAttribute("data-muted", "true");
+    expect(JSON.parse(window.localStorage.getItem("tuneforge.ui-preferences") ?? "{}"))
+      .toMatchObject({
+        countInOutputGain: 0.35,
+        countInOutputMuted: true,
+        metronomeOutputGain: 0.55,
+        metronomeOutputMuted: true,
+      });
   });
 
   it("restores mix-owned stems after reopening the project", async () => {

@@ -85,9 +85,25 @@
 }
 
 .playback-stem-card__controls {
-  display: flex;
+  display: grid;
+  grid-template-columns: auto auto minmax(6rem, 1fr);
+  align-items: center;
   gap: 0.45rem;
-  flex-wrap: wrap;
+}
+
+.playback-stem-card__controls > .chip {
+  inline-size: 2rem;
+  min-inline-size: 2rem;
+  min-block-size: 2rem;
+  padding: 0;
+}
+
+.playback-stem-card__controls > .output-volume {
+  grid-template-columns: minmax(3.5rem, 1fr) auto;
+}
+
+.playback-levels {
+  gap: 0.75rem;
 }
 
 .playback-focus__meta {
@@ -137,7 +153,7 @@
 
 .transport {
   display: grid;
-  grid-template-columns: auto auto minmax(0, 1fr);
+  grid-template-columns: auto auto minmax(0, 1fr) minmax(12rem, 16rem);
   gap: 1rem;
   align-items: end;
   min-width: 0;
@@ -1191,6 +1207,17 @@
 }
 
 .mobile-practice-controls .playback-practice-rail--drawer :is(button, input, select) {
+  min-block-size: 3rem;
+}
+
+.mobile-practice-controls .output-volume__mute,
+.mobile-practice-controls .output-volume__percentage {
+  min-inline-size: 3rem;
+}
+
+.mobile-practice-controls .playback-stem-card__controls > .chip {
+  inline-size: 3rem;
+  min-inline-size: 3rem;
   min-block-size: 3rem;
 }
 

@@ -212,6 +212,31 @@ export type NativeAudioLaneRequest = {
 export type NativeAudioLaneUpdate = {
   lanes: NativeAudioLaneRequest[];
   playbackRate?: number | null;
+  projectOutput: NativeAudioOutputRequest;
+};
+
+export type NativeAudioOutputRequest = {
+  gain: number;
+  muted: boolean;
+};
+
+export type NativeCueOutputRequest = {
+  countInGain: number;
+  countInMuted: boolean;
+  metronomeGain: number;
+  metronomeMuted: boolean;
+};
+
+export type NativeCueOutputSnapshot = {
+  countIn: NativeAudioOutputSnapshot;
+  metronome: NativeAudioOutputSnapshot;
+};
+
+export type NativeAudioOutputSnapshot = {
+  configuredGain: number;
+  muted: boolean;
+  targetGain: number;
+  currentGain: number;
 };
 
 export type NativeAudioSessionRequest = NativeAudioAcquisitionControl & {
@@ -220,6 +245,7 @@ export type NativeAudioSessionRequest = NativeAudioAcquisitionControl & {
   playbackRate?: number | null;
   owner?: "playback" | "cue" | "capture" | null;
   lanes: NativeAudioLaneRequest[];
+  projectOutput: NativeAudioOutputRequest;
 };
 
 export type NativeAudioSession = {
@@ -277,6 +303,10 @@ export type NativeAudioSnapshot = {
   availabilityReason: string | null;
   lanes: NativeAudioLane[];
   bufferHealth: NativeAudioBufferHealth[];
+  appOutput: NativeAudioOutputSnapshot;
+  projectOutput: NativeAudioOutputSnapshot;
+  countInOutput: NativeAudioOutputSnapshot;
+  metronomeOutput: NativeAudioOutputSnapshot;
   leaseId: string | null;
   generation: number;
   timelineRevision: number;
@@ -471,6 +501,14 @@ export function setNativeAudioLanes(
   control: NativeAudioOutputControl,
 ) {
   return invoke<NativeAudioSnapshot>("audio_set_lanes", { payload, control });
+}
+
+export function setNativeAppOutput(payload: NativeAudioOutputRequest) {
+  return invoke<NativeAudioOutputSnapshot>("audio_set_app_output", { payload });
+}
+
+export function setNativeCueOutputs(payload: NativeCueOutputRequest) {
+  return invoke<NativeCueOutputSnapshot>("audio_set_cue_outputs", { payload });
 }
 
 export function setNativeStandaloneMetronome(payload: NativeStandaloneMetronomeRequest) {

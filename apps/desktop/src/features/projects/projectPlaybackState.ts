@@ -10,12 +10,14 @@ import {
 } from "../../lib/timingGrid";
 import { normalizeTempoTargetBpm } from "./playbackTempo";
 import type { GeneratedExportDocumentId } from "../../lib/api";
+import { normalizeOutputGain } from "../../lib/preferences";
 
 export type ProjectPanelMode = "studio" | "analysis" | "export";
 
 export type StemControlState = {
   muted: boolean;
   solo: boolean;
+  gain?: number;
 };
 
 export type PlaybackLoopRange = {
@@ -55,6 +57,8 @@ export type StoredProjectPlaybackState = {
   lyricsFollowEnabled: boolean;
   chordsFollowEnabled: boolean;
   stemControls: Record<string, StemControlState>;
+  projectOutputGain: number;
+  projectOutputMuted: boolean;
   dismissedStemJobIds: string[];
   exportWorkspace: ExportWorkspaceState | null;
 };
@@ -78,6 +82,8 @@ const DEFAULT_STORED_PROJECT_PLAYBACK_STATE: StoredProjectPlaybackState = {
   lyricsFollowEnabled: true,
   chordsFollowEnabled: true,
   stemControls: {},
+  projectOutputGain: 1,
+  projectOutputMuted: false,
   dismissedStemJobIds: [],
   exportWorkspace: null,
 };
@@ -101,13 +107,14 @@ export function normalizePrecountClickCount(value: unknown) {
 
 function normalizeStemControlState(value: unknown): StemControlState {
   if (!value || typeof value !== "object") {
-    return { muted: false, solo: false };
+    return { muted: false, solo: false, gain: 1 };
   }
 
   const candidate = value as Partial<StemControlState>;
   return {
     muted: Boolean(candidate.muted),
     solo: Boolean(candidate.solo),
+    gain: normalizeOutputGain(candidate.gain),
   };
 }
 
@@ -241,6 +248,8 @@ function normalizeStoredProjectPlaybackState(value: unknown): StoredProjectPlayb
         ? candidate.chordsFollowEnabled
         : DEFAULT_STORED_PROJECT_PLAYBACK_STATE.chordsFollowEnabled,
     stemControls,
+    projectOutputGain: normalizeOutputGain(candidate.projectOutputGain),
+    projectOutputMuted: Boolean(candidate.projectOutputMuted),
     dismissedStemJobIds,
     exportWorkspace: normalizeExportWorkspaceState(candidate.exportWorkspace),
   };

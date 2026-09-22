@@ -154,20 +154,22 @@ describe("Desktop app tools metronome", () => {
     expect(screen.getByRole("button", { name: "Start" })).toBeInTheDocument();
   });
 
-  it("shows volume percentage and double-click resets volume to 80 percent", async () => {
+  it("shows volume percentage and resets volume to 80 percent", async () => {
     const user = userEvent.setup();
     renderApp(["/tools?tool=metronome"]);
 
     expect(await screen.findByRole("heading", { name: "Metronome" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Metronome volume 80%" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Reset metronome volume to 80%" }))
+      .toHaveTextContent("80%");
 
     fireEvent.change(screen.getByLabelText("Metronome volume"), { target: { value: "0.42" } });
 
-    expect(screen.getByRole("button", { name: "Metronome volume 42%" })).toBeInTheDocument();
-    await user.dblClick(screen.getByRole("button", { name: "Metronome volume 42%" }));
+    const reset = screen.getByRole("button", { name: "Reset metronome volume to 80%" });
+    expect(reset).toHaveTextContent("42%");
+    await user.click(reset);
 
     expect(screen.getByLabelText("Metronome volume")).toHaveValue("0.8");
-    expect(screen.getByRole("button", { name: "Metronome volume 80%" })).toBeInTheDocument();
+    expect(reset).toHaveTextContent("80%");
   });
 
   it("opens from the project analysis tempo action", async () => {
@@ -310,7 +312,7 @@ describe("Desktop app tools metronome", () => {
         leaseId: "project-playback", generation: 1, timelineRevision: 1,
       });
       expect(payload?.cues?.[0]).toMatchObject({
-        kind: "metronome", positionSeconds: 0, accent: true, gain: 0.8,
+        kind: "metronome", positionSeconds: 0, accent: true, gain: 1,
       });
     });
     expect(getMockAudioContexts()).toHaveLength(0);
@@ -344,10 +346,25 @@ describe("Desktop app tools metronome", () => {
     await waitFor(() => expect(getMockInvoke().mock.calls.filter(([name]) => name === "audio_schedule_cues").length).toBeGreaterThan(scheduleCount));
     scheduleCount = getMockInvoke().mock.calls.filter(([name]) => name === "audio_schedule_cues").length;
     fireEvent.change(screen.getByLabelText("Metronome volume"), { target: { value: "0.42" } });
-    await waitFor(() => expect(getMockInvoke().mock.calls.filter(([name]) => name === "audio_schedule_cues").length).toBeGreaterThan(scheduleCount));
+    await waitFor(() => expect(getMockInvoke().mock.calls.filter(
+      ([name, args]) => name === "audio_set_cue_outputs"
+        && (args as { payload?: { metronomeGain?: number } })?.payload?.metronomeGain === 0.42,
+    )).toHaveLength(1));
+    expect(getMockInvoke().mock.calls.filter(([name]) => name === "audio_schedule_cues"))
+      .toHaveLength(scheduleCount);
+    await user.click(screen.getByRole("button", { name: "Mute metronome volume" }));
+    await waitFor(() => expect(getMockInvoke().mock.calls.some(
+      ([name, args]) => name === "audio_set_cue_outputs"
+        && (args as { payload?: { metronomeGain?: number; metronomeMuted?: boolean } })
+          ?.payload?.metronomeGain === 0.42
+        && (args as { payload?: { metronomeMuted?: boolean } })?.payload?.metronomeMuted === true,
+    )).toBe(true));
+    expect(screen.getByRole("slider", { name: "Metronome volume" })).toHaveValue("0.42");
+    expect(getMockInvoke().mock.calls.filter(([name]) => name === "audio_schedule_cues"))
+      .toHaveLength(scheduleCount);
     const replacement = [...getMockInvoke().mock.calls].reverse().find(([name]) => name === "audio_schedule_cues");
     expect((replacement?.[1] as { payload?: { cues?: Array<{ accent: boolean; gain: number }> } })
-      ?.payload?.cues?.[0]).toMatchObject({ accent: false, gain: 0.42 });
+      ?.payload?.cues?.[0]).toMatchObject({ accent: false, gain: 1 });
 
     await user.click(screen.getByLabelText("Follow project playback"));
     await waitFor(() => expect(getMockInvoke().mock.calls.some(([name, args]) =>
@@ -456,7 +473,7 @@ describe("Desktop app tools metronome", () => {
     delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
   });
 
-  it("reconciles a failed native settings update by stopping the active metronome", async () => {
+  it("applies volume independently without rebuilding or stopping the active metronome", async () => {
     (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
     setMockNativeAudioState({ capabilities: {
       nativePlaybackSupported: true,      availabilityReason: null, backend: "desktop-cpal",
@@ -467,28 +484,33 @@ describe("Desktop app tools metronome", () => {
     renderApp(["/tools?tool=metronome"]);
     await screen.findByRole("heading", { name: "Metronome" });
     await user.click(screen.getByRole("button", { name: "Start" }));
-    fireEvent.change(screen.getByLabelText("Metronome volume"), { target: { value: "0.7" } });
     await waitFor(() => expect(invoke.mock.calls.filter(
       ([command]) => command === "audio_set_standalone_metronome",
-    ).length).toBeGreaterThanOrEqual(2));
+    )).toHaveLength(1));
+    const standaloneCount = invoke.mock.calls.filter(
+      ([command]) => command === "audio_set_standalone_metronome",
+    ).length;
 
-    let rejectNextUpdate = true;
     invoke.mockImplementation(async (command, args) => {
-      const enabled = (args as { payload?: { enabled?: boolean } } | undefined)?.payload?.enabled;
-      if (command === "audio_set_standalone_metronome" && enabled && rejectNextUpdate) {
-        rejectNextUpdate = false;
-        throw new Error("stale_timeline_revision");
+      if (command === "audio_set_cue_outputs") {
+        throw new Error("device unavailable");
       }
       return originalInvoke(command, args);
     });
     fireEvent.change(screen.getByLabelText("Metronome volume"), { target: { value: "0.5" } });
 
-    await waitFor(() => expect(screen.getByRole("button", { name: "Start" })).toBeInTheDocument());
-    const lastStandaloneCall = [...invoke.mock.calls].reverse().find(
+    expect(await screen.findAllByText(
+      "Click volume could not be applied. Change the volume to try again.",
+    )).not.toHaveLength(0);
+    expect(screen.getByRole("button", { name: "Stop" })).toBeInTheDocument();
+    expect(invoke.mock.calls.filter(
       ([command]) => command === "audio_set_standalone_metronome",
-    );
-    expect(lastStandaloneCall?.[1]).toMatchObject({ payload: { enabled: false } });
-    expect(screen.getByText(/stopping it safely/)).toBeInTheDocument();
+    )).toHaveLength(standaloneCount);
+    await user.click(screen.getByRole("button", { name: "Stop" }));
+    await waitFor(() => expect([...invoke.mock.calls].reverse().find(
+      ([command]) => command === "audio_set_standalone_metronome",
+    )?.[1]).toMatchObject({ payload: { enabled: false } }));
+    expect(screen.getByRole("button", { name: "Start" })).toBeInTheDocument();
     delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
   });
 

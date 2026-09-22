@@ -152,6 +152,7 @@
 
 @media (max-width: 720px) {
   .sidebar {
+    position: relative;
     gap: 0.75rem;
     padding: calc(0.75rem + var(--safe-area-top)) 0.75rem 0.75rem;
   }
@@ -174,6 +175,70 @@
   .nav__label,
   .app-shell--compact .nav__label {
     display: none;
+  }
+
+  .sidebar__app-output {
+    position: absolute;
+    inset-block-start: calc(0.75rem + var(--safe-area-top));
+    inset-inline-end: 0.75rem;
+    margin-top: 0;
+    padding-top: 0;
+    border-top: 0;
+  }
+
+  .sidebar__app-output-full {
+    display: none;
+  }
+
+  .sidebar__app-output-narrow {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+  }
+
+  .sidebar__app-output-narrow > .output-volume {
+    display: block;
+  }
+
+  .sidebar__app-output-narrow > .output-volume > :not(.output-volume__mute) {
+    display: none;
+  }
+
+  .sidebar__app-output-narrow details {
+    position: relative;
+  }
+
+  .sidebar__app-output-narrow summary {
+    list-style: none;
+  }
+
+  .sidebar__app-output-narrow summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .sidebar__app-output-narrow .output-volume__mute,
+  .sidebar__app-output-narrow summary {
+    min-inline-size: 3rem;
+    min-block-size: 3rem;
+  }
+
+  .settings-output-volume .output-volume__mute,
+  .metronome-field .output-volume__mute {
+    min-inline-size: 3rem;
+    min-block-size: 3rem;
+  }
+
+  .sidebar__app-output-popover {
+    position: absolute;
+    z-index: 10;
+    inset-block-start: calc(100% + 0.45rem);
+    inset-inline-end: 0;
+    inline-size: min(18rem, calc(100vw - 1.5rem));
+    padding: 0.75rem;
+    border: 1px solid var(--divider);
+    border-radius: 14px;
+    background: var(--panel);
+    box-shadow: 0 14px 36px color-mix(in srgb, black 28%, transparent);
   }
 
   .project-panel-tabs {

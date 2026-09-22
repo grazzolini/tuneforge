@@ -14,6 +14,7 @@ export type MetronomeContextValue = {
   errorMessage: string | null;
   followPlayback: boolean;
   isRunning: boolean;
+  muted: boolean;
   syncStatus: string;
   tapBpm: number | null;
   volume: number;
@@ -26,6 +27,7 @@ export type MetronomeContextValue = {
   setBeatsPerBarValue: (value: string) => void;
   setBpmDraftValue: (value: string) => void;
   setFollowPlaybackEnabled: (enabled: boolean) => Promise<void>;
+  setMuted: (muted: boolean) => void;
   setVolume: (volume: number) => void;
   startMetronome: () => Promise<void>;
   stopMetronome: () => void;

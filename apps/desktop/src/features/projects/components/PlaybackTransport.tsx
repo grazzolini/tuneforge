@@ -13,6 +13,7 @@ import {
 import { MetallicGlyphDefs, PlayPauseGlyph, SeekGlyph, StopGlyph } from "./TransportGlyphs";
 import { formatPlaybackClock } from "../projectViewUtils";
 import type { PlaybackLoopRange } from "../projectPlaybackState";
+import { OutputVolumeControl } from "../../../components/OutputVolumeControl";
 
 export function PlaybackTransport({
   compact = false,
@@ -26,12 +27,16 @@ export function PlaybackTransport({
   seekAnimationRevision,
   tempoDisplayBpm,
   tempoTargetBpm,
+  projectOutputGain,
+  projectOutputMuted,
   onSeek,
   onSeekTo,
   onResetTempo,
   onStop,
   onToggleLoop,
   onTogglePlayback,
+  onProjectOutputGainChange,
+  onProjectOutputMutedChange,
 }: {
   compact?: boolean;
   mobile?: boolean;
@@ -44,12 +49,16 @@ export function PlaybackTransport({
   seekAnimationRevision: Record<"backward" | "forward", number>;
   tempoDisplayBpm: number | null;
   tempoTargetBpm: number | null;
+  projectOutputGain: number;
+  projectOutputMuted: boolean;
   onSeek: (secondsDelta: number) => void;
   onSeekTo: (timeSeconds: number) => void;
   onResetTempo: () => void;
   onStop: () => void;
   onToggleLoop: () => void;
   onTogglePlayback: () => Promise<void>;
+  onProjectOutputGainChange: (gain: number) => void;
+  onProjectOutputMutedChange: (muted: boolean) => void;
 }) {
   useSyncExternalStore(
     subscribePlaybackDiagnostics,
@@ -205,6 +214,15 @@ export function PlaybackTransport({
           </div>
         ) : null}
       </div>
+      {!mobile ? (
+        <OutputVolumeControl
+          gain={projectOutputGain}
+          label="Project volume"
+          muted={projectOutputMuted}
+          onGainChange={onProjectOutputGainChange}
+          onMutedChange={onProjectOutputMutedChange}
+        />
+      ) : null}
     </div>
   );
 }

@@ -34,9 +34,16 @@ for browsers and non-Tauri runtimes, and for a Tauri build compiled with the for
   tuner Retry, or input selection starts one fresh native attempt. On Linux, a recoverable CPAL
   output xrun remains on the current stream and is recorded in diagnostics; a later unrecoverable
   output error still follows the terminal path.
-- Linux native capture and playback currently use `cpal`'s ALSA host. On PipeWire/PulseAudio
-  desktops this usually routes through the host ALSA compatibility layer, but device labels may
-  still look like ALSA PCM names.
+- Linux native capture and playback select `cpal`'s PipeWire host. A running PipeWire session and
+  its session manager are required; native audio reports unavailable when that host cannot open.
+  Explicit Linux microphone choices store CPAL's `pipewire:<node.name>` device identity. Missing
+  or duplicated identities fail instead of selecting by display label or device order. Saved older
+  `cpal:<index>:<hash>` Linux choices remain visibly unavailable until reselected. `System Default`
+  remains a separate live route.
+- Linux microphone volume uses `wpctl` with exact PipeWire source identity. Each read or write
+  resolves the current node and verifies its ID, name, and audio-source class before acting.
+  `wpctl` mute and volume commands are separate operations, so a device can still disappear
+  between verification and a command.
 - Android native playback and tuner capture report the `android-aaudio` backend and require Android
   API 26 or newer. Tuner monitoring remains unsupported.
 - Android forced-Web-Audio playback uses a private seekable loopback
@@ -332,9 +339,10 @@ output path and restores the previous output route during cleanup. If routing, r
 support is missing, the virtual-capture portion fails or skips with a clear message; the standard
 browser E2E suite still reports its own pass/fail result separately.
 
-On Linux, use a PipeWire desktop with the PulseAudio compatibility service (`pipewire-pulse`) or a
-PulseAudio session, and make sure `pactl` plus either `pw-record` or `parecord` are available on
-`PATH`. Example setup:
+For this optional host-only E2E capture, use a PipeWire desktop with the PulseAudio compatibility
+service (`pipewire-pulse`) or a PulseAudio session, and make sure `pactl` plus either `pw-record` or
+`parecord` are available on `PATH`. This test tooling does not control TuneForge's native playback
+or microphone volume. Example setup:
 
 ```sh
 # Arch

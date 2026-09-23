@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 env:
-  CI_IMAGE_REFERENCE: ghcr.io/grazzolini/tuneforge-ci@sha256:1ae2b125d00a62c858ebf7f2038ce75637e0664baebf6f1ec002491328d3c7b1
+  CI_IMAGE_REFERENCE: ghcr.io/grazzolini/tuneforge-ci@sha256:38326e7dd4f7d86257e0187cf72558fdbddab17817f68f83f379d8250c2906aa
 
 jobs:
   ci-scope:
@@ -251,7 +251,7 @@ jobs:
 
   e2e:
     runs-on: ubuntu-24.04
-    container: ghcr.io/grazzolini/tuneforge-ci@sha256:1ae2b125d00a62c858ebf7f2038ce75637e0664baebf6f1ec002491328d3c7b1
+    container: ghcr.io/grazzolini/tuneforge-ci@sha256:38326e7dd4f7d86257e0187cf72558fdbddab17817f68f83f379d8250c2906aa
     defaults:
       run:
         shell: bash
@@ -463,7 +463,7 @@ jobs:
     needs: ci-scope
     if: ${{ always() && (needs.ci-scope.result != 'success' || needs.ci-scope.outputs.backend_static == 'true' || needs.ci-scope.outputs.backend_ffmpeg == 'true') }}
     runs-on: ubuntu-24.04
-    container: ghcr.io/grazzolini/tuneforge-ci@sha256:1ae2b125d00a62c858ebf7f2038ce75637e0664baebf6f1ec002491328d3c7b1
+    container: ghcr.io/grazzolini/tuneforge-ci@sha256:38326e7dd4f7d86257e0187cf72558fdbddab17817f68f83f379d8250c2906aa
     defaults:
       run:
         shell: bash
@@ -597,7 +597,7 @@ jobs:
     needs: ci-scope
     if: ${{ always() && (needs.ci-scope.result != 'success' || needs.ci-scope.outputs.desktop == 'true') }}
     runs-on: ubuntu-24.04
-    container: ghcr.io/grazzolini/tuneforge-ci@sha256:1ae2b125d00a62c858ebf7f2038ce75637e0664baebf6f1ec002491328d3c7b1
+    container: ghcr.io/grazzolini/tuneforge-ci@sha256:38326e7dd4f7d86257e0187cf72558fdbddab17817f68f83f379d8250c2906aa
     defaults:
       run:
         shell: bash

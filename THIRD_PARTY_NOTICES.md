@@ -153,11 +153,12 @@ This file is the source of truth for dependency and model-weight distribution po
 - **Source:** <https://sourceforge.net/projects/lame/>
 - **Notes:** Dynamically linked only for the owned MP3 encoder. Upstream publishes the release archive over HTTPS but no detached signature or checksum sidecar; TuneForge pins and verifies the reviewed archive SHA-256 in `packaging/ffmpeg/sources.lock.json`. The package includes LAME's COPYING and LICENSE texts.
 
-### PulseAudio pactl
+### WirePlumber wpctl
 
-- **License:** LGPL-2.1+
-- **Source:** <https://www.freedesktop.org/software/pulseaudio/>
-- **Notes:** Bundled in the Flatpak build as client-only PulseAudio utilities/libraries so Linux system microphone volume control can use `pactl` inside the sandbox. The PulseAudio daemon is not bundled.
+- **Version:** 0.5.17
+- **License:** MIT
+- **Source:** <https://gitlab.freedesktop.org/pipewire/wireplumber/-/archive/0.5.17/wireplumber-0.5.17.tar.bz2>
+- **Notes:** The Flatpak bundles `wpctl` and required libraries/modules, not the session manager daemon. Source hashes are pinned in the manifest; upstream license files ship under `/app/share/licenses/wireplumber-wpctl`.
 
 ## Desktop Shell
 
@@ -193,9 +194,9 @@ This file is the source of truth for dependency and model-weight distribution po
 
 ### cpal
 
-- **License:** Apache-2.0 / MIT (dual)
+- **License:** Apache-2.0
 - **Source:** <https://github.com/RustAudio/cpal>
-- **Notes:** Used by the desktop shell for local microphone device enumeration and tuner input capture, and by macOS, Linux, Android, and iOS simulator project playback. Android playback uses CPAL's AAudio backend and requires API 26 or newer. iOS simulator playback uses CPAL's CoreAudio output backend.
+- **Notes:** Used by the desktop shell for local microphone device enumeration and tuner input capture, and by macOS, Linux, Android, and iOS simulator project playback. Linux selects CPAL's native PipeWire host; its `pipewire-rs` binding stack is MIT-licensed and links the host/Flatpak PipeWire library. Android playback uses CPAL's AAudio backend and requires API 26 or newer. iOS simulator playback uses CPAL's CoreAudio output backend.
 
 ### signalsmith-stretch
 

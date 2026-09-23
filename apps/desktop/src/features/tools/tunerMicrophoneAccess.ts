@@ -136,8 +136,8 @@ function normalizeTunerMicrophoneDevices(devices: unknown[]) {
       continue;
     }
     const label = device.label.trim();
-    const deviceId = device.deviceId.trim();
-    if (!label || seenDeviceIds.has(deviceId)) {
+    const deviceId = device.deviceId;
+    if (!label || !deviceId.trim() || seenDeviceIds.has(deviceId)) {
       continue;
     }
     seenDeviceIds.add(deviceId);

@@ -52,6 +52,7 @@ finish-args:
   - --share=ipc
   - --device=dri
   - --socket=pulseaudio
+  - --filesystem=xdg-run/pipewire-0
   - --share=network
   - --filesystem=xdg-data/tuneforge:create
   - --filesystem=xdg-cache/torch:create
@@ -288,57 +289,44 @@ modules:
       - find /app/lib/tuneforge/backend/torch-extensions/LegacyNvidia/Runtime/site-packages -type d -name __pycache__ -prune -exec rm -rf {} +
       - find /app/lib/tuneforge/backend/torch-extensions/LegacyNvidia/Runtime/site-packages -type f -name '*.pyc' -delete
 
-  - name: pulseaudio-client-tools
+  - name: wireplumber-wpctl
     buildsystem: meson
     builddir: true
     config-opts:
       - --buildtype=release
+      - -Dmodules=true
       - -Ddaemon=false
-      - -Dclient=true
-      - -Ddoxygen=false
-      - -Dman=false
-      - -Dtests=false
-      - -Ddatabase=simple
-      - -Dalsa=disabled
-      - -Dasyncns=disabled
-      - -Davahi=disabled
-      - -Dbluez5=disabled
-      - -Dbluez5-gstreamer=disabled
-      - -Dconsolekit=disabled
-      - -Ddbus=disabled
-      - -Delogind=disabled
-      - -Dfftw=disabled
-      - -Dglib=disabled
-      - -Dgsettings=disabled
-      - -Dgstreamer=disabled
-      - -Dgtk=disabled
-      - -Djack=disabled
-      - -Dlirc=disabled
-      - -Dopenssl=disabled
-      - -Dorc=disabled
-      - -Doss-output=disabled
-      - -Dsamplerate=disabled
-      - -Dsoxr=disabled
-      - -Dspeex=disabled
+      - -Dtools=true
+      - -Dintrospection=disabled
+      - -Ddoc=disabled
       - -Dsystemd=disabled
-      - -Dtcpwrap=disabled
-      - -Dudev=disabled
-      - -Dvalgrind=disabled
-      - -Dx11=disabled
-      - -Dwebrtc-aec=disabled
-      - -Dbashcompletiondir=no
-      - -Dzshcompletiondir=no
+      - -Delogind=disabled
+      - -Dsystem-lua=false
+      - -Dtests=false
+      - -Ddbus-tests=false
+      - --wrap-mode=nodownload
     sources:
       - type: archive
-        url: https://www.freedesktop.org/software/pulseaudio/releases/pulseaudio-17.0.tar.xz
-        sha256: 053794d6671a3e397d849e478a80b82a63cb9d8ca296bd35b73317bb5ceb87b5
+        url: https://gitlab.freedesktop.org/pipewire/wireplumber/-/archive/0.5.17/wireplumber-0.5.17.tar.bz2
+        sha256: c50988232457858e14ecb95ebc9f552df7780f0049d5633f957e82675ae5f05f
+      - type: file
+        url: https://www.lua.org/ftp/lua-5.5.0.tar.gz
+        sha256: 57ccc32bbbd005cab75bcc52444052535af691789dba2b9016d5c50640d68b3d
+        dest: subprojects/packagecache
+        dest-filename: lua-5.5.0.tar.gz
+      - type: file
+        url: https://wrapdb.mesonbuild.com/v2/lua_5.5.0-1/get_patch
+        sha256: 69ec4a2dd99ecf8e84830093d418f3a5be1202f16ba8d636b3008b67506e5cca
+        dest: subprojects/packagecache
+        dest-filename: lua_5.5.0-1_patch.zip
+    post-install:
+      - install -Dm644 "${FLATPAK_BUILDER_BUILDDIR}/LICENSE" /app/share/licenses/wireplumber-wpctl/WirePlumber-MIT.txt
+      - install -Dm644 "${FLATPAK_BUILDER_BUILDDIR}/subprojects/lua-5.5.0/doc/readme.html" /app/share/licenses/wireplumber-wpctl/Lua-MIT.html
+      - install -Dm644 "${FLATPAK_BUILDER_BUILDDIR}/subprojects/lua-5.5.0/LICENSE.build" /app/share/licenses/wireplumber-wpctl/WrapDB-MIT.txt
     cleanup:
-      - /bin/pacat
-      - /bin/pacmd
-      - /bin/padsp
-      - /bin/pasuspender
-      - /bin/pax11publish
-      - /bin/pulseaudio
+      - /bin/wpexec
+      - /bin/wireplumber
+      - /share/wireplumber
       - /share/bash-completion
       - /share/zsh
 
@@ -346,7 +334,7 @@ modules:
     buildsystem: simple
     build-options:
       env:
-        LD_LIBRARY_PATH: /app/lib/tuneforge/backend/python/lib
+        LD_LIBRARY_PATH: /app/lib/tuneforge/backend/python/lib:/app/lib
         PYTHONPATH: /app/lib/tuneforge/backend/site-packages
     sources:
       - type: archive
@@ -360,7 +348,7 @@ modules:
       - install -Dm755 ffprobe /app/bin/ffprobe
       - /app/bin/ffmpeg -version
       - /app/bin/ffprobe -version
-      - /app/bin/pactl --version
+      - /app/bin/wpctl --help
       - install -Dm644 version.json /app/lib/tuneforge/backend/version.json
       - install -dm755 /app/lib/tuneforge/backend/src
       - cp -a apps/backend/app /app/lib/tuneforge/backend/src/app

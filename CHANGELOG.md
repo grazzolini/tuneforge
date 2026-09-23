@@ -7,6 +7,8 @@ download, installation, verification, signature, and publication instructions.
 
 ### Added
 
+- Use native PipeWire for Linux playback and tuner capture, with exact microphone identity and
+  `wpctl` microphone volume control. Saved older Linux microphone choices require reselection.
 - Added persistent app, project, stem, count-in, and metronome volume controls with independent
   app, project, count-in, and metronome mute, accessible level reset actions, and smooth native and
   browser updates.

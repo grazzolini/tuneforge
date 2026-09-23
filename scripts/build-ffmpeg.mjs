@@ -448,6 +448,7 @@ function buildFfmpeg(sourceRoot, installRoot, tc, jobs) {
     "--disable-static",
     ...(tc.programs ? ["--enable-ffmpeg", "--enable-ffprobe"] : ["--disable-programs"]),
     ...COMMON_COMPONENTS,
+    ...(tc.target === "macos-arm64" ? ["--enable-muxer=pcm_f32le", "--enable-encoder=pcm_f32le"] : []),
     ...tc.ffmpegCross,
     `--cc=${tc.cc}`,
     `--ar=${tc.ar}`,

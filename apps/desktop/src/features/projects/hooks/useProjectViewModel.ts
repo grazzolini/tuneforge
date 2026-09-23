@@ -168,11 +168,10 @@ function formatLyricsLanguageMetadata(lyrics: LyricsResponse | undefined) {
   const model = lyrics.model_name === "large-v3-turbo"
     ? "Whisper Turbo"
     : lyrics.model_name ?? "Whisper";
-  const device = lyrics.device === "cpu"
-    ? "CPU"
-    : lyrics.device === "vulkan"
-      ? "Vulkan"
-      : "Not reported";
+  const deviceLabels = new Map([
+    ["cpu", "CPU"], ["mps", "MPS"], ["cuda", "CUDA"], ["vulkan", "Vulkan"],
+  ]);
+  const device = deviceLabels.get(lyrics.device ?? "") ?? "Not reported";
   const requested = lyricsLanguageLabel(lyrics.language_override) ?? "Auto-detect";
   const detected = lyricsLanguageLabel(lyrics.language) ?? "Not reported";
   return `${model} · ${device} · Requested: ${requested} · Detected: ${detected}`;

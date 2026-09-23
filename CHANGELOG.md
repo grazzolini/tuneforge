@@ -11,6 +11,11 @@ download, installation, verification, signature, and publication instructions.
   app, project, count-in, and metronome mute, accessible level reset actions, and smooth native and
   browser updates.
 
+### Fixed
+
+- Fixed macOS packaged stem separation failing when Demucs decodes audio through owned FFmpeg.
+- Show MPS and CUDA in saved lyrics metadata when the engine reports those devices.
+
 ## [1.6.0] - 2026-09-21
 
 ### Added

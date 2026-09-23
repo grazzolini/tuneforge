@@ -15,8 +15,8 @@ anything from this image.
   `/usr/bin/ffprobe` match the SHA-256 values pinned in `Dockerfile`.
 - Playwright: Ubuntu 24.04 Chromium system dependencies reviewed against
   Playwright `1.62.1`. Chromium itself remains a job-time download.
-- Tauri: the GTK, WebKitGTK, ALSA, AppIndicator, SVG, XDo, and OpenSSL
-  development packages previously installed by the CI workflow, plus
+- Tauri: the GTK, WebKitGTK, ALSA, PipeWire/SPA, AppIndicator, SVG, XDo, and OpenSSL
+  development packages needed by native Rust checks, plus
   `libclang-dev` for Rust bindgen.
 - SoXR: the repository-pinned Linux AMD64 `host-test` runtime under
   `/opt/tuneforge-ci/soxr/host-test`, built with PFFFT in a disposable stage.

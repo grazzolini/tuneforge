@@ -589,6 +589,33 @@ describe("Desktop app project analysis mix", () => {
     ).toBeInTheDocument();
   });
 
+  it.each([
+    ["mps", "MPS"],
+    ["cuda", "CUDA"],
+    ["cpu", "CPU"],
+    ["vulkan", "Vulkan"],
+    [undefined, "Not reported"],
+    ["future-device", "Not reported"],
+    ["constructor", "Not reported"],
+    ["__proto__", "Not reported"],
+  ])("shows %s lyrics device from fresh and cached responses", async (device, label) => {
+    const user = userEvent.setup();
+    const fixture = { ...await mockGetLyrics("proj_123"), device };
+    setProjectLyrics("proj_123", fixture);
+    const { queryClient } = renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openStudioPanel(user);
+    const metadata = `Whisper · ${label} · Requested: Auto-detect · Detected: English`;
+    expect(await screen.findByText(metadata)).toBeInTheDocument();
+
+    queryClient.setQueryData(["lyrics", "proj_123"], { ...fixture, device: "cpu" });
+    expect(await screen.findByText("Whisper · CPU · Requested: Auto-detect · Detected: English"))
+      .toBeInTheDocument();
+    queryClient.setQueryData(["lyrics", "proj_123"], fixture);
+    expect(await screen.findByText(metadata)).toBeInTheDocument();
+  });
+
   it("shows lyrics override metadata when effective language differs", async () => {
     const user = userEvent.setup();
     setProjectLyrics("proj_123", {

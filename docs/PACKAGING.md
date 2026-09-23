@@ -179,7 +179,8 @@ isolated keyring against the signing key pinned by the source lock. LAME publish
 signature/checksum sidecar; its official HTTPS archive is pinned by reviewed SHA-256. Generated
 payload provenance records exact sources, flags, file hashes, sizes, architecture, and linkage.
 Validators reject symlinks, unrecorded files, GPL/nonfree/version3/network flags, extra libraries,
-and dependencies outside the owned/system closure.
+and dependencies outside the owned/system closure. The macOS validator also decodes a synthetic
+stereo WAV with Demucs's `-f f32le -ar 44100` command and checks float output length and signal.
 
 Every target build also writes a content-addressed corresponding-sources archive and its SHA-256
 sidecar under `packaging/ffmpeg/generated/`. The deterministic companion contains the complete pinned upstream archives,
@@ -228,10 +229,12 @@ The generated artifacts are written under `apps/desktop/src-tauri/target/release
 - `macos/TuneForge.app`
 - `dmg/TuneForge_<version>_<arch>.dmg`
 
-Run packaging from a normal macOS shell so `hdiutil` can create the disk image. The generated app is unsigned and not notarized.
+Run packaging from a normal macOS shell with `diskutil`; it creates an APFS UDZO disk image from
+the staged app and Applications link. The generated app is unsigned and not notarized.
 
 The packaged backend resolves absolute `ffmpeg`/`ffprobe` paths inside the app and prepends the
-owned `bin`/`lib` directories for Demucs child processes. Missing or invalid payloads fail package
+owned `bin`/`lib` directories for Demucs child processes. The macOS runtime includes raw `f32le`
+output for Demucs input decoding. Missing or invalid payloads fail package
 preparation or launch clearly; validators reject Homebrew/MacPorts linkage. Development keeps host
 lookup and explicit overrides. System microphone volume control uses CoreAudio.
 

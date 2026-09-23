@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { existsSync, lstatSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -125,6 +126,54 @@ function validateMac(root, libraries) {
   }
 }
 
+function validateDemucsDecode(root) {
+  const temporary = mkdtempSync(path.join(tmpdir(), "tuneforge-ffmpeg-demucs-"));
+  try {
+    const sampleRate = 44100;
+    const channels = 2;
+    const frames = sampleRate;
+    const pcm = Buffer.alloc(frames * channels * 2);
+    for (let frame = 0; frame < frames; frame += 1) {
+      const sample = Math.round(10000 * Math.sin(2 * Math.PI * 440 * frame / sampleRate));
+      for (let channel = 0; channel < channels; channel += 1) {
+        pcm.writeInt16LE(sample, (frame * channels + channel) * 2);
+      }
+    }
+    const wav = Buffer.alloc(44 + pcm.length);
+    wav.write("RIFF", 0);
+    wav.writeUInt32LE(wav.length - 8, 4);
+    wav.write("WAVEfmt ", 8);
+    wav.writeUInt32LE(16, 16);
+    wav.writeUInt16LE(1, 20);
+    wav.writeUInt16LE(channels, 22);
+    wav.writeUInt32LE(sampleRate, 24);
+    wav.writeUInt32LE(sampleRate * channels * 2, 28);
+    wav.writeUInt16LE(channels * 2, 32);
+    wav.writeUInt16LE(16, 34);
+    wav.write("data", 36);
+    wav.writeUInt32LE(pcm.length, 40);
+    pcm.copy(wav, 44);
+    const source = path.join(temporary, "source.wav");
+    const output = path.join(temporary, "decoded.f32");
+    writeFileSync(source, wav);
+    run(path.join(root, "bin", "ffmpeg"), [
+      "-y", "-hide_banner", "-loglevel", "error", "-i", source,
+      "-map", "0:0", "-threads", "1", "-f", "f32le", "-ar", "44100", output,
+    ]);
+    const raw = readFileSync(output);
+    if (raw.length !== frames * channels * 4) fail("Owned FFmpeg Demucs decode produced an unexpected byte count");
+    let signal = false;
+    for (let offset = 0; offset < raw.length; offset += 4) {
+      const sample = raw.readFloatLE(offset);
+      if (!Number.isFinite(sample)) fail("Owned FFmpeg Demucs decode produced non-finite audio");
+      signal ||= sample !== 0;
+    }
+    if (!signal) fail("Owned FFmpeg Demucs decode produced silence");
+  } finally {
+    rmSync(temporary, { recursive: true, force: true });
+  }
+}
+
 function validateAndroid(libraries) {
   const ownedNames = new Set(libraries.map((file) => path.basename(file)));
   const systemNames = new Set(["libc.so", "libdl.so", "libm.so"]);
@@ -155,7 +204,10 @@ export function validateOwnedFfmpeg({ root, target, requireCorrespondingSources 
   for (const license of ["FFmpeg-COPYING.LGPLv2.1.txt", "LAME-COPYING.LGPL-2.0.txt", "LAME-LICENSE.txt"]) {
     if (!existsSync(path.join(root, "licenses", license))) fail(`Owned FFmpeg license missing: ${license}`);
   }
-  if (target === "macos-arm64") validateMac(root, libraries);
+  if (target === "macos-arm64") {
+    validateMac(root, libraries);
+    validateDemucsDecode(root);
+  }
   else validateAndroid(libraries);
   return { target, files: filesUnder(root).length, bytes: filesUnder(root).reduce((sum, file) => sum + statSync(file).size, 0) };
 }

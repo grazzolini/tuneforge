@@ -68,15 +68,16 @@ release_media_start=${SECONDS}
 release_media_elapsed=$((SECONDS - release_media_start))
 printf '\n[tests] Release media catalog tests finished in %ss\n' "${release_media_elapsed}"
 
-printf '\n[tests] Starting Android packaging helper tests\n\n'
+printf '\n[tests] Starting packaging helper tests\n\n'
 android_package_start=${SECONDS}
 (
   cd "${repo_root}"
   node --test scripts/package-android.test.mjs
   node --test scripts/build-ffmpeg.test.mjs
+  node --test scripts/package-dmg.test.mjs
 )
 android_package_elapsed=$((SECONDS - android_package_start))
-printf '\n[tests] Android packaging helper tests finished in %ss\n' "${android_package_elapsed}"
+printf '\n[tests] Packaging helper tests finished in %ss\n' "${android_package_elapsed}"
 
 printf '\n[tests] Starting Android generated power inhibition tests\n\n'
 android_generated_power_start=${SECONDS}

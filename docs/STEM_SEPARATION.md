@@ -14,6 +14,8 @@ runtime behavior and security boundaries for model loading.
   - `app/engines/demucs_worker.py` for both 6-stem and 2-stem modes.
   - 6-stem path writes each requested source file with `--stem source=path`.
   - 2-stem path writes `vocals` and `instrumental` from summed accompaniment.
+- The macOS packaged FFmpeg decodes source audio to 44.1 kHz raw `f32le` for Demucs. Packaging
+  validates that conversion with synthetic stereo audio before accepting the owned runtime.
 - Stem artifacts are stored with metadata `source_artifact_id`, `stem_model`,
   `stem_model_label`, and `stem_source` for each generated file.
 

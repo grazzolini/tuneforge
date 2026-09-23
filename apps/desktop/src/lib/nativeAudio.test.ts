@@ -61,6 +61,8 @@ const capabilities: NativeAudioCapabilities = {
   platform: "macos",
   backend: "desktop-null",
   nativePlaybackSupported: false,
+  outputSelectionPersistence: "persistent",
+  outputRouteVerification: "backend-selected",
   micCaptureSupported: false,
   micMonitoringSupported: false,
   systemInputVolumeSupported: true,
@@ -92,6 +94,13 @@ const snapshot: NativeAudioSnapshot = {
   generation: 4,
   timelineRevision: 2,
   nativeTimeUs: 100,
+  outputRoute: {
+    preferredDeviceId: null,
+    activeDeviceId: null,
+    status: "system-default",
+    fallbackLatched: false,
+    generation: 0,
+  },
 };
 
 const inputState: NativeAudioInputState = {

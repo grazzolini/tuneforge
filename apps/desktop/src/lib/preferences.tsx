@@ -36,6 +36,7 @@ export const MAX_TUNER_REFERENCE_HZ = 480;
 export type UiPreferences = {
   appOutputGain: number;
   appOutputMuted: boolean;
+  defaultOutputDeviceId: string | null;
   countInOutputGain: number;
   countInOutputMuted: boolean;
   metronomeOutputGain: number;
@@ -85,6 +86,7 @@ type PreferencesContextValue = UiPreferences & {
   setInformationDensity: (value: InformationDensity) => void;
   setAppOutputGain: (value: number) => void;
   setAppOutputMuted: (value: boolean) => void;
+  setDefaultOutputDeviceId: (value: string | null) => void;
   setCountInOutputGain: (value: number) => void;
   setCountInOutputMuted: (value: boolean) => void;
   setMetronomeOutputGain: (value: number) => void;
@@ -153,6 +155,7 @@ export const DEFAULT_VISIBILITY_PREFERENCES: VisibilityPreferences = {
 export const DEFAULT_PREFERENCES: UiPreferences = {
   appOutputGain: 1,
   appOutputMuted: false,
+  defaultOutputDeviceId: null,
   countInOutputGain: 1,
   countInOutputMuted: false,
   metronomeOutputGain: 0.8,
@@ -212,6 +215,22 @@ function normalizeTunerInputDeviceId(value: unknown): string | null {
   return value.trim().length > 0 ? value : null;
 }
 
+function normalizeOutputDeviceId(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 && value !== "default"
+    ? value
+    : null;
+}
+
+function isAndroidRuntime() {
+  return typeof navigator !== "undefined" && /\bAndroid\b/i.test(navigator.userAgent);
+}
+
+export function sanitizeOutputPreferenceForPlatform(value: UiPreferences): UiPreferences {
+  return isAndroidRuntime() && value.defaultOutputDeviceId !== null
+    ? { ...value, defaultOutputDeviceId: null }
+    : value;
+}
+
 export function normalizeTunerReferenceHz(value: unknown): number {
   const numericValue = typeof value === "number" ? value : Number(value);
   if (
@@ -240,6 +259,7 @@ export function normalizePreferences(value: unknown): UiPreferences {
     appOutputGain: normalizeOutputGain(candidate.appOutputGain),
     appOutputMuted:
       typeof candidate.appOutputMuted === "boolean" ? candidate.appOutputMuted : false,
+    defaultOutputDeviceId: normalizeOutputDeviceId(candidate.defaultOutputDeviceId),
     countInOutputGain: normalizeOutputGain(candidate.countInOutputGain, 1),
     countInOutputMuted:
       typeof candidate.countInOutputMuted === "boolean" ? candidate.countInOutputMuted : false,
@@ -309,7 +329,7 @@ function readStoredPreferences(): UiPreferences {
   }
 
   try {
-    return normalizePreferences(JSON.parse(storedValue));
+    return sanitizeOutputPreferenceForPlatform(normalizePreferences(JSON.parse(storedValue)));
   } catch {
     return DEFAULT_PREFERENCES;
   }
@@ -320,7 +340,10 @@ function persistPreferences(preferences: UiPreferences) {
     return;
   }
   try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(preferences));
+    window.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify(sanitizeOutputPreferenceForPlatform(preferences)),
+    );
     window.queueMicrotask(() =>
       window.dispatchEvent(new CustomEvent("tuneforge:preferences-save", { detail: null })),
     );
@@ -336,7 +359,7 @@ function persistPreferences(preferences: UiPreferences) {
 }
 
 function mergePreferences(current: UiPreferences, partial: Partial<UiPreferences>) {
-  const next = { ...current, ...partial };
+  const next = sanitizeOutputPreferenceForPlatform({ ...current, ...partial });
   persistPreferences(next);
   return next;
 }
@@ -369,6 +392,11 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
       },
       setAppOutputMuted: (appOutputMuted) => {
         setPreferences((current) => mergePreferences(current, { appOutputMuted }));
+      },
+      setDefaultOutputDeviceId: (defaultOutputDeviceId) => {
+        setPreferences((current) => mergePreferences(current, {
+          defaultOutputDeviceId: normalizeOutputDeviceId(defaultOutputDeviceId),
+        }));
       },
       setCountInOutputGain: (countInOutputGain) => {
         if (!Number.isFinite(countInOutputGain)) return;
@@ -445,7 +473,7 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
         setPreferences((current) => mergePreferences(current, { defaultTunerVisualMode }));
       },
       replacePreferences: (value) => {
-        const normalized = normalizePreferences(value);
+        const normalized = sanitizeOutputPreferenceForPlatform(normalizePreferences(value));
         persistPreferences(normalized);
         setPreferences(normalized);
       },

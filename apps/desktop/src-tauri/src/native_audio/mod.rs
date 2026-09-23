@@ -14,6 +14,7 @@ pub(crate) mod harmony;
 #[cfg(target_os = "ios")]
 pub(crate) mod ios_session;
 pub mod mixer;
+pub mod output_device;
 pub mod platform;
 pub mod session;
 #[cfg(any(
@@ -70,6 +71,7 @@ pub const AUDIO_EVENT_INPUT_LEVEL: &str = "audio://input-level";
 pub const AUDIO_EVENT_INPUT_FRAME: &str = "audio://input-frame";
 pub const AUDIO_EVENT_INPUT_STATE: &str = "audio://input-state";
 pub const AUDIO_EVENT_DEVICES_CHANGED: &str = "audio://devices-changed";
+pub const AUDIO_EVENT_OUTPUT_ROUTE: &str = "audio://output-route";
 pub const AUDIO_EVENT_SESSION: &str = "audio://session";
 pub const AUDIO_EVENT_CUE: &str = "audio://cue";
 pub const AUDIO_EVENT_TERMINAL: &str = "audio://terminal";
@@ -343,6 +345,8 @@ pub struct AudioCapabilities {
     platform: &'static str,
     backend: &'static str,
     native_playback_supported: bool,
+    output_selection_persistence: &'static str,
+    output_route_verification: &'static str,
     mic_capture_supported: bool,
     mic_monitoring_supported: bool,
     system_input_volume_supported: bool,
@@ -357,6 +361,16 @@ impl AudioCapabilities {
             platform: platform.name,
             backend: platform.backend,
             native_playback_supported: platform.native_playback_supported,
+            output_selection_persistence: match platform.name {
+                "android" => "session-only",
+                "macos" | "linux" => "persistent",
+                _ => "default-only",
+            },
+            output_route_verification: match platform.name {
+                "android" => "requested-unverified",
+                "macos" | "linux" => "backend-selected",
+                _ => "default-only",
+            },
             mic_capture_supported: platform.mic_capture_supported,
             mic_monitoring_supported: platform.mic_monitoring_supported,
             system_input_volume_supported: platform.system_input_volume_supported,
@@ -369,6 +383,7 @@ impl AudioCapabilities {
                 AUDIO_EVENT_INPUT_FRAME,
                 AUDIO_EVENT_INPUT_STATE,
                 AUDIO_EVENT_DEVICES_CHANGED,
+                AUDIO_EVENT_OUTPUT_ROUTE,
                 AUDIO_EVENT_SESSION,
                 AUDIO_EVENT_CUE,
                 AUDIO_EVENT_TERMINAL,
@@ -796,11 +811,60 @@ pub fn audio_list_input_devices(
 #[tauri::command]
 pub fn audio_list_output_devices(
     state: State<'_, NativeAudioState>,
-) -> Result<capture::AudioOutputDevices, String> {
-    Ok(state
-        .engine()?
-        .capture
-        .list_output_devices(state.capabilities()))
+) -> Result<output_device::AudioOutputDevices, String> {
+    if !state.capabilities.native_playback_supported {
+        return Ok(output_device::AudioOutputDevices {
+            supported: false,
+            devices: Vec::new(),
+            error: state.capabilities.availability_reason.map(str::to_string),
+        });
+    }
+    Ok(output_device::list())
+}
+
+#[tauri::command]
+pub fn audio_get_output_route(
+    state: State<'_, NativeAudioState>,
+) -> Result<output_device::OutputRouteSnapshot, String> {
+    Ok(state.engine()?.transport.output_route())
+}
+
+#[tauri::command]
+pub async fn audio_set_output_device(
+    app: AppHandle,
+    state: State<'_, NativeAudioState>,
+    device_id: Option<String>,
+    explicit: bool,
+) -> Result<transport::AudioSnapshot, String> {
+    if !state.capabilities.native_playback_supported {
+        return Err("native_audio_unavailable".to_string());
+    }
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut engine = state.engine()?;
+        let had_runtime = engine.transport.has_runtime();
+        let result = engine.transport.select_output_device(device_id, explicit);
+        let route = engine.transport.output_route();
+        let _ = app.emit(AUDIO_EVENT_OUTPUT_ROUTE, route);
+        if result.is_err() && had_runtime && !engine.transport.has_runtime() {
+            let snapshot = engine.output_snapshot();
+            let _ = app.emit(AUDIO_EVENT_ERROR, transport::AudioErrorEvent {
+                session_id: snapshot.session_id,
+                code: transport::NativeAudioErrorCode::OutputStreamFailure,
+                generation: snapshot.generation,
+                timeline_revision: snapshot.timeline_revision,
+                native_time_us: timeline::native_time_us(),
+                position_seconds: snapshot.position_seconds,
+            });
+            let generation = engine.output_session.snapshot().generation;
+            if let Some(event) = engine.output_session.mark_terminal(generation, "output_stream_failure") {
+                let _ = app.emit(AUDIO_EVENT_TERMINAL, event);
+            }
+        }
+        result.map(|_| engine.output_snapshot())
+    })
+    .await
+    .map_err(|error| format!("Native output selection task failed: {error}"))?
 }
 
 #[tauri::command]

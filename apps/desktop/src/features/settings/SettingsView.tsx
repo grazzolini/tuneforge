@@ -687,6 +687,7 @@ export function SettingsView() {
     defaultLyricsFollowEnabled,
     defaultChordsFollowEnabled,
     defaultTunerInputDeviceId,
+    defaultOutputDeviceId,
     defaultTunerReferenceHz,
     defaultTunerVisualMode,
     setInformationDensity,
@@ -915,6 +916,7 @@ export function SettingsView() {
           defaultInspectorOpen,
           defaultPlaybackDisplayMode,
           defaultTunerInputDeviceId,
+          defaultOutputDeviceId,
           defaultTunerReferenceHz,
           defaultTunerVisualMode,
           defaultLyricsFollowEnabled,
@@ -1144,6 +1146,81 @@ export function SettingsView() {
             <p className="subpanel__copy">Control playback and click volumes across TuneForge.</p>
           </div>
         </div>
+        {normalTauriAudio && appOutput.outputCapabilities
+          && appOutput.outputCapabilities.outputSelectionPersistence !== "default-only" ? (
+          <div className="settings-output-device">
+            <label htmlFor="settings-output-device">
+              {androidRuntime ? "Output" : "Audio output"}
+            </label>
+            <select
+              id="settings-output-device"
+              disabled={!appOutput.outputCapabilities.nativePlaybackSupported}
+              value={(androidRuntime ? appOutput.outputRoute?.preferredDeviceId : defaultOutputDeviceId) ?? "default"}
+              onChange={(event) => void appOutput.selectOutputDevice?.(
+                event.target.value === "default" ? null : event.target.value,
+              )}
+            >
+              <option value="default">System Default</option>
+              {(() => {
+                const preferred = (androidRuntime
+                  ? appOutput.outputRoute?.preferredDeviceId
+                  : defaultOutputDeviceId) ?? null;
+                const devices = appOutput.outputDevices?.devices ?? [];
+                const labelCounts = new Map<string, number>();
+                devices.forEach((device) => labelCounts.set(
+                  device.label,
+                  (labelCounts.get(device.label) ?? 0) + 1,
+                ));
+                return <>
+                  {preferred && !devices.some((device) => device.id === preferred) ? (
+                    <option value={preferred} disabled>
+                      {androidRuntime ? "Selected output" : "Saved output"} ({appOutput.outputDevices?.supported
+                        ? "unavailable" : "availability unknown"})
+                    </option>
+                  ) : null}
+                  {devices.map((device) => (
+                    <option key={device.id} value={device.id}>
+                      {labelCounts.get(device.label)! > 1
+                        ? `${device.label} (${device.id})`
+                        : device.label}
+                    </option>
+                  ))}
+                </>;
+              })()}
+            </select>
+            {appOutput.outputRoute?.status === "fallback-default" ? (
+              <p className="subpanel__copy">Selected output was lost. Using System Default for this session; {androidRuntime
+                ? "your selection remains in this app session."
+                : "your preference is saved."}</p>
+            ) : appOutput.outputRoute?.status === "requested-unverified" ? (
+              <p className="subpanel__copy">Android accepted the output request; its actual route cannot be verified.</p>
+            ) : appOutput.outputRoute?.status === "unavailable" ? (
+              <p className="field-error" role="alert">Output is unavailable. Choose another output or System Default, then press Play.</p>
+            ) : null}
+            {appOutput.outputDeviceError ? <p className="field-error" role="alert">{appOutput.outputDeviceError}</p> : null}
+            {appOutput.outputDevices?.error ? (
+              <p className="field-error" role="alert">{appOutput.outputDevices.error}</p>
+            ) : null}
+            {!appOutput.outputCapabilities.nativePlaybackSupported ? (
+              <p className="field-error" role="alert">
+                {appOutput.outputCapabilities.availabilityReason ?? "Native audio output is unavailable."}
+              </p>
+            ) : null}
+            {appOutput.outputDevices?.supported && appOutput.outputDevices.devices.length === 0 ? (
+              <p className="subpanel__copy">No selectable outputs found. System Default may still work.</p>
+            ) : null}
+          </div>
+        ) : null}
+        {normalTauriAudio && !appOutput.outputCapabilities && appOutput.outputDeviceError ? (
+          <div>
+            <p className="field-error" role="alert">{appOutput.outputDeviceError}</p>
+            <div className="button-row">
+              <button className="button button--ghost button--small" type="button" onClick={appOutput.retryOutputControls}>
+                Retry output controls
+              </button>
+            </div>
+          </div>
+        ) : null}
         <OutputVolumeControl
           gain={appOutputGain}
           label="App volume"

@@ -383,10 +383,73 @@ a {
   text-transform: uppercase;
 }
 
-.output-volume input[type="range"] {
+.output-volume__range {
+  position: relative;
   min-width: 0;
-  accent-color: var(--playback-accent);
+  block-size: 1.5rem;
+}
+
+.mobile-practice-controls .output-volume__range,
+.mobile-practice-controls .output-volume__range input[type="range"] {
+  block-size: 3rem;
+}
+
+.output-volume__track {
+  position: absolute;
+  inset-inline: 0.5rem;
+  top: calc(50% - 0.2rem);
+  block-size: 0.4rem;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--muted) 35%, var(--divider));
+  pointer-events: none;
+}
+
+.output-volume__fill {
+  display: block;
+  block-size: 100%;
+  border-radius: inherit;
+  background: var(--playback-accent);
+}
+
+.output-volume input[type="range"] {
+  position: relative;
+  display: block;
+  inline-size: 100%;
+  block-size: 1.5rem;
+  margin: 0;
+  appearance: none;
+  background: transparent;
   cursor: pointer;
+}
+
+.output-volume input[type="range"]::-webkit-slider-runnable-track {
+  block-size: 0.4rem;
+  background: transparent;
+}
+
+.output-volume input[type="range"]::-webkit-slider-thumb {
+  inline-size: 1rem;
+  block-size: 1rem;
+  margin-top: -0.3rem;
+  appearance: none;
+  border: 2px solid var(--panel-strong);
+  border-radius: 50%;
+  background: var(--playback-accent);
+}
+
+.output-volume input[type="range"]::-moz-range-track,
+.output-volume input[type="range"]::-moz-range-progress {
+  block-size: 0.4rem;
+  background: transparent;
+}
+
+.output-volume input[type="range"]::-moz-range-thumb {
+  inline-size: 0.75rem;
+  block-size: 0.75rem;
+  border: 2px solid var(--panel-strong);
+  border-radius: 50%;
+  background: var(--playback-accent);
 }
 
 .output-volume__mute,
@@ -416,8 +479,16 @@ a {
   font-weight: 500;
 }
 
-.output-volume[data-muted] input[type="range"] {
-  accent-color: color-mix(in srgb, var(--muted) 72%, var(--divider));
+.output-volume[data-muted] .output-volume__fill {
+  background: color-mix(in srgb, var(--muted) 72%, var(--divider));
+}
+
+.output-volume[data-muted] input[type="range"]::-webkit-slider-thumb {
+  background: color-mix(in srgb, var(--muted) 72%, var(--divider));
+}
+
+.output-volume[data-muted] input[type="range"]::-moz-range-thumb {
+  background: color-mix(in srgb, var(--muted) 72%, var(--divider));
 }
 
 .output-volume__mute svg {

@@ -72,6 +72,11 @@ pub struct Advance {
     pub start_offset: usize,
 }
 
+pub struct OutputHandoff {
+    was_running: bool,
+    suspended_at: u64,
+}
+
 pub struct Timeline {
     generation: u64,
     revision: u64,
@@ -159,6 +164,28 @@ impl Timeline {
         self.running = false;
         self.start_at = None;
         self.anchor_time = None;
+    }
+
+    pub fn suspend_output(&mut self, now: u64) -> OutputHandoff {
+        let handoff = OutputHandoff {
+            was_running: self.running,
+            suspended_at: now,
+        };
+        self.running = false;
+        self.anchor_time = None;
+        self.anchor_position = self.position;
+        handoff
+    }
+
+    pub fn resume_output(&mut self, handoff: OutputHandoff, now: u64) {
+        let delay = now.saturating_sub(handoff.suspended_at);
+        self.start_at = self.start_at.map(|start| start.saturating_add(delay));
+        for cue in &mut self.cues {
+            cue.native_time = cue.native_time.map(|time| time.saturating_add(delay));
+        }
+        self.anchor_time = None;
+        self.anchor_position = self.position;
+        self.running = handoff.was_running;
     }
 
     pub fn stop(&mut self) {
@@ -692,5 +719,48 @@ mod tests {
         let cues = timeline.advance(2, 1_000).cues;
         assert_eq!(cues.len(), 1);
         assert_eq!(cues[0].event.kind, CueKind::Marker);
+    }
+
+    #[test]
+    fn output_handoff_keeps_playing_cursor_revision_and_queued_cues() {
+        let mut timeline = timeline();
+        timeline.arm(1, None, Some(4_000), 100).unwrap();
+        timeline.schedule_precount(1, &[0.001, 0.002], 1_000).unwrap();
+        timeline.schedule(1, vec![CueRequest {
+            cue_index: 3,
+            position_seconds: 0.0,
+            kind: CueKind::Metronome,
+            accent: true,
+            gain: 0.8,
+        }]).unwrap();
+        let old_revision = timeline.revision();
+        let old_cues = timeline.cues.len();
+        let handoff = timeline.suspend_output(2_000);
+        assert!(!timeline.running);
+        timeline.advance(20, 3_000);
+        assert_eq!(timeline.position(), 0.0);
+        timeline.resume_output(handoff, 8_000);
+        assert!(timeline.running);
+        assert_eq!(timeline.revision(), old_revision);
+        assert_eq!(timeline.cues.len(), old_cues);
+        let advanced = timeline.advance(4, 10_000);
+        assert_eq!(advanced.start_offset, 0);
+        assert_eq!(advanced.cues.iter().map(|cue| cue.event.kind).collect::<Vec<_>>(), [
+            CueKind::PrecountBeat, CueKind::PrecountBeat,
+            CueKind::PrecountCompletion, CueKind::Metronome,
+        ]);
+    }
+
+    #[test]
+    fn output_handoff_does_not_resume_a_paused_timeline() {
+        let mut timeline = timeline();
+        timeline.arm(1, Some(2.5), None, 100).unwrap();
+        timeline.pause();
+        let revision = timeline.revision();
+        let handoff = timeline.suspend_output(200);
+        timeline.resume_output(handoff, 1_000);
+        assert!(!timeline.running);
+        assert_eq!(timeline.position(), 2.5);
+        assert_eq!(timeline.revision(), revision);
     }
 }

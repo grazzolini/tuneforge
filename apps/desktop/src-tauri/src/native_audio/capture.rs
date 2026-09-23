@@ -42,22 +42,6 @@ pub struct AudioInputDevices {
     pub error: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AudioOutputDevice {
-    pub id: String,
-    pub label: String,
-    pub is_default: bool,
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AudioOutputDevices {
-    pub supported: bool,
-    pub devices: Vec<AudioOutputDevice>,
-    pub error: Option<String>,
-}
-
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AudioInputRequest {
@@ -277,22 +261,6 @@ impl CaptureState {
                 devices: Vec::new(),
                 error: Some(error),
             },
-        }
-    }
-
-    pub fn list_output_devices(&self, capabilities: AudioCapabilities) -> AudioOutputDevices {
-        if !capabilities.native_playback_supported {
-            return AudioOutputDevices {
-                supported: false,
-                devices: Vec::new(),
-                error: Some("Native audio output device discovery is not wired yet.".to_string()),
-            };
-        }
-
-        AudioOutputDevices {
-            supported: true,
-            devices: Vec::new(),
-            error: None,
         }
     }
 
@@ -1439,6 +1407,8 @@ mod tests {
             platform: "test",
             backend: "test",
             native_playback_supported,
+            output_selection_persistence: "default-only",
+            output_route_verification: "default-only",
             mic_capture_supported,
             mic_monitoring_supported: false,
             system_input_volume_supported: false,
@@ -1459,31 +1429,6 @@ mod tests {
             devices.error,
             Some("Native microphone capture is not wired yet.".to_string())
         );
-    }
-
-    #[test]
-    fn list_output_devices_reports_unsupported_when_playback_not_wired() {
-        let state = CaptureState::default();
-
-        let devices = state.list_output_devices(capabilities(false, false));
-
-        assert!(!devices.supported);
-        assert!(devices.devices.is_empty());
-        assert_eq!(
-            devices.error,
-            Some("Native audio output device discovery is not wired yet.".to_string())
-        );
-    }
-
-    #[test]
-    fn list_output_devices_returns_empty_supported_skeleton_when_playback_wired() {
-        let state = CaptureState::default();
-
-        let devices = state.list_output_devices(capabilities(true, false));
-
-        assert!(devices.supported);
-        assert!(devices.devices.is_empty());
-        assert_eq!(devices.error, None);
     }
 
     #[test]

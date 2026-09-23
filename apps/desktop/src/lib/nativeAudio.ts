@@ -12,6 +12,7 @@ export type NativeAudioEventName =
   | "audio://input-frame"
   | "audio://input-state"
   | "audio://devices-changed"
+  | "audio://output-route"
   | "audio://session"
   | "audio://cue"
   | "audio://terminal";
@@ -81,6 +82,8 @@ export type NativeAudioCapabilities = {
   platform: string;
   backend: string;
   nativePlaybackSupported: boolean;
+  outputSelectionPersistence: "persistent" | "session-only" | "default-only";
+  outputRouteVerification: "backend-selected" | "requested-unverified" | "default-only";
   micCaptureSupported: boolean;
   micMonitoringSupported: boolean;
   systemInputVolumeSupported: boolean;
@@ -197,6 +200,14 @@ export type NativeAudioDevices = {
   error: string | null;
 };
 
+export type NativeOutputRoute = {
+  preferredDeviceId: string | null;
+  activeDeviceId: string | null;
+  status: "system-default" | "pending" | "selected" | "requested-unverified" | "fallback-default" | "unavailable";
+  fallbackLatched: boolean;
+  generation: number;
+};
+
 export type NativeAudioLaneRole = "primary" | "stem" | "click" | "mic_monitor";
 
 export type NativeAudioLaneRequest = {
@@ -311,6 +322,7 @@ export type NativeAudioSnapshot = {
   generation: number;
   timelineRevision: number;
   nativeTimeUs: number;
+  outputRoute: NativeOutputRoute;
 };
 
 export type NativeStandaloneMetronomeRequest =
@@ -476,6 +488,14 @@ export function listNativeAudioOutputDevices() {
   return invoke<NativeAudioDevices>("audio_list_output_devices");
 }
 
+export function getNativeOutputRoute() {
+  return invoke<NativeOutputRoute>("audio_get_output_route");
+}
+
+export function setNativeOutputDevice(deviceId: string | null, explicit: boolean) {
+  return invoke<NativeAudioSnapshot>("audio_set_output_device", { deviceId, explicit });
+}
+
 export function prepareNativeAudioSession(payload: NativeAudioSessionRequest) {
   return invoke<NativeAudioSession>("audio_prepare_session", { payload });
 }
@@ -614,4 +634,8 @@ export function listenNativeAudioCues(handler: (cue: NativeAudioCueEvent) => voi
 
 export function listenNativeAudioTerminal(handler: (terminal: NativeAudioTerminalEvent) => void) {
   return listen<NativeAudioTerminalEvent>("audio://terminal", (event) => handler(event.payload));
+}
+
+export function listenNativeOutputRoute(handler: (route: NativeOutputRoute) => void) {
+  return listen<NativeOutputRoute>("audio://output-route", (event) => handler(event.payload));
 }

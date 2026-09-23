@@ -406,7 +406,11 @@ impl SessionCoordinator {
             .map(|mut timeline| {
                 let revision = timeline.revision();
                 let position = timeline.position();
-                timeline.stop();
+                if self.resource == AudioResource::Output {
+                    timeline.pause();
+                } else {
+                    timeline.stop();
+                }
                 (revision, position)
             })
             .unwrap_or((0, 0.0));
@@ -593,6 +597,20 @@ mod tests {
         assert_eq!(terminal_value["resource"], "output");
         assert_eq!(terminal_value["source"], "project_playback");
         assert!(value.get("fallbackReason").is_none());
+    }
+
+    #[test]
+    fn output_terminal_preserves_cursor_without_resuming() {
+        let mut state = SessionCoordinator::new(true, true);
+        let generation = acquire(&mut state, SessionOwner::Playback, "play");
+        let revision = state.snapshot().timeline_revision;
+        state.timeline.lock().unwrap().seek(revision, 4.25).unwrap();
+        let terminal = state.mark_terminal(generation, "device_not_available").unwrap();
+        assert_eq!(terminal.position_seconds, 4.25);
+        assert_eq!(state.snapshot().position_seconds, 4.25);
+        let mut timeline = state.timeline.lock().unwrap();
+        timeline.advance(1_000, timeline::native_time_us());
+        assert_eq!(timeline.position(), 4.25);
     }
 
     #[test]

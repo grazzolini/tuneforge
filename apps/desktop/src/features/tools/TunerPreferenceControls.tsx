@@ -26,6 +26,7 @@ type TunerPreferenceControlsProps = {
   onInputDeviceChange: (value: string | null) => void;
   onReferenceHzChange: (value: number) => void;
   onVisualModeChange?: (value: TunerVisualMode) => void;
+  prefetchNativeDevicesOnMount?: boolean;
   referenceHz: number;
   refreshToken?: number;
   systemDefaultOnly?: boolean;
@@ -43,6 +44,7 @@ export function TunerPreferenceControls({
   onInputDeviceChange,
   onReferenceHzChange,
   onVisualModeChange,
+  prefetchNativeDevicesOnMount = false,
   referenceHz,
   refreshToken = 0,
   systemDefaultOnly = false,
@@ -51,9 +53,10 @@ export function TunerPreferenceControls({
   visualModeLabel = "Default tuner",
 }: TunerPreferenceControlsProps) {
   const [devices, setDevices] = useState<TunerMicrophoneDevice[]>(() =>
-    systemDefaultOnly || !nativeCaptureDisabled ? [] : readRememberedTunerMicrophoneDevices(),
+    systemDefaultOnly ? [] : readRememberedDevicesForMode(nativeCaptureDisabled),
   );
   const [deviceError, setDeviceError] = useState<string | null>(null);
+  const [nativeInventoryEmpty, setNativeInventoryEmpty] = useState(false);
   const [isReferenceFocused, setIsReferenceFocused] = useState(false);
   const [referenceDraft, setReferenceDraft] = useState(formatReferenceValue(referenceHz));
   const canEnumerateDevices = canUseMediaDeviceEnumeration();
@@ -82,8 +85,9 @@ export function TunerPreferenceControls({
     pendingRefreshRef.current = false;
     refreshPromiseRef.current = null;
     refreshRequestIdRef.current += 1;
-    setDevices(nativeCaptureDisabled ? readRememberedTunerMicrophoneDevices() : []);
+    setDevices(readRememberedDevicesForMode(nativeCaptureDisabled));
     setDeviceError(null);
+    setNativeInventoryEmpty(false);
   }, [nativeCaptureDisabled]);
 
   useEffect(() => {
@@ -96,6 +100,7 @@ export function TunerPreferenceControls({
             ),
       );
       setDeviceError(null);
+      setNativeInventoryEmpty(false);
       refreshRequestIdRef.current += 1;
     }
   }, [clearDevicesWhenSystemDefaultOnly, systemDefaultOnly]);
@@ -126,9 +131,13 @@ export function TunerPreferenceControls({
           }
           setDevices(availableDevices);
           setDeviceError(null);
+          setNativeInventoryEmpty(!nativeCaptureDisabled && availableDevices.length === 0);
         } catch (error) {
           if (isMountedRef.current && refreshRequestIdRef.current === requestId) {
-            setDevices([]);
+            if (nativeCaptureDisabled) {
+              setDevices([]);
+            }
+            setNativeInventoryEmpty(false);
             setDeviceError(
               error instanceof Error && error.message === "Native microphone capture unavailable."
                 ? error.message
@@ -151,6 +160,12 @@ export function TunerPreferenceControls({
     });
     return refreshPromise;
   }, [nativeCaptureDisabled, systemDefaultOnly]);
+
+  useEffect(() => {
+    if (prefetchNativeDevicesOnMount && !nativeCaptureDisabled && !systemDefaultOnly) {
+      void refreshDevices();
+    }
+  }, [nativeCaptureDisabled, prefetchNativeDevicesOnMount, refreshDevices, systemDefaultOnly]);
 
   useEffect(() => {
     if (lastRefreshTokenRef.current === refreshToken) {
@@ -229,7 +244,7 @@ export function TunerPreferenceControls({
           value={selectedInputDeviceId}
         >
           <option value="">System Default</option>
-          {selectedDeviceMissing ? <option disabled value={inputDeviceId ?? ""}>Saved microphone (unavailable)</option> : null}
+          {selectedDeviceMissing ? <option value={inputDeviceId ?? ""}>Saved microphone</option> : null}
           {devices.map((device) => (
             <option
               disabled={systemDefaultOnly}
@@ -284,12 +299,24 @@ export function TunerPreferenceControls({
       {children}
 
       {deviceError ? <p className="tuner-preferences__status">{deviceError}</p> : null}
+      {nativeInventoryEmpty && !deviceError ? (
+        <p className="tuner-preferences__status">No usable microphone was found. Connect a microphone, then reopen this list to retry.</p>
+      ) : null}
     </div>
   );
 }
 
 function canUseMediaDeviceEnumeration() {
   return typeof navigator !== "undefined" && typeof navigator.mediaDevices?.enumerateDevices === "function";
+}
+
+function readRememberedDevicesForMode(nativeCaptureDisabled: boolean) {
+  const remembered = readRememberedTunerMicrophoneDevices();
+  return nativeCaptureDisabled
+    ? remembered
+    : remembered.filter((device) =>
+        device.deviceId.startsWith("cpal:") || device.deviceId.startsWith("pipewire:"),
+      );
 }
 
 async function enumerateTunerInputDevices({

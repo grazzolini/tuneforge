@@ -19,7 +19,8 @@ export function OutputVolumeControl({
   resetGain?: number;
   showLabel?: boolean;
 }) {
-  const percentage = Math.round(gain * 100);
+  const clampedGain = Number.isFinite(gain) ? Math.min(1, Math.max(0, gain)) : 0;
+  const percentage = Math.round(clampedGain * 100);
   const resetPercentage = Math.round(resetGain * 100);
   const reset = () => onGainChange(resetGain);
   return (
@@ -40,21 +41,26 @@ export function OutputVolumeControl({
           {muted ? <VolumeX aria-hidden="true" /> : <Volume2 aria-hidden="true" />}
         </button>
       ) : null}
-      <input
-        aria-label={label}
-        aria-valuetext={`${percentage}%`}
-        max={1}
-        min={0}
-        onChange={(event) => {
-          onInteractionStart?.();
-          onGainChange(Number(event.target.value));
-        }}
-        onDoubleClick={reset}
-        onPointerDown={onInteractionStart}
-        step={0.01}
-        type="range"
-        value={gain}
-      />
+      <div className="output-volume__range">
+        <span aria-hidden="true" className="output-volume__track">
+          <span className="output-volume__fill" style={{ width: `${percentage}%` }} />
+        </span>
+        <input
+          aria-label={label}
+          aria-valuetext={`${percentage}%`}
+          max={1}
+          min={0}
+          onChange={(event) => {
+            onInteractionStart?.();
+            onGainChange(Number(event.target.value));
+          }}
+          onDoubleClick={reset}
+          onPointerDown={onInteractionStart}
+          step={0.01}
+          type="range"
+          value={clampedGain}
+        />
+      </div>
       <button
         aria-label={`Reset ${label.toLowerCase()} to ${resetPercentage}%`}
         className="output-volume__percentage"

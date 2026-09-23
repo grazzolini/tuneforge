@@ -53,7 +53,7 @@ pub fn set_system_default_input_volume(
 }
 
 #[cfg(target_os = "linux")]
-fn run_host_audio_command(binary: &str, args: &[&str]) -> Result<String, String> {
+pub(super) fn run_host_audio_command(binary: &str, args: &[&str]) -> Result<String, String> {
     let output = Command::new(binary)
         .args(args)
         .output()

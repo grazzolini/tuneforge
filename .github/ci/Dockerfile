@@ -102,7 +102,9 @@ RUN set -eux; \
       libayatana-appindicator3-dev \
       libclang-dev \
       libgtk-3-dev \
+      libpipewire-0.3-dev \
       librsvg2-dev \
+      libspa-0.2-dev \
       libssl-dev \
       libwebkit2gtk-4.1-dev \
       libxdo-dev \

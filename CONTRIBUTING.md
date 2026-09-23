@@ -19,8 +19,9 @@ If unsure whether a feature fits, open a discussion or feature-request issue fir
 - Python 3.14.7
 - `ffmpeg` and `ffprobe` on your `PATH`
 - Rust toolchain (for the Tauri shell)
-- Linux desktop builds need Clang/libclang for native audio bindings (`sudo pacman -S clang` on
-  Arch, `sudo apt-get install clang libclang-dev` on Debian/Ubuntu).
+- Linux desktop builds need Clang/libclang and PipeWire development headers for native audio
+  (`sudo pacman -S clang pipewire` on Arch, or
+  `sudo apt-get install clang libclang-dev libpipewire-0.3-dev libspa-0.2-dev` on Debian/Ubuntu).
 
 ## Setup
 

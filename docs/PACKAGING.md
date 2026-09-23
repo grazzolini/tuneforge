@@ -352,8 +352,11 @@ pnpm package:linux:flatpak -- --no-bundle
 
 The Flatpak build generates local dependency source manifests, builds inside the SDK sandbox, and
 installs the CPU-only backend under `/app/lib/tuneforge/backend`. The same manifest exports optional
-NVIDIA and legacy NVIDIA Torch extensions from one repository. It bundles `pactl` for microphone
-volume control but does not bundle FFmpeg.
+NVIDIA and legacy NVIDIA Torch extensions from one repository. It bundles the pinned `wpctl`
+client and required WirePlumber libraries/modules for microphone volume control, using the host
+PipeWire session. The app grants access to the session's `xdg-run/pipewire-0` socket for native
+audio and retains the PulseAudio socket for WebView audio. It does not bundle a WirePlumber daemon
+or FFmpeg.
 
 The root `.python-version` owns the exact Python release for release sync. Flatpak keeps its reviewed
 CPython archive, checksum, and `cp314` wheel ABI literals; source generation fails if they no longer

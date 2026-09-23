@@ -51,7 +51,7 @@ export function TunerPreferenceControls({
   visualModeLabel = "Default tuner",
 }: TunerPreferenceControlsProps) {
   const [devices, setDevices] = useState<TunerMicrophoneDevice[]>(() =>
-    systemDefaultOnly ? [] : readRememberedTunerMicrophoneDevices(),
+    systemDefaultOnly || !nativeCaptureDisabled ? [] : readRememberedTunerMicrophoneDevices(),
   );
   const [deviceError, setDeviceError] = useState<string | null>(null);
   const [isReferenceFocused, setIsReferenceFocused] = useState(false);
@@ -82,7 +82,7 @@ export function TunerPreferenceControls({
     pendingRefreshRef.current = false;
     refreshPromiseRef.current = null;
     refreshRequestIdRef.current += 1;
-    setDevices(readRememberedTunerMicrophoneDevices());
+    setDevices(nativeCaptureDisabled ? readRememberedTunerMicrophoneDevices() : []);
     setDeviceError(null);
   }, [nativeCaptureDisabled]);
 
@@ -91,7 +91,9 @@ export function TunerPreferenceControls({
       setDevices((currentDevices) =>
         clearDevicesWhenSystemDefaultOnly
           ? []
-          : currentDevices.filter((device) => !device.deviceId.startsWith("cpal:")),
+          : currentDevices.filter((device) =>
+              !device.deviceId.startsWith("cpal:") && !device.deviceId.startsWith("pipewire:"),
+            ),
       );
       setDeviceError(null);
       refreshRequestIdRef.current += 1;
@@ -124,10 +126,14 @@ export function TunerPreferenceControls({
           }
           setDevices(availableDevices);
           setDeviceError(null);
-        } catch {
+        } catch (error) {
           if (isMountedRef.current && refreshRequestIdRef.current === requestId) {
             setDevices([]);
-            setDeviceError("Microphone list unavailable.");
+            setDeviceError(
+              error instanceof Error && error.message === "Native microphone capture unavailable."
+                ? error.message
+                : "Microphone list unavailable.",
+            );
           }
         }
 
@@ -223,7 +229,7 @@ export function TunerPreferenceControls({
           value={selectedInputDeviceId}
         >
           <option value="">System Default</option>
-          {selectedDeviceMissing ? <option value={inputDeviceId ?? ""}>Saved microphone</option> : null}
+          {selectedDeviceMissing ? <option disabled value={inputDeviceId ?? ""}>Saved microphone (unavailable)</option> : null}
           {devices.map((device) => (
             <option
               disabled={systemDefaultOnly}
@@ -295,31 +301,27 @@ async function enumerateTunerInputDevices({
     const nativeDevices = await enumerateNativeAudioInputDevices();
     if (nativeDevices.length > 0) {
       rememberTunerMicrophoneDevices(nativeDevices);
-      return nativeDevices;
     }
+    return nativeDevices;
   }
   return enumerateAudioInputDevices();
 }
 
 async function enumerateNativeAudioInputDevices() {
-  try {
-    const capabilities = await getNativeAudioCapabilities();
-    if (!capabilities.micCaptureSupported) {
-      return [];
-    }
-    const deviceState = await listNativeAudioInputDevices();
-    if (!deviceState.supported) {
-      return [];
-    }
-    return deviceState.devices
-      .map((device) => ({
-        deviceId: device.id,
-        label: device.isDefault ? `${device.label} (Default)` : device.label,
-      }))
-      .filter((device) => device.label.trim());
-  } catch {
-    return [];
+  const capabilities = await getNativeAudioCapabilities();
+  if (!capabilities.micCaptureSupported) {
+    throw new Error("Native microphone capture unavailable.");
   }
+  const deviceState = await listNativeAudioInputDevices();
+  if (!deviceState.supported) {
+    throw new Error("Microphone list unavailable.");
+  }
+  return deviceState.devices
+    .map((device) => ({
+      deviceId: device.id,
+      label: device.isDefault ? `${device.label} (Default)` : device.label,
+    }))
+    .filter((device) => device.label.trim());
 }
 
 async function enumerateAudioInputDevices() {

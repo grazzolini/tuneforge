@@ -631,8 +631,7 @@ function ChromaticTunerPage() {
   const systemDefaultInputOnly =
     webAudioForced ||
     androidRuntime ||
-    activeCaptureBackend === "web" ||
-    nativeAudioCapabilities?.micCaptureSupported === false;
+    activeCaptureBackend === "web";
   const inputVolumeDeviceId =
     webAudioForced ||
     activeCaptureBackend === "web" ||
@@ -957,7 +956,7 @@ function createAudioConstraints(): MediaStreamConstraints {
 }
 
 function isNativeAudioInputDeviceId(inputDeviceId: string | null) {
-  return inputDeviceId?.startsWith("cpal:") ?? false;
+  return inputDeviceId?.startsWith("cpal:") || inputDeviceId?.startsWith("pipewire:") || false;
 }
 
 function captureErrorMessage(error: unknown) {

@@ -32,6 +32,36 @@ pub mod transport;
 pub(crate) mod whisper_alignment;
 pub(crate) mod whisper_model;
 
+#[cfg(target_os = "linux")]
+fn native_cpal_host() -> Result<cpal::Host, String> {
+    cpal::host_from_id(cpal::HostId::PipeWire)
+        .map_err(|error| format!("PipeWire audio host is unavailable: {error}"))
+}
+
+#[cfg(any(target_os = "android", target_os = "ios", target_os = "macos"))]
+fn native_cpal_host() -> Result<cpal::Host, String> {
+    Ok(cpal::default_host())
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn pipewire_node_name(device_id: &str) -> Option<String> {
+    let node_name = device_id.strip_prefix("pipewire:")?;
+    (!node_name.is_empty() && !node_name.contains('\0')).then(|| node_name.to_string())
+}
+
+#[cfg(test)]
+mod pipewire_identity_tests {
+    use super::pipewire_node_name;
+
+    #[test]
+    fn keeps_pipewire_node_names_exact_and_rejects_legacy_ids() {
+        let node_name = "alsa_input.usb:é ";
+        assert_eq!(pipewire_node_name(&format!("pipewire:{node_name}")), Some(node_name.to_string()));
+        assert_eq!(pipewire_node_name("cpal:1:0123456789abcdef"), None);
+        assert_eq!(pipewire_node_name("pipewire:"), None);
+    }
+}
+
 pub const AUDIO_EVENT_STATE: &str = "audio://state";
 pub const AUDIO_EVENT_POSITION: &str = "audio://position";
 pub const AUDIO_EVENT_ENDED: &str = "audio://ended";

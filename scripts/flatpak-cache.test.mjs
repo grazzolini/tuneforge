@@ -250,7 +250,7 @@ test("Flatpak modules split frontend, Rust, and backend source boundaries", () =
       "nvidia-torch-runtime-extension",
       "legacy-nvidia-torch-core-extension",
       "legacy-nvidia-torch-runtime-extension",
-      "pulseaudio-client-tools",
+      "wireplumber-wpctl",
       "tuneforge-backend",
     ],
   );
@@ -269,6 +269,48 @@ test("Flatpak modules split frontend, Rust, and backend source boundaries", () =
   assert.match(manifest, /sccache-v0\.17\.0-x86_64-unknown-linux-musl\.tar\.gz/);
   assert.match(manifest, /67c4a96dd237c1f518f6b36083f270f9976d516f1e57fce891755ea782e50006/);
   assert.match(backend, /rm -rf .*\/app\/bin\/sccache/);
+});
+
+test("WirePlumber's Lua wrap builds offline and ships upstream license files", () => {
+  const wireplumber = moduleSource("wireplumber-wpctl", "tuneforge-backend");
+  assert.match(wireplumber, /- -Dsystem-lua=false/);
+  assert.match(wireplumber, /- --wrap-mode=nodownload/);
+  for (const source of [
+    [
+      "https://www.lua.org/ftp/lua-5.5.0.tar.gz",
+      "57ccc32bbbd005cab75bcc52444052535af691789dba2b9016d5c50640d68b3d",
+      "lua-5.5.0.tar.gz",
+    ],
+    [
+      "https://wrapdb.mesonbuild.com/v2/lua_5.5.0-1/get_patch",
+      "69ec4a2dd99ecf8e84830093d418f3a5be1202f16ba8d636b3008b67506e5cca",
+      "lua_5.5.0-1_patch.zip",
+    ],
+  ]) {
+    assert.ok(wireplumber.includes([
+      "      - type: file",
+      `        url: ${source[0]}`,
+      `        sha256: ${source[1]}`,
+      "        dest: subprojects/packagecache",
+      `        dest-filename: ${source[2]}`,
+    ].join("\n")));
+  }
+  assert.match(wireplumber, /    post-install:/);
+  for (const [source, destination] of [
+    ["LICENSE", "WirePlumber-MIT.txt"],
+    ["subprojects/lua-5.5.0/doc/readme.html", "Lua-MIT.html"],
+    ["subprojects/lua-5.5.0/LICENSE.build", "WrapDB-MIT.txt"],
+  ]) {
+    assert.ok(wireplumber.includes(
+      `      - install -Dm644 "\${FLATPAK_BUILDER_BUILDDIR}/${source}" /app/share/licenses/wireplumber-wpctl/${destination}`,
+    ));
+  }
+});
+
+test("backend build can load wpctl from Flatpak's application libraries", () => {
+  const backend = moduleSource("tuneforge-backend");
+  assert.match(backend, /^        LD_LIBRARY_PATH: \/app\/lib\/tuneforge\/backend\/python\/lib:\/app\/lib$/m);
+  assert.match(backend, /^      - \/app\/bin\/wpctl --help$/m);
 });
 
 test("source snapshots are deterministic and preserve files, modes, empty directories, and links", () => {

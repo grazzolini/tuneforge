@@ -228,7 +228,7 @@ Validation failures return `INVALID_REQUEST` with serialized validation details.
   separate conversion infrastructure and does not replace realtime playback.
 - Native audio development notes live in [NATIVE_AUDIO.md](NATIVE_AUDIO.md).
 - Cross-platform wake, sleep, and power-inhibition behavior lives in [POWER_PROTECTION.md](POWER_PROTECTION.md).
-- Desktop system microphone volume control uses CoreAudio on macOS, or host `wpctl`/`pactl` tools on Linux with an active PipeWire/PulseAudio session.
+- Desktop system microphone volume control uses CoreAudio on macOS and `wpctl` against the active PipeWire session on Linux.
 - Advanced Chords and Advanced Beat Analysis are default desktop/dev/package engines. Advanced Chords uses ONNX Runtime and packages the exact pinned converted Crema model/state; the Crema Python package, TensorFlow, and Keras are absent. Packaged builds must treat ONNX Runtime, model provenance, beat-this, and their runtime dependencies as default-runtime notice scope. Built-in chord and beat engines remain fallback paths when advanced dependencies are unavailable, unsupported, or explicitly excluded.
 - Demucs and lyrics models follow first-use local download/cache behavior.
 - The Linux legacy NVIDIA profile is an opt-in local backend environment override; it does not change the default lockfile, CI setup, or packaged dependency baseline.

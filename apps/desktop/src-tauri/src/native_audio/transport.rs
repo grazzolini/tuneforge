@@ -2430,7 +2430,7 @@ fn start_native_runtime(
     generation: u64,
     report_sender: mpsc::SyncSender<RuntimeReport>,
 ) -> Result<PlaybackRuntime, String> {
-    let host = cpal::default_host();
+    let host = super::native_cpal_host()?;
     let device = host
         .default_output_device()
         .ok_or_else(|| "Native audio output device is unavailable.".to_string())?;
@@ -2589,8 +2589,8 @@ fn start_output_stream_thread(
             return;
         }
     };
-    let host = cpal::default_host();
     let result = (|| {
+        let host = super::native_cpal_host()?;
         let device = host
             .default_output_device()
             .ok_or_else(|| "Native audio output device is unavailable.".to_string())?;

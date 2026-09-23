@@ -655,6 +655,7 @@ fn calculate_input_level(samples: &[f32]) -> f32 {
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 struct DesktopInputDeviceDescriptor {
     exposed_id: String,
+    #[cfg(target_os = "macos")]
     stable_hash: u64,
     label: String,
     cpal_id: Option<cpal::DeviceId>,
@@ -662,31 +663,54 @@ struct DesktopInputDeviceDescriptor {
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn list_desktop_input_devices() -> Result<Vec<AudioInputDevice>, String> {
-    let host = cpal::default_host();
+    let host = super::native_cpal_host()?;
+    #[cfg(target_os = "linux")]
+    let verified_sources = super::system_input::verified_pipewire_sources()?;
+    #[cfg(target_os = "macos")]
     let default_device_id = host
         .default_input_device()
         .and_then(|device| device.id().ok());
     let devices = host
         .input_devices()
         .map_err(|error| format!("Could not list native input devices: {error}"))?;
+    #[cfg(target_os = "macos")]
     let mut marked_default = false;
 
-    Ok(devices
-        .enumerate()
-        .map(|(index, device)| {
-            let descriptor = describe_desktop_input_device(index, &device);
-            let is_default =
-                !marked_default && descriptor.cpal_id.as_ref() == default_device_id.as_ref();
-            if is_default {
-                marked_default = true;
-            }
-            AudioInputDevice {
-                id: descriptor.exposed_id,
-                label: descriptor.label,
-                is_default,
-            }
-        })
-        .collect())
+    let mut listed = Vec::new();
+    let mut seen_ids = std::collections::HashSet::new();
+    for (index, device) in devices.enumerate() {
+        let descriptor = describe_desktop_input_device(index, &device)?;
+        #[cfg(target_os = "linux")]
+        if descriptor.cpal_id.as_ref().is_some_and(|id| {
+            matches!(id.id(), "input_default" | "sink_default" | "output_default")
+        }) {
+            continue;
+        }
+        #[cfg(target_os = "linux")]
+        let Some(&is_default) = descriptor
+            .cpal_id
+            .as_ref()
+            .and_then(|id| verified_sources.get(id.id()))
+        else {
+            continue;
+        };
+        if !seen_ids.insert(descriptor.exposed_id.clone()) {
+            return Err("Native microphone identity is duplicated.".to_string());
+        }
+        #[cfg(target_os = "macos")]
+        let is_default =
+            !marked_default && descriptor.cpal_id.as_ref() == default_device_id.as_ref();
+        #[cfg(target_os = "macos")]
+        if is_default {
+            marked_default = true;
+        }
+        listed.push(AudioInputDevice {
+            id: descriptor.exposed_id,
+            label: descriptor.label,
+            is_default,
+        });
+    }
+    Ok(listed)
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
@@ -783,7 +807,7 @@ fn start_capture_stream(
     shared: Arc<Mutex<CaptureSharedState>>,
     capture_generation: u64,
 ) -> Result<CaptureStreamStartup, String> {
-    let host = cpal::default_host();
+    let host = super::native_cpal_host()?;
     let (device, effective_device_id) = select_input_device(&host, requested_device_id.as_deref())?;
     let supported_config = device
         .default_input_config()
@@ -946,7 +970,57 @@ fn start_native_input(
     Err("Native microphone capture is only available on macOS and Linux.".to_string())
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(target_os = "linux")]
+fn select_input_device(
+    host: &cpal::Host,
+    requested_device_id: Option<&str>,
+) -> Result<(cpal::Device, String), String> {
+    let requested_device_id = requested_device_id.filter(|device_id| !device_id.is_empty());
+    if requested_device_id.is_none() || requested_device_id == Some(DEFAULT_INPUT_DEVICE_ID) {
+        let device = host
+            .default_input_device()
+            .ok_or_else(|| "No default native input device is available.".to_string())?;
+        return Ok((device, DEFAULT_INPUT_DEVICE_ID.to_string()));
+    }
+
+    let requested_device_id = requested_device_id.unwrap_or(DEFAULT_INPUT_DEVICE_ID);
+    let requested: cpal::DeviceId = requested_device_id.parse().map_err(|_| {
+        "Selected microphone uses an unavailable device identity; reselect it.".to_string()
+    })?;
+    if requested.host() != cpal::HostId::PipeWire
+        || requested.id().is_empty()
+        || matches!(
+            requested.id(),
+            "input_default" | "sink_default" | "output_default"
+        )
+    {
+        return Err("Selected microphone uses an unavailable device identity; reselect it.".to_string());
+    }
+    super::system_input::resolve_wpctl_input_source(Some(requested_device_id))?;
+    let devices = host
+        .input_devices()
+        .map_err(|error| format!("Could not list native input devices: {error}"))?;
+    let mut matched = None;
+
+    for (index, device) in devices.enumerate() {
+        let descriptor = describe_desktop_input_device(index, &device)?;
+        if descriptor.cpal_id.as_ref().is_some_and(|id| {
+            matches!(id.id(), "input_default" | "sink_default" | "output_default")
+        }) {
+            continue;
+        }
+        if descriptor.cpal_id.as_ref() == Some(&requested) {
+            if matched.is_some() {
+                return Err("Selected microphone identity is duplicated.".to_string());
+            }
+            matched = Some((device, descriptor.exposed_id));
+        }
+    }
+
+    matched.ok_or_else(|| "Selected native input device was not found.".to_string())
+}
+
+#[cfg(target_os = "macos")]
 fn select_input_device(
     host: &cpal::Host,
     requested_device_id: Option<&str>,
@@ -967,7 +1041,7 @@ fn select_input_device(
     let mut hash_match: Option<(cpal::Device, String)> = None;
 
     for (index, device) in devices.enumerate() {
-        let descriptor = describe_desktop_input_device(index, &device);
+        let descriptor = describe_desktop_input_device(index, &device)?;
         if descriptor.exposed_id == requested_device_id {
             return Ok((device, descriptor.exposed_id));
         }
@@ -1266,7 +1340,7 @@ fn native_input_device_id_from_hash(index: usize, hash: u64) -> String {
 fn describe_desktop_input_device(
     index: usize,
     device: &cpal::Device,
-) -> DesktopInputDeviceDescriptor {
+) -> Result<DesktopInputDeviceDescriptor, String> {
     let label = device
         .description()
         .map(|description| description.name().trim().to_string())
@@ -1274,14 +1348,30 @@ fn describe_desktop_input_device(
         .filter(|label| !label.is_empty())
         .unwrap_or_else(|| format!("Input Device {}", index + 1));
 
-    let cpal_id = device.id().ok();
-    let stable_hash = stable_name_hash(native_input_device_hash_source(&label, cpal_id.as_ref()));
-
-    DesktopInputDeviceDescriptor {
-        exposed_id: native_input_device_id_from_hash(index, stable_hash),
-        stable_hash,
-        label,
-        cpal_id,
+    #[cfg(target_os = "linux")]
+    {
+        let cpal_id = device
+            .id()
+            .map_err(|error| format!("Could not identify native input device: {error}"))?;
+        if cpal_id.host() != cpal::HostId::PipeWire || cpal_id.id().is_empty() {
+            return Err("Native microphone has no PipeWire node identity.".to_string());
+        }
+        Ok(DesktopInputDeviceDescriptor {
+            exposed_id: cpal_id.to_string(),
+            label,
+            cpal_id: Some(cpal_id),
+        })
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let cpal_id = device.id().ok();
+        let stable_hash = stable_name_hash(native_input_device_hash_source(&label, cpal_id.as_ref()));
+        Ok(DesktopInputDeviceDescriptor {
+            exposed_id: native_input_device_id_from_hash(index, stable_hash),
+            stable_hash,
+            label,
+            cpal_id,
+        })
     }
 }
 

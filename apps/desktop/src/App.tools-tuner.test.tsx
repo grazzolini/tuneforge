@@ -120,7 +120,7 @@ describe("Desktop app tools tuner", () => {
     expect(screen.getByLabelText("Microphone source")).toHaveValue("cpal:1:usb");
     expect(screen.getByLabelText("A4 reference tuning")).toHaveValue(442.5);
     expect(screen.getByLabelText("Default tuner")).toHaveValue("simple");
-    expect(screen.getByRole("option", { name: "USB Interface" })).toBeInTheDocument();
+    await refreshMicrophoneOptions("USB Interface");
     expect(screen.getByText("442.5 Hz")).toBeInTheDocument();
 
     await user.selectOptions(screen.getByLabelText("Microphone source"), "");
@@ -178,6 +178,7 @@ describe("Desktop app tools tuner", () => {
 
   it("controls the selected native microphone volume", async () => {
     const user = userEvent.setup();
+    const nativeId = "pipewire:alsa_input.usb:é ";
     mockTauriRuntime();
     setMockNativeAudioState({
       capabilities: {
@@ -186,7 +187,7 @@ describe("Desktop app tools tuner", () => {
       },
       inputDevices: {
         supported: true,
-        devices: [{ id: "cpal:0:built-in", label: "Built-in Microphone", isDefault: false }],
+        devices: [{ id: nativeId, label: "Built-in Microphone", isDefault: false }],
         error: null,
       },
     });
@@ -194,7 +195,7 @@ describe("Desktop app tools tuner", () => {
 
     expect(await screen.findByRole("heading", { name: "Tools" })).toBeInTheDocument();
     await refreshMicrophoneOptions("Built-in Microphone");
-    await user.selectOptions(screen.getByLabelText("Microphone source"), "cpal:0:built-in");
+    await user.selectOptions(screen.getByLabelText("Microphone source"), nativeId);
 
     const selectedInputVolume = await screen.findByLabelText("Selected input volume");
     fireEvent.change(selectedInputVolume, { target: { value: "72" } });
@@ -202,12 +203,12 @@ describe("Desktop app tools tuner", () => {
 
     await waitFor(() =>
       expect(getMockInvoke()).toHaveBeenCalledWith("get_system_default_input_volume", {
-        deviceId: "cpal:0:built-in",
+        deviceId: nativeId,
       }),
     );
     await waitFor(() =>
       expect(getMockInvoke()).toHaveBeenCalledWith("set_system_default_input_volume", {
-        deviceId: "cpal:0:built-in",
+        deviceId: nativeId,
         volumePercent: 72,
       }),
     );
@@ -245,6 +246,110 @@ describe("Desktop app tools tuner", () => {
     expect(screen.getByLabelText("Microphone source")).toHaveValue("");
     expect(screen.getByLabelText("A4 reference tuning")).toHaveValue(440);
     expect(screen.getByLabelText("Tuner visual mode")).toHaveValue("wide-arc");
+  });
+
+  it("keeps a legacy Linux microphone unavailable until a PipeWire source is selected", async () => {
+    const user = userEvent.setup();
+    const nativeId = "pipewire:alsa_input.usb:é ";
+    window.localStorage.setItem(
+      "tuneforge.ui-preferences",
+      JSON.stringify({ defaultTunerInputDeviceId: "cpal:1:0123456789abcdef" }),
+    );
+    mockTauriRuntime();
+    setMockNativeAudioState({
+      capabilities: { platform: "linux", micCaptureSupported: true, backend: "desktop-cpal" },
+      inputDevices: {
+        supported: true,
+        devices: [{ id: nativeId, label: "USB Interface", isDefault: false }],
+        error: null,
+      },
+    });
+    renderApp(["/tools"]);
+
+    expect(await screen.findByRole("heading", { name: "Tools" })).toBeInTheDocument();
+    await refreshMicrophoneOptions("USB Interface");
+    expect(screen.getByRole("option", { name: "Saved microphone (unavailable)" })).toBeDisabled();
+    expect(screen.getByLabelText("Microphone source")).toHaveValue("cpal:1:0123456789abcdef");
+    await user.selectOptions(screen.getByLabelText("Microphone source"), nativeId);
+    expect(JSON.parse(window.localStorage.getItem("tuneforge.ui-preferences") ?? "{}")
+      .defaultTunerInputDeviceId).toBe(nativeId);
+    await user.click(screen.getByRole("button", { name: "Start" }));
+    await waitFor(() => expect(getMockInvoke()).toHaveBeenCalledWith("audio_start_input", {
+      payload: expect.objectContaining({ deviceId: nativeId }),
+    }));
+  });
+
+  it.each([
+    { name: "empty", supported: true, error: null, expectedStatus: null },
+    { name: "unavailable", supported: false, error: "Native list failed.", expectedStatus: "Microphone list unavailable." },
+  ])("keeps $name native inventory separate from browser devices", async ({
+    supported,
+    error,
+    expectedStatus,
+  }) => {
+    const savedId = "pipewire:alsa_input.usb:é ";
+    window.localStorage.setItem(
+      "tuneforge.ui-preferences",
+      JSON.stringify({ defaultTunerInputDeviceId: savedId }),
+    );
+    window.localStorage.setItem(
+      "tuneforge.tuner-microphone-devices",
+      JSON.stringify([{ deviceId: "built-in", label: "Cached browser microphone" }]),
+    );
+    getMockMediaDevices().revealLabels();
+    mockTauriRuntime();
+    setMockNativeAudioState({
+      capabilities: { platform: "linux", micCaptureSupported: true, backend: "desktop-cpal" },
+      inputDevices: { supported, devices: [], error },
+    });
+    renderApp(["/tools"]);
+
+    expect(await screen.findByRole("heading", { name: "Tools" })).toBeInTheDocument();
+    const source = screen.getByLabelText("Microphone source");
+    expect(source).toHaveValue(savedId);
+    expect(screen.getByRole("option", { name: "Saved microphone (unavailable)" })).toBeDisabled();
+    expect(screen.queryByRole("option", { name: "Cached browser microphone" })).not.toBeInTheDocument();
+    const webEnumerationCalls = getMockMediaDevices().enumerateDevices.mock.calls.length;
+    fireEvent.pointerDown(source);
+
+    await waitFor(() => expect(getMockInvoke()).toHaveBeenCalledWith("audio_list_input_devices"));
+    if (expectedStatus) {
+      expect(await screen.findByText(expectedStatus)).toBeInTheDocument();
+    } else {
+      expect(screen.queryByText("Microphone list unavailable.")).not.toBeInTheDocument();
+    }
+    expect(source).toHaveValue(savedId);
+    expect(screen.getByRole("option", { name: "System Default" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "Saved microphone (unavailable)" })).toBeDisabled();
+    expect(screen.queryByRole("option", { name: "Built-in Microphone" })).not.toBeInTheDocument();
+    expect(getMockMediaDevices().enumerateDevices).toHaveBeenCalledTimes(webEnumerationCalls);
+  });
+
+  it("shows a saved native microphone as unavailable when native capture is unsupported", async () => {
+    const savedId = "pipewire:alsa_input.usb:é ";
+    window.localStorage.setItem(
+      "tuneforge.ui-preferences",
+      JSON.stringify({ defaultTunerInputDeviceId: savedId }),
+    );
+    getMockMediaDevices().revealLabels();
+    mockTauriRuntime();
+    setMockNativeAudioState({
+      capabilities: { platform: "linux", micCaptureSupported: false, backend: "desktop-cpal" },
+    });
+    renderApp(["/tools"]);
+
+    expect(await screen.findByRole("heading", { name: "Tools" })).toBeInTheDocument();
+    const source = screen.getByLabelText("Microphone source");
+    expect(source).toHaveValue(savedId);
+    const webEnumerationCalls = getMockMediaDevices().enumerateDevices.mock.calls.length;
+    fireEvent.pointerDown(source);
+
+    expect(await screen.findByText("Native microphone capture unavailable.")).toBeInTheDocument();
+    expect(source).toHaveValue(savedId);
+    expect(screen.getByRole("option", { name: "Saved microphone (unavailable)" })).toBeDisabled();
+    expect(screen.queryByRole("option", { name: "Built-in Microphone" })).not.toBeInTheDocument();
+    expect(getMockInvoke()).not.toHaveBeenCalledWith("audio_list_input_devices");
+    expect(getMockMediaDevices().enumerateDevices).toHaveBeenCalledTimes(webEnumerationCalls);
   });
 
   it("starts Web Audio capture with the system default source and stops cleanly", async () => {
@@ -894,6 +999,7 @@ describe("Desktop app tools tuner", () => {
     expect(getMockInvoke()).not.toHaveBeenCalledWith("audio_get_capabilities");
     expect(getMockInvoke()).not.toHaveBeenCalledWith("audio_list_input_devices");
     expect(getMockInvoke()).not.toHaveBeenCalledWith("audio_start_input", expect.anything());
+    expect(getMockMediaDevices().enumerateDevices).toHaveBeenCalled();
     expect(window.localStorage.getItem("tuneforge.tuner-native-capture-error")).toBeNull();
     expect(window.localStorage.getItem("tuneforge.tuner-input-capture-backend")).toContain(
       '"web"',

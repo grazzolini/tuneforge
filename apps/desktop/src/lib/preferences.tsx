@@ -209,8 +209,7 @@ function normalizeTunerInputDeviceId(value: unknown): string | null {
   if (typeof value !== "string") {
     return null;
   }
-  const trimmedValue = value.trim();
-  return trimmedValue.length > 0 ? trimmedValue : null;
+  return value.trim().length > 0 ? value : null;
 }
 
 export function normalizeTunerReferenceHz(value: unknown): number {

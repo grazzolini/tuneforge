@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { DEFAULT_PREFERENCES } from "./preferences";
 import {
   SETTINGS_SNAPSHOT_KIND,
@@ -21,13 +21,14 @@ function snapshot(version: number, preferences: Record<string, unknown>) {
 }
 
 describe("settings snapshot migrations", () => {
-  it("round-trips v4 with nondefault app and click output preferences", () => {
+  it("round-trips v5 with nondefault app, click, and preferred output settings", () => {
     const input = {
       exportedAt,
       preferences: {
         ...DEFAULT_PREFERENCES,
         appOutputGain: 0.37,
         appOutputMuted: true,
+        defaultOutputDeviceId: "pipewire:alsa_output.usb:é ",
         countInOutputGain: 0.42,
         countInOutputMuted: true,
         metronomeOutputGain: 0.61,
@@ -40,10 +41,11 @@ describe("settings snapshot migrations", () => {
     } as const;
 
     expect(buildSettingsSnapshot(input)).toMatchObject({
-      version: 4,
+      version: 5,
       preferences: {
         appOutputGain: 0.37,
         appOutputMuted: true,
+        defaultOutputDeviceId: "pipewire:alsa_output.usb:é ",
         countInOutputGain: 0.42,
         countInOutputMuted: true,
         metronomeOutputGain: 0.61,
@@ -53,10 +55,11 @@ describe("settings snapshot migrations", () => {
       },
     });
     expect(parseSettingsSnapshot(serializeSettingsSnapshot(input))).toMatchObject({
-      version: 4,
+      version: 5,
       preferences: {
         appOutputGain: 0.37,
         appOutputMuted: true,
+        defaultOutputDeviceId: "pipewire:alsa_output.usb:é ",
         countInOutputGain: 0.42,
         countInOutputMuted: true,
         metronomeOutputGain: 0.61,
@@ -140,8 +143,27 @@ describe("settings snapshot migrations", () => {
       .toThrow("Unsupported settings file.");
   });
 
-  it("rejects unsupported v5 snapshots", () => {
-    expect(() => parseSettingsSnapshot(snapshot(5, DEFAULT_PREFERENCES)))
+  it("defaults preferred output for v1 through v4 and rejects unsupported v6", () => {
+    for (const version of [1, 2, 3, 4]) {
+      const { defaultOutputDeviceId, ...legacy } = DEFAULT_PREFERENCES;
+      expect(defaultOutputDeviceId).toBeNull();
+      expect(parseSettingsSnapshot(snapshot(version, legacy)).preferences.defaultOutputDeviceId)
+        .toBeNull();
+    }
+    expect(() => parseSettingsSnapshot(snapshot(6, DEFAULT_PREFERENCES)))
       .toThrow("Unsupported settings file.");
+  });
+
+  it("removes desktop output IDs from Android imports and exports", () => {
+    const userAgent = vi.spyOn(navigator, "userAgent", "get").mockReturnValue("Android WebView");
+    try {
+      const preferences = { ...DEFAULT_PREFERENCES, defaultOutputDeviceId: "pipewire:private-node" };
+      const exported = serializeSettingsSnapshot({ preferences, themeOverrides: {}, themePreference: "system" });
+      expect(JSON.parse(exported).preferences.defaultOutputDeviceId).toBeNull();
+      const desktopSnapshot = snapshot(5, preferences);
+      expect(parseSettingsSnapshot(desktopSnapshot).preferences.defaultOutputDeviceId).toBeNull();
+    } finally {
+      userAgent.mockRestore();
+    }
   });
 });

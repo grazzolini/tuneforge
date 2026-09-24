@@ -7,6 +7,9 @@ download, installation, verification, signature, and publication instructions.
 
 ### Added
 
+- Select one native master audio output on macOS, Linux, and Android. Desktop choices persist;
+  Android choices last only for the app process. Output loss attempts one System Default recovery
+  while retaining the selected device and playback position.
 - Use native PipeWire for Linux playback and tuner capture, with exact microphone identity and
   `wpctl` microphone volume control. Saved older Linux microphone choices require reselection.
 - Added persistent app, project, stem, count-in, and metronome volume controls with independent

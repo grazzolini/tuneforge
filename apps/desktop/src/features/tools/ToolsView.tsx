@@ -660,6 +660,7 @@ function ChromaticTunerPage() {
           onInputDeviceChange={handleInputDeviceChange}
           onReferenceHzChange={handleReferenceHzChange}
           onVisualModeChange={handleVisualModeChange}
+          prefetchNativeDevicesOnMount
           referenceHz={defaultTunerReferenceHz}
           refreshToken={deviceRefreshToken}
           systemDefaultOnly={systemDefaultInputOnly}

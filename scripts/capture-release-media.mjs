@@ -20,13 +20,15 @@ const releaseMediaNativeAudioMetadata = Object.freeze({
   nativeTimeUs: 1,
 });
 const releaseMediaNativeAudioCapabilities = Object.freeze({
-  platform: "release-media",
+  platform: "linux",
   backend: "release-media-fixture",
   nativePlaybackSupported: true,
+  outputSelectionPersistence: "persistent",
+  outputRouteVerification: "backend-selected",
   micCaptureSupported: true,
   micMonitoringSupported: false,
   systemInputVolumeSupported: false,
-  emitsEvents: ["audio://position", "audio://ended", "audio://error", "audio://input-frame"],
+  emitsEvents: ["audio://position", "audio://ended", "audio://error", "audio://input-frame", "audio://output-route"],
   availabilityReason: null,
 });
 const releaseMediaNativeAudioCaptureMetadata = Object.freeze({
@@ -817,6 +819,10 @@ async function installPageStabilizers(
       projectOutput: { configuredGain: 1, muted: false, targetGain: 1, currentGain: 1 },
       countInOutput: { configuredGain: 1, muted: false, targetGain: 1, currentGain: 1 },
       metronomeOutput: { configuredGain: 0.8, muted: false, targetGain: 0.8, currentGain: 0.8 },
+      outputRoute: {
+        preferredDeviceId: null, activeDeviceId: null, status: "system-default",
+        fallbackLatched: false, generation: 0,
+      },
     };
 
     try {
@@ -1095,7 +1101,23 @@ async function installPageStabilizers(
         };
       }
       if (command === "audio_list_output_devices") {
-        return { supported: true, devices: [], error: null };
+        return { supported: true, devices: [{
+          id: "pipewire:release.media.output", label: "Release media output", isDefault: true,
+        }], error: null };
+      }
+      if (command === "audio_get_output_route") {
+        return { ...playbackSnapshot.outputRoute };
+      }
+      if (command === "audio_set_output_device") {
+        const deviceId = typeof args?.deviceId === "string" ? args.deviceId : null;
+        if (args?.explicit !== false || playbackSnapshot.outputRoute.preferredDeviceId !== deviceId) {
+          updatePlaybackSnapshot({ outputRoute: {
+            preferredDeviceId: deviceId, activeDeviceId: deviceId,
+            status: deviceId ? "selected" : "system-default", fallbackLatched: false,
+            generation: playbackSnapshot.outputRoute.generation + 1,
+          } });
+        }
+        return updatePlaybackSnapshot();
       }
       if (command === "audio_set_app_output") {
         const payload = args?.payload ?? {};

@@ -1,5 +1,6 @@
 import { createContext, useContext } from "react";
 import { setBrowserAppOutput, setBrowserCueOutputs } from "./audioOutput";
+import type { NativeAudioCapabilities, NativeAudioDevices, NativeOutputRoute } from "./nativeAudio";
 
 export type AudioOutputContextValue = {
   appOutputGain: number;
@@ -9,6 +10,13 @@ export type AudioOutputContextValue = {
   metronomeOutputGain: number;
   metronomeOutputMuted: boolean;
   outputSaveError: string | null;
+  outputCapabilities?: NativeAudioCapabilities | null;
+  outputDevices?: NativeAudioDevices | null;
+  outputRoute?: NativeOutputRoute | null;
+  outputDeviceError?: string | null;
+  refreshOutputDevices?: () => Promise<void>;
+  retryOutputControls?: () => void;
+  selectOutputDevice?: (deviceId: string | null) => Promise<void>;
   ensureAppOutputReady: () => Promise<void>;
   setAppOutputGain: (gain: number) => void;
   setAppOutputMuted: (muted: boolean) => void;

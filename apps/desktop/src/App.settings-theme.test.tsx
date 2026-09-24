@@ -24,7 +24,10 @@ import {
 
 describe("Desktop app settings theme", () => {
   beforeEach(resetAppTestHarness);
-  afterEach(() => vi.unstubAllEnvs());
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+  });
 
   function mockTauriRuntime() {
     Object.defineProperty(window, "__TAURI_INTERNALS__", {
@@ -463,6 +466,88 @@ describe("Desktop app settings theme", () => {
       expect(mockInvoke).toHaveBeenCalledWith("native_audio_diagnostics_availability"),
     );
     expect(screen.queryByRole("heading", { name: "Native Audio Diagnostics" })).not.toBeInTheDocument();
+  });
+
+  it("shows exact desktop outputs with duplicate labels and preserves a missing preference", async () => {
+    mockTauriRuntime();
+    const first = "pipewire:alsa_output.one";
+    const second = "pipewire:alsa_output.two";
+    window.localStorage.setItem("tuneforge.ui-preferences", JSON.stringify({
+      defaultOutputDeviceId: second,
+    }));
+    setMockNativeAudioState({
+      capabilities: {
+        platform: "linux", nativePlaybackSupported: true,
+        outputSelectionPersistence: "persistent", outputRouteVerification: "backend-selected",
+      },
+      outputDevices: { supported: true, devices: [
+        { id: first, label: "USB Output", isDefault: false },
+        { id: second, label: "USB Output", isDefault: false },
+      ], error: null },
+    });
+    const user = userEvent.setup();
+    renderApp(["/settings"]);
+    const selector = await screen.findByLabelText("Audio output");
+    expect(within(selector).getByRole("option", { name: `USB Output (${first})` })).toBeInTheDocument();
+    expect(within(selector).getByRole("option", { name: `USB Output (${second})` })).toBeInTheDocument();
+    expect(selector).toHaveValue(second);
+    await user.selectOptions(selector, first);
+    await waitFor(() => expect(
+      JSON.parse(window.localStorage.getItem("tuneforge.ui-preferences") ?? "{}").defaultOutputDeviceId,
+    ).toBe(first));
+  });
+
+  it("shows native output inventory uncertainty and keeps Android fallback session scoped", async () => {
+    mockTauriRuntime();
+    vi.spyOn(navigator, "userAgent", "get").mockReturnValue("Android WebView");
+    setMockNativeAudioState({
+      capabilities: {
+        platform: "android", nativePlaybackSupported: true,
+        outputSelectionPersistence: "session-only", outputRouteVerification: "requested-unverified",
+      },
+      outputDevices: { supported: false, devices: [], error: "Output inventory unavailable." },
+      snapshot: { outputRoute: {
+        preferredDeviceId: "aaudio:42", activeDeviceId: null,
+        status: "fallback-default", fallbackLatched: true, generation: 3,
+      } },
+    });
+    renderApp(["/settings"]);
+    const selector = await screen.findByLabelText("Output", { selector: "select" });
+    expect(selector).toHaveValue("aaudio:42");
+    expect(within(selector).getByRole("option", { name: "Selected output (availability unknown)" }))
+      .toBeInTheDocument();
+    expect(screen.getByText(/your selection remains in this app session/)).toBeInTheDocument();
+    expect(screen.getByText("Output inventory unavailable.")).toBeInTheDocument();
+    expect(JSON.parse(window.localStorage.getItem("tuneforge.ui-preferences") ?? "{}"))
+      .toMatchObject({ defaultOutputDeviceId: null });
+  });
+
+  it("explains failed native output initialization and retries the route request", async () => {
+    mockTauriRuntime();
+    setMockNativeAudioState({ capabilities: {
+      platform: "linux", nativePlaybackSupported: true,
+      outputSelectionPersistence: "persistent", outputRouteVerification: "backend-selected",
+    } });
+    const defaultInvoke = mockInvoke.getMockImplementation();
+    if (!defaultInvoke) throw new Error("Mock invoke implementation was not installed.");
+    let routeRequests = 0;
+    mockInvoke.mockImplementation((command, args) => {
+      if (command === "audio_get_output_route" && ++routeRequests === 1) {
+        return Promise.reject(new Error("route unavailable"));
+      }
+      return defaultInvoke(command, args);
+    });
+    const user = userEvent.setup();
+    renderApp(["/settings"]);
+
+    expect(await screen.findByRole("alert", { name: "" })).toHaveTextContent(
+      "Native output controls are unavailable.",
+    );
+    expect(screen.queryByLabelText("Audio output")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Retry output controls" }));
+    await waitFor(() => expect(routeRequests).toBe(2));
+    expect(await screen.findByLabelText("Audio output")).toBeInTheDocument();
+    expect(screen.queryByText("Native output controls are unavailable.")).not.toBeInTheDocument();
   });
 
   it("resets and exports enabled local native audio diagnostics", async () => {

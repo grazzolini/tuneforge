@@ -163,7 +163,7 @@ const {
   };
   type NativeAudioRuntimeEvent = {
     event: "audio://position" | "audio://ended" | "audio://error" | "audio://input-state" |
-      "audio://session" | "audio://cue" | "audio://terminal";
+      "audio://session" | "audio://cue" | "audio://terminal" | "audio://output-route";
     id: number;
     payload: Record<string, unknown>;
   };
@@ -227,6 +227,7 @@ const {
     };
     nativeAudioCapabilities: Record<string, unknown>;
     nativeAudioInputDevices: Record<string, unknown>;
+    nativeAudioOutputDevices: Record<string, unknown>;
     nativeAudioInputState: {
       active: boolean;
       deviceId: string | null;
@@ -891,10 +892,12 @@ const {
         platform: "test",
         backend: "test",
         nativePlaybackSupported: false,
+        outputSelectionPersistence: "default-only",
+        outputRouteVerification: "default-only",
         micCaptureSupported: false,
         micMonitoringSupported: false,
         systemInputVolumeSupported: true,
-        emitsEvents: ["audio://input-frame", "audio://devices-changed"],
+        emitsEvents: ["audio://input-frame", "audio://devices-changed", "audio://output-route"],
         availabilityReason: "native_audio_unavailable",
       },
       nativeAudioInputDevices: {
@@ -902,6 +905,7 @@ const {
         devices: [],
         error: null,
       },
+      nativeAudioOutputDevices: { supported: true, devices: [], error: null },
       nativeAudioInputState: {
         active: false,
         deviceId: null,
@@ -936,6 +940,10 @@ const {
         generation: 1,
         timelineRevision: 1,
         nativeTimeUs: 1,
+        outputRoute: {
+          preferredDeviceId: null, activeDeviceId: null, status: "system-default",
+          fallbackLatched: false, generation: 0,
+        },
       },
       nativeAudioStartError: null,
       nativeAudioPlayError: null,
@@ -993,6 +1001,7 @@ const {
   function setMockNativeAudio(nextState: {
     capabilities?: Record<string, unknown>;
     inputDevices?: Record<string, unknown>;
+    outputDevices?: Record<string, unknown>;
     inputState?: Partial<typeof state.nativeAudioInputState>;
     inputPermission?: Partial<typeof state.nativeAudioInputPermission>;
     snapshot?: Record<string, unknown>;
@@ -1007,6 +1016,10 @@ const {
     state.nativeAudioInputDevices = {
       ...state.nativeAudioInputDevices,
       ...nextState.inputDevices,
+    };
+    state.nativeAudioOutputDevices = {
+      ...state.nativeAudioOutputDevices,
+      ...nextState.outputDevices,
     };
     state.nativeAudioInputState = {
       ...state.nativeAudioInputState,
@@ -1228,7 +1241,8 @@ const {
         eventName === "audio://input-state" ||
         eventName === "audio://session" ||
         eventName === "audio://cue" ||
-        eventName === "audio://terminal"
+        eventName === "audio://terminal" ||
+        eventName === "audio://output-route"
       ) {
         const listenerId = nextNativeRuntimeListenerId;
         nextNativeRuntimeListenerId += 1;
@@ -1353,6 +1367,30 @@ const {
 
     if (command === "audio_list_input_devices") {
       return clone(state.nativeAudioInputDevices);
+    }
+
+    if (command === "audio_list_output_devices") {
+      return clone(state.nativeAudioOutputDevices);
+    }
+
+    if (command === "audio_get_output_route") {
+      return clone(state.nativeAudioSnapshot.outputRoute);
+    }
+
+    if (command === "audio_set_output_device") {
+      const deviceId = typeof args?.deviceId === "string" ? args.deviceId : null;
+      const previous = state.nativeAudioSnapshot.outputRoute as Record<string, unknown>;
+      if (args?.explicit === false && previous.preferredDeviceId === deviceId) {
+        return clone(state.nativeAudioSnapshot);
+      }
+      state.nativeAudioSnapshot.outputRoute = {
+        preferredDeviceId: deviceId,
+        activeDeviceId: deviceId,
+        status: deviceId ? "selected" : "system-default",
+        fallbackLatched: false,
+        generation: Number(previous.generation ?? 0) + 1,
+      };
+      return clone(state.nativeAudioSnapshot);
     }
 
     if (command === "audio_get_input_state") {

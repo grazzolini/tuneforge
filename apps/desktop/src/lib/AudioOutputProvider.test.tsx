@@ -4,12 +4,24 @@ import { AudioOutputProvider } from "./AudioOutputProvider";
 import { useAudioOutput, type AudioOutputContextValue } from "./audioOutputContext";
 import { PreferencesProvider } from "./preferences";
 
-const { mockSetNativeAppOutput, mockSetNativeCueOutputs } = vi.hoisted(() => ({
+const { mockSetNativeAppOutput, mockSetNativeCueOutputs, mockSetNativeOutputDevice,
+  mockGetNativeCapabilities, mockGetNativeOutputRoute, mockListNativeOutputDevices } = vi.hoisted(() => ({
   mockSetNativeAppOutput: vi.fn(),
   mockSetNativeCueOutputs: vi.fn(),
+  mockSetNativeOutputDevice: vi.fn(),
+  mockGetNativeCapabilities: vi.fn(),
+  mockGetNativeOutputRoute: vi.fn(),
+  mockListNativeOutputDevices: vi.fn(),
 }));
 
 vi.mock("./nativeAudio", () => ({
+  getNativeAudioCapabilities: mockGetNativeCapabilities,
+  getNativeOutputRoute: mockGetNativeOutputRoute,
+  isWebAudioBackendForced: () => false,
+  isAndroidRuntime: () => false,
+  listNativeAudioOutputDevices: mockListNativeOutputDevices,
+  listenNativeOutputRoute: () => Promise.resolve(() => undefined),
+  setNativeOutputDevice: mockSetNativeOutputDevice,
   setNativeAppOutput: mockSetNativeAppOutput,
   setNativeCueOutputs: mockSetNativeCueOutputs,
 }));
@@ -27,6 +39,18 @@ describe("AudioOutputProvider", () => {
     currentOutput = null;
     mockSetNativeAppOutput.mockReset();
     mockSetNativeCueOutputs.mockReset().mockResolvedValue({});
+    mockSetNativeOutputDevice.mockReset().mockResolvedValue({ outputRoute: {
+      preferredDeviceId: null, activeDeviceId: null, status: "system-default",
+      fallbackLatched: false, generation: 0,
+    } });
+    mockGetNativeCapabilities.mockReset().mockResolvedValue({
+      platform: "macos", nativePlaybackSupported: true, outputSelectionPersistence: "persistent",
+    });
+    mockGetNativeOutputRoute.mockReset().mockResolvedValue({
+      preferredDeviceId: null, activeDeviceId: null, status: "system-default",
+      fallbackLatched: false, generation: 0,
+    });
+    mockListNativeOutputDevices.mockReset().mockResolvedValue({ supported: true, devices: [], error: null });
     Object.defineProperty(window, "__TAURI_INTERNALS__", {
       configurable: true,
       value: {},
@@ -162,5 +186,48 @@ describe("AudioOutputProvider", () => {
       metronomeGain: 0.65,
       metronomeMuted: false,
     });
+  });
+
+  it("hydrates an exact desktop output ID before playback readiness", async () => {
+    const selected = "pipewire:alsa_output.usb:é ";
+    window.localStorage.setItem("tuneforge.ui-preferences", JSON.stringify({
+      defaultOutputDeviceId: selected,
+    }));
+    mockSetNativeAppOutput.mockResolvedValue({});
+    render(<PreferencesProvider><AudioOutputProvider><Probe /></AudioOutputProvider></PreferencesProvider>);
+
+    await waitFor(() => expect(mockSetNativeOutputDevice).toHaveBeenCalledWith(selected, false));
+    await act(async () => currentOutput?.ensureAppOutputReady());
+    expect(JSON.parse(window.localStorage.getItem("tuneforge.ui-preferences") ?? "{}"))
+      .toMatchObject({ defaultOutputDeviceId: selected });
+  });
+
+  it("keeps Android output selection in native process state across WebView remount", async () => {
+    vi.spyOn(navigator, "userAgent", "get").mockReturnValue("Android test WebView");
+    const selected = "aaudio:42";
+    window.localStorage.setItem("tuneforge.ui-preferences", JSON.stringify({
+      defaultOutputDeviceId: selected,
+    }));
+    mockGetNativeCapabilities.mockResolvedValue({
+      platform: "android", nativePlaybackSupported: true,
+      outputSelectionPersistence: "session-only", outputRouteVerification: "requested-unverified",
+    });
+    mockGetNativeOutputRoute.mockResolvedValue({
+      preferredDeviceId: selected, activeDeviceId: selected,
+      status: "requested-unverified", fallbackLatched: false, generation: 2,
+    });
+    mockSetNativeAppOutput.mockResolvedValue({});
+
+    const view = render(<PreferencesProvider><AudioOutputProvider><Probe /></AudioOutputProvider></PreferencesProvider>);
+    await waitFor(() => expect(currentOutput?.outputRoute?.preferredDeviceId).toBe(selected));
+    expect(mockSetNativeOutputDevice).not.toHaveBeenCalled();
+    expect(JSON.parse(window.localStorage.getItem("tuneforge.ui-preferences") ?? "{}"))
+      .toMatchObject({ defaultOutputDeviceId: null });
+
+    view.unmount();
+    currentOutput = null;
+    render(<PreferencesProvider><AudioOutputProvider><Probe /></AudioOutputProvider></PreferencesProvider>);
+    await waitFor(() => expect(currentOutput?.outputRoute?.preferredDeviceId).toBe(selected));
+    expect(mockSetNativeOutputDevice).not.toHaveBeenCalled();
   });
 });

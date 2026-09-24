@@ -87,6 +87,39 @@
   gap: 1.1rem;
 }
 
+.settings-output-device {
+  display: grid;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.settings-output-device label {
+  color: var(--text);
+  font-size: 0.88rem;
+  font-weight: 700;
+}
+
+.settings-output-device select {
+  inline-size: 100%;
+  min-inline-size: 0;
+  min-block-size: 2.75rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--divider);
+  border-radius: 10px;
+  background: var(--panel-strong);
+  color: var(--text);
+  font: inherit;
+}
+
+.settings-output-device select:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.settings-output-device select:disabled {
+  opacity: 0.65;
+}
+
 .settings-stack {
   display: grid;
   gap: 1rem;

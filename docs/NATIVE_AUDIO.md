@@ -29,11 +29,28 @@ for browsers and non-Tauri runtimes, and for a Tauri build compiled with the for
   free-running alongside playback.
 - Native tempo changes use `signalsmith-stretch` for pitch-preserving playback.
 - A normal Tauri native failure is terminal for that resource. Playback holds its last authoritative
-  position, cancels pending cues, and shows the transport error; tuner capture clears live input.
-  Neither path starts Web Audio or retries automatically. A later explicit Play, metronome Start,
-  tuner Retry, or input selection starts one fresh native attempt. On Linux, a recoverable CPAL
-  output xrun remains on the current stream and is recorded in diagnostics; a later unrecoverable
-  output error still follows the terminal path.
+  position and shows the transport error; tuner capture clears live input. Neither path starts Web
+  Audio. A later explicit Play, metronome Start, tuner Retry, or input selection starts one fresh
+  native attempt. The bounded output-device recovery below is the only automatic reopen path.
+  On Linux, a recoverable CPAL output xrun remains on the current stream and is recorded in
+  diagnostics; a later unrecoverable output error still follows the terminal path.
+- Settings selects one native master output for project playback, count-in, and metronome. macOS
+  and Linux persist an exact native device ID or System Default; Android keeps the choice only in
+  native process memory, including WebView remounts, and discards it on process restart. Older
+  settings snapshots load System Default; Android strips desktop output IDs on import and export.
+  Linux lists only verified PipeWire `Audio/Sink` nodes and rejects duplicate or missing identity.
+  Device labels are display text, never identity.
+- Switching outputs rebuilds one stream with the same device used for configuration and opening.
+  It retains the playback cursor, gains, count-in, metronome, and queued cues. Healthy System
+  Default route changes leave the stream running. If a selected output disappears, native audio
+  tries System Default once, keeps the preferred selection visible, and stays on the fallback for
+  that process session. A default stream invalidation gets one bounded rebuild. If recovery fails
+  or no output remains, playback pauses at its last position and waits for Play; a device returning
+  does not resume playback automatically. Generic output errors remain terminal.
+- Android's AAudio request cannot confirm the physical route through CPAL. Settings reports
+  `requested-unverified` for an explicit Android device and never claims that Android followed
+  the request. A selected Android output loss uses the same one-time System Default fallback,
+  which may route to the phone speaker.
 - Linux native capture and playback select `cpal`'s PipeWire host. A running PipeWire session and
   its session manager are required; native audio reports unavailable when that host cannot open.
   Explicit Linux microphone choices store CPAL's `pipewire:<node.name>` device identity. Missing

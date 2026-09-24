@@ -32,13 +32,15 @@ test("native playback fixture exposes stable safe session metadata", () => {
 
 test("native release-media fixtures match required audio contracts", () => {
   assert.deepEqual(releaseMediaNativeAudioCapabilities, {
-    platform: "release-media",
+    platform: "linux",
     backend: "release-media-fixture",
     nativePlaybackSupported: true,
+    outputSelectionPersistence: "persistent",
+    outputRouteVerification: "backend-selected",
     micCaptureSupported: true,
     micMonitoringSupported: false,
     systemInputVolumeSupported: false,
-    emitsEvents: ["audio://position", "audio://ended", "audio://error", "audio://input-frame"],
+    emitsEvents: ["audio://position", "audio://ended", "audio://error", "audio://input-frame", "audio://output-route"],
     availabilityReason: null,
   });
   assert.deepEqual(releaseMediaNativeAudioCaptureMetadata, {

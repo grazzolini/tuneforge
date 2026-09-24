@@ -2,6 +2,9 @@ package com.tuneforge.desktop
 
 import android.Manifest
 import android.app.AppOpsManager
+import android.media.AudioDeviceCallback
+import android.media.AudioDeviceInfo
+import android.media.AudioManager
 import android.content.pm.PackageManager
 import android.hardware.SensorPrivacyManager
 import android.os.Build
@@ -11,20 +14,54 @@ import android.view.View
 import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.view.WindowManager
+import android.webkit.WebView
 
 class MainActivity : TauriActivity() {
   private var notificationPermissionOwnershipRevision = 0L
   @Volatile private var microphonePermissionRequestPending = false
+  private var outputWebView: WebView? = null
+  private val outputDevices = object : AudioDeviceCallback() {
+    override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>) {
+      notifyOutputDevicesChanged()
+    }
+
+    override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>) {
+      notifyOutputDevicesChanged()
+    }
+  }
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
     PowerInhibitionService.attachActivity(this)
+    getSystemService(AudioManager::class.java)?.registerAudioDeviceCallback(outputDevices, null)
     scheduleHideNavigationBar()
   }
 
+  override fun onWebViewCreate(webView: WebView) {
+    super.onWebViewCreate(webView)
+    outputWebView = webView
+    notifyOutputDevicesChanged()
+  }
+
+  override fun onResume() {
+    super.onResume()
+    notifyOutputDevicesChanged()
+  }
+
   override fun onDestroy() {
+    getSystemService(AudioManager::class.java)?.unregisterAudioDeviceCallback(outputDevices)
+    outputWebView = null
     PowerInhibitionService.detachActivity(this)
     super.onDestroy()
+  }
+
+  private fun notifyOutputDevicesChanged() {
+    runOnUiThread {
+      outputWebView?.evaluateJavascript(
+        "window.dispatchEvent(new Event('tuneforge:output-devices-changed'))",
+        null,
+      )
+    }
   }
 
   override fun onWindowFocusChanged(hasFocus: Boolean) {

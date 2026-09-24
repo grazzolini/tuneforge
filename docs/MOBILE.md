@@ -158,6 +158,14 @@ compatibility transcode, or sync protocol redesign.
 
 ## Desktop vs Mobile Persistence Parity
 
+Android output selection is session-only native process state. The selected master output survives
+a WebView remount or background/foreground transition, but resets to System Default after process
+restart. Android may route an AAudio request to a different physical output; TuneForge reports the
+request as unverified. If a selected output is lost, playback attempts System Default once (which
+may use the phone speaker) and retains the selected choice for the session. A failed recovery
+pauses at the current position until Play. Settings imports, exports, and local preferences never
+store an Android output device ID.
+
 Mobile stores synced desktop outputs as library data, not as ad hoc downloads. Generation capability
 is separate from data readability: unsupported mobile generation shows `Unavailable on this device`,
 not a failed or pending job.

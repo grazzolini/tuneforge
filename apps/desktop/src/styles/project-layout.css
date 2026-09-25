@@ -161,6 +161,59 @@
   gap: 0.65rem;
 }
 
+.processing-panel__drum-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.42rem;
+  min-width: min(100%, 12rem);
+}
+
+.stem-group__details {
+  margin: 0.35rem 0 0 0.75rem;
+  padding: 0.5rem 0 0.2rem 0.75rem;
+  border-left: 2px solid var(--input-border);
+}
+
+.stem-group__actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.stem-group__actions .button-row {
+  display: flex;
+  width: auto;
+  gap: 0.25rem;
+}
+
+.stem-group__summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-top: 0.3rem;
+}
+
+.stem-group__summary .artifact-meta {
+  margin: 0;
+}
+
+.stem-group__child {
+  margin-top: 0.25rem;
+}
+
+.stem-group__child .artifact-pill,
+.stem-group__child .artifact-action-row__delete {
+  min-height: 2rem;
+  padding-block: 0.2rem;
+}
+
+.stem-group__child .artifact-pill__meta {
+  display: none;
+}
+
 .processing-panel__chord-actions,
 .processing-panel__lyrics-actions {
   display: flex;

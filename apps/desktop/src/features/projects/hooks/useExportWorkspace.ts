@@ -52,6 +52,8 @@ function selectedIdsForPreset(
 export function useExportWorkspace() {
   const {
     displayArtifacts,
+    drumModesBySource,
+    drumModeParentKeysBySource,
     displayedChords,
     displayedLyrics,
     chordsQuerySettled,
@@ -76,8 +78,9 @@ export function useExportWorkspace() {
   const isCurrentProjectHydrated =
     hydratedProjectId === projectId && projectQuery.data?.id === projectId && artifactsQuery.isSuccess;
   const audioSets = useMemo(
-    () => isCurrentProjectHydrated ? buildExportAudioSets(displayArtifacts) : [],
-    [displayArtifacts, isCurrentProjectHydrated],
+    () => isCurrentProjectHydrated
+      ? buildExportAudioSets(displayArtifacts, drumModesBySource, drumModeParentKeysBySource) : [],
+    [displayArtifacts, drumModesBySource, drumModeParentKeysBySource, isCurrentProjectHydrated],
   );
   const defaultAudioSetId =
     audioSets.find((audioSet) => audioSet.artifact.id === selectedPrimaryArtifactId)?.artifact.id ??
@@ -322,7 +325,7 @@ export function useExportWorkspace() {
   function selectPreset(nextPreset: Exclude<ExportPreset, "custom">) {
     if (!audioSet || (isMobileRuntime && nextPreset !== "track")) return;
     updateSelection(
-      selectedIdsForPreset(nextPreset, audioSet.artifact.id, audioSet.stems.map((stem) => stem.id)),
+      selectedIdsForPreset(nextPreset, audioSet.artifact.id, audioSet.defaultStemIds),
     );
   }
 

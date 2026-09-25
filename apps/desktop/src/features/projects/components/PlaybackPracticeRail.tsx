@@ -100,7 +100,18 @@ export const PlaybackPracticeRail = forwardRef<
     tempoTargetBpm,
     toggleStemControl,
     visibleStemArtifacts,
+    coarseVisibleStemArtifacts,
+    drumGroup,
+    drumMode,
+    drumGroupExpanded,
+    handleSetDrumMode,
+    handleToggleDrumExpanded,
+    nativeDesktopRuntime,
   } = useProjectViewModelContext();
+  const displayStemArtifacts = coarseVisibleStemArtifacts.flatMap((artifact) =>
+    artifact.type === "drums_stem" && drumGroupExpanded && drumGroup
+      ? [artifact, ...drumGroup.includedChildren] : [artifact],
+  );
   const showHeaderDetails = informationDensity === "detailed";
   const tempoSummary =
     canUseTempo && tempoDisplayBpm !== null && tempoOriginalBpm !== null
@@ -553,15 +564,18 @@ export const PlaybackPracticeRail = forwardRef<
             </div>
 
             <div className="playback-stem-grid playback-stem-grid--compact" role="group" aria-label="Playback stem list">
-              {visibleStemArtifacts.map((artifact) => {
+              {displayStemArtifacts.map((artifact) => {
                 const state = stemControls[artifact.id] ?? { muted: false, solo: false, gain: 1 };
                 return (
-                  <div className="playback-stem-card" key={artifact.id}>
+                  <div className={`playback-stem-card${artifact.metadata?.parent_artifact_id ? " playback-stem-card--child" : ""}`} key={artifact.id}
+                    aria-disabled={artifact.metadata?.parent_artifact_id && drumMode !== "split" ? true : undefined}
+                    title={artifact.metadata?.parent_artifact_id && drumMode !== "split" ? "Select Split to control drum parts." : undefined}>
                     <button
                       className={`artifact-pill${
                         selectedArtifactId === artifact.id ? " artifact-pill--active" : ""
                       }`}
                       onClick={() => void handleSelectStemArtifact(artifact)}
+                      disabled={Boolean(artifact.metadata?.parent_artifact_id && drumMode !== "split")}
                       type="button"
                     >
                       <span className="artifact-pill__title">{artifactLabel(artifact)}</span>
@@ -572,6 +586,7 @@ export const PlaybackPracticeRail = forwardRef<
                         className={`chip${state.muted ? " chip--active" : ""}`}
                         aria-label={`Mute ${artifactLabel(artifact)}`}
                         aria-pressed={state.muted}
+                        disabled={Boolean(artifact.metadata?.parent_artifact_id && drumMode !== "split")}
                         onClick={() => toggleStemControl(artifact, "muted")}
                         type="button"
                       >
@@ -581,12 +596,14 @@ export const PlaybackPracticeRail = forwardRef<
                         className={`chip${state.solo ? " chip--active" : ""}`}
                         aria-label={`Solo ${artifactLabel(artifact)}`}
                         aria-pressed={state.solo}
+                        disabled={Boolean(artifact.metadata?.parent_artifact_id && drumMode !== "split")}
                         onClick={() => toggleStemControl(artifact, "solo")}
                         type="button"
                       >
                         S
                       </button>
                       <OutputVolumeControl
+                        disabled={Boolean(artifact.metadata?.parent_artifact_id && drumMode !== "split")}
                         gain={state.gain ?? 1}
                         label={`${artifactLabel(artifact)} volume`}
                         muted={state.muted}
@@ -599,6 +616,30 @@ export const PlaybackPracticeRail = forwardRef<
                         showLabel={false}
                       />
                     </div>
+                    {artifact.type === "drums_stem" && drumGroup ? (
+                      <div className="stem-group__details">
+                        <div className="stem-group__actions">
+                          {drumGroup.children.length ? <button aria-expanded={drumGroupExpanded}
+                            className="button button--ghost button--small"
+                            onClick={handleToggleDrumExpanded} type="button">
+                            {drumGroupExpanded ? "Hide Parts" : "Show Parts"}
+                          </button> : null}
+                          <div className="button-row" role="group" aria-label="Drums playback mode">
+                            <button aria-pressed={drumMode === "original"} className={`chip${drumMode === "original" ? " chip--active" : ""}`}
+                              onClick={() => handleSetDrumMode("original", true)} type="button">Original</button>
+                            <button aria-pressed={drumMode === "split"} className={`chip${drumMode === "split" ? " chip--active" : ""}`}
+                              disabled={!nativeDesktopRuntime || !drumGroup.splitAvailable}
+                              onClick={() => handleSetDrumMode("split", true)} type="button">Split</button>
+                          </div>
+                        </div>
+                        {drumGroup.children.length ? (
+                          <span className="artifact-meta">{drumGroup.includedChildren.length} of 4 parts</span>
+                        ) : null}
+                        {drumGroup.recoveryNeeded ? (
+                          <p className="artifact-meta">Refinement unavailable; check files or rebuild.</p>
+                        ) : null}
+                      </div>
+                    ) : null}
                   </div>
                 );
               })}

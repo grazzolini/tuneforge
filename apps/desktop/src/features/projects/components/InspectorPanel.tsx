@@ -29,6 +29,7 @@ export function InspectorPanel({ mode = "studio" }: { mode?: "studio" | "analysi
     isDeleteArtifactsPending,
     isDeleteMixDisabled,
     isDeleteStemDisabled,
+    isPlaying,
     lowerTargetPreview,
     lowerTargetShiftOptions,
     previewMutation,
@@ -544,7 +545,7 @@ export function InspectorPanel({ mode = "studio" }: { mode?: "studio" | "analysi
           <button
             className="button button--ghost button--small"
             onClick={handleDeleteAllStems}
-            disabled={!canDeleteAnyStems || isDeleteStemDisabled}
+            disabled={!canDeleteAnyStems || isDeleteStemDisabled || isPlaying}
             title={editLockTitle}
             type="button"
           >
@@ -554,7 +555,7 @@ export function InspectorPanel({ mode = "studio" }: { mode?: "studio" | "analysi
             <button
               className="button button--ghost button--small"
               onClick={handleDeleteSelectedPrimaryStems}
-              disabled={!selectedPrimaryStemArtifacts.length || isDeleteStemDisabled}
+              disabled={!selectedPrimaryStemArtifacts.length || isDeleteStemDisabled || isPlaying}
               title={editLockTitle}
               type="button"
             >

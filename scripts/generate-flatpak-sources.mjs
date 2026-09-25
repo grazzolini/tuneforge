@@ -1,6 +1,6 @@
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -873,10 +873,12 @@ function resolveSourceDateEpoch() {
 
 export function cremaOnlyModelBundlePlan(plan) {
   const fileNames = new Set(plan.manifest.crema_onnx_files.map((entry) => entry.file_name));
+  const manifest = { ...plan.manifest };
+  delete manifest.drumsep_checkpoint;
   return {
     sources: plan.sources.filter((source) => fileNames.has(source["dest-filename"])),
     manifest: {
-      ...plan.manifest,
+      ...manifest,
       torch_checkpoints: [],
       demucs_hf_models: [],
       whisper_models: [],
@@ -898,10 +900,14 @@ export function generateFlatpakSourceSnapshots({ root, generatedRoot: snapshotRo
     root, inputs: inputs.map((input) => typeof input === "string" ? { source: input } : input),
     outputPath: path.join(snapshotRoot, `${name}-snapshot.tar`), sourceDateEpoch,
   });
+  const backendInputs = [...flatpakSourceSnapshotInputs.backend];
+  if (existsSync(path.join(root, "packaging/demucs/drumsep-model.json"))) {
+    backendInputs.push({ source: "packaging/demucs/drumsep-model.json", destination: "apps/backend/drumsep-model.json" });
+  }
   return [
     createSnapshot("frontend", flatpakSourceSnapshotInputs.frontend),
     createFlatpakDesktopSourceSnapshot({ root, outputPath: path.join(snapshotRoot, "desktop-snapshot.tar"), sourceDateEpoch }),
-    createSnapshot("backend", flatpakSourceSnapshotInputs.backend),
+    createSnapshot("backend", backendInputs),
   ];
 }
 

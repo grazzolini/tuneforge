@@ -1,11 +1,13 @@
 import type { ArtifactSchema, ExportCapabilities, GeneratedExportDocumentId } from "../../lib/api";
 import type { ExportWorkspaceState } from "./projectPlaybackState";
 import { artifactLabel, isStemArtifact } from "./projectViewUtils";
+import { activeStemArtifacts, describeDrumGroup, drumParentKey, type DrumMode } from "./drumStemGroup";
 
 export type ExportAudioSet = {
   artifact: ArtifactSchema;
   label: string;
   stems: ArtifactSchema[];
+  defaultStemIds: string[];
 };
 
 export type ExportPreset = "track" | "stems" | "track-and-stems" | "custom";
@@ -113,7 +115,7 @@ export function defaultExportWorkspaceState({
   if (!audioSet) return null;
   const availableFormats = availableOptionIds(capabilities, "formats");
   const outputFormat = preferredOutputFormat(defaultOutputFormat, availableFormats);
-  const artifactOrder = [audioSet.artifact, ...audioSet.stems]
+  const artifactOrder = [audioSet.artifact, ...audioSet.stems.filter((stem) => audioSet.defaultStemIds.includes(stem.id))]
     .filter((artifact) =>
       capabilities.platform !== "android" || !androidAudioExportUnavailableReason(artifact)
     )
@@ -272,7 +274,10 @@ export function reconcileExportWorkspaceState({
   return { state, recovery: !stateEquals(storedState, state) };
 }
 
-export function buildExportAudioSets(artifacts: ArtifactSchema[]): ExportAudioSet[] {
+export function buildExportAudioSets(
+  artifacts: ArtifactSchema[], drumModesBySource: Record<string, DrumMode> = {},
+  drumModeParentKeysBySource: Record<string, string> = {},
+): ExportAudioSet[] {
   const source = artifacts.find((artifact) => artifact.type === "source_audio") ?? null;
   const mixes = artifacts
     .filter((artifact) => artifact.type === "preview_mix")
@@ -282,18 +287,25 @@ export function buildExportAudioSets(artifacts: ArtifactSchema[]): ExportAudioSe
     );
   const stems = artifacts.filter(isStemArtifact);
   const primaryArtifacts = [source, ...mixes].filter(Boolean) as ArtifactSchema[];
-  return primaryArtifacts.map((artifact) => ({
-    artifact,
-    label:
-      artifact.type === "source_audio"
-        ? "Source Track"
-        : `Practice Mix ${mixes.findIndex((mix) => mix.id === artifact.id) + 1}`,
-    stems: stems.filter((stem) => stem.metadata?.source_artifact_id === artifact.id),
-  }));
+  return primaryArtifacts.map((artifact) => {
+    const sourceStems = stems.filter((stem) => stem.metadata?.source_artifact_id === artifact.id);
+    const drumGroup = describeDrumGroup(sourceStems);
+    const drumMode = drumModesBySource[artifact.id] === "split" && drumGroup?.splitAvailable &&
+      drumModeParentKeysBySource[artifact.id] === drumParentKey(drumGroup) ? "split" : "original";
+    return {
+      artifact,
+      label:
+        artifact.type === "source_audio"
+          ? "Source Track"
+          : `Practice Mix ${mixes.findIndex((mix) => mix.id === artifact.id) + 1}`,
+      stems: sourceStems,
+      defaultStemIds: activeStemArtifacts(sourceStems, drumMode).map((stem) => stem.id),
+    };
+  });
 }
 
 export function exportPresetForSelection(audioSet: ExportAudioSet, selectedIds: Set<string>): ExportPreset {
-  const stemIds = audioSet.stems.map((stem) => stem.id);
+  const stemIds = audioSet.defaultStemIds;
   if (selectedIds.size === 1 && selectedIds.has(audioSet.artifact.id)) {
     return "track";
   }

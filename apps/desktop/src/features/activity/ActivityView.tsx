@@ -336,7 +336,7 @@ function JobRow({
         <div className="activity-job-row__main">
           <div className="activity-job-row__identity">
             <div className="activity-job-row__title-line">
-              <strong className="activity-job-row__type">{job.type}</strong>
+              <strong className="activity-job-row__type">{job.type === "drum_substems" ? "Refine Drums" : job.type}</strong>
               <span className={`activity-job-row__status activity-job-row__status--${job.status}`}>
                 {job.status}
               </span>

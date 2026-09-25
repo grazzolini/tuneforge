@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from app.errors import AppError
 from app.models import Artifact, Job
 from app.services.project_storage import queue_project_storage_reconciliation
-from app.services.stem_models import STEM_ARTIFACT_TYPES
+from app.services.stem_models import DRUM_SUBSTEM_ARTIFACT_TYPES, STEM_ARTIFACT_TYPES
 from app.services.sync_tombstones import record_artifact_delete_tombstone
 from app.utils.hashing import file_sha256
 from app.utils.ids import new_artifact_id
@@ -20,7 +20,7 @@ REGENERABLE_ARTIFACT_TYPES = {
     "lyrics",
     "preview_mix",
     "waveform_cache",
-} | STEM_ARTIFACT_TYPES
+} | STEM_ARTIFACT_TYPES | DRUM_SUBSTEM_ARTIFACT_TYPES
 
 
 def _artifact_size_bytes(path: Path) -> int:
@@ -107,13 +107,28 @@ def prune_project_artifacts(
 
 
 def _has_pending_audio_job(session: Session, *, project_id: str) -> bool:
-    pending_audio_job_types = ("chords", "stems", "export")
+    pending_audio_job_types = ("chords", "stems", "drum_substems", "export")
     stmt = select(Job.id).where(
         Job.project_id == project_id,
         Job.type.in_(pending_audio_job_types),
         Job.status.in_(("pending", "running")),
     )
     return session.scalar(stmt) is not None
+
+
+def drum_substem_file_integrity(artifact: Artifact) -> str | None:
+    if artifact.type not in DRUM_SUBSTEM_ARTIFACT_TYPES and not (
+        artifact.type == "drums_stem" and isinstance(artifact.metadata_json.get("drum_substems"), dict)
+    ):
+        return None
+    if artifact.type == "drums_stem" and (
+        artifact.metadata_json["drum_substems"].get("parent_sha256") != artifact.content_sha256
+    ):
+        return "corrupt"
+    path = Path(artifact.path)
+    if not path.is_file():
+        return "missing"
+    return "verified" if file_sha256(path) == artifact.content_sha256 else "corrupt"
 
 
 def delete_project_artifact(session: Session, *, project_id: str, artifact_id: str) -> None:
@@ -125,7 +140,10 @@ def delete_project_artifact(session: Session, *, project_id: str, artifact_id: s
         raise AppError("ARTIFACT_NOT_FOUND", "Artifact does not belong to this project.", status_code=404)
     if artifact.type == "source_audio":
         raise AppError("INVALID_REQUEST", "Source audio cannot be deleted from a project.")
-    if artifact.type in STEM_ARTIFACT_TYPES and _has_pending_audio_job(session, project_id=project_id):
+    if (
+        artifact.type in STEM_ARTIFACT_TYPES | DRUM_SUBSTEM_ARTIFACT_TYPES
+        and _has_pending_audio_job(session, project_id=project_id)
+    ):
         raise AppError(
             "ARTIFACT_BUSY",
             "Stem artifacts cannot be deleted while chord, stem, or export jobs are pending or running.",
@@ -137,7 +155,27 @@ def delete_project_artifact(session: Session, *, project_id: str, artifact_id: s
             "Practice mixes cannot be deleted while chord, stem, or export jobs are pending or running.",
             status_code=409,
         )
-    if artifact.type in STEM_ARTIFACT_TYPES:
+    if artifact.type in STEM_ARTIFACT_TYPES | DRUM_SUBSTEM_ARTIFACT_TYPES:
+        if artifact.type == "drums_stem":
+            from app.services.drum_substems import invalidate_drum_refinement
+
+            invalidate_drum_refinement(session, artifact)
+        elif artifact.type in DRUM_SUBSTEM_ARTIFACT_TYPES:
+            parent_id = artifact.metadata_json.get("parent_artifact_id")
+            parent = session.get(Artifact, parent_id) if isinstance(parent_id, str) else None
+            if parent is not None and isinstance(parent.metadata_json.get("drum_substems"), dict):
+                metadata = dict(parent.metadata_json)
+                manifest = dict(metadata["drum_substems"])
+                part = artifact.metadata_json.get("drum_part")
+                excluded = set(manifest.get("excluded_parts", []))
+                if isinstance(part, str):
+                    excluded.add(part)
+                manifest["excluded_parts"] = sorted(excluded)
+                child_ids = dict(manifest.get("child_artifact_ids", {}))
+                child_ids.pop(part, None)
+                manifest["child_artifact_ids"] = child_ids
+                metadata["drum_substems"] = manifest
+                parent.metadata_json = metadata
         record_artifact_delete_tombstone(session, artifact)
         session.delete(artifact)
         queue_project_storage_reconciliation(session, project_id)
@@ -147,7 +185,7 @@ def delete_project_artifact(session: Session, *, project_id: str, artifact_id: s
 
     stmt = select(Artifact).where(
         Artifact.project_id == project_id,
-        Artifact.type.in_(tuple(STEM_ARTIFACT_TYPES)),
+        Artifact.type.in_(tuple(STEM_ARTIFACT_TYPES | DRUM_SUBSTEM_ARTIFACT_TYPES)),
     )
     related_stems = [
         stem

@@ -6,7 +6,9 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pytest
+import soundfile as sf
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -227,6 +229,65 @@ def test_artifact_classification_uses_recorded_metadata_and_trusted_provider_cho
     assert _action(plan, ACTION_IMPORT_ARTIFACT_MANIFEST, ITEM_ARTIFACT, "art_missing_file") is not None
     assert _action(plan, ACTION_IMPORT_ARTIFACT_MANIFEST, ITEM_ARTIFACT, "art_truncated_file") is not None
     assert _action(plan, ACTION_IMPORT_ARTIFACT_MANIFEST, ITEM_ARTIFACT, "art_duplicate_content") is not None
+
+
+def test_drum_membership_metadata_syncs_when_parent_audio_hash_is_unchanged(
+    db_session: Session, tmp_path: Path,
+) -> None:
+    source_hash, source_size, project_id = _seed_existing_project_with_source(
+        db_session, tmp_path, filename="drum-membership-source.wav",
+    )
+    parent_path = tmp_path / "drum-membership-parent.wav"
+    sf.write(parent_path, np.zeros((256, 2), dtype="float32"), 44100)
+    parent_hash = hashlib.sha256(parent_path.read_bytes()).hexdigest()
+    parent_size = parent_path.stat().st_size
+    first_time = datetime(2026, 1, 1, tzinfo=UTC)
+    parent = _add_artifact(
+        db_session, artifact_id="art_drum_membership", project_id=project_id,
+        path=parent_path, content_sha256=parent_hash, size_bytes=parent_size,
+        artifact_type="drums_stem", metadata_json={"source_artifact_id": f"art_source_{project_id}"},
+        updated_at=first_time,
+    )
+    db_session.commit()
+
+    def reconcile(metadata: dict[str, Any], updated_at: datetime) -> None:
+        remote_parent = _artifact_manifest(
+            project_id, parent.id, parent_hash, parent_size,
+            artifact_type="drums_stem", metadata=metadata, updated_at=updated_at,
+        )
+        project_manifest = _project_manifest(
+            project_id, source_hash, source_size_bytes=source_size,
+            extra_artifacts=[remote_parent],
+        )
+        request = {
+            "remote_library": {
+                "projects": [project_manifest["project"]],
+                "artifacts": project_manifest["artifacts"],
+            },
+            "project_manifests": [project_manifest],
+            "peer_inventory": [],
+        }
+        plan = plan_sync_reconciliation(db_session, request)
+        action = _action(plan, ACTION_IMPORT_ARTIFACT_MANIFEST, ITEM_ARTIFACT, parent.id)
+        assert action is not None and action.details["metadata_only"] is True
+        result = apply_sync_reconciliation(db_session, request)
+        assert result.summary.failed_actions == 0
+        db_session.refresh(parent)
+
+    refined = {
+        "source_artifact_id": f"art_source_{project_id}",
+        "drum_substems": {
+            "generation_id": "drumset_1", "parent_sha256": parent_hash,
+            "expected_parts": ["kick", "snare", "cymbals", "toms"],
+            "excluded_parts": [], "child_artifact_ids": {"kick": "child_kick"},
+        },
+    }
+    reconcile(refined, first_time + timedelta(days=1))
+    assert parent.metadata_json["drum_substems"]["excluded_parts"] == []
+    refined["drum_substems"]["excluded_parts"] = ["kick"]
+    refined["drum_substems"]["child_artifact_ids"] = {}
+    reconcile(refined, first_time + timedelta(days=2))
+    assert parent.metadata_json["drum_substems"]["excluded_parts"] == ["kick"]
 
 def test_generated_analysis_same_hash_noops_even_when_remote_timestamp_is_newer(
     db_session: Session,

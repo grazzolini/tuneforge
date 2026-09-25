@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { cremaOnlyModelBundlePlan } from "./generate-flatpak-sources.mjs";
-import { buildModelBundlePlan } from "./model-bundle-metadata.mjs";
+import { buildModelBundlePlan, validateDrumsepDescriptor } from "./model-bundle-metadata.mjs";
 import { readDemucsModelManifest, validateManifest } from "./prepare-demucs-models.mjs";
 
 const flatpakManifest = readFileSync(
@@ -130,6 +130,43 @@ test("model bundle plan includes Demucs and Whisper by default", () => {
     ),
     true,
   );
+});
+
+test("model bundle plan adds only a vetted immutable DrumSep checkpoint", () => {
+  const descriptor = {
+    id: "drumsep", class: "demucs.hdemucs.HDemucs", repo_id: "reviewed/drumsep",
+    revision: "e".repeat(40), file_name: "drumsep.safetensors",
+    sha256: "f".repeat(64), size_bytes: 17, license: "MIT",
+    rights_record: "https://example.org/rights",
+  };
+  const ordinary = buildModelBundlePlan({ demucsManifest, lyricsModel: "base", drumsepDescriptor: null });
+  assert.equal(ordinary.manifest.drumsep_checkpoint, undefined);
+  assert.equal(ordinary.sources.some((source) => source["dest-filename"] === "drumsep.safetensors"), false);
+
+  const plan = buildModelBundlePlan({ demucsManifest, lyricsModel: "base", drumsepDescriptor: descriptor });
+  const relativePath = `demucs/drumsep/${descriptor.revision}/drumsep.safetensors`;
+  assert.deepEqual(plan.manifest.drumsep_checkpoint, { ...descriptor, relative_path: relativePath });
+  assert.deepEqual(plan.sources.find((source) => source["dest-filename"] === "drumsep.safetensors"), {
+    type: "file",
+    url: `https://huggingface.co/reviewed/drumsep/resolve/${descriptor.revision}/drumsep.safetensors`,
+    sha256: descriptor.sha256,
+    dest: `model-bundle/demucs/drumsep/${descriptor.revision}`,
+    "dest-filename": "drumsep.safetensors",
+  });
+  assert.equal(cremaOnlyModelBundlePlan(plan).manifest.drumsep_checkpoint, undefined);
+  assert.equal(cremaOnlyModelBundlePlan(plan).sources.some(
+    (source) => source["dest-filename"] === "drumsep.safetensors",
+  ), false);
+  for (const invalid of [
+    { ...descriptor, class: "pickle" },
+    { ...descriptor, revision: "latest" },
+    { ...descriptor, repo_id: "../escape" },
+    { ...descriptor, rights_record: "" },
+    { ...descriptor, size_bytes: 0 },
+    { ...descriptor, unexpected: true },
+  ]) {
+    assert.throws(() => validateDrumsepDescriptor(invalid), /invalid provenance or rights/);
+  }
 });
 
 test("model bundle plan includes beat-this only when requested", () => {

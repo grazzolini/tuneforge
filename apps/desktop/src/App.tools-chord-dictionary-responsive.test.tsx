@@ -136,6 +136,7 @@ function makePlaybackValue({
     setProjectOutputGain: vi.fn(),
     setProjectOutputMuted: vi.fn(),
     stopPlayback: vi.fn(),
+    releasePlaybackHandles: vi.fn(async () => undefined),
     togglePlayback: vi.fn(async () => undefined),
   };
 }

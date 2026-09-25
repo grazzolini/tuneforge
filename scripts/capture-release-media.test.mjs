@@ -139,8 +139,8 @@ test("settings scroll delta rounds bottom overflow up to whole pixels", () => {
 
 test("release-media catalog has unique identifiers, files, and required callbacks", () => {
   assert.equal(validateReleaseMediaCatalog(releaseMediaCaptureCatalog), releaseMediaCaptureCatalog);
-  assert.equal(releaseMediaCaptureCatalog.length, 19);
-  assert.equal(releaseMediaCaptureCatalog.filter((entry) => entry.kind === "screenshot").length, 18);
+  assert.equal(releaseMediaCaptureCatalog.length, 21);
+  assert.equal(releaseMediaCaptureCatalog.filter((entry) => entry.kind === "screenshot").length, 20);
   assert.equal(releaseMediaCaptureCatalog.filter((entry) => entry.kind === "video").length, 1);
 
   const ids = releaseMediaCaptureCatalog.map((entry) => entry.id);
@@ -164,6 +164,21 @@ test("release-media catalog has unique identifiers, files, and required callback
       assert.equal(typeof entry.record, "function");
     }
   }
+});
+
+test("refined drums captures require distinct Studio and Playback ready states", () => {
+  const studio = releaseMediaCaptureCatalog.find((entry) => entry.id === "studio-drum-parts");
+  const playback = releaseMediaCaptureCatalog.find((entry) => entry.id === "playback-drum-parts");
+  for (const entry of [studio, playback]) {
+    assert.equal(entry?.kind, "screenshot");
+    assert.equal(entry?.fixture, "release-showcase-drumsep-v1");
+    assert.deepEqual(entry?.viewport, { width: 1600, height: 1400 });
+    assert.equal(typeof entry?.prepare, "function");
+    assert.equal(typeof entry?.ready, "function");
+  }
+  assert.notEqual(studio?.ready, playback?.ready);
+  assert.match(studio?.alt ?? "", /six coarse stems.*four-part Drums group/);
+  assert.match(playback?.alt ?? "", /four part levels/);
 });
 
 test("Export readiness follows the selected file format in its preview", async () => {

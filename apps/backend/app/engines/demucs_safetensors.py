@@ -6,24 +6,25 @@ from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
+from demucs_infer.hdemucs import HDemucs
 from demucs_infer.htdemucs import HTDemucs
 from safetensors import safe_open
 
 # Adapted from Demucs' MIT-licensed Hugging Face safetensors loader:
 # https://github.com/facebookresearch/demucs/blob/main/demucs/hf.py
-_MODEL_CLASS_TAG = "demucs.htdemucs.HTDemucs"
+_MODEL_CLASS_TAGS = frozenset({"demucs.htdemucs.HTDemucs", "demucs.hdemucs.HDemucs"})
 _METADATA_KEYS = frozenset({"klass", "args", "kwargs"})
 
 
-def load_safetensors_model(path: str | Path) -> HTDemucs:
-    """Load the pinned native HTDemucs safetensors format without pickle imports."""
+def load_safetensors_model(path: str | Path) -> HTDemucs | HDemucs:
+    """Load only allowed native Demucs classes from safetensors."""
     with safe_open(str(path), framework="pt") as file:
         metadata = file.metadata()
         tensors = {key: file.get_tensor(key) for key in file.keys()}
 
     if set(metadata) != _METADATA_KEYS:
         raise ValueError("Unsupported Demucs safetensors metadata fields.")
-    if metadata["klass"] != _MODEL_CLASS_TAG:
+    if metadata["klass"] not in _MODEL_CLASS_TAGS:
         raise ValueError(f"Unsupported Demucs safetensors model class: {metadata['klass']}")
 
     args = _decode_metadata_json(metadata["args"], "args")
@@ -33,7 +34,8 @@ def load_safetensors_model(path: str | Path) -> HTDemucs:
     if not isinstance(kwargs, Mapping) or not all(isinstance(key, str) for key in kwargs):
         raise ValueError("Demucs safetensors kwargs metadata must be a JSON object.")
 
-    model = HTDemucs(*args, **kwargs)
+    model_class = HDemucs if metadata["klass"] == "demucs.hdemucs.HDemucs" else HTDemucs
+    model = model_class(*args, **kwargs)
     model.load_state_dict(tensors, strict=True)
     return model
 

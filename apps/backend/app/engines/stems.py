@@ -82,6 +82,8 @@ def separate_sources(
     model: str,
     device: str = "cpu",
     model_repo: Path | None = None,
+    drumsep_checkpoint: Path | None = None,
+    float_output: bool = False,
     on_progress: Callable[[int], None] | None = None,
     should_cancel: Callable[[], bool] | None = None,
     register_process: Callable[[subprocess.Popen[str]], None] | None = None,
@@ -104,6 +106,10 @@ def separate_sources(
         command.extend(["--stem", f"{source}={output_path}"])
     if model_repo is not None:
         command.extend(["--model-repo", str(model_repo)])
+    if drumsep_checkpoint is not None:
+        command.extend(["--drumsep-checkpoint", str(drumsep_checkpoint)])
+    if float_output:
+        command.append("--float-output")
 
     return _run_demucs_worker(
         command,

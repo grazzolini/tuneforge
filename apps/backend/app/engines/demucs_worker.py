@@ -10,8 +10,23 @@ from demucs_infer.apply import apply_model
 from demucs_infer.audio import AudioFile
 
 from app.engines.demucs_cache import load_demucs_model
+from app.engines.demucs_safetensors import load_safetensors_model
 from app.runtime_status import emit_runtime_event
 from app.utils.torch_runtime import choose_torch_device
+
+_DRUMSEP_SOURCE_LABELS = {
+    "kick": "bombo",
+    "snare": "redoblante",
+    "cymbals": "platillos",
+    "toms": "toms",
+}
+
+
+def drumsep_source_indices(sources: list[str]) -> dict[str, int]:
+    """Map app-facing part names to the vetted checkpoint's fixed native labels."""
+    if len(sources) != 4 or set(sources) != set(_DRUMSEP_SOURCE_LABELS.values()):
+        raise ValueError("DrumSep checkpoint has unexpected source labels.")
+    return {part: sources.index(label) for part, label in _DRUMSEP_SOURCE_LABELS.items()}
 
 
 def parse_args() -> argparse.Namespace:
@@ -28,6 +43,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", default="htdemucs_ft")
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--model-repo", default=None)
+    parser.add_argument("--drumsep-checkpoint", default=None)
+    parser.add_argument("--float-output", action="store_true")
     return parser.parse_args()
 
 
@@ -73,7 +90,14 @@ def _separate_with_device(
         stage_label=f"Loading Demucs model on {_device_label(device_name)}.",
         runtime_device=device_name,
     )
-    model = load_demucs_model(args.model, model_repo=model_repo)
+    if args.model == "drumsep":
+        if not args.drumsep_checkpoint:
+            raise ValueError("DrumSep requires a verified safetensors checkpoint.")
+        model = load_safetensors_model(args.drumsep_checkpoint)
+        if type(model).__name__ != "HDemucs":
+            raise ValueError("DrumSep requires HDemucs checkpoint metadata.")
+    else:
+        model = load_demucs_model(args.model, model_repo=model_repo)
     samplerate = int(model.samplerate)
     channels = int(getattr(model, "audio_channels", 2))
     mix = AudioFile(source_path).read(streams=0, samplerate=samplerate, channels=channels)
@@ -96,14 +120,20 @@ def _separate_with_device(
     )
     sources = list(model.sources)
     stem_outputs = _parse_stem_outputs(args.stem)
+    drumsep_indices = drumsep_source_indices(sources) if args.model == "drumsep" else None
     written_sources: list[str] = []
 
     if stem_outputs:
         for source, output_path in stem_outputs.items():
-            source_index = sources.index(source)
+            source_index = drumsep_indices[source] if drumsep_indices is not None else sources.index(source)
             estimate = estimates[source_index]
             output_path.parent.mkdir(parents=True, exist_ok=True)
-            sf.write(output_path, estimate.transpose(0, 1).numpy(), samplerate)
+            sf.write(
+                output_path,
+                estimate.transpose(0, 1).numpy(),
+                samplerate,
+                subtype="FLOAT" if args.float_output else None,
+            )
             written_sources.append(source)
     else:
         if not args.vocals or not args.instrumental:

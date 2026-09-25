@@ -39,6 +39,7 @@ const stagedSitePackagesRoot = path.join(stagedBackendRoot, "site-packages");
 const stagedModelBundleRoot = path.join(stagedBackendRoot, "models", "bundle");
 const stagedFfmpegRoot = path.join(stagedBackendRoot, "ffmpeg");
 const sourceDemucsManifestPath = path.join(workspaceRoot, "packaging", "demucs", "models.json");
+const sourceDrumSepManifestPath = path.join(workspaceRoot, "packaging", "demucs", "drumsep-model.json");
 const stagedLvChordiaRoot = path.join(stagedPythonRoot, "share", "lv-chordia", "cache_data");
 const sourceLvChordiaRoot = path.join(backendRoot, ".venv", "share", "lv-chordia", "cache_data");
 const cremaLicensePath = path.join(workspaceRoot, "LICENSES", "crema-0.2.0-BSD-2-Clause.txt");
@@ -139,6 +140,9 @@ export function stageDemucsManifest(root) {
   const destination = path.join(root, DEMUCS_MANIFEST_BACKEND_RELATIVE_PATH);
   mkdirSync(path.dirname(destination), { recursive: true });
   copyInto(sourceDemucsManifestPath, destination);
+  if (existsSync(sourceDrumSepManifestPath)) {
+    copyInto(sourceDrumSepManifestPath, path.join(root, "src", "drumsep-model.json"));
+  }
   const manifest = JSON.parse(readFileSync(destination, "utf8"));
   if (manifest.version !== 2 || !Array.isArray(manifest.models)) {
     throw new Error(`Invalid staged Demucs manifest: ${destination}`);

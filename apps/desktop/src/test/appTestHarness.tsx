@@ -7,6 +7,7 @@ import type {
   AnalysisRequest,
   BulkJobRequest,
   BulkJobsResponse,
+  DrumSubstemCapabilitiesResponse,
   ExportCapabilitiesResponse,
   LyricsGenerateRequest,
   ListJobsParams,
@@ -88,6 +89,8 @@ const {
   mockCreateTabImport,
   mockCreatePreview,
   mockCreateStems,
+  mockGetDrumSubstemCapabilities,
+  mockCreateDrumSubstems,
   mockAnalyzeProject,
   mockUpdateLyrics,
   mockUpdateProject,
@@ -1754,6 +1757,29 @@ const {
       max_artifact_count: null,
     },
   }));
+  const mockGetDrumSubstemCapabilities = vi.fn(async (): Promise<DrumSubstemCapabilitiesResponse> => ({
+    platform_supported: true,
+    available: true,
+    unavailable_reason: null,
+    model_id: "drumsep",
+    checkpoint_sha256: "a".repeat(64),
+    checkpoint_revision: "test",
+    cache_status: "missing",
+    download_size_bytes: 167400043,
+  }));
+  const mockCreateDrumSubstems = vi.fn(async (projectId: string) => ({
+    job: {
+      id: `job_${state.nextJobId++}`,
+      project_id: projectId,
+      type: "drum_substems",
+      status: "pending",
+      progress: 0,
+      source_artifact_id: null,
+      error_message: null,
+      created_at: createdAt,
+      updated_at: createdAt,
+    },
+  }));
   const mockEnsureWebMediaTransport = vi.fn(async () => {});
   const mockScanPairingQrCode = vi.fn(async (): Promise<string> => {
     throw new Error("QR scanner unavailable.");
@@ -2805,6 +2831,8 @@ const {
     mockCreateTabImport,
     mockCreatePreview,
     mockCreateStems,
+    mockGetDrumSubstemCapabilities,
+    mockCreateDrumSubstems,
     mockAnalyzeProject,
     mockUpdateLyrics,
     mockUpdateProject,
@@ -2891,6 +2919,8 @@ export {
   mockCreateTabImport,
   mockCreatePreview,
   mockCreateStems,
+  mockGetDrumSubstemCapabilities,
+  mockCreateDrumSubstems,
   mockAnalyzeProject,
   mockUpdateLyrics,
   mockUpdateProject,
@@ -2965,6 +2995,8 @@ vi.mock("../lib/api", async (importOriginal) => {
       listSections: mockListSections,
       createPreview: mockCreatePreview,
       createStems: mockCreateStems,
+      getDrumSubstemCapabilities: mockGetDrumSubstemCapabilities,
+      createDrumSubstems: mockCreateDrumSubstems,
       analyzeProject: mockAnalyzeProject,
       updateLyrics: mockUpdateLyrics,
       updateProject: mockUpdateProject,
@@ -3398,6 +3430,13 @@ export function resetAppTestHarness() {
   mockListSections.mockClear();
   mockCreatePreview.mockClear();
   mockCreateStems.mockClear();
+  mockGetDrumSubstemCapabilities.mockReset();
+  mockGetDrumSubstemCapabilities.mockResolvedValue({
+    platform_supported: true, available: true, unavailable_reason: null,
+    model_id: "drumsep", checkpoint_sha256: "a".repeat(64),
+    checkpoint_revision: "test", cache_status: "missing", download_size_bytes: 167400043,
+  });
+  mockCreateDrumSubstems.mockClear();
   mockAnalyzeProject.mockClear();
   mockUpdateLyrics.mockClear();
   mockUpdateProject.mockClear();

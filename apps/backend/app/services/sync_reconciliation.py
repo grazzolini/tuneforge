@@ -1655,6 +1655,32 @@ def _plan_artifact(
             return
 
         if _artifact_has_recorded_content(local_artifact, artifact.content_sha256, artifact.size_bytes):
+            remote_metadata = _first_field(artifact.raw, "metadata", "metadata_json", default={})
+            remote_updated_at = _coerce_datetime(_first_field(artifact.raw, "updated_at", default=None))
+            local_updated_at = _coerce_datetime(local_artifact.updated_at)
+            if (
+                local_artifact.type == "drums_stem"
+                and isinstance(remote_metadata, dict)
+                and local_artifact.metadata_json.get("drum_substems") != remote_metadata.get("drum_substems")
+                and remote_updated_at is not None
+                and (local_updated_at is None or remote_updated_at > local_updated_at)
+            ):
+                details = {"metadata_only": True}
+                _upsert_item(items_by_key, SyncReconciliationItem(
+                    item_type=ITEM_ARTIFACT, item_id=artifact.artifact_id,
+                    project_id=artifact.project_id, status="remote_available",
+                    action_type=ACTION_IMPORT_ARTIFACT_MANIFEST,
+                    content_sha256=artifact.content_sha256,
+                    reason="Import newer DrumSep membership metadata without copying unchanged audio.",
+                    details=details,
+                ))
+                actions.append(_action(
+                    ACTION_IMPORT_ARTIFACT_MANIFEST,
+                    item_type=ITEM_ARTIFACT, item_id=artifact.artifact_id,
+                    project_id=artifact.project_id, content_sha256=artifact.content_sha256,
+                    reason="Import newer DrumSep membership metadata.", details=details,
+                ))
+                return
             _upsert_item(
                 items_by_key,
                 SyncReconciliationItem(

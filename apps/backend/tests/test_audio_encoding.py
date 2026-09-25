@@ -1,6 +1,10 @@
+import json
+import subprocess
 from pathlib import Path
 
+import numpy as np
 import pytest
+import soundfile as sf
 
 from app.engines import audio_encoding
 from app.errors import AppError
@@ -21,6 +25,44 @@ def test_durable_encoding_profiles_match_export_contract(
     profile: tuple[str, ...],
 ) -> None:
     assert audio_encoding.encoding_profile(output_format) == profile
+
+
+def test_m4a_movie_timescale_keeps_nonround_sample_duration(tmp_path: Path) -> None:
+    source = tmp_path / "source.wav"
+    encoded = tmp_path / "encoded.m4a"
+    sf.write(source, np.zeros((44101, 2), dtype="float32"), 44100, subtype="FLOAT")
+    audio_encoding.encode_audio(source, encoded, "m4a", movie_timescale=44100)
+
+    data = encoded.read_bytes()
+    mvhd = data.index(b"mvhd") + 4
+    offset = 20 if data[mvhd] == 1 else 12
+    assert int.from_bytes(data[mvhd + offset:mvhd + offset + 4], "big") == 44100
+
+    result = subprocess.run(
+        [audio_encoding.get_settings().ffprobe_path, "-v", "error", "-select_streams", "a:0",
+         "-show_entries", "stream=start_pts,duration_ts,time_base", "-of", "json", str(encoded)],
+        check=True, capture_output=True, text=True,
+    )
+    stream = json.loads(result.stdout)["streams"][0]
+    assert (stream["start_pts"], stream["time_base"], stream["duration_ts"]) == (0, "1/44100", 44101)
+
+
+def test_encode_audio_keeps_default_m4a_command_without_timescale(monkeypatch) -> None:
+    commands = []
+
+    class FinishedProcess:
+        returncode = 0
+
+        def poll(self):
+            return 0
+
+    def capture(command, **_kwargs):
+        commands.append(command)
+        return FinishedProcess()
+
+    monkeypatch.setattr(audio_encoding.subprocess, "Popen", capture)
+    audio_encoding.encode_audio(Path("source.wav"), Path("encoded.m4a"), "m4a")
+    assert "-movie_timescale" not in commands[0]
 
 
 @pytest.mark.parametrize("profile", ["HE-AAC", "HE-AACv2", None])

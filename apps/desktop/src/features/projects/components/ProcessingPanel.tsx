@@ -41,6 +41,14 @@ export function ProcessingPanel() {
     selectedPrimaryArtifactId,
     showSupportingCopy,
     stemMutation,
+    drumCapabilities,
+    drumGroup,
+    drumJob,
+    drumMutation,
+    drumCancelMutation,
+    isDrumRunning,
+    nativeDesktopRuntime,
+    handleRefineDrumsAction,
   } = useProjectViewModelContext();
 
   const analyzeDisabled = projectEditLocked || analyzeMutation.isPending || isAnalysisRunning || !canAnalyze;
@@ -58,6 +66,9 @@ export function ProcessingPanel() {
     isStemRunning ||
     !selectedPrimaryArtifactId ||
     !canGenerateStems;
+  const drumsDisabled = projectEditLocked || !nativeDesktopRuntime || !drumGroup
+    || !drumCapabilities?.available || drumMutation.isPending || isDrumRunning
+    || isStemRunning;
   const editLockTitle = projectSyncLockReason ?? undefined;
   const analyzeTitle = mobileAdvancedAnalysisUnavailable
     ? "Advanced Beat Analysis is unavailable on this device. Choose Built-in Beat Analysis in Settings."
@@ -227,6 +238,41 @@ export function ProcessingPanel() {
               ? "Rebuild Stems"
               : "Generate Stems"}
         </button>
+        {!isMobileRuntime ? (
+          <div className="processing-panel__drum-actions" role="group" aria-label="Drum refinement">
+            <button
+              className="button button--small"
+              disabled={drumsDisabled}
+              onClick={() => void handleRefineDrumsAction()}
+              title={drumCapabilities?.unavailable_reason ?? (
+                !drumGroup ? "Generate six stems for selected source or mix first." : undefined
+              )}
+              type="button"
+            >
+              {drumMutation.isPending || isDrumRunning
+                ? "Refining..."
+                : drumGroup?.children.length ? "Rebuild Refined Drums" : "Refine Drums"}
+            </button>
+            {drumGroup && !drumCapabilities?.available && drumCapabilities?.unavailable_reason ? (
+              <p className="subpanel__copy">{drumCapabilities.unavailable_reason}</p>
+            ) : null}
+            {drumJob && ["pending", "running"].includes(drumJob.status) ? (
+              <p aria-live="polite" className="subpanel__copy">
+                {drumJob.stage_label ?? "Refining drums"} · {Math.round(drumJob.progress)}% ·{" "}
+                <Link to="/activity">Activity</Link>{" "}
+                <button
+                  className="button button--ghost button--small"
+                  disabled={drumCancelMutation.isPending}
+                  onClick={() => drumCancelMutation.mutate(drumJob.id)}
+                  type="button"
+                >Cancel</button>
+              </p>
+            ) : null}
+            {drumJob?.status === "failed" ? (
+              <p className="inline-error" role="alert">{drumJob.error_message ?? "Drum refinement failed. Retry when ready."}</p>
+            ) : null}
+          </div>
+        ) : null}
       </div>
     </div>
   );

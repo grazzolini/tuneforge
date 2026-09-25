@@ -11,6 +11,9 @@ export type ProjectPlaybackSession = {
   stageSummary: string;
   selectedPlaybackArtifactId: string | null;
   isStemPlayback: boolean;
+  drumMode?: "original" | "split";
+  drumSourceArtifactId?: string | null;
+  onDrumModeRollback?: () => void;
   playbackArtifactIds: string[];
   artifactPathsById: Record<string, string>;
   artifactFormatsById: Record<string, string>;
@@ -57,6 +60,7 @@ export type PlaybackContextValue = {
   playPlayback: () => Promise<void>;
   pausePlayback: () => void;
   stopPlayback: () => void;
+  releasePlaybackHandles: () => Promise<void>;
   dismissSession: () => void;
   seekBy: (secondsDelta: number) => void;
   seekTo: (timeSeconds: number) => void;

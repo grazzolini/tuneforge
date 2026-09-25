@@ -2,6 +2,7 @@ import { Volume2, VolumeX } from "lucide-react";
 
 export function OutputVolumeControl({
   gain,
+  disabled = false,
   label,
   muted = false,
   onGainChange,
@@ -11,6 +12,7 @@ export function OutputVolumeControl({
   showLabel = true,
 }: {
   gain: number;
+  disabled?: boolean;
   label: string;
   muted?: boolean;
   onGainChange: (gain: number) => void;
@@ -32,6 +34,7 @@ export function OutputVolumeControl({
       {showLabel ? <span className="output-volume__label">{label}</span> : null}
       {onMutedChange ? (
         <button
+          disabled={disabled}
           aria-label={`${muted ? "Unmute" : "Mute"} ${label.toLowerCase()}`}
           aria-pressed={muted}
           className="output-volume__mute"
@@ -46,6 +49,7 @@ export function OutputVolumeControl({
           <span className="output-volume__fill" style={{ width: `${percentage}%` }} />
         </span>
         <input
+          disabled={disabled}
           aria-label={label}
           aria-valuetext={`${percentage}%`}
           max={1}
@@ -62,6 +66,7 @@ export function OutputVolumeControl({
         />
       </div>
       <button
+        disabled={disabled}
         aria-label={`Reset ${label.toLowerCase()} to ${resetPercentage}%`}
         className="output-volume__percentage"
         onClick={() => {

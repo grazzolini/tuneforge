@@ -86,6 +86,22 @@ function bufferedSession(
   });
 }
 
+function drumSession(mode: "original" | "split", onDrumModeRollback?: () => void): ProjectPlaybackSession {
+  const drumIds = mode === "split" ? ["kick", "snare"] : ["drums"];
+  const ids = ["bass", ...drumIds];
+  return bufferedSession({
+    drumMode: mode,
+    drumSourceArtifactId: "source",
+    onDrumModeRollback,
+    selectedPlaybackArtifactId: ids[0],
+    playbackArtifactIds: ids,
+    visibleStemArtifactIds: ids,
+    artifactPathsById: Object.fromEntries(ids.map((id) => [id, `/tmp/${id}.wav`])),
+    artifactFormatsById: Object.fromEntries(ids.map((id) => [id, "wav"])),
+    stemControls: Object.fromEntries(ids.map((id) => [id, { muted: false, solo: false, gain: 1 }])),
+  });
+}
+
 function activePlaybackContextValue(
   targetSession: ProjectPlaybackSession,
   playbackTimeSeconds: number,
@@ -110,6 +126,7 @@ function activePlaybackContextValue(
     playPlayback: async () => undefined,
     pausePlayback: () => undefined,
     stopPlayback: () => undefined,
+    releasePlaybackHandles: async () => undefined,
     dismissSession: () => undefined,
     seekBy: () => undefined,
     seekTo: () => undefined,
@@ -223,6 +240,133 @@ describe("stem playback activation backend selection", () => {
 });
 
 describe("native playback race regressions", () => {
+  it("requires an acknowledged native Stop before releasing playback handles", async () => {
+    enableNativePlayback();
+    await setup(bufferedSession());
+    await act(async () => playback.playPlayback());
+    setMockNativeAudioState({ stopError: "output_stream_failure" });
+
+    await act(async () => {
+      await expect(playback.releasePlaybackHandles()).rejects.toThrow("output_stream_failure");
+    });
+    expect(calls("audio_stop")).toHaveLength(1);
+    expect(playback.session?.isStemPlayback).toBe(true);
+  });
+
+  it("does not inherit a swallowed failure from an in-flight ordinary Stop", async () => {
+    enableNativePlayback();
+    await setup(bufferedSession());
+    await act(async () => playback.playPlayback());
+    const invoke = getMockInvoke();
+    const originalInvoke = invoke.getMockImplementation()!;
+    let rejectStop!: (error: Error) => void;
+    const stopped = new Promise<never>((_resolve, reject) => { rejectStop = reject; });
+    invoke.mockImplementation((command, args) => command === "audio_stop"
+      ? stopped : originalInvoke(command, args));
+
+    act(() => playback.stopPlayback());
+    await flush();
+    const release = playback.releasePlaybackHandles();
+    rejectStop(new Error("output_stream_failure"));
+    await act(async () => {
+      await expect(release).rejects.toThrow("output_stream_failure");
+    });
+    expect(calls("audio_stop")).toHaveLength(1);
+  });
+
+  it("rejects a stale Stop acknowledgment after queued seek advances the native revision", async () => {
+    enableNativePlayback();
+    await setup(bufferedSession());
+    await act(async () => playback.playPlayback());
+    const invoke = getMockInvoke();
+    const originalInvoke = invoke.getMockImplementation()!;
+    const pendingSeek = deferred<Record<string, unknown>>();
+    let seekSnapshot: Record<string, unknown> | null = null;
+    invoke.mockImplementation(async (command, args) => {
+      const result = await originalInvoke(command, args);
+      if (command === "audio_seek") {
+        seekSnapshot = { ...(result as object), timelineRevision: 2 };
+        return pendingSeek.promise;
+      }
+      if (command === "audio_stop") return { ...(result as object), timelineRevision: 1 };
+      return result;
+    });
+
+    act(() => playback.seekTo(8));
+    await flush();
+    const release = playback.releasePlaybackHandles();
+    await act(async () => {
+      pendingSeek.resolve(seekSnapshot!);
+      await expect(release).rejects.toThrow("did not acknowledge Stop");
+    });
+    const stopPayload = calls("audio_stop")[0]?.[1] as { payload?: { timelineRevision?: number } };
+    expect(stopPayload.payload?.timelineRevision).toBe(2);
+  });
+
+  for (const invalidRevision of [undefined, NaN]) {
+    it(`rejects a Stop acknowledgment with ${String(invalidRevision)} revision`, async () => {
+      enableNativePlayback();
+      await setup(bufferedSession());
+      await act(async () => playback.playPlayback());
+      const invoke = getMockInvoke();
+      const originalInvoke = invoke.getMockImplementation()!;
+      invoke.mockImplementation(async (command, args) => {
+        const result = await originalInvoke(command, args);
+        return command === "audio_stop"
+          ? { ...(result as object), timelineRevision: invalidRevision }
+          : result;
+      });
+      await act(async () => {
+        await expect(playback.releasePlaybackHandles()).rejects.toThrow("did not acknowledge Stop");
+      });
+    });
+  }
+
+  it("switches drum representation at the current playing position without parent and child overlap", async () => {
+    enableNativePlayback();
+    await setup(drumSession("original"));
+    await act(async () => playback.playPlayback());
+    act(() => playback.seekTo(9));
+    await flush();
+
+    act(() => playback.registerProjectSession(drumSession("split")));
+    await flush();
+
+    expect(playback.session?.drumMode).toBe("split");
+    expect(playback.playbackTimeSeconds).toBe(9);
+    expect(playback.isPlaying).toBe(true);
+    const prepares = calls("audio_prepare_session");
+    const lastPrepare = prepares[prepares.length - 1]?.[1] as { payload?: { lanes?: { artifactId: string }[] } };
+    const laneIds = lastPrepare?.payload?.lanes?.map((lane) => lane.artifactId) ?? [];
+    expect(laneIds).not.toContain("drums");
+    expect(laneIds).toEqual(expect.arrayContaining(["kick", "snare"]));
+  });
+
+  it("restores the original native session and paused position after a failed drum switch", async () => {
+    enableNativePlayback();
+    const rollback = vi.fn();
+    await setup(drumSession("original", rollback));
+    act(() => playback.seekTo(7));
+    await flush();
+    const invoke = getMockInvoke();
+    const originalInvoke = invoke.getMockImplementation()!;
+    invoke.mockImplementation(async (command, args) => {
+      const payload = (args as { payload?: { lanes?: { artifactId?: string }[] } })?.payload;
+      if (command === "audio_prepare_session" && payload?.lanes?.some((lane) => lane.artifactId === "kick")) {
+        throw new Error("output_stream_failure");
+      }
+      return originalInvoke(command, args);
+    });
+
+    act(() => playback.registerProjectSession(drumSession("split")));
+    await flush();
+
+    expect(rollback).toHaveBeenCalledTimes(1);
+    expect(playback.session?.drumMode).toBe("original");
+    expect(playback.playbackTimeSeconds).toBe(7);
+    expect(playback.isPlaying).toBe(false);
+  });
+
   for (const action of ["stop", "pause"] as const) {
     it(`${action} waits for an in-flight native seek revision`, async () => {
       enableNativePlayback();

@@ -621,6 +621,7 @@ pub fn run() {
             native_audio::audio_list_output_devices,
             native_audio::audio_get_output_route,
             native_audio::audio_set_output_device,
+            native_audio::audio_set_output_routing,
             native_audio::audio_get_input_state,
             native_audio::audio_get_input_permission_status,
             native_audio::audio_request_input_permission,

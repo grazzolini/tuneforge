@@ -208,6 +208,36 @@ export type NativeOutputRoute = {
   generation: number;
 };
 
+export type NativeRouteSelection =
+  | { kind: "inherit" }
+  | { kind: "system-default" }
+  | { kind: "explicit-device"; deviceId: string };
+
+export type NativeOutputRoutingRequest = {
+  project: NativeRouteSelection;
+  cue: NativeRouteSelection;
+  lanes: Array<{
+    laneId: string;
+    parentLaneId?: string | null;
+    selection: NativeRouteSelection;
+  }>;
+};
+
+export type NativeDestinationRoute = {
+  selection: NativeRouteSelection;
+  preferredDeviceId: string | null;
+  effectiveDeviceId: string | null;
+  status: NativeOutputRoute["status"];
+  fallbackLatched: boolean;
+};
+
+export type NativeOutputRouting = {
+  project: NativeDestinationRoute;
+  cue: NativeDestinationRoute;
+  lanes: Array<NativeDestinationRoute & { laneId: string }>;
+  generation: number;
+};
+
 export type NativeAudioLaneRole = "primary" | "stem" | "click" | "mic_monitor";
 
 export type NativeAudioLaneRequest = {
@@ -257,6 +287,7 @@ export type NativeAudioSessionRequest = NativeAudioAcquisitionControl & {
   owner?: "playback" | "cue" | "capture" | null;
   lanes: NativeAudioLaneRequest[];
   projectOutput: NativeAudioOutputRequest;
+  outputRouting?: NativeOutputRoutingRequest;
 };
 
 export type NativeAudioSession = {
@@ -323,6 +354,7 @@ export type NativeAudioSnapshot = {
   timelineRevision: number;
   nativeTimeUs: number;
   outputRoute: NativeOutputRoute;
+  outputRouting: NativeOutputRouting;
 };
 
 export type NativeStandaloneMetronomeRequest =
@@ -494,6 +526,13 @@ export function getNativeOutputRoute() {
 
 export function setNativeOutputDevice(deviceId: string | null, explicit: boolean) {
   return invoke<NativeAudioSnapshot>("audio_set_output_device", { deviceId, explicit });
+}
+
+export function setNativeOutputRouting(
+  payload: NativeOutputRoutingRequest,
+  control: NativeAudioOutputControl,
+) {
+  return invoke<NativeAudioSnapshot>("audio_set_output_routing", { payload, control });
 }
 
 export function prepareNativeAudioSession(payload: NativeAudioSessionRequest) {

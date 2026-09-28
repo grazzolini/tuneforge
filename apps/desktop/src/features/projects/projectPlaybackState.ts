@@ -11,6 +11,7 @@ import {
 import { normalizeTempoTargetBpm } from "./playbackTempo";
 import type { GeneratedExportDocumentId } from "../../lib/api";
 import { normalizeOutputGain } from "../../lib/preferences";
+import type { DrumMode } from "./drumStemGroup";
 
 export type ProjectPanelMode = "studio" | "analysis" | "export";
 
@@ -18,6 +19,7 @@ export type StemControlState = {
   muted: boolean;
   solo: boolean;
   gain?: number;
+  groupMuted?: boolean;
 };
 
 export type PlaybackLoopRange = {
@@ -57,6 +59,8 @@ export type StoredProjectPlaybackState = {
   lyricsFollowEnabled: boolean;
   chordsFollowEnabled: boolean;
   stemControls: Record<string, StemControlState>;
+  drumModesBySource: Record<string, DrumMode>;
+  drumModeParentKeysBySource: Record<string, string>;
   projectOutputGain: number;
   projectOutputMuted: boolean;
   dismissedStemJobIds: string[];
@@ -82,6 +86,8 @@ const DEFAULT_STORED_PROJECT_PLAYBACK_STATE: StoredProjectPlaybackState = {
   lyricsFollowEnabled: true,
   chordsFollowEnabled: true,
   stemControls: {},
+  drumModesBySource: {},
+  drumModeParentKeysBySource: {},
   projectOutputGain: 1,
   projectOutputMuted: false,
   dismissedStemJobIds: [],
@@ -199,6 +205,16 @@ function normalizeStoredProjectPlaybackState(value: unknown): StoredProjectPlayb
       normalizeStemControlState(controlState),
     ]),
   );
+  const drumModesBySource = Object.fromEntries(
+    Object.entries(candidate.drumModesBySource ?? {}).filter((entry): entry is [string, DrumMode] =>
+      entry[1] === "original" || entry[1] === "split",
+    ),
+  );
+  const drumModeParentKeysBySource = Object.fromEntries(
+    Object.entries(candidate.drumModeParentKeysBySource ?? {}).filter(
+      (entry): entry is [string, string] => typeof entry[1] === "string",
+    ),
+  );
   const dismissedStemJobIds = Array.isArray(candidate.dismissedStemJobIds)
     ? candidate.dismissedStemJobIds.filter((jobId): jobId is string => typeof jobId === "string")
     : [];
@@ -248,6 +264,8 @@ function normalizeStoredProjectPlaybackState(value: unknown): StoredProjectPlayb
         ? candidate.chordsFollowEnabled
         : DEFAULT_STORED_PROJECT_PLAYBACK_STATE.chordsFollowEnabled,
     stemControls,
+    drumModesBySource,
+    drumModeParentKeysBySource,
     projectOutputGain: normalizeOutputGain(candidate.projectOutputGain),
     projectOutputMuted: Boolean(candidate.projectOutputMuted),
     dismissedStemJobIds,

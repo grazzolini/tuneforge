@@ -13,6 +13,7 @@ from app import __version__
 from app.api.routes.artifacts import router as artifacts_router
 from app.api.routes.beat_backends import router as beat_backends_router
 from app.api.routes.chord_backends import router as chord_backends_router
+from app.api.routes.drum_substems import router as drum_substems_router
 from app.api.routes.health import router as health_router
 from app.api.routes.jobs import router as jobs_router
 from app.api.routes.projects import router as projects_router
@@ -87,6 +88,7 @@ app.include_router(health_router, prefix=settings.api_prefix)
 app.include_router(beat_backends_router, prefix=settings.api_prefix)
 app.include_router(chord_backends_router, prefix=settings.api_prefix)
 app.include_router(stem_models_router, prefix=settings.api_prefix)
+app.include_router(drum_substems_router, prefix=settings.api_prefix)
 app.include_router(projects_router, prefix=settings.api_prefix)
 app.include_router(jobs_router, prefix=settings.api_prefix)
 app.include_router(artifacts_router, prefix=settings.api_prefix)

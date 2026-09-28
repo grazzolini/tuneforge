@@ -31,11 +31,23 @@ from app.runtime_status import (
     safe_runtime_device,
     safe_runtime_label,
 )
-from app.schemas import AnalysisRequest, BulkJobRequest, ChordRequest, LyricsGenerateRequest, StemRequest
+from app.schemas import (
+    AnalysisRequest,
+    BulkJobRequest,
+    ChordRequest,
+    DrumSubstemsRequest,
+    LyricsGenerateRequest,
+    StemRequest,
+)
 from app.services.analysis import analyze_project
 from app.services.beat_backends import beat_backend_runtime_device
 from app.services.chord_backends import chord_backend_runtime_device, resolve_chord_backend
 from app.services.chords import detect_project_chords, project_chord_detection_source
+from app.services.drum_substems import (
+    generate_drum_substems,
+    guard_parent_rebuild,
+    validate_drum_refinement_request,
+)
 from app.services.lyrics import generate_project_lyrics
 from app.services.project_storage import queue_project_storage_reconciliation
 from app.services.projects import get_mutable_project, get_project
@@ -73,10 +85,12 @@ JobHandler = Callable[["JobExecutionContext", Session, Job], JobExecutionResult]
 JobSortBy = Literal["activity", "created_at", "started_at", "updated_at", "status"]
 JobSortOrder = Literal["asc", "desc"]
 JobTimestampSortBy = Literal["created_at", "started_at", "updated_at"]
-BulkActivityJobType = Literal["analyze", "chords", "lyrics", "stems", "convert_audio"]
+BulkActivityJobType = Literal["analyze", "chords", "lyrics", "stems", "drum_substems", "convert_audio"]
 BulkActivityJobSkipReason = Literal["active_job", "locked", "creation_failed",
                                     "no_existing_stems", "already_target_format"]
-ProjectActivityJobPayload = AnalysisRequest | ChordRequest | LyricsGenerateRequest | StemRequest | dict[str, Any]
+ProjectActivityJobPayload = (
+    AnalysisRequest | ChordRequest | LyricsGenerateRequest | StemRequest | DrumSubstemsRequest | dict[str, Any]
+)
 
 _ACTIVE_JOB_STATUSES = ("pending", "running")
 _BULK_ACTIVITY_JOB_TYPES = frozenset({"analyze", "chords", "lyrics", "stems", "convert_audio"})
@@ -93,6 +107,7 @@ _PREPARING_STAGE_LABELS = {
     "retune": "Preparing pitch adjustment.",
     "transpose": "Preparing pitch adjustment.",
     "stems": "Preparing stem separation.",
+    "drum_substems": "Preparing drum refinement.",
     "export": "Preparing export.",
 }
 
@@ -541,6 +556,7 @@ def _project_activity_job_payload(
             project=project,
             source_artifact_id=payload.source_artifact_id,
         )
+        guard_parent_rebuild(session, project_id=project.id, source_artifact_id=source_artifact.id)
         selected_chord_backend = resolve_chord_backend(payload.chord_backend, require_available=False)
         requested_stem_model = payload.stem_model
         if payload.mode == "two_stem" and requested_stem_model in {None, "default"}:
@@ -552,6 +568,16 @@ def _project_activity_job_payload(
         job_payload["stem_model_label"] = selected_stem_model.label
         job_payload["source_artifact_id"] = source_artifact.id
         return job_payload
+    if job_type == "drum_substems" and isinstance(payload, DrumSubstemsRequest):
+        parent, source_id = validate_drum_refinement_request(
+            session, project_id=project.id, parent_id=payload.drums_artifact_id,
+            output_format=payload.output_format,
+        )
+        return {
+            **payload.model_dump(),
+            "source_artifact_id": source_id,
+            "parent_sha256": parent.content_sha256,
+        }
     if job_type == "convert_audio" and isinstance(payload, dict):
         return payload
     raise AppError("INVALID_REQUEST", "Job payload does not match job type.", status_code=422)
@@ -698,6 +724,7 @@ class InProcessJobRunner:
             "retune": self._handle_single_transform,
             "transpose": self._handle_single_transform,
             "stems": self._handle_stems,
+            "drum_substems": self._handle_drum_substems,
             "export": self._handle_export,
             "convert_audio": self._handle_convert_audio,
         }
@@ -1236,6 +1263,36 @@ class InProcessJobRunner:
             artifact_ids=[artifact.id for artifact in artifacts],
             runtime_device=runtime_device,
         )
+
+    def _handle_drum_substems(
+        self, context: JobExecutionContext, session: Session, job: Job,
+    ) -> JobExecutionResult:
+        project = get_project(session, job.project_id or "")
+        payload = job.payload_json
+        context.update_runtime_status(
+            stage="loading_model", stage_label="Loading DrumSep model.", progress=10,
+        )
+        artifacts = generate_drum_substems(
+            session, project=project,
+            parent_id=str(payload["drums_artifact_id"]),
+            parent_sha256=str(payload["parent_sha256"]),
+            output_format=cast(DurableAudioFormat, payload["output_format"]),
+            force=bool(payload.get("force", False)),
+            allow_download=bool(payload.get("allow_download", False)),
+            on_progress=context.progress_reporter(),
+            should_cancel=context.should_cancel,
+            register_process=context.register_process,
+            unregister_process=context.unregister_process,
+        )
+        runtime_device = next((
+            value for artifact in artifacts
+            if isinstance(value := artifact.metadata_json.get("device"), str)
+        ), None)
+        context.update_runtime_status(
+            stage="finalizing", stage_label="Saving refined drums.", progress=90,
+            runtime_device=runtime_device,
+        )
+        return JobExecutionResult([artifact.id for artifact in artifacts], runtime_device)
 
     def _handle_convert_audio(
         self,

@@ -34,6 +34,12 @@ from app.engines.lyrics import (
     preload_whisper_model,
     resolve_whisper_model_candidates,
 )
+from app.services.drum_substem_model import (
+    DRUMSEP_CHECKPOINT_CLASS,
+    DRUMSEP_MODEL_ID,
+    read_drumsep_checkpoint,
+    resolve_drumsep_checkpoint,
+)
 from app.utils.model_cache import ExpectedModelFile, invalid_model_files, remove_invalid_model_files
 
 
@@ -67,26 +73,24 @@ def prepare_model_bundle(
     output_dir.mkdir(parents=True)
 
     demucs_entries = _prepare_demucs_entries(output_dir)
+    drumsep_entry = _prepare_drumsep_entry(output_dir)
     torch_entries: list[dict[str, object]] = []
     whisper_entries = _prepare_whisper_entries(output_dir, lyrics_models)
     if include_beat_this:
         torch_entries.extend(_prepare_beat_this_entries(output_dir))
     crema_onnx_entries = _prepare_crema_onnx_entries(output_dir) if include_crema_onnx else []
 
-    (output_dir / "manifest.json").write_text(
-        json.dumps(
-            {
-                "version": 2,
-                "prepared_at": datetime.now(UTC).isoformat(),
-                "torch_checkpoints": torch_entries,
-                "demucs_hf_models": demucs_entries,
-                "whisper_models": whisper_entries,
-                "crema_onnx_files": crema_onnx_entries,
-            },
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
+    manifest: dict[str, object] = {
+        "version": 2,
+        "prepared_at": datetime.now(UTC).isoformat(),
+        "torch_checkpoints": torch_entries,
+        "demucs_hf_models": demucs_entries,
+        "whisper_models": whisper_entries,
+        "crema_onnx_files": crema_onnx_entries,
+    }
+    if drumsep_entry is not None:
+        manifest["drumsep_checkpoint"] = drumsep_entry
+    (output_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     sys.stdout.write(f"Prepared model bundle in {output_dir}\n")
 
 
@@ -125,6 +129,30 @@ def _prepare_demucs_entries(output_dir: Path) -> list[dict[str, object]]:
             }
         )
     return entries
+
+
+def _prepare_drumsep_entry(output_dir: Path) -> dict[str, object] | None:
+    if read_drumsep_checkpoint() is None:
+        return None
+    checkpoint, cached_path = resolve_drumsep_checkpoint(allow_download=True)
+    relative_path = Path("demucs") / DRUMSEP_MODEL_ID / checkpoint.revision / checkpoint.file_name
+    _copy_to_bundle(
+        output_dir,
+        ExpectedModelFile("DrumSep checkpoint", cached_path, checkpoint.size_bytes, checkpoint.sha256),
+        relative_path,
+    )
+    return {
+        "id": DRUMSEP_MODEL_ID,
+        "class": DRUMSEP_CHECKPOINT_CLASS,
+        "repo_id": checkpoint.repo_id,
+        "revision": checkpoint.revision,
+        "file_name": checkpoint.file_name,
+        "sha256": checkpoint.sha256,
+        "size_bytes": checkpoint.size_bytes,
+        "license": checkpoint.license,
+        "rights_record": checkpoint.rights_record,
+        "relative_path": relative_path.as_posix(),
+    }
 
 
 def _prepare_whisper_entries(output_dir: Path, lyrics_models: Sequence[str]) -> list[dict[str, object]]:

@@ -7,6 +7,10 @@ download, installation, verification, signature, and publication instructions.
 
 ### Added
 
+- Added optional, separate DrumSep refinement for existing six-stem Drums on native desktop,
+  with Original/Split controls and durable child artifacts. An explicit Refine or Rebuild action
+  authorizes native desktop to download and verify the author-hosted checkpoint when needed, then
+  converts it once for safe local inference and offline reuse.
 - Select one native master audio output on macOS, Linux, and Android. Desktop choices persist;
   Android choices last only for the app process. Output loss attempts one System Default recovery
   while retaining the selected device and playback position.

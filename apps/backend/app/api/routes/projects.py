@@ -17,6 +17,7 @@ from app.schemas import (
     ChordRequest,
     ChordResponse,
     DeleteResponse,
+    DrumSubstemsRequest,
     ErrorResponse,
     ExportRequest,
     JobResponse,
@@ -41,8 +42,9 @@ from app.schemas import (
     TabImportSchema,
     TransposeRequest,
 )
-from app.services.artifacts import delete_project_artifact
+from app.services.artifacts import delete_project_artifact, drum_substem_file_integrity
 from app.services.chord_backends import FAST_CHORD_BACKEND_ID, ChordDetectionBackend, resolve_chord_backend
+from app.services.drum_substems import delete_drum_substem_set
 from app.services.jobs import create_project_activity_job
 from app.services.lyrics import update_project_lyrics
 from app.services.projects import (
@@ -435,11 +437,36 @@ def project_stems(
     return JobResponse(job=JobSchema.model_validate(job))
 
 
+@router.post("/{project_id}/drum-substems", response_model=JobResponse)
+def project_drum_substems(
+    project_id: str,
+    payload: DrumSubstemsRequest,
+    session: Session = Depends(get_db),
+    runner=Depends(get_job_runner),
+) -> JobResponse:
+    job = create_project_activity_job(
+        session, runner, project_id=project_id, job_type="drum_substems", payload=payload,
+    )
+    return JobResponse(job=JobSchema.model_validate(job))
+
+
+@router.delete("/{project_id}/drum-substems/{drums_artifact_id}", response_model=DeleteResponse)
+def project_drum_substems_delete(
+    project_id: str, drums_artifact_id: str, session: Session = Depends(get_db),
+) -> DeleteResponse:
+    get_mutable_project(session, project_id)
+    delete_drum_substem_set(session, project_id=project_id, parent_id=drums_artifact_id)
+    session.commit()
+    return DeleteResponse(deleted=True)
+
+
 @router.get("/{project_id}/artifacts", response_model=ArtifactsResponse)
 def project_artifacts(project_id: str, session: Session = Depends(get_db)) -> ArtifactsResponse:
     get_project(session, project_id)
     stmt = select(Artifact).where(Artifact.project_id == project_id).order_by(Artifact.created_at.desc())
-    artifacts = [ArtifactSchema.model_validate(artifact) for artifact in session.scalars(stmt)]
+    artifacts = [ArtifactSchema.model_validate(artifact).model_copy(update={
+        "file_integrity": drum_substem_file_integrity(artifact),
+    }) for artifact in session.scalars(stmt)]
     return ArtifactsResponse(artifacts=artifacts)
 
 

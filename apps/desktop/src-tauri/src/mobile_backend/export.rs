@@ -477,6 +477,10 @@ fn stem_export_context(
         "other_stem" => "Other",
         "piano_stem" => "Piano",
         "vocal_stem" => "Vocals",
+        "kick_drum_substem" => "Kick",
+        "snare_drum_substem" => "Snare",
+        "cymbals_drum_substem" => "Cymbals",
+        "toms_drum_substem" => "Toms",
         _ => return Err("Selected stem type is not exportable.".to_string()),
     };
     Ok(format!("{audio_set} - {stem_label}"))

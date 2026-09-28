@@ -913,6 +913,17 @@ pub(super) fn manifest_artifact_merge(
         if existing_artifact.size_bytes != artifact.size_bytes {
             return Err("A synced artifact conflicts with an existing local artifact.".to_string());
         }
+        if existing_artifact.r#type == "drums_stem" {
+            let local_updated_at =
+                parse_sync_timestamp_utc(&existing_artifact.updated_at, "local artifact updated_at")?;
+            let remote_updated_at = parse_sync_timestamp_utc(
+                artifact.updated_at.as_deref().unwrap_or(&artifact.created_at),
+                "artifact updated_at",
+            )?;
+            if remote_updated_at < local_updated_at {
+                return Ok((ManifestArtifactMerge::KeepLocal, Some(existing_artifact)));
+            }
+        }
         return Ok((ManifestArtifactMerge::Update, Some(existing_artifact)));
     }
     if durable_manifest_audio_format(artifact).is_some() {

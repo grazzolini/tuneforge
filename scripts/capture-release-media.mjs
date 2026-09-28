@@ -154,6 +154,36 @@ const releaseMediaCaptureCatalog = [
     capture: captureScreenshotEntry,
   },
   {
+    id: "studio-drum-parts",
+    enabled: true,
+    kind: "screenshot",
+    fileName: "studio-drum-parts.png",
+    title: "Optional refined drums in Studio",
+    caption: "Keep six original stems and optionally reveal four synthetic drum parts for a saved mix.",
+    alt: "TuneForge Studio showing all six coarse stems and an expanded four-part Drums group",
+    fixture: "release-showcase-drumsep-v1",
+    viewport: { width: 1600, height: 1400 },
+    route: "/projects/proj_release_showcase",
+    prepare: prepareStudioDrumParts,
+    ready: readyStudioDrumParts,
+    capture: captureScreenshotEntry,
+  },
+  {
+    id: "playback-drum-parts",
+    enabled: true,
+    kind: "screenshot",
+    fileName: "playback-drum-parts.png",
+    title: "Split drum controls in Playback",
+    caption: "Control the Drums group and each synthetic child part while the other stems stay available.",
+    alt: "TuneForge Playback showing Original and Split modes, drum group level, and four part levels",
+    fixture: "release-showcase-drumsep-v1",
+    viewport: { width: 1600, height: 1400 },
+    route: "/projects/proj_release_showcase",
+    prepare: preparePlaybackDrumParts,
+    ready: readyPlaybackDrumParts,
+    capture: captureScreenshotEntry,
+  },
+  {
     id: "background-playback-volume",
     enabled: true,
     kind: "screenshot",
@@ -1595,7 +1625,7 @@ async function createCaptureContext(browser, options, { entry = null, recordVide
     viewport,
   });
   await context.route("**/*", async (route) => {
-    const handled = await maybeFulfillMockApi(route);
+    const handled = await maybeFulfillMockApi(route, entry?.fixture);
     if (!handled) {
       await route.continue();
     }
@@ -1700,6 +1730,58 @@ async function preparePlaybackMixer({ page, timeoutMs }) {
   await vocalsVolume.fill("0.65");
   await page.getByRole("button", { name: "Mute Vocals", exact: true }).click();
   await page.locator(".playback-stem-grid").scrollIntoViewIfNeeded();
+}
+
+async function prepareStudioDrumParts({ page, timeoutMs }) {
+  await page.getByRole("tab", { name: "Project", exact: true }).click();
+  await page.getByRole("button", { name: /^Practice Mix/ }).first().click();
+  const group = page.getByRole("group", { name: "Drums playback mode" }).first();
+  await group.getByRole("button", { name: "Split" }).waitFor({ timeout: timeoutMs });
+  await group.getByRole("button", { name: "Split" }).click();
+  await page.getByRole("button", { name: "Show Parts" }).first().click();
+}
+
+async function preparePlaybackDrumParts({ page, timeoutMs }) {
+  await page.getByRole("button", { name: /^Practice Mix/ }).first().click();
+  const group = page.getByRole("group", { name: "Drums playback mode" }).first();
+  await group.getByRole("button", { name: "Split" }).waitFor({ timeout: timeoutMs });
+  await group.getByRole("button", { name: "Split" }).click();
+  await page.getByRole("button", { name: "Show Parts" }).first().click();
+  await page.locator(".playback-practice-rail--desktop")
+    .getByRole("slider", { name: "Toms volume", exact: true }).scrollIntoViewIfNeeded();
+}
+
+async function readyStudioDrumParts({ page, timeoutMs }) {
+  const rail = page.locator(".sources-rail");
+  for (const part of ["Vocals", "Drums", "Bass", "Guitar", "Piano", "Other", "Kick", "Snare", "Cymbals", "Toms"]) {
+    await rail.getByText(part, { exact: true }).first().waitFor({ state: "visible", timeout: timeoutMs });
+  }
+  const split = rail.getByRole("group", { name: "Drums playback mode" })
+    .getByRole("button", { name: "Split" });
+  if (await split.getAttribute("aria-pressed") !== "true") {
+    throw new Error("Studio drum-parts capture requires Split selected.");
+  }
+}
+
+async function readyPlaybackDrumParts({ page, timeoutMs }) {
+  const rail = page.locator(".playback-practice-rail--desktop");
+  for (const part of ["Vocals", "Drums", "Bass", "Guitar", "Piano", "Other", "Kick", "Snare", "Cymbals", "Toms"]) {
+    await rail.getByRole("slider", { name: `${part} volume`, exact: true })
+      .waitFor({ state: "visible", timeout: timeoutMs });
+  }
+  const split = rail.getByRole("group", { name: "Drums playback mode" })
+    .getByRole("button", { name: "Split" });
+  if (await split.getAttribute("aria-pressed") !== "true") {
+    throw new Error("Playback drum-parts capture requires Split selected.");
+  }
+  const railBounds = await rail.boundingBox();
+  if (!railBounds) throw new Error("Playback drum-parts rail has no visible bounds.");
+  for (const part of ["Kick", "Snare", "Cymbals", "Toms"]) {
+    const bounds = await rail.getByRole("slider", { name: `${part} volume`, exact: true }).boundingBox();
+    if (!bounds || bounds.y < railBounds.y || bounds.y + bounds.height > railBounds.y + railBounds.height) {
+      throw new Error(`Playback drum-parts capture clips ${part}.`);
+    }
+  }
 }
 
 async function preparePlaybackOutputLevels({ page, timeoutMs }) {
@@ -2515,14 +2597,14 @@ function generatedAt() {
   return fixtureTimestamp;
 }
 
-async function maybeFulfillMockApi(route) {
+async function maybeFulfillMockApi(route, fixture) {
   const request = route.request();
   const url = new URL(request.url());
   if (!url.pathname.startsWith("/api/v1/")) {
     return false;
   }
 
-  const payload = mockApiResponse(request.method(), url);
+  const payload = mockApiResponse(request.method(), url, fixture);
   if (!payload) {
     await route.fulfill({
       contentType: "application/json",
@@ -2539,7 +2621,7 @@ async function maybeFulfillMockApi(route) {
   return true;
 }
 
-function mockApiResponse(method, url) {
+function mockApiResponse(method, url, fixture = null) {
   const path = url.pathname;
   if (method !== "GET" && method !== "POST" && method !== "PATCH") {
     return null;
@@ -2558,6 +2640,18 @@ function mockApiResponse(method, url) {
   }
   if (method === "GET" && path === "/api/v1/stem-models") {
     return { body: { models: stemModels() } };
+  }
+  if (method === "GET" && path === "/api/v1/drum-substems/capabilities") {
+    return { body: {
+      platform_supported: true,
+      available: false,
+      unavailable_reason: "A vetted DrumSep checkpoint and rights record have not been supplied.",
+      model_id: "drumsep",
+      checkpoint_sha256: null,
+      checkpoint_revision: null,
+      cache_status: "unavailable",
+      download_size_bytes: null,
+    } };
   }
   if (method === "GET" && path === "/api/v1/jobs") {
     return { body: jobsResponse(url.searchParams) };
@@ -2615,7 +2709,7 @@ function mockApiResponse(method, url) {
     return { body: lyrics(projectId) };
   }
   if (child === "artifacts") {
-    return { body: { artifacts: artifacts(projectId) } };
+    return { body: { artifacts: artifacts(projectId, fixture === "release-showcase-drumsep-v1") } };
   }
   if (child === "sections") {
     return { body: { sections: sections(projectId) } };
@@ -2819,8 +2913,8 @@ function lyrics(projectId) {
   };
 }
 
-function artifacts(projectId) {
-  return [
+function artifacts(projectId, drumsep = false) {
+  const result = [
     {
       id: "art_preview",
       project_id: projectId,
@@ -2869,6 +2963,55 @@ function artifacts(projectId) {
       created_at: fixtureTimestamp,
     },
   ];
+  if (!drumsep) return result;
+  const parent = result.find((artifact) => artifact.id === "art_drums");
+  const parentSha = "a".repeat(64);
+  const childIds = Object.fromEntries(
+    ["kick", "snare", "cymbals", "toms"].map((part) => [part, `art_drum_${part}`]),
+  );
+  parent.metadata = {
+    ...parent.metadata,
+    mode: "six_stems",
+    stem_model: "htdemucs_6s",
+    drum_substems: {
+      generation_id: "drumset_release_fixture",
+      parent_sha256: parentSha,
+      checkpoint_model: "drumsep",
+      checkpoint_revision: "b".repeat(40),
+      checkpoint_sha256: "c".repeat(64),
+      format: "wav",
+      applied_gain: 0.8,
+      expected_parts: ["kick", "snare", "cymbals", "toms"],
+      excluded_parts: [],
+      child_artifact_ids: childIds,
+    },
+  };
+  parent.file_integrity = "verified";
+  for (const [id, type] of [["art_piano", "piano_stem"], ["art_other", "other_stem"]]) {
+    result.push({
+      id, project_id: projectId, type, format: "wav",
+      path: `/tmp/tuneforge-release-media/${id}.wav`,
+      metadata: { source_artifact_id: "art_preview" },
+      created_at: fixtureTimestamp,
+    });
+  }
+  for (const part of ["kick", "snare", "cymbals", "toms"]) {
+    result.push({
+      id: childIds[part], project_id: projectId,
+      type: `${part}_drum_substem`, format: "wav",
+      path: `/tmp/tuneforge-release-media/${childIds[part]}.wav`,
+      file_integrity: "verified",
+      metadata: {
+        source_artifact_id: "art_preview",
+        parent_artifact_id: "art_drums",
+        parent_sha256: parentSha,
+        generation_id: "drumset_release_fixture",
+        drum_part: part,
+      },
+      created_at: fixtureTimestamp,
+    });
+  }
+  return result;
 }
 
 function sections(projectId) {

@@ -9,12 +9,15 @@ import {
   mockCreateExport,
   mockCreateStems,
   mockDeleteArtifact,
+  getMockInvoke,
   mockListJobs,
   mockSave,
   mockUpdateProject,
   renderApp,
   setJobs,
   setProjectChords,
+  setProjectArtifacts,
+  setMockNativeAudioState,
 } from "./test/appTestHarness";
 import { ApiError } from "./lib/api";
 import {
@@ -387,6 +390,83 @@ describe("Desktop app project playback artifacts", () => {
         ? within(updatedStemList).queryByRole("button", { name: /Vocals/i })
         : null,
     ).not.toBeInTheDocument();
+  });
+
+  it("does not delete an active stem when native Stop fails", async () => {
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: { invoke: getMockInvoke() },
+    });
+    setMockNativeAudioState({ capabilities: {
+      nativePlaybackSupported: true,
+      fallbackRequired: false,
+      fallbackReason: null,
+      backend: "desktop-cpal",
+    } });
+    try {
+      const user = userEvent.setup();
+      renderApp(["/projects/proj_123"]);
+      expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+      await generateStems(user);
+      const stemList = await screen.findByRole("group", { name: "Stem track list" });
+      await user.click(within(stemList).getAllByRole("button", { name: /Vocals/i })[0] as HTMLElement);
+      await user.click(screen.getByRole("button", { name: "Play playback" }));
+      await waitFor(() => expect(getMockInvoke().mock.calls.some(([name]) => name === "audio_play")).toBe(true));
+      setMockNativeAudioState({ stopError: "output_stream_failure" });
+
+      await user.click(within(stemList).getAllByRole("button", { name: "Delete stem track" })[0] as HTMLElement);
+      await waitFor(() => expect(getMockInvoke().mock.calls.some(([name]) => name === "audio_stop")).toBe(true));
+      await waitFor(() => expect(screen.getByText("Could not release playback before deleting stems.")).toBeInTheDocument());
+      expect(mockDeleteArtifact).not.toHaveBeenCalled();
+      expect(await screen.findByRole("heading", { name: "Vocals" })).toBeInTheDocument();
+    } finally {
+      delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+    }
+  });
+
+  it("keeps Split selected when deleting the last included drum part fails", async () => {
+    const sha = "a".repeat(64);
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: { invoke: getMockInvoke() },
+    });
+    setMockNativeAudioState({ capabilities: {
+      nativePlaybackSupported: true,
+      fallbackRequired: false,
+      fallbackReason: null,
+      backend: "desktop-cpal",
+    } });
+    setProjectArtifacts("proj_123", [
+      { id: "art_source", project_id: "proj_123", type: "source_audio", format: "wav",
+        path: "/tmp/source.wav", metadata: {}, created_at: "2026-04-18T13:16:00Z" },
+      { id: "art_drums", project_id: "proj_123", type: "drums_stem", format: "wav",
+        path: "/tmp/drums.wav", file_integrity: "verified", metadata: {
+          source_artifact_id: "art_source", drum_substems: {
+            generation_id: "generation", parent_sha256: sha,
+            expected_parts: ["kick", "snare", "cymbals", "toms"],
+            excluded_parts: ["snare", "cymbals", "toms"],
+            child_artifact_ids: { kick: "art_kick" },
+          },
+        }, created_at: "2026-04-18T13:16:00Z" },
+      { id: "art_kick", project_id: "proj_123", type: "kick_drum_substem", format: "wav",
+        path: "/tmp/kick.wav", file_integrity: "verified", metadata: {
+          source_artifact_id: "art_source", parent_artifact_id: "art_drums",
+          generation_id: "generation", parent_sha256: sha,
+        }, created_at: "2026-04-18T13:16:00Z" },
+    ]);
+    mockDeleteArtifact.mockRejectedValueOnce(new Error("busy"));
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    const stemList = await screen.findByRole("group", { name: "Stem track list" });
+    const mode = within(stemList).getByRole("group", { name: "Drums playback mode" });
+    await user.click(within(mode).getByRole("button", { name: "Split" }));
+    await user.click(within(stemList).getByRole("button", { name: "Show Parts" }));
+    await user.click(within(stemList).getByRole("button", { name: "Delete Kick part" }));
+
+    await waitFor(() => expect(mockDeleteArtifact).toHaveBeenCalledWith("proj_123", "art_kick"));
+    expect(within(mode).getByRole("button", { name: "Split" })).toHaveAttribute("aria-pressed", "true");
+    delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
   });
 
   it("exposes sources rail delete for saved mixes but not the source track", async () => {

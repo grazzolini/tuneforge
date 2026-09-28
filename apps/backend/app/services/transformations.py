@@ -33,7 +33,7 @@ from app.models import Artifact, ChordTimeline, LyricsTranscript, Project
 from app.services.analysis import analyze_project
 from app.services.artifacts import find_cached_artifact, register_artifact
 from app.services.paths import project_exports_dir, project_previews_dir
-from app.services.stem_models import STEM_ARTIFACT_TYPE_SOURCES, STEM_ARTIFACT_TYPES
+from app.services.stem_models import DRUM_SUBSTEM_ARTIFACT_TYPES, STEM_ARTIFACT_TYPE_SOURCES, STEM_ARTIFACT_TYPES
 from app.utils.hashing import stable_hash
 
 
@@ -156,7 +156,7 @@ def _safe_filename_base(value: str) -> str:
 def _primary_audio_artifact(artifact: Artifact, artifacts_by_id: dict[str, Artifact]) -> Artifact | None:
     if artifact.type in {"source_audio", "preview_mix"}:
         return artifact
-    if artifact.type not in STEM_ARTIFACT_TYPES:
+    if artifact.type not in STEM_ARTIFACT_TYPES | DRUM_SUBSTEM_ARTIFACT_TYPES:
         return None
     source_artifact_id = artifact.metadata_json.get("source_artifact_id")
     return artifacts_by_id.get(source_artifact_id) if isinstance(source_artifact_id, str) else None
@@ -183,6 +183,8 @@ def _audio_set_label(session: Session, artifact: Artifact) -> str:
 
 def _artifact_export_label(artifact: Artifact) -> str | None:
     source = STEM_ARTIFACT_TYPE_SOURCES.get(artifact.type)
+    if source is None and artifact.type in DRUM_SUBSTEM_ARTIFACT_TYPES:
+        source = str(artifact.metadata_json.get("drum_part", ""))
     return source.replace("_", " ").title() if source else None
 
 

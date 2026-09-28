@@ -8,6 +8,11 @@ runtime behavior and security boundaries for model loading.
 - Backend service exposes two APIs for stems:
   - `GET /api/v1/stem-models` lists supported models + availability.
   - `POST /api/v1/projects/{project_id}/stems` starts stem generation.
+- Optional desktop DrumSep refinement has separate `GET /api/v1/drum-substems/capabilities`
+  and `POST /api/v1/projects/{project_id}/drum-substems` endpoints. Capability reads never acquire
+  weights. A refinement job requires an existing `htdemucs_6s` Drums artifact; model acquisition
+  is authorized by the explicit Refine Drums or Rebuild Refined Drums action, including when a
+  previously verified cache is missing later. Import does not refine drums.
 - Backend services route to `app/services/stems.py` and execute Demucs through
   `app/engines/stems.py`.
 - Demucs execution runs as a spawned Python module:
@@ -59,8 +64,24 @@ The worker constructs each bag with TuneForge's native safetensors loader and
 pinned HTDemucs metadata grammar, constructs `demucs_infer.htdemucs.HTDemucs` directly, and
 strictly loads its tensor keys. No pickle checkpoint loader, dynamic class import, or FBAI
 fallback is used.
-Treat writable local repos and bundles as integrity-sensitive generated artifacts even though
-safetensors removes the legacy pickle execution path.
+DrumSep extends the strict loader with an explicit `HDemucs` class allowlist. On native macOS and
+Linux, an explicit refinement action can download the author-hosted upstream `49469ca8.th` from a
+fixed Google URL. TuneForge verifies its pinned 167,400,043-byte size and full SHA-256 before
+restricted `torch.load(weights_only=True)` with only the expected `HDemucs` global. It validates the package,
+strictly loads the state, and converts the same tensors once to a locally cached safetensors file.
+Subsequent inference uses only the strict safetensors loader. A verified converted cache is reused
+offline; missing or corrupt conversion is rebuilt from verified local upstream bytes, and a
+missing upstream file requires new authorized acquisition. The upstream weights are not bundled or
+redistributed, and no MIT rights claim is made for them. This acquisition does not run during
+capability checks, default packaging, `--model-bundle`, or `setup:dev`.
+
+The separate future safetensors publication path retains its reviewed descriptor gate. That
+descriptor must pin repository commit, full SHA-256, byte size, class identity, MIT license, and a
+documented rights record. It is read only from a fixed TuneForge package/repository path, never
+from a request. Once supplied, explicit macOS/Linux `--model-bundle` preparation includes its
+exact pinned safetensors file, records its identity in the bundle manifest, and verifies its full
+hash at packaging and startup. Existing bundles without DrumSep remain valid. Treat writable
+local repos and bundles as integrity-sensitive generated artifacts.
 
 ## 2-stem vs 6-stem model behavior
 
@@ -86,6 +107,32 @@ Artifacts are generated per source + selected model. Regenerating the same model
 replaces current files and removes stale paths. Switching models and rebuilding
 prunes stale stems for the same source so the UI does not keep mixed model output
 sets.
+
+## Optional DrumSep parts
+
+Refine Drums is an independent queued job for the selected source or saved mix. It keeps the
+six coarse stems and publishes Kick, Snare, Cymbals, and Toms as four distinct child artifacts.
+The parent manifest records checkpoint identity, parent hash, generation, common gain, child IDs,
+and deliberate part exclusions; these fields and child deletion tombstones survive sync.
+Generation stages and validates all four files before replacing a prior set. Failed or cancelled
+refinement leaves the prior generation usable. A successful coarse Drums rebuild invalidates its
+old parts and returns selection to Original. A failed rebuild leaves them intact.
+
+Studio and Playback share the source-scoped Original/Split choice. Split plays only included
+children and never the original Drums at the same time. Deleting a child retains siblings and
+records the omission; deleting the set retains Original. Missing or corrupt files disable Split
+and require file recovery or a new refinement. Individual file export follows selected membership
+by default while allowing Original Drums to be chosen separately. It does not render live mute,
+solo, or volume settings into new mixes.
+
+The four inference outputs remain floating point until one common attenuation is applied.
+At each aligned sample/channel, the bound is the greater of summed positive samples and the
+absolute sum of negative samples. A common `min(1, 0.9 / bound)` gain is applied before encoding;
+the final decoded files must satisfy the bound, with at most three total encoding attempts.
+This bounds an isolated drum subset under attenuation-only controls. It does not establish
+full-mix or true-peak safety. Production gain, switching, and isolated part quality still need
+focused listening; packaged macOS/Flatpak and unavailable accelerator hardware remain release
+gates.
 
 ## Chord refresh hidden non-vocal mix
 

@@ -1,5 +1,34 @@
 import path from "node:path";
+import { existsSync, readFileSync } from "node:fs";
 import { readDemucsModelManifest } from "./prepare-demucs-models.mjs";
+
+const drumsepDescriptorPath = new URL("../packaging/demucs/drumsep-model.json", import.meta.url);
+const drumsepFields = [
+  "id", "class", "repo_id", "revision", "file_name", "sha256", "size_bytes", "license", "rights_record",
+];
+
+export function validateDrumsepDescriptor(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value) ||
+    Object.keys(value).length !== drumsepFields.length ||
+    drumsepFields.some((field) => !Object.hasOwn(value, field)) ||
+    value.id !== "drumsep" || value.class !== "demucs.hdemucs.HDemucs" ||
+    typeof value.repo_id !== "string" ||
+    !/^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*$/.test(value.repo_id) ||
+    typeof value.revision !== "string" || !/^[a-f0-9]{40}$/.test(value.revision) ||
+    value.file_name !== "drumsep.safetensors" ||
+    typeof value.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(value.sha256) ||
+    !Number.isSafeInteger(value.size_bytes) || value.size_bytes <= 0 ||
+    value.license !== "MIT" || typeof value.rights_record !== "string" ||
+    !value.rights_record.startsWith("https://")) {
+    throw new Error("DrumSep checkpoint descriptor has invalid provenance or rights.");
+  }
+  return value;
+}
+
+export function readDrumsepDescriptor() {
+  if (!existsSync(drumsepDescriptorPath)) return null;
+  return validateDrumsepDescriptor(JSON.parse(readFileSync(drumsepDescriptorPath, "utf8")));
+}
 
 export const DEFAULT_LYRICS_MODEL = "turbo";
 
@@ -129,12 +158,14 @@ export function buildModelBundlePlan({
   includeCremaOnnx = false,
   lyricsModel = process.env.TUNEFORGE_LYRICS_MODEL ?? DEFAULT_LYRICS_MODEL,
   demucsManifest = readDemucsModelManifest(),
+  drumsepDescriptor = readDrumsepDescriptor(),
 } = {}) {
   const entriesByPath = new Map();
   const torchCheckpoints = [];
   const demucsHfModels = [];
   const whisperModels = [];
   const cremaOnnxFiles = [];
+  let drumsepCheckpoint = null;
 
   for (const model of demucsManifest.models) {
     const files = [];
@@ -159,6 +190,20 @@ export function buildModelBundlePlan({
       bag_order: [...model.bag_order],
       files,
     });
+  }
+
+  if (drumsepDescriptor !== null) {
+    const descriptor = validateDrumsepDescriptor(drumsepDescriptor);
+    const relativePath = `demucs/${descriptor.id}/${descriptor.revision}/${descriptor.file_name}`;
+    addEntry(entriesByPath, {
+      label: "DrumSep checkpoint",
+      url: `https://huggingface.co/${descriptor.repo_id}/resolve/${descriptor.revision}/${descriptor.file_name}`,
+      relativePath,
+      fileName: descriptor.file_name,
+      size: descriptor.size_bytes,
+      sha256: descriptor.sha256,
+    });
+    drumsepCheckpoint = { ...descriptor, relative_path: relativePath };
   }
 
   for (const modelName of resolveWhisperBundleModels(lyricsModel)) {
@@ -219,6 +264,7 @@ export function buildModelBundlePlan({
       version: 2,
       torch_checkpoints: torchCheckpoints.map(manifestEntry),
       demucs_hf_models: demucsHfModels,
+      ...(drumsepCheckpoint ? { drumsep_checkpoint: drumsepCheckpoint } : {}),
       whisper_models: whisperModels.map((entry) => ({
         ...manifestEntry(entry),
         model: entry.model,

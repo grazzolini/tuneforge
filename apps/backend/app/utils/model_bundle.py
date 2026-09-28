@@ -54,7 +54,7 @@ def seed_model_bundle_caches(settings: Any) -> None:
 
 def demucs_model_bundle_repo(bundle_dir: Path) -> Path | None:
     entries = _validated_manifest_entries(bundle_dir)["demucs_hf_models"]
-    return bundle_dir / "demucs" if entries else None
+    return bundle_dir / "demucs" if entries or (bundle_dir / "demucs" / "drumsep").is_dir() else None
 
 
 def _validated_manifest_entries(bundle_dir: Path) -> dict[str, tuple[Mapping[str, Any], ...]]:
@@ -69,6 +69,7 @@ def _validated_manifest_entries(bundle_dir: Path) -> dict[str, tuple[Mapping[str
         _reject_legacy_demucs_entries(entries["torch_checkpoints"])
     elif version == DEMUCS_MANIFEST_VERSION:
         _validate_demucs_hf_entries(bundle_dir, entries["demucs_hf_models"])
+        _validate_optional_drumsep_checkpoint(bundle_dir, manifest)
     else:
         raise RuntimeError(f"Unsupported model bundle manifest version: {version}")
     return entries
@@ -179,6 +180,57 @@ def _validate_demucs_hf_entry_metadata(entry: Mapping[str, Any], model: DemucsHf
         or bag_order != list(model.bag_order)
     ):
         raise RuntimeError(f"Model bundle Demucs metadata is invalid: {model.id}")
+
+
+def _validate_optional_drumsep_checkpoint(bundle_dir: Path, manifest: Mapping[str, Any]) -> None:
+    from app.services.drum_substem_model import (
+        DRUMSEP_CHECKPOINT_CLASS,
+        DRUMSEP_MODEL_ID,
+        read_drumsep_checkpoint,
+    )
+
+    raw = manifest.get("drumsep_checkpoint")
+    model_root = bundle_dir / "demucs" / DRUMSEP_MODEL_ID
+    if "drumsep_checkpoint" not in manifest:
+        if model_root.exists():
+            raise RuntimeError("Model bundle contains an unlisted DrumSep asset")
+        return
+    checkpoint = read_drumsep_checkpoint()
+    if checkpoint is None:
+        raise RuntimeError("Model bundle contains DrumSep without a vetted descriptor")
+    relative_path = (
+        Path("demucs") / DRUMSEP_MODEL_ID / checkpoint.revision / checkpoint.file_name
+    ).as_posix()
+    expected_metadata = {
+        "id": DRUMSEP_MODEL_ID,
+        "class": DRUMSEP_CHECKPOINT_CLASS,
+        "repo_id": checkpoint.repo_id,
+        "revision": checkpoint.revision,
+        "file_name": checkpoint.file_name,
+        "sha256": checkpoint.sha256,
+        "size_bytes": checkpoint.size_bytes,
+        "license": checkpoint.license,
+        "rights_record": checkpoint.rights_record,
+        "relative_path": relative_path,
+    }
+    if (
+        not isinstance(raw, Mapping)
+        or set(raw) != set(expected_metadata)
+        or type(raw.get("size_bytes")) is not int
+        or any(raw[key] != value for key, value in expected_metadata.items())
+    ):
+        raise RuntimeError("Model bundle DrumSep metadata does not match the vetted descriptor")
+    expected_path = (bundle_dir / relative_path).resolve()
+    if not expected_path.is_relative_to(bundle_dir.resolve()):
+        raise RuntimeError("Model bundle DrumSep asset escapes bundle directory")
+    expected = ExpectedModelFile(
+        "DrumSep checkpoint", expected_path, checkpoint.size_bytes, checkpoint.sha256
+    )
+    if invalid_model_files((expected,)):
+        raise RuntimeError("Bundled DrumSep checkpoint is missing or corrupt")
+    actual_files = {path.relative_to(bundle_dir).as_posix() for path in model_root.rglob("*") if path.is_file()}
+    if actual_files != {relative_path}:
+        raise RuntimeError("Model bundle contains unexpected DrumSep assets")
 
 
 def _seed_entries(bundle_dir: Path, entries: tuple[Mapping[str, Any], ...], cache_dir: Path) -> None:

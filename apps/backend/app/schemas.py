@@ -1127,6 +1127,17 @@ class StemModelsResponse(BaseModel):
     models: list[StemModelSchema]
 
 
+class DrumSubstemCapabilitiesResponse(BaseModel):
+    platform_supported: bool
+    available: bool
+    unavailable_reason: str | None
+    model_id: str
+    checkpoint_sha256: str | None
+    checkpoint_revision: str | None
+    cache_status: str
+    download_size_bytes: int | None
+
+
 class LyricsGenerateRequest(BaseModel):
     force: bool = False
     language_override: LyricsLanguageOverride | None = None
@@ -1412,6 +1423,7 @@ class ArtifactSchema(BaseModel):
     format: str
     path: str
     size_bytes: int
+    file_integrity: Literal["verified", "missing", "corrupt"] | None = None
     generated_by: str
     can_delete: bool
     can_regenerate: bool
@@ -1492,6 +1504,13 @@ class StemRequest(BaseModel):
             raise ValueError("two_stem mode requires a two-stem model.")
         _validate_chord_backend_fields(self.chord_backend, self.chord_backend_fallback_from)
         return self
+
+
+class DrumSubstemsRequest(BaseModel):
+    drums_artifact_id: str = Field(min_length=1)
+    output_format: DurableAudioFormat = "wav"
+    force: bool = False
+    allow_download: bool = False
 
 
 class ExportSingleFileDestinationSchema(BaseModel):

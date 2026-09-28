@@ -422,6 +422,50 @@ test("Flatpak generator desktop snapshot includes the complete local whisper cra
   }
 });
 
+test("Flatpak generator includes the optional DrumSep descriptor only in the backend snapshot", () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "tuneforge-drumsep-snapshot-"));
+  const fixture = path.join(root, "fixture");
+  const generatedRoot = path.join(root, "generated");
+  try {
+    const sources = [
+      ...flatpakSourceSnapshotInputs.frontend,
+      ...flatpakDesktopSourceSnapshotInputs,
+      ...flatpakSourceSnapshotInputs.backend,
+    ].map((input) => typeof input === "string" ? input : input.source);
+    for (const source of new Set(sources)) {
+      const target = path.join(fixture, source);
+      if (existsSync(target)) continue;
+      mkdirSync(path.dirname(target), { recursive: true });
+      cpSync(path.join(repositoryRoot, source), target, { recursive: true });
+    }
+
+    const snapshots = () => {
+      generateFlatpakSourceSnapshots({ root: fixture, generatedRoot, sourceDateEpoch: "1" });
+      return Object.fromEntries(["frontend", "desktop", "backend"].map((name) => [
+        name, readFileSync(path.join(generatedRoot, `${name}-snapshot.tar`)),
+      ]));
+    };
+    const absent = snapshots();
+    const descriptorPath = "apps/backend/drumsep-model.json";
+    const absentBackend = tarMembers(absent.backend).map(({ name }) => name);
+    assert.ok(absentBackend.includes("apps/backend/demucs-models.json"));
+    assert.ok(absentBackend.includes("apps/backend/app/"));
+    assert.ok(!absentBackend.includes(descriptorPath));
+
+    writeFileSync(path.join(fixture, "packaging/demucs/drumsep-model.json"), "{}\n");
+    const present = snapshots();
+    const presentBackend = tarMembers(present.backend).map(({ name }) => name);
+    assert.ok(presentBackend.includes(descriptorPath));
+    assert.ok(!presentBackend.includes("packaging/demucs/drumsep-model.json"));
+    assert.ok(presentBackend.includes("apps/backend/demucs-models.json"));
+    assert.ok(presentBackend.includes("apps/backend/app/"));
+    assert.notDeepEqual(present.backend, absent.backend);
+    for (const name of ["frontend", "desktop"]) assert.deepEqual(present[name], absent[name]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("source snapshots reject duplicate paths, unsafe paths, and unsupported inputs", () => {
   const root = mkdtempSync(path.join(os.tmpdir(), "tuneforge-source-snapshot-errors-"));
   try {

@@ -22,6 +22,7 @@ from app.errors import AppError, JobCancelledError
 from app.models import Artifact, Project, utcnow
 from app.services.artifacts import refresh_artifact_file_metadata, register_artifact
 from app.services.audio_working import materialize_pcm_wav
+from app.services.drum_substems import invalidate_drum_refinement
 from app.services.paths import project_stems_dir
 from app.services.project_storage import queue_project_storage_reconciliation
 from app.services.stem_models import (
@@ -463,6 +464,11 @@ def generate_stems(
         ]
 
     try:
+        for prior in _stem_artifacts_for_source(
+            session, project_id=project.id, source_artifact_id=source_artifact.id,
+        ):
+            if prior.type == "drums_stem":
+                invalidate_drum_refinement(session, prior)
         for output, stem_metadata in stem_output_metadatas:
             saved_artifacts.append(
                 _upsert_stem_artifact(

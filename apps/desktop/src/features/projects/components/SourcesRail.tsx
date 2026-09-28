@@ -22,9 +22,18 @@ export function SourcesRail() {
     sourcesRailCollapsed,
     sourcesRailSummary,
     stemErrorMessage,
+    stemDeletionError,
     stemJob,
     stemOutputLabel,
     visibleStemArtifacts,
+    coarseVisibleStemArtifacts,
+    drumGroup,
+    drumMode,
+    drumGroupExpanded,
+    handleSetDrumMode,
+    handleToggleDrumExpanded,
+    handleDeleteDrumSplit,
+    nativeDesktopRuntime,
   } = useProjectViewModelContext();
   const editLockTitle = projectSyncLockReason ?? undefined;
 
@@ -163,8 +172,9 @@ export function SourcesRail() {
                   role="group"
                   aria-label="Stem track list"
                 >
-                  {visibleStemArtifacts.map((artifact) => (
-                    <div className="artifact-action-row" key={artifact.id}>
+                  {coarseVisibleStemArtifacts.map((artifact) => (
+                    <div className="stem-group" key={artifact.id}>
+                    <div className="artifact-action-row">
                       <button
                         className={`artifact-pill${
                           selectedArtifactId === artifact.id ? " artifact-pill--active" : ""
@@ -188,6 +198,51 @@ export function SourcesRail() {
                       >
                         <Trash2 aria-hidden="true" className="artifact-action-row__delete-icon" />
                       </button>
+                    </div>
+                    {artifact.type === "drums_stem" && drumGroup ? (
+                      <div className="stem-group__details">
+                        <div className="stem-group__actions">
+                          {drumGroup.children.length ? <button
+                            aria-expanded={drumGroupExpanded}
+                            className="button button--ghost button--small"
+                            onClick={handleToggleDrumExpanded}
+                            type="button"
+                          >{drumGroupExpanded ? "Hide Parts" : "Show Parts"}</button> : null}
+                          <div className="button-row" role="group" aria-label="Drums playback mode">
+                            <button aria-pressed={drumMode === "original"} className={`chip${drumMode === "original" ? " chip--active" : ""}`}
+                              onClick={() => handleSetDrumMode("original")} type="button">Original</button>
+                            <button aria-pressed={drumMode === "split"} className={`chip${drumMode === "split" ? " chip--active" : ""}`}
+                              disabled={!nativeDesktopRuntime || !drumGroup.splitAvailable}
+                              onClick={() => handleSetDrumMode("split")} type="button">Split</button>
+                          </div>
+                        </div>
+                        {drumGroup.children.length ? (
+                          <div className="stem-group__summary">
+                            <span className="artifact-meta">{drumGroup.includedChildren.length} of 4 parts</span>
+                            <button className="button button--ghost button--small"
+                              disabled={isDeleteStemDisabled}
+                              onClick={() => void handleDeleteDrumSplit()} type="button">Delete parts</button>
+                          </div>
+                        ) : null}
+                        {drumGroup.recoveryNeeded ? (
+                          <p className="artifact-meta">Refinement unavailable; check files or rebuild.</p>
+                        ) : null}
+                        {drumGroupExpanded ? drumGroup.includedChildren.map((child) => (
+                          <div className="artifact-action-row stem-group__child" key={child.id}>
+                            <button className="artifact-pill" onClick={() => void handleSelectStemArtifact(child)} type="button">
+                              <span className="artifact-pill__title">{artifactLabel(child)}</span>
+                              <span className="artifact-pill__meta">{stemOutputLabel(child.id)}</span>
+                            </button>
+                            <button aria-label={`Delete ${artifactLabel(child)} part`}
+                              className="button button--ghost button--small artifact-action-row__delete"
+                              disabled={isDeleteStemDisabled}
+                              onClick={() => void handleDeleteStem(child)} type="button">
+                              <Trash2 aria-hidden="true" className="artifact-action-row__delete-icon" />
+                            </button>
+                          </div>
+                        )) : null}
+                      </div>
+                    ) : null}
                     </div>
                   ))}
                 </div>
@@ -214,6 +269,7 @@ export function SourcesRail() {
                   </button>
                 </div>
               ) : null}
+              {stemDeletionError ? <p className="inline-error" role="alert">{stemDeletionError}</p> : null}
             </div>
           </>
         )}

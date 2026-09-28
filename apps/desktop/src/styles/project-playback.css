@@ -84,6 +84,48 @@
   gap: 0.55rem;
 }
 
+.playback-stem-card--child {
+  margin-inline-start: 0.75rem;
+  padding-inline-start: 0.75rem;
+  border-left: 2px solid var(--input-border);
+}
+
+.playback-stem-card--child[aria-disabled="true"] {
+  opacity: 0.55;
+}
+
+.playback-stem-card--child .artifact-pill {
+  min-width: 0;
+  padding: 0.3rem 0.4rem;
+}
+
+.playback-stem-card--child .artifact-pill__meta {
+  display: none;
+}
+
+.playback-stem-card--child .playback-stem-card__controls {
+  grid-template-columns: auto auto minmax(0, 1fr);
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+.playback-stem-card--child .output-volume[data-gain-only] {
+  grid-template-columns: minmax(2rem, 1fr) auto;
+  gap: 0.15rem;
+}
+
+.playback-stem-card--child .output-volume__percentage {
+  min-inline-size: 2.2rem;
+  padding-inline: 0.1rem;
+  font-size: 0.68rem;
+}
+
+.playback-stem-card--child .playback-stem-card__controls > .chip {
+  min-inline-size: 1.7rem;
+  inline-size: 1.7rem;
+  min-block-size: 1.7rem;
+}
+
 .playback-stem-card__controls {
   display: grid;
   grid-template-columns: auto auto minmax(6rem, 1fr);

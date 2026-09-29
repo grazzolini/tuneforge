@@ -1572,6 +1572,201 @@ mod tests {
 
     #[test]
     #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+    fn source_to_mix_transition_renders_replacement_and_advances_native_clock() {
+        fn prepare(engine: &mut NativeAudioEngine, id: &str) -> transport::AudioSession {
+            let control = session::SessionCommand {
+                lease_id: Some(format!("lease-{id}")),
+                operation_id: Some(format!("prepare-{id}")),
+                ..Default::default()
+            };
+            engine
+                .acquire(None, session::SessionOwner::Playback, &control, 30.0, 1.0)
+                .unwrap()
+                .expect("distinct source acquisition creates a generation");
+            let lanes = vec![mixer::AudioLaneRequest {
+                id: id.into(),
+                artifact_id: Some(format!("artifact-{id}")),
+                source_path: None,
+                role: mixer::AudioLaneRole::Primary,
+                gain: 1.0,
+                muted: false,
+                solo: false,
+            }];
+            engine.mixer.set_lanes(lanes.clone());
+            engine.transport.prepare(
+                None,
+                transport::AudioSessionRequest {
+                    session_id: id.into(),
+                    duration_seconds: Some(30.0),
+                    playback_rate: Some(1.0),
+                    lanes,
+                    project_output: mixer::AudioOutputRequest {
+                        gain: 1.0,
+                        muted: false,
+                    },
+                    output_routing: Default::default(),
+                    control,
+                    owner: Some(session::SessionOwner::Playback),
+                },
+                engine.mixer.effective_lanes(),
+                AudioCapabilities::detect(),
+            )
+        }
+
+        fn command(prepared: &transport::AudioSession, operation: &str) -> session::SessionCommand {
+            session::SessionCommand {
+                lease_id: Some(prepared.lease_id.clone()),
+                generation: Some(prepared.generation),
+                timeline_revision: Some(prepared.timeline_revision),
+                operation_id: Some(operation.into()),
+            }
+        }
+
+        fn play(engine: &mut NativeAudioEngine, control: session::SessionCommand, position: f64) {
+            assert!(engine
+                .authorize(session::SessionOwner::Playback, &control, true)
+                .unwrap());
+            let expected = engine.output_session.snapshot().timeline_revision;
+            let started = engine
+                .transport
+                .play(transport::AudioPlayRequest {
+                    start_time_seconds: Some(position),
+                    scheduled_start_time_seconds: None,
+                    control,
+                    start_at_native_us: None,
+                    precount: None,
+                    metronome_cues: None,
+                })
+                .unwrap();
+            assert_eq!(started.state, "playing");
+            let now = timeline::native_time_us();
+            engine
+                .output_session
+                .timeline()
+                .lock()
+                .unwrap()
+                .arm(expected, Some(position), None, now)
+                .unwrap();
+            engine
+                .transport
+                .arm_group_timelines(expected, Some(position), None, now, None, None)
+                .unwrap();
+            engine.transport.start_group_transport();
+        }
+
+        for follow_playback in [false, true] {
+            let (report_sender, report_receiver) = mpsc::sync_channel(8);
+            let mut engine = NativeAudioEngine {
+                mixer: mixer::MixerState::default(),
+                transport: transport::TransportState::default(),
+                capture: capture::CaptureState::default(),
+                output_session: session::SessionCoordinator::new_for_resource(
+                    session::AudioResource::Output,
+                    session::AudioSource::ProjectPlayback,
+                    true,
+                    false,
+                ),
+                capture_session: session::SessionCoordinator::new_for_resource(
+                    session::AudioResource::Capture,
+                    session::AudioSource::TunerCapture,
+                    false,
+                    true,
+                ),
+                report_sender,
+                report_receiver,
+                last_terminal_event: None,
+            };
+            engine
+                .transport
+                .set_standalone_metronome_for_test(
+                    transport::StandaloneMetronomeRequest {
+                        enabled: true,
+                        bpm: 120.0,
+                        beats_per_bar: 4,
+                        accent_first_beat: true,
+                    gain: 0.8,
+                        follow_playback,
+                        control: session::SessionCommand {
+                            lease_id: Some("standalone-metronome".into()),
+                            operation_id: Some("start-metronome".into()),
+                            ..Default::default()
+                        },
+                    },
+                    AudioCapabilities::detect(),
+                )
+                .unwrap();
+
+            // Keep metronome lifecycle active while PCM assertions identify the song source.
+            engine.transport
+                .set_cue_outputs(mixer::CueOutputRequest {
+                    count_in_gain: 1.0,
+                    count_in_muted: false,
+                    metronome_gain: 0.8,
+                    metronome_muted: true,
+                })
+                .unwrap();
+            let mut source = prepare(&mut engine, "source");
+            let source_runtime = engine
+                .transport
+                .install_test_project_pcm_runtime(&[0.25; 1_000]);
+            assert!(!source_runtime.gate_open());
+            play(&mut engine, command(&source, "play-source"), 13.99);
+            let mut output = [0.0; 10];
+            source_runtime.render(&mut output);
+            assert_eq!(output, [0.25; 10]);
+            let carried_position = engine.output_snapshot().position_seconds;
+            assert!((carried_position - 14.0).abs() < 1e-9);
+            let source_incarnation = engine.transport.runtime_incarnation();
+            source.timeline_revision = engine.output_snapshot().timeline_revision;
+
+            assert!(engine
+                .authorize(
+                    session::SessionOwner::Playback,
+                    &command(&source, "stop-source"),
+                    false
+                )
+                .unwrap());
+            assert_eq!(engine.transport.stop().state, "stopped");
+            engine.output_session.timeline().lock().unwrap().stop();
+            engine.transport.stop_group_timelines().unwrap();
+            assert!(!source_runtime.gate_open());
+            assert!(!engine
+                .authorize(
+                    session::SessionOwner::Playback,
+                    &command(&source, "play-source"),
+                    true
+                )
+                .unwrap());
+            assert_eq!(engine.output_snapshot().state, "stopped");
+
+            let mix = prepare(&mut engine, "practice-mix");
+            assert!(mix.generation > source.generation);
+            assert_eq!(mix.timeline_revision, 1);
+            assert!(source_runtime.retired());
+            assert!(engine.transport.runtime_incarnation() > source_incarnation);
+            source_runtime.render(&mut output);
+            assert_eq!(output, [0.0; 10]);
+            let mix_runtime = engine
+                .transport
+                .install_test_project_pcm_runtime(&[-0.5; 1_000]);
+            assert!(!mix_runtime.gate_open());
+            play(&mut engine, command(&mix, "play-mix"), carried_position);
+            assert!(mix_runtime.gate_open());
+            mix_runtime.render(&mut output);
+            assert_eq!(output, [-0.5; 10]);
+            let playing = engine.output_snapshot();
+            assert_eq!(playing.session_id.as_deref(), Some("practice-mix"));
+            assert_eq!(playing.generation, mix.generation);
+            assert_eq!(playing.state, "playing");
+            assert!((playing.position_seconds - carried_position - 0.01).abs() < 1e-9);
+            mix_runtime.render(&mut output);
+            assert_eq!(output, [-0.5; 10]);
+            assert!(engine.output_snapshot().position_seconds > playing.position_seconds);
+        }
+    }
+
+    #[test]
+    #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
     fn playback_acquire_and_prepare_preserve_standalone_auxiliary_runtime() {
         let capabilities = AudioCapabilities::detect();
         let (report_sender, report_receiver) = mpsc::sync_channel(8);

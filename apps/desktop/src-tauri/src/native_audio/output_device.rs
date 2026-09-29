@@ -41,7 +41,7 @@ impl RouteSelection {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LaneRouteSelection {
     pub lane_id: String,
@@ -51,7 +51,7 @@ pub struct LaneRouteSelection {
     pub selection: RouteSelection,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OutputRoutingRequest {
     #[serde(default)]
@@ -185,6 +185,17 @@ impl OutputRoutingState {
         self.project = OutputRouteState::default();
         self.cue = OutputRouteState::default();
         self.lanes.clear();
+        self.recompute(global);
+        Ok(())
+    }
+
+    pub fn update_metadata(
+        &mut self,
+        request: OutputRoutingRequest,
+        global: &OutputRouteState,
+    ) -> Result<(), &'static str> {
+        request.validate()?;
+        self.request = request;
         self.recompute(global);
         Ok(())
     }

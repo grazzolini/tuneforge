@@ -58,6 +58,7 @@ export function PlaybackPracticeControlsDrawer({
     };
     const handleKeyDown = (event: globalThis.KeyboardEvent) => {
       if (event.key === "Escape") {
+        if (event.defaultPrevented) return;
         event.preventDefault();
         dismissFromUi();
         return;

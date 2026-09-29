@@ -11,9 +11,10 @@ for browsers and non-Tauri runtimes, and for a Tauri build compiled with the for
   Android when every active
   artifact has a local path. WAV uses a fast streaming reader; other common formats decode through
   Symphonia for playback only.
-- One native output runtime mixes project lanes, count-in cues, and the standalone metronome. A
-  separate native capture runtime can run tuner input at the same time; starting or stopping either
-  resource does not replace the other.
+- Native playback opens one runtime per resolved output device. Sources assigned to the same device
+  share its stream; each group owns its decoders and timeline. Logical transport commands reach all
+  groups. Device clocks are not aligned or corrected. A separate native capture runtime can run
+  tuner input at the same time.
 - Output gain is layered in the same order on native and browser paths: each stem gain feeds the
   project gain and mute; independent count-in and metronome gain and mute control their click
   categories; then the app gain and mute control the final output. Gain changes ramp over 15 ms.
@@ -23,10 +24,10 @@ for browsers and non-Tauri runtimes, and for a Tauri build compiled with the for
   use a 760 Hz triangle click with a 2 ms attack, 45 ms duration, and exponential decay on both
   native and Web Audio paths; timing-grid gaps are filtered against source BPM and scaled to the
   displayed playback tempo.
-- The standalone metronome free-runs at its configured BPM when no project is playing. Follow is on
-  by default: during playback it follows the analysed beat grid when available, otherwise the
-  playback timeline. Pause, stop, or natural end re-anchor it to free-run. With Follow off it stays
-  free-running alongside playback.
+- The standalone Tools metronome free-runs at its configured BPM with Follow off. Follow is on by
+  default: its clicks use the analysed beat grid when available, otherwise the playback timeline.
+  Followed clicks are silent while project playback is paused, stopped, or complete, and resume with
+  project playback. With Follow off, Tools runs independently alongside playback.
 - Native tempo changes use `signalsmith-stretch` for pitch-preserving playback.
 - A normal Tauri native failure is terminal for that resource. Playback holds its last authoritative
   position and shows the transport error; tuner capture clears live input. Neither path starts Web
@@ -34,19 +35,26 @@ for browsers and non-Tauri runtimes, and for a Tauri build compiled with the for
   native attempt. The bounded output-device recovery below is the only automatic reopen path.
   On Linux, a recoverable CPAL output xrun remains on the current stream and is recorded in
   diagnostics; a later unrecoverable output error still follows the terminal path.
-- Settings selects one native master output for project playback, count-in, and metronome. macOS
-  and Linux persist an exact native device ID or System Default; Android keeps the choice only in
-  native process memory, including WebView remounts, and discards it on process restart. Older
-  settings snapshots load System Default; Android strips desktop output IDs on import and export.
-  Linux lists only verified PipeWire `Audio/Sink` nodes and rejects duplicate or missing identity.
-  Device labels are display text, never identity.
-- Switching outputs rebuilds one stream with the same device used for configuration and opening.
-  It retains the playback cursor, gains, count-in, metronome, and queued cues. Healthy System
-  Default route changes leave the stream running. If a selected output disappears, native audio
-  tries System Default once, keeps the preferred selection visible, and stays on the fallback for
-  that process session. A default stream invalidation gets one bounded rebuild. If recovery fails
-  or no output remains, playback pauses at its last position and waits for Play; a device returning
-  does not resume playback automatically. Generic output errors remain terminal.
+- Settings selects the global route. A project can follow Settings or override it for its source
+  track and saved mixes. Stems follow the project unless overridden; refined drum parts follow the
+  stable Drums route unless overridden. Metronome, count-in, and loop count-in share one cue route
+  that follows the project by default. An independent Tools metronome follows Settings. Playback
+  and Studio share the same local project choices; Reset all outputs clears only route overrides.
+  macOS and Linux persist exact native device IDs; Android keeps explicit IDs only in native process
+  memory and discards them on restart. Browser output IDs remain separate from native IDs. Route
+  choices never enter backend, sync, or export payloads. Older settings load System Default. Linux
+  lists only verified PipeWire `Audio/Sink` nodes and rejects duplicate or missing identity; labels
+  are display text, never identity.
+- Switching a route preserves the playback cursor, playing or paused intent, gains, and cues across
+  a short stream handoff. An unavailable explicit selection gets one System Default attempt per
+  explicit Play, Retry, or selection action. The preferred choice remains visible while the
+  effective route is latched to fallback; device reappearance alone does not switch it back. If
+  System Default recovery fails, the whole playback session stops at its last position and waits
+  for an explicit retry. Generic output errors remain terminal.
+- Browser output routing uses one Web Audio context with a sink-selectable destination per route
+  where supported. Direct HTML media selects its own sink. Browsers without output selection use
+  System Default and keep saved choices for a capable runtime. Browser sink permission and autoplay
+  may require a user gesture; failures are shown without silently changing the saved route.
 - Android's AAudio request cannot confirm the physical route through CPAL. Settings reports
   `requested-unverified` for an explicit Android device and never claims that Android followed
   the request. A selected Android output loss uses the same one-time System Default fallback,

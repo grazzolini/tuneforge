@@ -1,6 +1,8 @@
+import { useState } from "react";
 import { Trash2 } from "lucide-react";
 import { useProjectViewModelContext } from "./useProjectViewModelContext";
 import { artifactLabel, artifactSummary, fileNameFromPath, formatArtifactTimestamp } from "../projectViewUtils";
+import { OutputRoutingPanel, ProjectOutputRoute, RoutingTabs } from "./OutputRoutingControls";
 
 export function SourcesRail() {
   const {
@@ -36,6 +38,11 @@ export function SourcesRail() {
     nativeDesktopRuntime,
   } = useProjectViewModelContext();
   const editLockTitle = projectSyncLockReason ?? undefined;
+  const [routingTab, setRoutingTab] = useState<"stems" | "outputs">("stems");
+  const outputStemArtifacts = coarseVisibleStemArtifacts.flatMap((artifact) =>
+    artifact.type === "drums_stem" && drumGroupExpanded && drumGroup
+      ? [artifact, ...drumGroup.includedChildren] : [artifact],
+  );
 
   return (
     <aside className={`stack sources-rail${sourcesRailCollapsed ? " sources-rail--collapsed" : ""}`}>
@@ -105,6 +112,8 @@ export function SourcesRail() {
               </div>
             </div>
 
+            <ProjectOutputRoute />
+
             <div className="rail-section">
               <div className="rail-section__header">
                 <div>
@@ -157,7 +166,8 @@ export function SourcesRail() {
               )}
             </div>
 
-            <div className="rail-section">
+            <RoutingTabs active={routingTab} label="Studio routes and stems" onChange={setRoutingTab} />
+            {routingTab === "stems" ? <div className="rail-section">
               <div className="rail-section__header">
                 <div>
                   <h3>Stems</h3>
@@ -270,7 +280,7 @@ export function SourcesRail() {
                 </div>
               ) : null}
               {stemDeletionError ? <p className="inline-error" role="alert">{stemDeletionError}</p> : null}
-            </div>
+            </div> : <OutputRoutingPanel stemArtifacts={outputStemArtifacts} />}
           </>
         )}
       </div>

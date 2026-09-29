@@ -139,8 +139,8 @@ test("settings scroll delta rounds bottom overflow up to whole pixels", () => {
 
 test("release-media catalog has unique identifiers, files, and required callbacks", () => {
   assert.equal(validateReleaseMediaCatalog(releaseMediaCaptureCatalog), releaseMediaCaptureCatalog);
-  assert.equal(releaseMediaCaptureCatalog.length, 21);
-  assert.equal(releaseMediaCaptureCatalog.filter((entry) => entry.kind === "screenshot").length, 20);
+  assert.equal(releaseMediaCaptureCatalog.length, 22);
+  assert.equal(releaseMediaCaptureCatalog.filter((entry) => entry.kind === "screenshot").length, 21);
   assert.equal(releaseMediaCaptureCatalog.filter((entry) => entry.kind === "video").length, 1);
 
   const ids = releaseMediaCaptureCatalog.map((entry) => entry.id);
@@ -388,6 +388,42 @@ test("mobile screenshots provide deterministic Playback, Analysis, and Android E
       viewport: { width: 411, height: 2000 },
     },
   ]);
+});
+
+test("mobile Analysis is ready from its results without the removed Tools shortcut", async () => {
+  const entry = releaseMediaCaptureCatalog.find((item) => item.id === "mobile-analysis-results");
+  const observed = [];
+  const readyText = (text) => ({ waitFor: async () => { observed.push(text); } });
+  const panel = {
+    waitFor: async () => undefined,
+    getByText: (text) => readyText(text),
+    locator: (selector) => {
+      assert.equal(selector, ".analysis-stat");
+      return { filter: ({ hasText }) => {
+        assert.equal(hasText, "Estimated Key");
+        return { getByLabel: (label) => readyText(label) };
+      } };
+    },
+    boundingBox: async () => ({ x: 0, y: 60, width: 411, height: 400 }),
+  };
+  const page = {
+    getByRole: (role, { name }) => {
+      if (role === "link") throw new Error(`Unexpected removed link: ${name}`);
+      if (role === "tablist") return { boundingBox: async () => ({ x: 0, y: 0, width: 411, height: 50 }) };
+      assert.equal(role, "tab");
+      assert.equal(name, "Analysis");
+      return readyText(name);
+    },
+    locator: (selector) => {
+      if (selector === ".analysis-summary-panel") return panel;
+      assert.equal(selector, ".main-content");
+      return { boundingBox: async () => ({ x: 0, y: 0, width: 411, height: 891 }) };
+    },
+    viewportSize: () => ({ width: 411, height: 891 }),
+  };
+
+  await entry.ready({ page, timeoutMs: 1 });
+  assert.deepEqual(observed, ["Analysis", "Detected Tuning", "439.80", "Estimated Key", "F", "116.0"]);
 });
 
 test("Android Export preparation selects one saved mix and M4A", async () => {

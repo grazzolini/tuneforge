@@ -27,6 +27,7 @@ import {
 } from "../tools/metronome-context";
 import { AudioOutputContext } from "../../lib/audioOutputContext";
 import { markBrowserOutputDisconnected, setBrowserOutputRouting } from "../../lib/audioOutput";
+import { readPlaybackLiveDiagnostics } from "../../lib/playbackDiagnostics";
 import { DEFAULT_PROJECT_OUTPUT_ROUTING } from "../../lib/outputRouting";
 import { readProjectPlaybackState, writeProjectPlaybackState } from "./projectPlaybackState";
 
@@ -262,6 +263,8 @@ describe("native playback race regressions", () => {
         cue: { kind: "inherit" }, stems: {} },
     } });
     await setup(bufferedSession({
+      selectedPlaybackArtifactId: "kick", playbackArtifactIds: ["kick"],
+      visibleStemArtifactIds: ["kick"], artifactPathsById: { kick: "/tmp/kick.wav" },
       routeLanes: [{ laneId: "kick", stableKey: "source:kick",
         parentLaneId: "drums", parentStableKey: "source:drums" }],
     }));
@@ -468,6 +471,128 @@ describe("native playback race regressions", () => {
       });
     });
   }
+
+  for (const cueRoute of [{ kind: "inherit" }, { kind: "explicit-device", deviceId: "cue-speaker" }] as const) {
+    it(`keeps original playback running when inactive stems arrive (${cueRoute.kind})`, async () => {
+      enableNativePlayback();
+      const original = session();
+      await setup(original);
+      act(() => playback.setCueOutputRoute(cueRoute));
+      await flush();
+      await act(async () => playback.playPlayback());
+      act(() => playback.seekTo(9));
+      await flush();
+      const prepareCount = calls("audio_prepare_session").length;
+      const routeCount = calls("audio_set_output_routing").length;
+      const stopCount = calls("audio_stop").length;
+      act(() => playback.registerProjectSession(session({
+        playbackArtifactIds: ["sine", "new-stem"],
+        visibleStemArtifactIds: ["new-stem"],
+        artifactPathsById: { sine: "/tmp/synthetic.wav", "new-stem": "/tmp/new-stem.wav" },
+        routeLanes: [{ laneId: "new-stem", stableKey: "source:vocals" }],
+      })));
+      await flush();
+      expect(calls("audio_prepare_session")).toHaveLength(prepareCount);
+      expect(calls("audio_set_output_routing")).toHaveLength(routeCount);
+      expect(calls("audio_stop")).toHaveLength(stopCount);
+      expect(playback.isPlaying).toBe(true);
+      expect(playback.playbackTimeSeconds).toBe(9);
+    });
+  }
+
+  it("keeps acknowledged playback running after a rejected route change", async () => {
+    enableNativePlayback();
+    await setup();
+    await act(async () => playback.playPlayback());
+    const invoke = getMockInvoke();
+    const originalInvoke = invoke.getMockImplementation()!;
+    const stopCount = calls("audio_stop").length;
+    invoke.mockImplementation(async (command, args) => {
+      if (command === "audio_set_output_routing") throw new Error("output_stream_failure");
+      return originalInvoke(command, args);
+    });
+    act(() => playback.setCueOutputRoute({ kind: "explicit-device", deviceId: "missing-speaker" }));
+    await flush();
+    expect(playback.isPlaying).toBe(true);
+    expect(calls("audio_stop")).toHaveLength(stopCount);
+    expect(playback.outputRoutingSaveError).toMatch(/previous output/);
+  });
+
+  it("starts a newly selected native mix after asynchronous replacement and artifact refresh", async () => {
+    enableNativePlayback();
+    await setup();
+    await act(async () => playback.playPlayback());
+    act(() => emitMockNativePlaybackPosition({ sessionId: "synthetic:native:sine", state: "playing",
+      positionSeconds: 14, durationSeconds: 30 }));
+    const invoke = getMockInvoke();
+    const originalInvoke = invoke.getMockImplementation()!;
+    const stop = deferred<void>();
+    const prepare = deferred<void>();
+    const play = deferred<void>();
+    let replacementPlaying: Record<string, unknown> | undefined;
+    invoke.mockImplementation(async (command, args) => {
+      if (command === "audio_stop") await stop.promise;
+      if (command === "audio_prepare_session") {
+        await prepare.promise;
+        setMockNativeAudioState({ snapshot: { generation: 2, timelineRevision: 1 } });
+      }
+      const result = await originalInvoke(command, args) as Record<string, unknown>;
+      if (command === "audio_play") {
+        replacementPlaying = result;
+        await play.promise;
+      }
+      return result;
+    });
+    const mix = session({ selectedPlaybackArtifactId: "mix", playbackArtifactIds: ["sine", "mix"],
+      artifactPathsById: { sine: "/tmp/synthetic.wav", mix: "/tmp/mix.wav" } });
+    act(() => playback.registerProjectSession(mix));
+    await flush();
+    expect(calls("audio_stop")).toHaveLength(1);
+    act(() => stop.resolve());
+    await flush();
+    act(() => playback.registerProjectSession({ ...mix, stageSummary: "Refreshed artifacts" }));
+    act(() => prepare.resolve());
+    await flush();
+    expect(replacementPlaying?.state).toBe("playing");
+    expect(calls("audio_play")[1]?.[1]).toMatchObject({ payload: {
+      generation: 2, timelineRevision: 1, startTimeSeconds: 14,
+    } });
+    act(() => play.resolve());
+    await flush();
+    act(() => emitMockNativePlaybackPosition({ sessionId: "synthetic:native:mix", generation: 2,
+      timelineRevision: replacementPlaying?.timelineRevision as number, state: "playing",
+      positionSeconds: 14.25, durationSeconds: 30 }));
+    expect(playback.session?.selectedPlaybackArtifactId).toBe("mix");
+    expect(playback.isPlaying).toBe(true);
+    expect(playback.playbackTimeSeconds).toBe(14.25);
+    expect(readPlaybackLiveDiagnostics()).toMatchObject({ currentState: "playing", currentPath: "native", statusMessage: null });
+    expect(getMockAudioContexts()).toHaveLength(0);
+  });
+
+  it("restores original playback and source selection when a replacement mix fails", async () => {
+    enableNativePlayback();
+    const rollback = vi.fn();
+    await setup(session({ onPlaybackSourceRollback: rollback }));
+    await act(async () => playback.playPlayback());
+    act(() => playback.seekTo(9));
+    await flush();
+    const invoke = getMockInvoke();
+    const originalInvoke = invoke.getMockImplementation()!;
+    invoke.mockImplementation(async (command, args) => {
+      const payload = (args as { payload?: { lanes?: { artifactId?: string }[] } })?.payload;
+      if (command === "audio_prepare_session" && payload?.lanes?.some((lane) => lane.artifactId === "mix")) {
+        throw new Error("output_stream_failure");
+      }
+      return originalInvoke(command, args);
+    });
+    act(() => playback.registerProjectSession(session({ selectedPlaybackArtifactId: "mix",
+      playbackArtifactIds: ["mix"], artifactPathsById: { mix: "/tmp/mix.wav" } })));
+    await flush();
+    expect(rollback).toHaveBeenCalledTimes(1);
+    expect(playback.session?.selectedPlaybackArtifactId).toBe("sine");
+    expect(playback.playbackTimeSeconds).toBe(9);
+    expect(playback.isPlaying).toBe(true);
+  });
 
   it("switches drum representation at the current playing position without parent and child overlap", async () => {
     enableNativePlayback();
@@ -1709,6 +1834,59 @@ describe("buffered Web playback race regressions", () => {
 });
 
 describe("followed native metronome races", () => {
+  it("stops and exposes a failed Follow cue schedule, then allows Start to retry", async () => {
+    enableNativePlayback();
+    const invoke = getMockInvoke();
+    const originalInvoke = invoke.getMockImplementation()!;
+    let failSchedule = true;
+    invoke.mockImplementation(async (command, args) => {
+      if (command === "audio_set_standalone_metronome") return standaloneMetronomeResult(args);
+      if (command === "audio_schedule_cues" && failSchedule) throw new Error("output_stream_failure");
+      return originalInvoke(command, args);
+    });
+    render(<PlaybackProvider><Harness /><MetronomeProvider><MetronomeHarness /></MetronomeProvider></PlaybackProvider>);
+    act(() => playback.registerProjectSession(session()));
+    await flush();
+    await act(async () => playback.playPlayback());
+    await act(async () => metronome.startMetronome());
+    await flush();
+    expect(metronome.isRunning).toBe(false);
+    expect(metronome.errorMessage).toMatch(/stopping it safely/);
+    expect(playback.isPlaying).toBe(true);
+    failSchedule = false;
+    await act(async () => metronome.startMetronome());
+    await flush();
+    expect(metronome.isRunning).toBe(true);
+    expect(metronome.errorMessage).toBeNull();
+  });
+
+  for (const position of [0.25, 0.75, 1.25]) {
+    it(`starts Follow at the next future beat from ${position}s`, async () => {
+      enableNativePlayback();
+      const invoke = getMockInvoke();
+      const originalInvoke = invoke.getMockImplementation()!;
+      invoke.mockImplementation(async (command, args) => command === "audio_set_standalone_metronome"
+        ? standaloneMetronomeResult(args) : originalInvoke(command, args));
+      render(<PlaybackProvider><Harness /><MetronomeProvider><MetronomeHarness /></MetronomeProvider></PlaybackProvider>);
+      act(() => playback.registerProjectSession(session()));
+      await flush();
+      await act(async () => playback.playPlayback());
+      act(() => {
+        playback.seekTo(position);
+        metronome.seedBpm(120);
+      });
+      await flush();
+      await act(async () => metronome.startMetronome());
+      await flush();
+      const schedules = calls("audio_schedule_cues");
+      const last = schedules[schedules.length - 1]?.[1] as {
+        payload?: { cues?: Array<{ cueIndex: number; positionSeconds: number; accent: boolean }> };
+      };
+      expect(last.payload?.cues?.[0]).toMatchObject({ cueIndex: Math.ceil(position / 0.5),
+        positionSeconds: Math.ceil(position / 0.5) * 0.5, accent: false });
+    });
+  }
+
   it("restores followed cues after a native tempo mutation", async () => {
     enableNativePlayback();
     let cueCount = 0;

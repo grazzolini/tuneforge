@@ -7,6 +7,9 @@ download, installation, verification, signature, and publication instructions.
 
 ### Added
 
+- Added project, stem, and shared cue output routing in Playback and Studio, with inherited routes,
+  explicit device choices, visible fallback state, and a separate reset for output assignments.
+  Practice Controls now exposes routing on narrow desktops and mobile.
 - Added optional, separate DrumSep refinement for existing six-stem Drums on native desktop,
   with Original/Split controls and durable child artifacts. An explicit Refine or Rebuild action
   authorizes native desktop to download and verify the author-hosted checkpoint when needed, then

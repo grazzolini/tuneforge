@@ -1156,6 +1156,13 @@ export function SettingsView() {
               id="settings-output-device"
               disabled={!appOutput.outputCapabilities.nativePlaybackSupported}
               value={(androidRuntime ? appOutput.outputRoute?.preferredDeviceId : defaultOutputDeviceId) ?? "default"}
+              onFocus={() => void appOutput.refreshOutputDevices?.()}
+              onPointerDown={() => void appOutput.refreshOutputDevices?.()}
+              onKeyDown={(event) => {
+                if (event.key === " " || event.key === "ArrowDown" || event.key === "Enter") {
+                  void appOutput.refreshOutputDevices?.();
+                }
+              }}
               onChange={(event) => void appOutput.selectOutputDevice?.(
                 event.target.value === "default" ? null : event.target.value,
               )}

@@ -1045,6 +1045,18 @@
   letter-spacing: 0.14em;
 }
 
+.narrow-playback-controls {
+  display: none;
+  align-items: center;
+  gap: 0.45rem;
+  flex: 0 0 auto;
+}
+
+.narrow-playback-controls svg {
+  inline-size: 1rem;
+  block-size: 1rem;
+}
+
 .screen__header.mobile-playback-app-bar {
   position: relative;
   z-index: 4;
@@ -1347,6 +1359,197 @@
 .playback-practice-rail__header h2 {
   font-size: clamp(1.25rem, 2.3vw, 1.65rem);
   margin: 0;
+}
+
+.output-routing-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.35rem;
+  padding: 0.28rem;
+  border: 1px solid var(--divider);
+  border-radius: 13px;
+  background: var(--surface-muted);
+}
+
+.output-routing-tabs__tab {
+  min-inline-size: 0;
+  padding: 0.48rem 0.6rem;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.output-routing-tabs__tab--active {
+  background: var(--panel-strong);
+  color: var(--text);
+}
+
+.output-routing {
+  display: flex;
+  flex-direction: column;
+  gap: 0.58rem;
+  min-inline-size: 0;
+  padding: 0.8rem;
+  border: 1px solid var(--divider);
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--surface-muted) 76%, transparent);
+}
+
+.output-routing h3 {
+  margin: 0;
+  font-size: 0.98rem;
+}
+
+.playback-picker-group .output-routing--project {
+  flex-basis: 100%;
+}
+
+.output-routing__heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.45rem;
+}
+
+.output-routing__heading h3 {
+  white-space: nowrap;
+}
+
+.output-routing__heading .button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  flex: 0 0 auto;
+  min-block-size: 2.75rem;
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+
+.output-routing__heading svg,
+.output-route-row svg {
+  inline-size: 0.88rem;
+  block-size: 0.88rem;
+  flex: 0 0 auto;
+}
+
+.output-route-row {
+  display: grid;
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
+  align-items: center;
+  gap: 0.3rem 0.45rem;
+  min-inline-size: 0;
+}
+
+.output-route-row__heading {
+  min-inline-size: 0;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.output-route-row__warning {
+  color: var(--danger);
+}
+
+.output-route-row__trigger,
+.output-route-row__choice {
+  display: grid;
+  grid-template-columns: 0.9rem minmax(0, 1fr) 0.9rem;
+  align-items: center;
+  gap: 0.45rem;
+  inline-size: 100%;
+  min-block-size: 2.75rem;
+  min-inline-size: 0;
+  padding: 0.48rem 0.55rem;
+  border: 1px solid var(--divider);
+  border-radius: 10px;
+  background: var(--panel-strong);
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.78rem;
+  text-align: start;
+}
+
+.output-route-row__trigger > span {
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.output-route-row__choice > span {
+  min-inline-size: 0;
+  overflow-wrap: anywhere;
+}
+
+.output-route-row__trigger:focus-visible,
+.output-route-row__choice:focus-visible,
+.output-routing-tabs__tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.output-route-row__choice[aria-pressed="true"] {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.output-route-row__choice:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.output-route-row__choices {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  max-block-size: 15rem;
+  overflow: auto;
+  overscroll-behavior-y: contain;
+  padding: 0.35rem;
+  border: 1px solid var(--divider);
+  border-radius: 12px;
+  background: var(--panel-strong);
+  grid-column: 1 / -1;
+}
+
+.output-route-row__status,
+.output-route-row__unavailable,
+.output-routing .artifact-meta {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.72rem;
+  overflow-wrap: anywhere;
+}
+
+.output-route-row__status,
+.output-route-row > .field-error {
+  grid-column: 1 / -1;
+}
+
+.output-routing--project .output-route-row__heading {
+  display: none;
+}
+
+.output-routing--project .output-route-row__trigger {
+  grid-column: 1 / -1;
+}
+
+.output-route-row__unavailable {
+  padding: 0.35rem;
+}
+
+.playback-metronome-follow {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  font-size: 0.84rem;
+  font-weight: 700;
 }
 
 .playback-workspace__summary-meta--inline {
@@ -2140,6 +2343,10 @@
 }
 
 @media (max-width: 1100px) {
+  .narrow-playback-controls {
+    display: inline-flex;
+  }
+
   .playback-workspace--practice {
     grid-template-columns: 1fr;
     grid-template-rows: minmax(0, 7rem) minmax(0, 1fr) auto;

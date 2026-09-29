@@ -517,10 +517,6 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     useState<PlaybackControlBackend>("none");
 
   useEffect(() => {
-    sessionRef.current = session;
-  }, [session]);
-
-  useEffect(() => {
     setBrowserOutputRouting({
       projectId: session?.projectId ?? null,
       globalDeviceId: browserOutputDeviceId,
@@ -861,7 +857,9 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     while (nativePlaybackRef.current.sessionSignature === targetSignature &&
       nativeSessionSignature(sessionRef.current) === targetSignature) {
       const latestSession = sessionRef.current!;
-      const request = nativeRoutingRequest(outputRoutingRef.current, latestSession.routeLanes ?? []);
+      const activeIds = new Set(nativeActiveArtifactIds(latestSession));
+      const request = nativeRoutingRequest(outputRoutingRef.current,
+        (latestSession.routeLanes ?? []).filter((lane) => activeIds.has(lane.laneId)));
       const signature = JSON.stringify(request);
       if (nativeRouteUpdateSignatureRef.current === signature && !forceAttempt) return true;
       const snapshot = await enqueueNativeOutputMutation((control) =>
@@ -1308,7 +1306,9 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
 
     const prepareToken = {};
     const preparedLaneUpdateSignature = nativeLaneUpdateSignature(targetSession);
-    const preparedRouting = nativeRoutingRequest(outputRoutingRef.current, targetSession.routeLanes ?? []);
+    const activeRouteIds = new Set(nativeActiveArtifactIds(targetSession));
+    const preparedRouting = nativeRoutingRequest(outputRoutingRef.current,
+      (targetSession.routeLanes ?? []).filter((lane) => activeRouteIds.has(lane.laneId)));
     const preparedRoutingSignature = JSON.stringify(preparedRouting);
     const preparePromise = (async () => {
       const preparedSession = await prepareNativeAudioSession({
@@ -2885,9 +2885,11 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
         const restoreSession = failed.rollbackSession;
         if (restoreSession) {
           clearPendingTransition();
+          nativePlaybackRef.current.blockedSessionSignature = null;
           sessionRef.current = restoreSession;
           setSession(restoreSession);
-          restoreSession.onDrumModeRollback?.();
+          if (failed.rollbackSession?.isStemPlayback) restoreSession.onDrumModeRollback?.();
+          else restoreSession.onPlaybackSourceRollback?.();
           pendingTransitionRef.current = {
             id: ++transitionCounterRef.current,
             signature: playbackSignature(restoreSession),
@@ -2906,7 +2908,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
         clearPendingTransition();
         setIsPlaying(false);
         markPlaybackError(failed.restoringDrumMode
-          ? "Drum switching and playback restoration both failed. Check your audio output, then press Play to retry."
+          ? "Switching and playback restoration both failed. Check your audio output, then press Play to retry."
           : "Playback could not start. Check your audio output, then press Play to retry.");
       };
 
@@ -3874,11 +3876,24 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     forceAttempt = false,
   ) {
     if (nativePlaybackRef.current.sessionSignature !== nativeSessionSignature(targetSession)) return;
+    const owner = nativeOutputMutationTag();
     void reconcileNativeOutputRouting(targetSession, forceAttempt)
-      .catch((error) => failNativePlaybackCommand(
-        error,
-        "Playback stopped. Check your audio output, then press Play to retry.",
-      ));
+      .catch(async (error) => {
+        if (!owner || !nativeOutputMutationIsCurrent(owner)) return;
+        try {
+          const snapshot = await getNativeAudioSnapshot();
+          if (!nativeOutputMutationIsCurrent(owner)) return;
+          if (snapshot.nativePlaybackSupported && snapshot.state !== "stopped"
+            && recordNativeSnapshot(snapshot)) {
+            setOutputRoutingSaveError("Could not open that output route. Playback continues on the previous output.");
+            return;
+          }
+        } catch {
+          if (!nativeOutputMutationIsCurrent(owner)) return;
+        }
+        failNativePlaybackCommand(error,
+          "Playback stopped. Check your audio output, then press Play to retry.");
+      });
   });
 
   const registerProjectSession = useCallback((nextSession: ProjectPlaybackSession) => {
@@ -4092,7 +4107,8 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
           shouldPlay &&
           nextUsesBufferedClock &&
           (previousUsesBufferedClock || !samePlaybackTarget) && !isDrumSwitch,
-        rollbackSession: isDrumSwitch ? previousSession : undefined,
+        rollbackSession: isDrumSwitch || (previousUsesNative && primarySwap)
+          ? previousSession : undefined,
         awaitingLoadKeys,
         awaitingSeekKeys,
         forceSeekKeys,

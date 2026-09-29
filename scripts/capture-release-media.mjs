@@ -125,6 +125,21 @@ const releaseMediaCaptureCatalog = [
     capture: captureScreenshotEntry,
   },
   {
+    id: "playback-output-routes",
+    enabled: true,
+    kind: "screenshot",
+    fileName: "playback-output-routes.png",
+    title: "Playback output routes",
+    caption: "Route a synthetic vocal stem to System Default while other stems follow the project.",
+    alt: "TuneForge Playback Outputs tab showing project, stem, and metronome routes with Vocals on System Default",
+    fixture: "release-showcase-v1",
+    viewport: { width: 1600, height: 1400 },
+    route: "/projects/proj_release_showcase",
+    prepare: preparePlaybackOutputRoutes,
+    ready: readyPlaybackOutputRoutes,
+    capture: captureScreenshotEntry,
+  },
+  {
     id: "playback",
     enabled: true,
     kind: "screenshot",
@@ -1794,6 +1809,18 @@ async function preparePlaybackOutputLevels({ page, timeoutMs }) {
   await rail.getByRole("slider", { name: "App volume", exact: true }).scrollIntoViewIfNeeded();
 }
 
+async function preparePlaybackOutputRoutes({ page, timeoutMs }) {
+  const practiceMix = page.getByRole("button", { name: /^Practice Mix/ }).first();
+  await practiceMix.waitFor({ state: "visible", timeout: timeoutMs });
+  await practiceMix.click();
+  const rail = page.locator(".playback-practice-rail--desktop");
+  await rail.getByRole("tab", { name: "Outputs" }).click();
+  await rail.getByRole("button", { name: "Vocals output: Follow project" }).click();
+  await rail.getByRole("group", { name: "Vocals output choices" })
+    .getByRole("button", { name: "System Default" }).click();
+  await rail.getByRole("heading", { name: "Project output" }).scrollIntoViewIfNeeded();
+}
+
 async function prepareBackgroundPlaybackVolume({ page, timeoutMs }) {
   const playButton = page.getByRole("button", { name: "Play playback" });
   await playButton.waitFor({ state: "visible", timeout: timeoutMs });
@@ -1993,6 +2020,21 @@ async function readyPlaybackOutputLevels({ page, timeoutMs }) {
   ) {
     throw new Error("Playback output capture requires muted Metronome 62 and App 100.");
   }
+}
+
+async function readyPlaybackOutputRoutes({ page, timeoutMs }) {
+  const rail = page.locator(".playback-practice-rail--desktop");
+  await rail.getByRole("tab", { name: "Outputs" })
+    .waitFor({ state: "visible", timeout: timeoutMs });
+  if (await rail.getByRole("tab", { name: "Outputs" }).getAttribute("aria-selected") !== "true") {
+    throw new Error("Playback routing capture requires Outputs selected.");
+  }
+  await rail.getByRole("button", { name: "Vocals output: System Default" })
+    .waitFor({ state: "visible", timeout: timeoutMs });
+  await rail.getByRole("button", { name: "Drums output: Follow project" })
+    .waitFor({ state: "visible", timeout: timeoutMs });
+  await rail.getByRole("button", { name: "Metronome & count-in output: Follow project" })
+    .waitFor({ state: "visible", timeout: timeoutMs });
 }
 
 async function readyBackgroundPlaybackVolume({ page, timeoutMs }) {
@@ -2250,8 +2292,6 @@ async function readyMobileAnalysisResults({ page, timeoutMs }) {
   const keyStat = panel.locator(".analysis-stat").filter({ hasText: "Estimated Key" });
   await keyStat.getByLabel("F", { exact: true }).waitFor({ timeout: timeoutMs });
   await panel.getByText("116.0", { exact: true }).waitFor({ timeout: timeoutMs });
-  await page.getByRole("link", { name: "Follow on metronome at 116.0 BPM" })
-    .waitFor({ state: "visible", timeout: timeoutMs });
   const box = await panel.boundingBox();
   const tabs = await page.getByRole("tablist", { name: "Project sections" }).boundingBox();
   const content = await page.locator(".main-content").boundingBox();

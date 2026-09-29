@@ -10,22 +10,18 @@ import {
 describe("Desktop app chord dictionary project entrypoint", () => {
   beforeEach(resetAppTestHarness);
 
-  it("opens Chord Dictionary from project analysis with playback follow params", async () => {
+  it("keeps Analysis free of Tools shortcuts while Chord Dictionary remains accessible", async () => {
     const user = userEvent.setup();
     renderApp(["/projects/proj_123"]);
 
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
     await user.click(screen.getByRole("tab", { name: "Analysis" }));
 
-    const dictionaryLink = await screen.findByRole("link", {
-      name: "Follow chords in Chord Dictionary",
-    });
-    expect(dictionaryLink).toHaveAttribute(
-      "href",
-      "/tools?tool=chord-dictionary&followPlayback=1&projectId=proj_123",
-    );
+    expect(screen.queryByRole("link", { name: "Follow chords in Chord Dictionary" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /Follow on metronome/ })).not.toBeInTheDocument();
 
-    await user.click(dictionaryLink);
+    await user.click(screen.getByRole("link", { name: "Tools" }));
+    await user.click(await screen.findByRole("tab", { name: "Chord Dictionary" }));
 
     expect(await screen.findByRole("heading", { name: "Chord Dictionary" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Chord Dictionary" })).toHaveAttribute(

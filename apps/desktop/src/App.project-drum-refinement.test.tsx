@@ -90,6 +90,23 @@ describe("Drum refinement controls", () => {
     setDrumArtifacts();
   });
 
+  it("labels refined child routes as Follow Drums in Original and Split modes", async () => {
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openPlaybackWorkspace(user);
+    const rail = document.querySelector(".playback-practice-rail--desktop");
+    if (!(rail instanceof HTMLElement)) throw new Error("Expected Playback practice rail");
+    await user.click(within(rail).getByRole("button", { name: "Show Parts" }));
+    await user.click(within(rail).getByRole("tab", { name: "Outputs" }));
+    expect(within(rail).getByRole("button", { name: "Kick output: Follow Drums" })).toBeInTheDocument();
+    await user.click(within(rail).getByRole("tab", { name: "Stems" }));
+    await user.click(within(within(rail).getByRole("group", { name: "Drums playback mode" }))
+      .getByRole("button", { name: "Split" }));
+    await user.click(within(rail).getByRole("tab", { name: "Outputs" }));
+    expect(within(rail).getByRole("button", { name: "Kick output: Follow Drums" })).toBeInTheDocument();
+  });
+
   it.each(["missing", "verified", "corrupt"])(
     "authorizes a %s DrumSep cache only after an explicit refinement action",
     async (cacheStatus) => {

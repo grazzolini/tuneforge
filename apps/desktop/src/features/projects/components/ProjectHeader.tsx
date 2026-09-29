@@ -313,6 +313,17 @@ export function ProjectHeader({
           </p>
         ) : null}
       </div>
+      {activeWorkspace === "playback" ? (
+        <button
+          aria-label="Open Practice Controls"
+          className="button button--ghost button--small narrow-playback-controls"
+          onClick={onOpenPracticeControls}
+          type="button"
+        >
+          <SlidersHorizontal aria-hidden="true" />
+          <span>Practice Controls</span>
+        </button>
+      ) : null}
     </div>
   );
 }

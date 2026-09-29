@@ -99,7 +99,8 @@ describe("Desktop app tools metronome", () => {
     expect(screen.getByLabelText("Tempo BPM")).toHaveValue(121.5);
     expect(screen.getByLabelText("Follow project playback")).toBeChecked();
     expect(screen.getByRole("button", { name: "Stop" })).toBeInTheDocument();
-    expect(screen.getAllByText("Free-running at 121.5 BPM").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Waiting for project playback at 121.5 BPM").length).toBeGreaterThan(0);
+    expect(getMetronomeAudioContext()?.createdOscillators.length ?? 0).toBe(0);
   });
 
   it("describes idle follow and free-running modes truthfully", async () => {
@@ -113,7 +114,7 @@ describe("Desktop app tools metronome", () => {
     expect(screen.getAllByText("Ready at 100.0 BPM").length).toBeGreaterThan(0);
     await user.click(screen.getByRole("button", { name: "Start" }));
     expect(screen.getAllByText(
-      "Free-running at 100.0 BPM · follows Demo Song when playback starts",
+      "Waiting for Demo Song playback at 100.0 BPM",
     ).length).toBeGreaterThan(0);
     await user.click(screen.getByLabelText("Follow project playback"));
     expect(screen.getAllByText("Free-running at 100.0 BPM").length).toBeGreaterThan(0);
@@ -142,6 +143,7 @@ describe("Desktop app tools metronome", () => {
 
     expect(await screen.findByRole("heading", { name: "Metronome" })).toBeInTheDocument();
     expect(screen.getByLabelText("Tempo BPM")).toHaveValue(100);
+    await user.click(screen.getByLabelText("Follow project playback"));
     await user.click(screen.getByRole("button", { name: "Start" }));
 
     await waitFor(() =>
@@ -231,16 +233,14 @@ describe("Desktop app tools metronome", () => {
     await user.click(screen.getByRole("button", { name: "Pause background playback" }));
     await waitFor(() =>
       expect(screen.getAllByText(
-        "Free-running at 100.0 BPM · follows Demo Song when playback starts",
+        "Waiting for Demo Song playback at 100.0 BPM",
       ).length).toBeGreaterThan(0),
     );
     act(() => {
       advanceMockAnimationFrames();
     });
     expect(syncedContext?.close).not.toHaveBeenCalled();
-    await waitFor(() =>
-      expect(syncedContext?.createdOscillators.length).toBeGreaterThan(scheduledBeforePause),
-    );
+    expect(syncedContext?.createdOscillators.length).toBe(scheduledBeforePause);
     const scheduledDuringPause = syncedContext?.createdOscillators.length ?? 0;
 
     await user.click(screen.getByRole("button", { name: "Play background playback" }));
@@ -254,6 +254,13 @@ describe("Desktop app tools metronome", () => {
     await waitFor(() =>
       expect(syncedContext?.createdOscillators.length).toBeGreaterThan(scheduledDuringPause),
     );
+    fireEvent.ended(sourceAudio);
+    await waitFor(() => expect(screen.getAllByText(
+      "Waiting for Demo Song playback at 100.0 BPM",
+    ).length).toBeGreaterThan(0));
+    const scheduledAtCompletion = syncedContext?.createdOscillators.length ?? 0;
+    act(() => { advanceMockAnimationFrames(4); });
+    expect(syncedContext?.createdOscillators.length).toBe(scheduledAtCompletion);
   });
 
   it("schedules followed clicks from analysis timing when available", async () => {

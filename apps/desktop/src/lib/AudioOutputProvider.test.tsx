@@ -91,6 +91,37 @@ describe("AudioOutputProvider", () => {
       .toMatchObject({ appOutputGain: 0.4, appOutputMuted: true });
   });
 
+  it("requests browser output permission in the selection gesture and stores its own ID", async () => {
+    delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+    const mediaDevices = Object.getOwnPropertyDescriptor(navigator, "mediaDevices");
+    const sinkId = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, "setSinkId");
+    const selectAudioOutput = vi.fn(async () => ({ deviceId: "browser-granted" } as MediaDeviceInfo));
+    Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: {
+      enumerateDevices: vi.fn(async () => []),
+      addEventListener: vi.fn(), removeEventListener: vi.fn(), selectAudioOutput,
+    } });
+    Object.defineProperty(HTMLMediaElement.prototype, "setSinkId", {
+      configurable: true, value: vi.fn(async () => undefined),
+    });
+    try {
+      render(<PreferencesProvider><AudioOutputProvider><Probe /></AudioOutputProvider></PreferencesProvider>);
+      if (!currentOutput) throw new Error("Expected audio output context.");
+      let selection!: Promise<void>;
+      act(() => { selection = currentOutput!.selectBrowserOutputDevice("requested"); });
+      expect(selectAudioOutput).toHaveBeenCalledWith({ deviceId: "requested" });
+      await act(async () => selection);
+      expect(currentOutput!.browserOutputDeviceId).toBe("browser-granted");
+      expect(window.localStorage.getItem("tuneforge.browser-output-device")).toBe("browser-granted");
+      expect(JSON.parse(window.localStorage.getItem("tuneforge.ui-preferences") ?? "{}")
+        .defaultOutputDeviceId ?? null).toBeNull();
+    } finally {
+      if (mediaDevices) Object.defineProperty(navigator, "mediaDevices", mediaDevices);
+      else Reflect.deleteProperty(navigator, "mediaDevices");
+      if (sinkId) Object.defineProperty(HTMLMediaElement.prototype, "setSinkId", sinkId);
+      else Reflect.deleteProperty(HTMLMediaElement.prototype, "setSinkId");
+    }
+  });
+
   it("rejects non-finite changes without mutating configured gain or mute", async () => {
     mockSetNativeAppOutput.mockResolvedValue({});
     render(

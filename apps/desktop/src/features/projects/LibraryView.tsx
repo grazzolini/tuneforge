@@ -305,6 +305,7 @@ export function LibraryView() {
   const isIOSHost = /\b(iPhone|iPad|iPod)\b/i.test(navigator.userAgent)
     || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
   const isIOSRuntime = mobileCapabilitiesQuery.data?.platform === "ios";
+  const canShowLibrary = !isIOSHost || mobileCapabilitiesQuery.isSuccess;
 
   const projectsQuery = useInfiniteQuery({
     queryKey: ["projects", deferredSearch],
@@ -465,7 +466,7 @@ export function LibraryView() {
   const pendingImportCopy = importPendingPhase ? importPendingCopy[importPendingPhase] : null;
   const { loadNextPage: fetchNextProjectPage, sentinelRef: loadMoreSentinelRef } =
     useLazyLoadSentinel({
-      enabled: showPaginationStatus && !isFetching && !isProjectsError,
+      enabled: canShowLibrary && showPaginationStatus && !isFetching && !isProjectsError,
       fetchNextPage,
       hasNextPage,
       isFetchingNextPage,
@@ -486,7 +487,7 @@ export function LibraryView() {
             </p>
           ) : null}
         </div>
-        {(!isIOSHost || mobileCapabilitiesQuery.isSuccess) && !isIOSRuntime ? <div className="screen__title-block">
+        {canShowLibrary && !isIOSRuntime ? <div className="screen__title-block">
           <button
             className="button button--primary"
             onClick={() => importMutation.mutate()}
@@ -503,6 +504,16 @@ export function LibraryView() {
         </div> : null}
       </div>
 
+      {!canShowLibrary ? (
+        mobileCapabilitiesQuery.isPending ? (
+          <div className="panel" role="status">Loading library...</div>
+        ) : (
+          <div className="panel panel--error" role="alert">
+            Could not verify library support.
+            <button onClick={() => void mobileCapabilitiesQuery.refetch()} type="button">Retry</button>
+          </div>
+        )
+      ) : <>
       {importNotice ? (
         <div
           className={getImportNoticeClassName(importNotice)}
@@ -644,6 +655,7 @@ export function LibraryView() {
           )}
         </div>
       ) : null}
+      </>}
     </section>
   );
 }

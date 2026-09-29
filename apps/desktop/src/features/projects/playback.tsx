@@ -24,6 +24,7 @@ import {
   scheduleNativeAudioCues,
   seekNativeAudio,
   setNativeAudioLanes,
+  setNativeOutputRouting,
   stopNativeAudio,
   type NativeAudioCue,
   type NativeAudioCueEvent,
@@ -31,6 +32,7 @@ import {
   type NativeAudioOutputControl,
   type NativeAudioSessionSnapshot,
   type NativeAudioSnapshot,
+  type NativeOutputRouting,
 } from "../../lib/nativeAudio";
 import {
   clearNativePlaybackSessionDiagnostics,
@@ -67,12 +69,25 @@ import { useStableCallback } from "../../lib/useStableCallback";
 import { useAudioOutput } from "../../lib/audioOutputContext";
 import {
   getProjectAudioOutputNode,
+  browserOutputRoutingSnapshot,
   projectMediaElementSupportsVolume,
   registerProjectMediaElement,
+  releaseBrowserOutputContext,
+  retryBrowserOutputRouting,
+  setBrowserOutputRouting,
   setBrowserProjectOutput,
+  subscribeBrowserOutputRouting,
+  subscribeBrowserOutputFailure,
   unregisterProjectMediaElement,
   updateProjectMediaElement,
 } from "../../lib/audioOutput";
+import {
+  DEFAULT_PROJECT_OUTPUT_ROUTING,
+  nativeRoutingRequest,
+  normalizeOutputRouteSelection,
+  type OutputRouteSelection,
+  type ProjectOutputRouting,
+} from "../../lib/outputRouting";
 import { countInIntervalsForTiming } from "../../lib/timingGrid";
 import {
   PlaybackContext,
@@ -394,14 +409,19 @@ function nativeLaneUpdateSignature(session: ProjectPlaybackSession) {
   return JSON.stringify(nativeLaneUpdateForSession(session));
 }
 
+function activeRouteBackend(): "native" | "browser" {
+  return isTauriRuntime() && !isWebAudioBackendForced() ? "native" : "browser";
+}
+
 export function PlaybackProvider({ children }: { children: ReactNode }) {
-  const { ensureAppOutputReady } = useAudioOutput();
+  const { ensureAppOutputReady, browserOutputDeviceId } = useAudioOutput();
   const initialWebMediaSourcesEnabled = !isTauriRuntime();
   const primaryAudioRef = useRef<HTMLAudioElement | null>(null);
   const activePrecountRef = useRef<ActivePrecount | null>(null);
   const precountAudioContextRef = useRef<AudioContext | null>(null);
   const precountSequenceRef = useRef(0);
   const stemAudioRefs = useRef<Record<string, HTMLAudioElement | null>>({});
+  const stemAudioRefCallbacks = useRef(new Map<string, (element: HTMLAudioElement | null) => void>());
   const stemAudioContextRef = useRef<AudioContext | null>(null);
   const stemClockBlockedRef = useRef(false);
   const stemBufferCacheRef = useRef(new Map<string, Promise<AudioBuffer>>());
@@ -432,6 +452,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
   const nativeOutputMutationTailRef = useRef<Promise<void>>(Promise.resolve());
   const nativeOutputAuthorityRef = useRef<NativeOutputAuthority | null>(null);
   const nativeLaneUpdateSignatureRef = useRef<string | null>(null);
+  const nativeRouteUpdateSignatureRef = useRef<string | null>(null);
   const pendingNativeLaneMutationRef = useRef<{
     promise: Promise<NativeAudioSnapshot | null>;
     session: ProjectPlaybackSession;
@@ -453,6 +474,11 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
   const nativeCapabilitiesPromiseRef = useRef<ReturnType<typeof getNativeAudioCapabilities> | null>(null);
   const nativeBackendRef = useRef<string | null>(null);
   const pendingWebPlaybackRef = useRef<PendingWebPlayback | null>(null);
+  const pendingWebStartRef = useRef<{
+    projectId: string;
+    signature: string;
+    intentEpoch: number;
+  } | null>(null);
   const webStallTimersRef = useRef(new Map<HTMLAudioElement, number>());
   const webMediaSourcesEnabledRef = useRef(initialWebMediaSourcesEnabled);
   const pendingTransitionRef = useRef<PendingTransition | null>(null);
@@ -467,6 +493,10 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
   const playbackControlBackendRef = useRef<PlaybackControlBackend>("none");
   const playbackTelemetryGenerationRef = useRef(0);
   const nativeSnapshotRef = useRef<NativeAudioSnapshot | null>(null);
+  const outputRoutingRef = useRef<ProjectOutputRouting>(DEFAULT_PROJECT_OUTPUT_ROUTING);
+  const [outputRouting, setOutputRouting] = useState<ProjectOutputRouting>(DEFAULT_PROJECT_OUTPUT_ROUTING);
+  const [outputRoutingSnapshot, setOutputRoutingSnapshot] = useState<NativeOutputRouting | null>(null);
+  const [outputRoutingSaveError, setOutputRoutingSaveError] = useState<string | null>(null);
   const countInTelemetryRef = useRef<PlaybackE2ECountInState>({
     active: false,
     lastScheduled: null,
@@ -489,6 +519,25 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     sessionRef.current = session;
   }, [session]);
+
+  useEffect(() => {
+    setBrowserOutputRouting({
+      projectId: session?.projectId ?? null,
+      globalDeviceId: browserOutputDeviceId,
+      routing: outputRouting,
+      lanes: session?.routeLanes ?? [],
+    });
+  }, [browserOutputDeviceId, outputRouting, session]);
+
+  useEffect(() => {
+    const update = () => {
+      if (activeRouteBackend() === "browser") {
+        setOutputRoutingSnapshot(browserOutputRoutingSnapshot());
+      }
+    };
+    update();
+    return subscribeBrowserOutputRouting(update);
+  }, []);
 
   useEffect(() => {
     resetLivePlaybackDiagnostics();
@@ -617,6 +666,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       timelineRevision: snapshot.timelineRevision,
     };
     nativeSnapshotRef.current = snapshot;
+    setOutputRoutingSnapshot(snapshot.outputRouting);
     updateNativePlaybackDiagnostics(snapshot);
     writePlaybackE2ETelemetry({
       positionSeconds: snapshot.positionSeconds,
@@ -803,6 +853,26 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     return entry.promise;
   });
 
+  const reconcileNativeOutputRouting = useStableCallback(async function reconcileNativeOutputRouting(
+    targetSession: ProjectPlaybackSession,
+    forceAttempt = false,
+  ) {
+    const targetSignature = nativeSessionSignature(targetSession);
+    while (nativePlaybackRef.current.sessionSignature === targetSignature &&
+      nativeSessionSignature(sessionRef.current) === targetSignature) {
+      const latestSession = sessionRef.current!;
+      const request = nativeRoutingRequest(outputRoutingRef.current, latestSession.routeLanes ?? []);
+      const signature = JSON.stringify(request);
+      if (nativeRouteUpdateSignatureRef.current === signature && !forceAttempt) return true;
+      const snapshot = await enqueueNativeOutputMutation((control) =>
+        setNativeOutputRouting(request, control));
+      if (!snapshot || !recordNativeSnapshot(snapshot)) return false;
+      nativeRouteUpdateSignatureRef.current = signature;
+      forceAttempt = false;
+    }
+    return false;
+  });
+
   const updateFollowedMetronomeCues = useStableCallback(
     function updateFollowedMetronomeCues(cues: NativeAudioCue[]) {
       const tag = nativeOutputMutationTag();
@@ -875,7 +945,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     }
   }, [setIsPlaying, setPlaybackControlBackend]);
 
-  function setPrimaryAudioRef(element: HTMLAudioElement | null) {
+  const setPrimaryAudioRef = useStableCallback(function setPrimaryAudioRef(element: HTMLAudioElement | null) {
     if (primaryAudioRef.current && primaryAudioRef.current !== element) {
       unregisterProjectMediaElement(primaryAudioRef.current);
     }
@@ -884,9 +954,9 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       registerProjectMediaElement(element, 1);
       applyMediaElementPlaybackRate(element, playbackRateForSession(sessionRef.current));
     }
-  }
+  });
 
-  function setStemAudioRef(artifactId: string, element: HTMLAudioElement | null) {
+  const setStemAudioRef = useStableCallback(function setStemAudioRef(artifactId: string, element: HTMLAudioElement | null) {
     const previous = stemAudioRefs.current[artifactId];
     if (previous && previous !== element) unregisterProjectMediaElement(previous);
     if (element) {
@@ -894,12 +964,22 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       registerProjectMediaElement(
         element,
         sessionRef.current?.stemControls[artifactId]?.gain ?? 1,
+        artifactId,
       );
       applyMediaElementPlaybackRate(element, playbackRateForSession(sessionRef.current));
       return;
     }
     delete stemAudioRefs.current[artifactId];
-  }
+  });
+
+  const stemAudioRef = useStableCallback(function stemAudioRef(artifactId: string) {
+    let callback = stemAudioRefCallbacks.current.get(artifactId);
+    if (!callback) {
+      callback = (element) => setStemAudioRef(artifactId, element);
+      stemAudioRefCallbacks.current.set(artifactId, callback);
+    }
+    return callback;
+  });
 
   function getStemElements(artifactIds: string[]) {
     return artifactIds
@@ -1217,6 +1297,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
         if (snapshot) {
           recordNativeSnapshot(snapshot);
         }
+        if (!(await reconcileNativeOutputRouting(targetSession))) return false;
       }
       return prepared;
     }
@@ -1227,6 +1308,8 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
 
     const prepareToken = {};
     const preparedLaneUpdateSignature = nativeLaneUpdateSignature(targetSession);
+    const preparedRouting = nativeRoutingRequest(outputRoutingRef.current, targetSession.routeLanes ?? []);
+    const preparedRoutingSignature = JSON.stringify(preparedRouting);
     const preparePromise = (async () => {
       const preparedSession = await prepareNativeAudioSession({
         leaseId: "project-playback",
@@ -1239,6 +1322,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
           gain: targetSession.projectOutputGain,
           muted: targetSession.projectOutputMuted,
         },
+        outputRouting: preparedRouting,
       });
       if (
         preparedSession.leaseId !== "project-playback" ||
@@ -1300,6 +1384,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
         prepareToken: null,
       };
       nativeLaneUpdateSignatureRef.current = preparedLaneUpdateSignature;
+      nativeRouteUpdateSignatureRef.current = preparedRoutingSignature;
       const latestPreparedSession = sessionRef.current;
       if (
         latestPreparedSession &&
@@ -1310,6 +1395,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
         if (!snapshot) return false;
         recordNativeSnapshot(snapshot);
       }
+      if (!(await reconcileNativeOutputRouting(latestPreparedSession ?? targetSession))) return false;
       return true;
     })();
 
@@ -1400,6 +1486,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
         }
         recordNativeSnapshot(corrected);
       }
+      if (!(await reconcileNativeOutputRouting(latestSession))) return true;
       const playGeneration = nativeControlGenerationRef.current + 1;
       nativeControlGenerationRef.current = playGeneration;
       const playPlaybackSignature = playbackSignature(latestSession);
@@ -1422,6 +1509,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       stemPlaybackRef.current = null;
       stemBufferCacheRef.current.clear();
       if (playbackAudioContext && playbackAudioContext.state !== "closed") {
+        releaseBrowserOutputContext(playbackAudioContext);
         await playbackAudioContext.close();
       }
       if (shouldContinue && !shouldContinue()) {
@@ -1735,6 +1823,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       precountAudioContextRef.current = null;
     }
     if (activePrecount.context.state !== "closed") {
+      releaseBrowserOutputContext(activePrecount.context);
       void activePrecount.context.close().catch(() => undefined);
     }
   });
@@ -1782,6 +1871,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       precountAudioContextRef.current = null;
     }
     if (activePrecount.context.state !== "closed") {
+      releaseBrowserOutputContext(activePrecount.context);
       void activePrecount.context.close().catch(() => undefined);
     }
   });
@@ -1994,6 +2084,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     stemAudioContextRef.current = null;
     stemClockBlockedRef.current = false;
     if (audioContext && audioContext.state !== "closed") {
+      releaseBrowserOutputContext(audioContext);
       void audioContext.close().catch(() => undefined);
     }
   });
@@ -2034,7 +2125,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     const gains = Object.fromEntries(
       artifactIds.map((artifactId) => {
         const gainNode = context.createGain();
-        gainNode.connect(getProjectAudioOutputNode(context));
+        gainNode.connect(getProjectAudioOutputNode(context, artifactId));
         return [artifactId, gainNode] as const;
       }),
     );
@@ -2252,7 +2343,6 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     if (!targetSession) {
       return;
     }
-
     const soloedStemIds = targetSession.visibleStemArtifactIds.filter(
       (artifactId) => targetSession.stemControls[artifactId]?.solo,
     );
@@ -2725,6 +2815,31 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
   const clearPendingTransition = useStableCallback(function clearPendingTransition() {
     pendingTransitionRef.current = null;
   });
+
+  useEffect(() => subscribeBrowserOutputFailure(() => {
+    const targetSession = sessionRef.current;
+    const pendingStart = pendingWebStartRef.current;
+    const ownsPendingStart = targetSession && pendingStart &&
+      pendingStart.projectId === targetSession.projectId &&
+      pendingStart.signature === playbackSignature(targetSession) &&
+      pendingStart.intentEpoch === playbackIntentEpochRef.current;
+    if (!targetSession || (playbackControlBackendRef.current !== "web" &&
+      pendingWebPlaybackRef.current?.signature !== playbackSignature(targetSession) &&
+      activePrecountRef.current?.signature !== playbackSignature(targetSession) &&
+      !pendingTransitionRef.current?.shouldPlay && !ownsPendingStart)) return;
+    playbackIntentEpochRef.current += 1;
+    pendingWebStartRef.current = null;
+    cancelPrecount("unavailable");
+    clearPendingTransition();
+    disposeStemPlaybackState();
+    getActiveMediaElements(targetSession).forEach((element) => element.pause());
+    pendingWebPlaybackRef.current = null;
+    clearPlaybackControlBackend();
+    setIsPlaying(false);
+    rememberWebPlaybackError("System Default output could not be opened.");
+    markPlaybackError("Playback stopped. Check your audio output, then press Play to retry.");
+  }), [cancelPrecount, clearPendingTransition, clearPlaybackControlBackend,
+    disposeStemPlaybackState, getActiveMediaElements, setIsPlaying]);
 
   const markPendingSeekComplete = useStableCallback(function markPendingSeekComplete(mediaKey: string, element: HTMLAudioElement) {
     const pendingTransition = pendingTransitionRef.current;
@@ -3419,6 +3534,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
         precountAudioContextRef.current = null;
       }
       if (precountAudio.ownsContext) {
+        releaseBrowserOutputContext(precountAudio.context);
         void precountAudio.context.close().catch(() => undefined);
       }
       return false;
@@ -3429,6 +3545,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
         precountAudioContextRef.current = null;
       }
       if (precountAudio.ownsContext) {
+        releaseBrowserOutputContext(precountAudio.context);
         void precountAudio.context.close().catch(() => undefined);
       }
       return true;
@@ -3538,38 +3655,49 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     }
     const playbackIntentEpoch = playbackIntentEpochRef.current;
     const signature = playbackSignature(targetSession);
-    const playbackIsCurrent = () =>
-      playbackIntentEpochRef.current === playbackIntentEpoch &&
-      playbackSignature(sessionRef.current) === signature;
+    const webStartup = isWebAudioBackendForced() || !isTauriRuntime()
+      ? { projectId: targetSession.projectId,
+        signature,
+        intentEpoch: playbackIntentEpoch }
+      : null;
+    if (webStartup) pendingWebStartRef.current = webStartup;
+    try {
+      if (webStartup) retryBrowserOutputRouting();
+      const playbackIsCurrent = () =>
+        playbackIntentEpochRef.current === playbackIntentEpoch &&
+        playbackSignature(sessionRef.current) === signature;
 
-    const pendingNativePlay = pendingNativePlayRef.current;
-    if (
-      pendingNativePlay?.generation === nativeControlGenerationRef.current &&
-      pendingNativePlay.sessionSignature === nativeSessionSignature(targetSession) &&
-      pendingNativePlay.playbackSignature === playbackSignature(targetSession)
-    ) {
-      return;
+      const pendingNativePlay = pendingNativePlayRef.current;
+      if (
+        pendingNativePlay?.generation === nativeControlGenerationRef.current &&
+        pendingNativePlay.sessionSignature === nativeSessionSignature(targetSession) &&
+        pendingNativePlay.playbackSignature === playbackSignature(targetSession)
+      ) {
+        return;
+      }
+
+      if (nativePlaybackRef.current.blockedSessionSignature !== null) {
+        nativePlaybackRef.current.blockedSessionSignature = null;
+      }
+
+      tryCompletePendingTransition();
+
+      const masterTime = playbackStartTimeForSession(
+        targetSession,
+        readMasterTime(targetSession),
+      );
+      if (await startPrecountThenPlayback(targetSession, masterTime)) {
+        return;
+      }
+      if (!playbackIsCurrent()) {
+        return;
+      }
+
+      allowFreshPlaybackRef.current = false;
+      await playPlaybackImmediately({ shouldContinue: playbackIsCurrent });
+    } finally {
+      if (webStartup && pendingWebStartRef.current === webStartup) pendingWebStartRef.current = null;
     }
-
-    if (nativePlaybackRef.current.blockedSessionSignature !== null) {
-      nativePlaybackRef.current.blockedSessionSignature = null;
-    }
-
-    tryCompletePendingTransition();
-
-    const masterTime = playbackStartTimeForSession(
-      targetSession,
-      readMasterTime(targetSession),
-    );
-    if (await startPrecountThenPlayback(targetSession, masterTime)) {
-      return;
-    }
-    if (!playbackIsCurrent()) {
-      return;
-    }
-
-    allowFreshPlaybackRef.current = false;
-    await playPlaybackImmediately({ shouldContinue: playbackIsCurrent });
   }, [
     cancelPrecount,
     playPlaybackImmediately,
@@ -3741,12 +3869,31 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     setPlaybackDurationSeconds(0);
   }, [closePlaybackAudioContext, setPlaybackDurationSeconds, stopPlayback]);
 
+  const queueNativeOutputRouting = useStableCallback(function queueNativeOutputRouting(
+    targetSession: ProjectPlaybackSession,
+    forceAttempt = false,
+  ) {
+    if (nativePlaybackRef.current.sessionSignature !== nativeSessionSignature(targetSession)) return;
+    void reconcileNativeOutputRouting(targetSession, forceAttempt)
+      .catch((error) => failNativePlaybackCommand(
+        error,
+        "Playback stopped. Check your audio output, then press Play to retry.",
+      ));
+  });
+
   const registerProjectSession = useCallback((nextSession: ProjectPlaybackSession) => {
     setBrowserProjectOutput({
       gain: nextSession.projectOutputGain,
       muted: nextSession.projectOutputMuted,
     });
     const previousSession = sessionRef.current;
+    if (previousSession?.projectId !== nextSession.projectId) {
+      const restoredRouting = readProjectPlaybackState(nextSession.projectId).outputRouting[activeRouteBackend()];
+      outputRoutingRef.current = restoredRouting;
+      setOutputRouting(restoredRouting);
+      if (activeRouteBackend() === "native") setOutputRoutingSnapshot(null);
+      setOutputRoutingSaveError(null);
+    }
     const previousSignature = playbackSignature(previousSession);
     const nextSignature = playbackSignature(nextSession);
 
@@ -3883,6 +4030,9 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
               }
             }
             setIsPlaying(snapshot.state === "playing");
+            if (JSON.stringify(previousSession.routeLanes) !== JSON.stringify(nextSession.routeLanes)) {
+              queueNativeOutputRouting(nextSession);
+            }
           })
           .catch((error) => {
             failNativeLaneUpdate(playbackErrorMessage(error));
@@ -3958,6 +4108,10 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
 
     sessionRef.current = nextSession;
     setSession(nextSession);
+    if (previousSession?.projectId === nextSession.projectId &&
+      JSON.stringify(previousSession.routeLanes) !== JSON.stringify(nextSession.routeLanes)) {
+      queueNativeOutputRouting(nextSession);
+    }
   }, [
     cancelPrecount,
     applyMediaPlaybackRate,
@@ -3975,6 +4129,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     playbackStartTimeForSession,
     readMasterTime,
     recordNativeSnapshot,
+    queueNativeOutputRouting,
     requestNativeStop,
     setIsPlaying,
     setPlaybackControlBackend,
@@ -4412,6 +4567,61 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     }
   });
 
+  const updateOutputRouting = useStableCallback(function updateOutputRouting(
+    modify: (current: ProjectOutputRouting) => ProjectOutputRouting,
+  ) {
+    const currentSession = sessionRef.current;
+    if (!currentSession) return;
+    const next = modify(outputRoutingRef.current);
+    const sameSelection = JSON.stringify(next) === JSON.stringify(outputRoutingRef.current);
+    if (sameSelection && activeRouteBackend() === "browser") {
+      retryBrowserOutputRouting();
+    }
+    outputRoutingRef.current = next;
+    setOutputRouting(next);
+    try {
+      writeProjectPlaybackState(currentSession.projectId, {
+        ...readProjectPlaybackState(currentSession.projectId),
+        outputRouting: {
+          ...readProjectPlaybackState(currentSession.projectId).outputRouting,
+          [activeRouteBackend()]: next,
+        },
+      });
+      setOutputRoutingSaveError(null);
+    } catch {
+      setOutputRoutingSaveError("Output route changed, but could not be saved for the next launch.");
+    }
+    setBrowserOutputRouting({
+      projectId: currentSession.projectId,
+      globalDeviceId: browserOutputDeviceId,
+      routing: next,
+      lanes: currentSession.routeLanes ?? [],
+    });
+    queueNativeOutputRouting(currentSession, sameSelection);
+  });
+
+  const setProjectOutputRoute = useStableCallback((selection: OutputRouteSelection) => {
+    updateOutputRouting((current) => ({ ...current,
+      project: normalizeOutputRouteSelection(selection) }));
+  });
+  const setCueOutputRoute = useStableCallback((selection: OutputRouteSelection) => {
+    updateOutputRouting((current) => ({ ...current,
+      cue: normalizeOutputRouteSelection(selection) }));
+  });
+  const setStemOutputRoute = useStableCallback((stableKey: string, selection: OutputRouteSelection) => {
+    if (!stableKey) return;
+    updateOutputRouting((current) => {
+      const stems = { ...current.stems };
+      const normalized = normalizeOutputRouteSelection(selection);
+      if (normalized.kind === "inherit") delete stems[stableKey];
+      else stems[stableKey] = normalized;
+      return { ...current, stems };
+    });
+  });
+  const resetOutputRoutes = useStableCallback(() => {
+    updateOutputRouting(() => DEFAULT_PROJECT_OUTPUT_ROUTING);
+  });
+
   const value = useMemo<PlaybackContextValue>(
     () => ({
       session,
@@ -4420,6 +4630,13 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       isPrecounting,
       isPlaying,
       projectOutputSaveError,
+      outputRoutingSaveError,
+      outputRouting,
+      outputRoutingSnapshot,
+      setProjectOutputRoute,
+      setCueOutputRoute,
+      setStemOutputRoute,
+      resetOutputRoutes,
       activateStemPlayback,
       primeWebAudioForGesture,
       getPlaybackSnapshot,
@@ -4445,6 +4662,13 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       isPrecounting,
       isPlaying,
       projectOutputSaveError,
+      outputRoutingSaveError,
+      outputRouting,
+      outputRoutingSnapshot,
+      setProjectOutputRoute,
+      setCueOutputRoute,
+      setStemOutputRoute,
+      resetOutputRoutes,
       pausePlayback,
       playbackDurationSeconds,
       playbackTimeSeconds,
@@ -4536,7 +4760,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       {session?.visibleStemArtifactIds.map((artifactId) => (
         <audio
           key={artifactId}
-          ref={(element) => setStemAudioRef(artifactId, element)}
+          ref={stemAudioRef(artifactId)}
           src={webMediaSourcesEnabled ? api.streamArtifactUrl(artifactId) : undefined}
           preload={webMediaSourcesEnabled ? "metadata" : "none"}
           className="player player--hidden"

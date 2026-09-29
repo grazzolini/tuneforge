@@ -29,11 +29,13 @@ export function scheduleMetronomeClick({
   audioContext,
   sound = DEFAULT_METRONOME_SOUND,
   startTimeSeconds,
+  onEnded,
 }: {
   accent: boolean;
   audioContext: AudioContext;
   sound?: MetronomeSound;
   startTimeSeconds: number;
+  onEnded?: () => void;
 }) {
   const oscillator = audioContext.createOscillator();
   const gainNode = audioContext.createGain();
@@ -57,8 +59,12 @@ export function scheduleMetronomeClick({
   oscillator.onended = () => {
     oscillator.disconnect();
     gainNode.disconnect();
+    onEnded?.();
   };
   oscillator.start(safeStartTimeSeconds);
   oscillator.stop(stopTimeSeconds + 0.004);
+  return () => {
+    try { oscillator.stop(); } catch { /* The click already ended. */ }
+  };
 }
 import { getMetronomeAudioOutputNode } from "../../lib/audioOutput";

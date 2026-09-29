@@ -20,8 +20,9 @@ import {
   type NativeCueOutputRequest,
   type NativeOutputRoute,
 } from "./nativeAudio";
-import { setBrowserAppOutput, setBrowserCueOutputs } from "./audioOutput";
+import { canRouteBrowserAudio, markBrowserOutputDisconnected, retryBrowserOutputRouting, setBrowserAppOutput, setBrowserCueOutputs } from "./audioOutput";
 import { AudioOutputContext, type AudioOutputContextValue } from "./audioOutputContext";
+import { readBrowserOutputDeviceId, writeBrowserOutputDeviceId } from "./outputRouting";
 import { usePreferences } from "./preferences";
 
 function isTauriRuntime() {
@@ -36,6 +37,10 @@ export function AudioOutputProvider({ children }: { children: ReactNode }) {
   const [outputDevices, setOutputDevices] = useState<NativeAudioDevices | null>(null);
   const [outputRoute, setOutputRoute] = useState<NativeOutputRoute | null>(null);
   const [outputDeviceError, setOutputDeviceError] = useState<string | null>(null);
+  const [browserOutputDeviceId, setBrowserOutputDeviceId] = useState(readBrowserOutputDeviceId);
+  const [browserOutputDevices, setBrowserOutputDevices] = useState<MediaDeviceInfo[]>([]);
+  const [browserOutputError, setBrowserOutputError] = useState<string | null>(null);
+  const browserDeviceIdsRef = useRef<Set<string>>(new Set());
   const [outputControlsAttempt, setOutputControlsAttempt] = useState(0);
   const routeQueueRef = useRef(Promise.resolve());
   const latestRouteOperationRef = useRef<Promise<void>>(Promise.resolve());
@@ -58,7 +63,22 @@ export function AudioOutputProvider({ children }: { children: ReactNode }) {
   const lastAppliedCuesRef = useRef<NativeCueOutputRequest | null>(null);
 
   const refreshOutputDevices = useCallback(async () => {
-    if (!isTauriRuntime() || isWebAudioBackendForced()) return;
+    if (!isTauriRuntime() || isWebAudioBackendForced()) {
+      if (!navigator.mediaDevices?.enumerateDevices) return;
+      try {
+        const inventory = (await navigator.mediaDevices.enumerateDevices())
+          .filter((device) => device.kind === "audiooutput");
+        const currentIds = new Set(inventory.map((device) => device.deviceId));
+        browserDeviceIdsRef.current.forEach((id) => {
+          if (!currentIds.has(id)) markBrowserOutputDisconnected(id);
+        });
+        browserDeviceIdsRef.current = currentIds;
+        setBrowserOutputDevices(inventory);
+      } catch {
+        setBrowserOutputError("Browser output inventory is unavailable.");
+      }
+      return;
+    }
     try {
       const inventory = await listNativeAudioOutputDevices();
       setOutputDevices(inventory);
@@ -66,6 +86,37 @@ export function AudioOutputProvider({ children }: { children: ReactNode }) {
       setOutputDevices({ supported: false, devices: [], error: "Output inventory is unavailable." });
     }
   }, []);
+
+  useEffect(() => {
+    if (isTauriRuntime() && !isWebAudioBackendForced()) return;
+    void refreshOutputDevices();
+    navigator.mediaDevices?.addEventListener?.("devicechange", refreshOutputDevices);
+    return () => navigator.mediaDevices?.removeEventListener?.("devicechange", refreshOutputDevices);
+  }, [refreshOutputDevices]);
+
+  const authorizeBrowserOutputDevice = useCallback(async (deviceId: string) => {
+    if (!canRouteBrowserAudio()) return null;
+    const devices = navigator.mediaDevices as MediaDevices & {
+      selectAudioOutput?: (options?: { deviceId?: string }) => Promise<MediaDeviceInfo>;
+    };
+    const selected = devices?.selectAudioOutput
+      ? await devices.selectAudioOutput({ deviceId }) : null;
+    return selected?.deviceId ?? deviceId;
+  }, []);
+
+  const selectBrowserOutputDevice = useCallback(async (deviceId: string | null) => {
+    try {
+      const nextId = deviceId ? await authorizeBrowserOutputDevice(deviceId) : null;
+      if (deviceId && !nextId) return;
+      writeBrowserOutputDeviceId(nextId);
+      setBrowserOutputDeviceId(nextId);
+      retryBrowserOutputRouting();
+      setBrowserOutputError(null);
+      void refreshOutputDevices();
+    } catch {
+      setBrowserOutputError("Output permission was denied. Choose an output to try again.");
+    }
+  }, [authorizeBrowserOutputDevice, refreshOutputDevices]);
 
   useEffect(() => {
     if (!isTauriRuntime() || isWebAudioBackendForced()) return;
@@ -230,10 +281,15 @@ export function AudioOutputProvider({ children }: { children: ReactNode }) {
     outputDevices,
     outputRoute,
     outputDeviceError,
+    browserOutputDeviceId,
+    browserOutputSelectionSupported: canRouteBrowserAudio(),
+    browserOutputDevices,
+    selectBrowserOutputDevice,
+    authorizeBrowserOutputDevice,
     refreshOutputDevices,
     retryOutputControls,
     selectOutputDevice,
-    outputSaveError: preferences.preferencesSaveError ?? nativeAppError ?? nativeCueError,
+    outputSaveError: preferences.preferencesSaveError ?? nativeAppError ?? nativeCueError ?? browserOutputError,
     ensureAppOutputReady: () => Promise.all([
       latestOperationRef.current,
       latestCueOperationRef.current,
@@ -281,7 +337,9 @@ export function AudioOutputProvider({ children }: { children: ReactNode }) {
       applyCueOutputs(configuredCuesRef.current);
       preferences.setMetronomeOutputMuted(muted);
     },
-  }), [applyCueOutputs, applyOutput, nativeAppError, nativeCueError, outputCapabilities,
+  }), [applyCueOutputs, applyOutput, nativeAppError, nativeCueError, browserOutputError,
+    browserOutputDeviceId, browserOutputDevices, selectBrowserOutputDevice,
+    authorizeBrowserOutputDevice, outputCapabilities,
     outputDevices, outputRoute, outputDeviceError, refreshOutputDevices, retryOutputControls, selectOutputDevice,
     preferences]);
 

@@ -101,6 +101,14 @@ const snapshot: NativeAudioSnapshot = {
     fallbackLatched: false,
     generation: 0,
   },
+  outputRouting: {
+    project: { selection: { kind: "inherit" }, preferredDeviceId: null,
+      effectiveDeviceId: null, status: "system-default", fallbackLatched: false },
+    cue: { selection: { kind: "inherit" }, preferredDeviceId: null,
+      effectiveDeviceId: null, status: "system-default", fallbackLatched: false },
+    lanes: [],
+    generation: 0,
+  },
 };
 
 const inputState: NativeAudioInputState = {

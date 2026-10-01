@@ -101,6 +101,7 @@ pub enum RuntimeReportKind {
 pub struct RuntimeReport {
     pub resource: AudioResource,
     pub generation: u64,
+    pub runtime_incarnation: u64,
     pub kind: RuntimeReportKind,
 }
 

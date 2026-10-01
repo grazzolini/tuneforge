@@ -169,6 +169,10 @@ impl NativeAudioState {
 impl NativeAudioEngine {
     fn drain_reports(&mut self) {
         while let Ok(report) = self.report_receiver.try_recv() {
+            if report.resource == session::AudioResource::Output
+                && report.runtime_incarnation != self.transport.runtime_incarnation() {
+                continue;
+            }
             match report.kind {
                 session::RuntimeReportKind::Ended => self
                     .session_mut(report.resource)
@@ -176,6 +180,10 @@ impl NativeAudioEngine {
                 session::RuntimeReportKind::Terminal(code) => {
                     self.session_mut(report.resource)
                         .mark_terminal(report.generation, code);
+                    if report.resource == session::AudioResource::Output
+                        && report.generation == self.transport.snapshot().generation {
+                        self.transport.terminalize_runtime_group(code);
+                    }
                 }
             }
         }
@@ -339,6 +347,19 @@ impl Default for NativeAudioState {
     }
 }
 
+fn fail_output_group_command(
+    app: &AppHandle,
+    engine: &mut NativeAudioEngine,
+    code: &'static str,
+) -> String {
+    engine.transport.fail_group_command();
+    let generation = engine.output_session.snapshot().generation;
+    if let Some(event) = engine.output_session.mark_terminal(generation, "output_stream_failure") {
+        let _ = app.emit(AUDIO_EVENT_TERMINAL, event);
+    }
+    code.to_string()
+}
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AudioCapabilities {
@@ -408,6 +429,7 @@ pub async fn audio_prepare_session(
         return Err("native_audio_unavailable".to_string());
     }
     payload.project_output = payload.project_output.validate().map_err(str::to_string)?;
+    payload.output_routing.validate().map_err(str::to_string)?;
     #[cfg(target_os = "ios")]
     validate_ios_playback_rate(payload.playback_rate)?;
     #[cfg(target_os = "ios")]
@@ -579,8 +601,8 @@ pub async fn audio_play(
         return Err(code.to_string());
     }
     let revision = timeline.revision();
-    if let Some(cues) = metronome_cues {
-        timeline.replace_metronome(revision, cues)?;
+    if let Some(cues) = metronome_cues.as_ref() {
+        timeline.replace_metronome(revision, cues.clone())?;
     }
     if let (Some(intervals), Some(first)) = (precount.as_ref(), first_precount) {
         timeline
@@ -588,6 +610,13 @@ pub async fn audio_play(
             .map_err(str::to_string)?;
     }
     drop(timeline);
+    if let Err(code) = engine.transport.arm_group_timelines(
+        expected, position, source_start, now, metronome_cues.as_deref(),
+        precount.as_deref().zip(first_precount),
+    ) {
+        return Err(fail_output_group_command(&app, &mut engine, code));
+    }
+    engine.transport.start_group_transport();
     engine.emit_session(&app, session::AudioResource::Output);
     Ok(engine.output_snapshot())
 }
@@ -617,6 +646,9 @@ pub fn audio_pause(
         .lock()
         .map_err(|_| "timeline_unavailable")?
         .pause();
+    if let Err(code) = engine.transport.pause_group_timelines() {
+        return Err(fail_output_group_command(&app, &mut engine, code));
+    }
     engine.emit_session(&app, session::AudioResource::Output);
     engine.require_healthy_output(snapshot)
 }
@@ -646,6 +678,9 @@ pub fn audio_stop(
         .lock()
         .map_err(|_| "timeline_unavailable")?
         .stop();
+    if let Err(code) = engine.transport.stop_group_timelines() {
+        return Err(fail_output_group_command(&app, &mut engine, code));
+    }
     engine.emit_session(&app, session::AudioResource::Output);
     engine.require_healthy_output(snapshot)
 }
@@ -671,6 +706,9 @@ pub fn audio_seek(
         .map_err(|_| "timeline_unavailable")?
         .seek(expected, payload.time_seconds)
         .map_err(str::to_string)?;
+    if let Err(code) = engine.transport.seek_group_timelines(expected, payload.time_seconds) {
+        return Err(fail_output_group_command(&app, &mut engine, code));
+    }
     let generation = diagnostics::begin_operation(
         diagnostics::DiagnosticOperationKind::Seek,
         engine.transport.lane_count(),
@@ -723,6 +761,9 @@ pub fn audio_set_lanes(
             .map_err(|_| "timeline_unavailable")?
             .set_rate(revision, rate)
             .map_err(str::to_string)?;
+        if let Err(code) = engine.transport.rate_group_timelines(revision, rate) {
+            return Err(fail_output_group_command(&app, &mut engine, code));
+        }
     }
     engine
         .transport
@@ -865,6 +906,46 @@ pub async fn audio_set_output_device(
     })
     .await
     .map_err(|error| format!("Native output selection task failed: {error}"))?
+}
+
+#[tauri::command]
+pub async fn audio_set_output_routing(
+    app: AppHandle,
+    state: State<'_, NativeAudioState>,
+    payload: output_device::OutputRoutingRequest,
+    control: session::SessionCommand,
+) -> Result<transport::AudioSnapshot, String> {
+    payload.validate().map_err(str::to_string)?;
+    if !state.capabilities.native_playback_supported {
+        return Err("native_audio_unavailable".to_string());
+    }
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut engine = state.engine()?;
+        if !engine.authorize(session::SessionOwner::Playback, &control, false)? {
+            return Ok(engine.output_snapshot());
+        }
+        let had_runtime = engine.transport.has_runtime();
+        let result = engine.transport.select_output_routing(payload);
+        if result.is_err() && had_runtime && !engine.transport.has_runtime() {
+            let snapshot = engine.output_snapshot();
+            let _ = app.emit(AUDIO_EVENT_ERROR, transport::AudioErrorEvent {
+                session_id: snapshot.session_id,
+                code: transport::NativeAudioErrorCode::OutputStreamFailure,
+                generation: snapshot.generation,
+                timeline_revision: snapshot.timeline_revision,
+                native_time_us: timeline::native_time_us(),
+                position_seconds: snapshot.position_seconds,
+            });
+            let generation = engine.output_session.snapshot().generation;
+            if let Some(event) = engine.output_session.mark_terminal(generation, "output_stream_failure") {
+                let _ = app.emit(AUDIO_EVENT_TERMINAL, event);
+            }
+        }
+        result.map(|_| engine.output_snapshot())
+    })
+    .await
+    .map_err(|error| format!("Native output routing task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -1043,8 +1124,11 @@ pub fn audio_schedule_cues(
         .timeline()
         .lock()
         .map_err(|_| "timeline_unavailable")?
-        .schedule(revision, payload.cues)
+        .schedule(revision, payload.cues.clone())
         .map_err(str::to_string)?;
+    if let Err(code) = engine.transport.schedule_group_cues(revision, &payload.cues) {
+        return Err(fail_output_group_command(&app, &mut engine, code));
+    }
     engine.emit_session(&app, session::AudioResource::Output);
     Ok(engine.output_session.snapshot())
 }
@@ -1075,6 +1159,9 @@ pub fn audio_cancel_cues(
         .map_err(|_| "timeline_unavailable")?
         .cancel(revision, kind)
         .map_err(str::to_string)?;
+    if let Err(code) = engine.transport.cancel_group_cues(revision, kind) {
+        return Err(fail_output_group_command(&app, &mut engine, code));
+    }
     engine.emit_session(&app, session::AudioResource::Output);
     Ok(engine.output_session.snapshot())
 }
@@ -1213,6 +1300,7 @@ mod tests {
             .send(session::RuntimeReport {
                 resource: session::AudioResource::Output,
                 generation,
+                runtime_incarnation: 0,
                 kind: session::RuntimeReportKind::Terminal("output_stream_failure"),
             })
             .unwrap();
@@ -1247,6 +1335,22 @@ mod tests {
         timeline
             .arm(restarted.timeline_revision, None, None, 0)
             .expect("explicit retry arms with the restarted revision");
+        drop(timeline);
+        #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
+        {
+            engine.transport.install_test_auxiliary_runtime();
+            let retiring_incarnation = engine.transport.runtime_incarnation();
+            report_sender.send(session::RuntimeReport {
+                resource: session::AudioResource::Output,
+                generation: restarted.generation,
+                runtime_incarnation: retiring_incarnation,
+                kind: session::RuntimeReportKind::Terminal("output_stream_failure"),
+            }).unwrap();
+            engine.transport.release_for_transfer().unwrap();
+            assert_ne!(engine.transport.runtime_incarnation(), retiring_incarnation);
+            engine.drain_reports();
+            assert_eq!(engine.output_session.snapshot().terminal_diagnostic, None);
+        }
         assert!(capabilities.emits_events.contains(&AUDIO_EVENT_TERMINAL));
     }
 
@@ -1537,6 +1641,7 @@ mod tests {
                 playback_rate: Some(1.0),
                 lanes: Vec::new(),
                 project_output: mixer::AudioOutputRequest { gain: 1.0, muted: false },
+                output_routing: Default::default(),
                 control: prepare_control,
                 owner: Some(session::SessionOwner::Playback),
             },

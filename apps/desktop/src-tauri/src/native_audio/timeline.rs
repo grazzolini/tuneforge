@@ -51,6 +51,7 @@ pub struct CueEvent {
     pub insertion_sequence: u64,
 }
 
+#[derive(Clone)]
 struct Cue {
     index: u32,
     position: f64,
@@ -72,11 +73,13 @@ pub struct Advance {
     pub start_offset: usize,
 }
 
+#[derive(Clone, Copy)]
 pub struct OutputHandoff {
     was_running: bool,
     suspended_at: u64,
 }
 
+#[derive(Clone)]
 pub struct Timeline {
     generation: u64,
     revision: u64,

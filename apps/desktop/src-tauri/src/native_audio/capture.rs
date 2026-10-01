@@ -1229,6 +1229,7 @@ fn finish_capture_with_error(
         let _ = sender.try_send(RuntimeReport {
             resource: AudioResource::Capture,
             generation: session_generation,
+            runtime_incarnation: 0,
             kind: RuntimeReportKind::Terminal(terminal_code),
         });
     }

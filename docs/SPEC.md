@@ -149,6 +149,11 @@ Capo-relative display is a harmonic presentation feature. It should not alter au
 
 - Persist per-project playback session state.
 - Support source playback, saved mixes, and stem playback.
+- Route project audio, individual stems, and shared metronome/count-in cues to available outputs.
+  Settings supplies the global route; projects, stems, and cues can follow their parent or choose
+  System Default or an exact device. Refined drum parts inherit Drums. Keep these choices local to
+  the installation, with browser and native device identities separate. Show both the saved choice
+  and effective fallback, and clear route overrides independently of mute and solo.
 - Persist app, count-in, and metronome output gain and mute per installation, plus per-project
   project gain, project mute, and stem gains. Stem gain is applied before project gain; separate
   count-in and metronome levels join after project audio; app gain controls the final output. Muting

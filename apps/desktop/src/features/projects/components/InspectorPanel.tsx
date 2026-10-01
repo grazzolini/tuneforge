@@ -1,8 +1,6 @@
-import { Link } from "react-router-dom";
 import { PanelRightClose } from "lucide-react";
 import { MusicalKeyLabel } from "../../../components/MusicalLabel";
 import { formatKey } from "../../../lib/music";
-import { useMetronome } from "../../tools/metronome-context";
 import { TargetKeySelector } from "./TargetKeySelector";
 import { useProjectViewModelContext } from "./useProjectViewModelContext";
 
@@ -21,7 +19,7 @@ export function InspectorPanel({ mode = "studio" }: { mode?: "studio" | "analysi
     handleDeleteAllStems,
     handleDeleteProject,
     handleDeleteSelectedPrimaryStems,
-    hasChordTimeline,
+    projectQuery,
     hasTransformChange,
     higherTargetPreview,
     higherTargetShiftOptions,
@@ -34,11 +32,9 @@ export function InspectorPanel({ mode = "studio" }: { mode?: "studio" | "analysi
     lowerTargetShiftOptions,
     previewMutation,
     projectEditLocked,
-    projectQuery,
     projectSyncLockReason,
     referenceHz,
     retuneMode,
-    selectedPlaybackArtifact,
     selectedPrimaryStemArtifacts,
     selectedPrimaryStemDeleteLabel,
     setCentsOffset,
@@ -68,13 +64,9 @@ export function InspectorPanel({ mode = "studio" }: { mode?: "studio" | "analysi
     transposeSemitones,
     tuningSummary,
   } = useProjectViewModelContext();
-  const { launchMetronome } = useMetronome();
   const editLockTitle = projectSyncLockReason ?? undefined;
   const tempoBpm = analysisQuery.data?.tempo_bpm;
   const canOpenMetronome = typeof tempoBpm === "number" && Number.isFinite(tempoBpm);
-  const canOpenChordDictionary = Boolean(
-    projectQuery.data?.id && selectedPlaybackArtifact && hasChordTimeline,
-  );
   const estimatedReferenceHz = analysisQuery.data?.estimated_reference_hz;
   const hasEstimatedReferenceHz =
     typeof estimatedReferenceHz === "number" && Number.isFinite(estimatedReferenceHz);
@@ -85,21 +77,6 @@ export function InspectorPanel({ mode = "studio" }: { mode?: "studio" | "analysi
       : isAnalysisRunning
         ? "Analyzing..."
         : "Pending";
-  const metronomeSearchParams = new URLSearchParams();
-  if (canOpenMetronome) {
-    metronomeSearchParams.set("tool", "metronome");
-    metronomeSearchParams.set("bpm", tempoBpm.toFixed(1));
-    metronomeSearchParams.set("followPlayback", "1");
-    if (projectQuery.data?.id) {
-      metronomeSearchParams.set("projectId", projectQuery.data.id);
-    }
-  }
-  const chordDictionarySearchParams = new URLSearchParams();
-  if (canOpenChordDictionary && projectQuery.data?.id) {
-    chordDictionarySearchParams.set("tool", "chord-dictionary");
-    chordDictionarySearchParams.set("followPlayback", "1");
-    chordDictionarySearchParams.set("projectId", projectQuery.data.id);
-  }
 
   return (
     <aside className={`stack inspector-stack inspector-stack--${mode}`}>
@@ -342,29 +319,6 @@ export function InspectorPanel({ mode = "studio" }: { mode?: "studio" | "analysi
             </strong>
           </div>
         </div>
-        {canOpenMetronome || canOpenChordDictionary ? (
-          <div className="analysis-action-row">
-            {canOpenMetronome ? (
-              <Link
-                aria-label={`Follow on metronome at ${tempoBpm.toFixed(1)} BPM`}
-                className="button button--small analysis-stat__action"
-                onClick={() => void launchMetronome({ bpm: tempoBpm, followPlayback: true })}
-                to={`/tools?${metronomeSearchParams.toString()}`}
-              >
-                Follow on Metronome
-              </Link>
-            ) : null}
-            {canOpenChordDictionary ? (
-              <Link
-                aria-label="Follow chords in Chord Dictionary"
-                className="button button--small analysis-stat__action"
-                to={`/tools?${chordDictionarySearchParams.toString()}`}
-              >
-                Chord Dictionary
-              </Link>
-            ) : null}
-          </div>
-        ) : null}
         <details className="details-block details-block--inset">
           <summary>Correct source key for this project</summary>
           <p className="artifact-meta">

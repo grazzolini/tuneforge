@@ -35,6 +35,7 @@ export function AudioOutputProvider({ children }: { children: ReactNode }) {
   const [nativeCueError, setNativeCueError] = useState<string | null>(null);
   const [outputCapabilities, setOutputCapabilities] = useState<NativeAudioCapabilities | null>(null);
   const [outputDevices, setOutputDevices] = useState<NativeAudioDevices | null>(null);
+  const outputDeviceRequestRef = useRef(0);
   const [outputRoute, setOutputRoute] = useState<NativeOutputRoute | null>(null);
   const [outputDeviceError, setOutputDeviceError] = useState<string | null>(null);
   const [browserOutputDeviceId, setBrowserOutputDeviceId] = useState(readBrowserOutputDeviceId);
@@ -63,11 +64,13 @@ export function AudioOutputProvider({ children }: { children: ReactNode }) {
   const lastAppliedCuesRef = useRef<NativeCueOutputRequest | null>(null);
 
   const refreshOutputDevices = useCallback(async () => {
+    const request = ++outputDeviceRequestRef.current;
     if (!isTauriRuntime() || isWebAudioBackendForced()) {
       if (!navigator.mediaDevices?.enumerateDevices) return;
       try {
         const inventory = (await navigator.mediaDevices.enumerateDevices())
           .filter((device) => device.kind === "audiooutput");
+        if (request !== outputDeviceRequestRef.current) return;
         const currentIds = new Set(inventory.map((device) => device.deviceId));
         browserDeviceIdsRef.current.forEach((id) => {
           if (!currentIds.has(id)) markBrowserOutputDisconnected(id);
@@ -75,17 +78,23 @@ export function AudioOutputProvider({ children }: { children: ReactNode }) {
         browserDeviceIdsRef.current = currentIds;
         setBrowserOutputDevices(inventory);
       } catch {
-        setBrowserOutputError("Browser output inventory is unavailable.");
+        if (request === outputDeviceRequestRef.current) {
+          setBrowserOutputError("Browser output inventory is unavailable.");
+        }
       }
       return;
     }
     try {
       const inventory = await listNativeAudioOutputDevices();
-      setOutputDevices(inventory);
+      if (request === outputDeviceRequestRef.current) setOutputDevices(inventory);
     } catch {
-      setOutputDevices({ supported: false, devices: [], error: "Output inventory is unavailable." });
+      if (request === outputDeviceRequestRef.current) {
+        setOutputDevices({ supported: false, devices: [], error: "Output inventory is unavailable." });
+      }
     }
   }, []);
+
+  useEffect(() => () => { outputDeviceRequestRef.current += 1; }, []);
 
   useEffect(() => {
     if (isTauriRuntime() && !isWebAudioBackendForced()) return;

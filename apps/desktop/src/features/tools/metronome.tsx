@@ -681,7 +681,11 @@ export function MetronomeProvider({ children }: { children: ReactNode }) {
     void updateFollowedMetronomeCues?.(cues).then((snapshot) => {
       if (!snapshot || cancelled || nativeActivationEpochRef.current !== activationEpoch) return;
       setNativeSession(snapshot);
-    }).catch(() => undefined);
+    }).catch(() => {
+      if (!cancelled && nativeActivationEpochRef.current === activationEpoch) {
+        void reconcileNativeMetronomeFailure(nativeStandaloneCommandEpochRef.current);
+      }
+    });
     return () => { cancelled = true; };
   }, [
     accentFirstBeat,
@@ -691,6 +695,7 @@ export function MetronomeProvider({ children }: { children: ReactNode }) {
     getPlaybackSnapshot,
     isRunning,
     nativeCuePlan,
+    reconcileNativeMetronomeFailure,
     session?.tempoOriginalBpm,
     session?.tempoTargetBpm,
     updateFollowedMetronomeCues,

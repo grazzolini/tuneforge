@@ -692,7 +692,10 @@ fn handle_output_stream_error_with_policy(
     }
     let code = output_stream_error_code(error);
     let diagnostic_code = diagnostic_code_for_output_stream_error(code);
-    if recover_xruns && error.kind() == ErrorKind::Xrun {
+    if shared.output_suspended && shared.suppress_events
+        && matches!(code, NativeAudioErrorCode::DeviceChanged | NativeAudioErrorCode::DeviceNotAvailable | NativeAudioErrorCode::StreamInvalidated) {
+        mark_terminal_runtime_error(shared, code, diagnostic_code);
+    } else if recover_xruns && error.kind() == ErrorKind::Xrun {
         diagnostics::record_callback_safe_code(shared.diagnostics_generation, diagnostic_code);
     } else if code == NativeAudioErrorCode::DeviceChanged {
         if shared.output_route.preferred_device_id.is_some() && !shared.output_route.fallback_latched {
@@ -756,6 +759,28 @@ struct PlaybackRuntime {
     worker_threads: Vec<JoinHandle<()>>,
     auxiliary_only: bool,
     destinations: Vec<RoutedDestination>,
+}
+
+#[cfg(all(test, any(mobile, target_os = "linux", target_os = "macos")))]
+pub(crate) struct TestPlaybackRuntime(Arc<Mutex<PlaybackShared>>);
+
+#[cfg(all(test, any(mobile, target_os = "linux", target_os = "macos")))]
+impl TestPlaybackRuntime {
+    pub(crate) fn render(&self, output: &mut [f32]) {
+        render_shared_output(&mut self.0.lock().unwrap(), output);
+    }
+
+    pub(crate) fn retired(&self) -> bool {
+        self.0.lock().unwrap().output_suspended
+    }
+
+    pub(crate) fn gate_open(&self) -> bool {
+        self.0
+            .lock()
+            .unwrap()
+            .transport_playing
+            .load(Ordering::Acquire)
+    }
 }
 
 #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
@@ -828,6 +853,8 @@ pub struct TransportState {
     #[cfg(test)]
     fail_next_runtime_start: bool,
     #[cfg(test)]
+    fail_next_handoff_candidate: Option<NativeAudioErrorCode>,
+    #[cfg(test)]
     fail_next_release: bool,
 }
 
@@ -870,6 +897,8 @@ impl Default for TransportState {
             runtime_inhibited: None,
             #[cfg(test)]
             fail_next_runtime_start: false,
+            #[cfg(test)]
+            fail_next_handoff_candidate: None,
             #[cfg(test)]
             fail_next_release: false,
         }
@@ -1254,6 +1283,26 @@ impl TransportState {
         request.validate().map_err(str::to_string)?;
         #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
         if self.runtime.is_some() {
+            let mut next = self.output_routing.clone();
+            let same_request = next.request() == &request;
+            if same_request {
+                next.select(request.clone(), &self.output_route).map_err(str::to_string)?;
+            } else {
+                next.update_metadata(request.clone(), &self.output_route).map_err(str::to_string)?;
+            }
+            let same_lanes = self.raw_lanes.iter().filter(|lane| lane.source_path.is_some()).all(|lane| {
+                self.output_routing.route_for_lane(&lane.id).target_device_id()
+                    == next.route_for_lane(&lane.id).target_device_id()
+            });
+            if same_lanes && self.output_routing.cue().target_device_id() == next.cue().target_device_id() {
+                if !same_request { self.output_routing = next; }
+                for runtime in self.runtimes() {
+                    if let Ok(mut shared) = runtime.shared.lock() {
+                        shared.output_routing = self.output_routing.snapshot();
+                    }
+                }
+                return Ok(self.snapshot());
+            }
             return self.handoff_output(None, Some(request), None);
         }
         self.output_routing.select(request, &self.output_route).map_err(str::to_string)?;
@@ -1282,6 +1331,20 @@ impl TransportState {
             }) {
                 return Err(error);
             }
+        }
+        let previous_route = self.output_route.clone();
+        let previous_routing = self.output_routing.clone();
+        let previous_supported = self.native_playback_supported;
+        let previous_reason = self.availability_reason.clone();
+        let now = timeline::native_time_us();
+        let mut previous_timelines = Vec::new();
+        for runtime in self.runtimes() {
+            let shared = runtime.shared.lock()
+                .map_err(|_| "Native playback state is unavailable.".to_string())?;
+            let mut timeline = shared.timeline.lock()
+                .map_err(|_| "Native timeline is unavailable.".to_string())?.clone();
+            let suspended = timeline.suspend_output(now);
+            previous_timelines.push((shared.timeline.clone(), timeline, suspended));
         }
         self.transport_playing.store(false, Ordering::Release);
         let (position, previous_status, handoff) = {
@@ -1324,52 +1387,122 @@ impl TransportState {
             shared.buffering = true;
             shared.suppress_events = true;
             shared.output_suspended = true;
-            shared.handoff_committed = true;
+            // Keep candidate failures observable until replacement commits.
+            shared.handoff_committed = false;
         }
         self.position_seconds = self.clamp_position(position);
         self.status = previous_status;
         self.started_at = None;
-        self.stop_runtime();
-        if let Some(id) = selection {
-            self.output_route.select(id);
-            self.output_routing.retry(&self.output_route);
-        }
-        if let Some(request) = routing {
-            self.output_routing
-                .select(request, &self.output_route)
-                .map_err(str::to_string)?;
-        }
-        if let Some(destinations) = &recovery_destinations {
-            if !self.fallback_group(destinations) {
-                let error = "Native output fallback was unavailable.".to_string();
+        let previous_runtime = self.runtime.take();
+        let previous_others = std::mem::take(&mut self.other_runtimes);
+        let replacement = (|| {
+            if let Some(id) = selection {
+                self.output_route.select(id);
+                self.output_routing.retry(&self.output_route);
+            }
+            if let Some(request) = routing {
+                self.output_routing
+                    .select(request, &self.output_route)
+                    .map_err(str::to_string)?;
+            }
+            if let Some(destinations) = &recovery_destinations {
+                if !self.fallback_group(destinations) {
+                    let error = "Native output fallback was unavailable.".to_string();
+                    self.native_playback_supported = false;
+                    self.availability_reason = Some(error.clone());
+                    self.output_route.unavailable();
+                    self.output_routing.unavailable_all();
+                    self.status = TransportStatus::Paused;
+                    return Err(error);
+                }
+            }
+            self.native_playback_supported = true;
+            self.availability_reason = None;
+            #[cfg(test)]
+            if let Some(code) = self.fail_next_handoff_candidate.take() {
+                if let Some(runtime) = &previous_runtime {
+                    if let Ok(mut shared) = runtime.shared.lock() {
+                        if matches!(code, NativeAudioErrorCode::StreamInvalidated) {
+                            handle_output_stream_error_with_policy(&mut shared,
+                                &cpal::Error::new(ErrorKind::StreamInvalidated), true);
+                        } else {
+                            mark_terminal_runtime_error(&mut shared, code, diagnostic_code_for_output_stream_error(code));
+                        }
+                    }
+                }
+            }
+            let rebuild = self.ensure_runtime(!auxiliary_only, true, recovery_destinations.is_none());
+            if let Err(error) = rebuild {
+                self.status = TransportStatus::Paused;
                 self.native_playback_supported = false;
                 self.availability_reason = Some(error.clone());
                 self.output_route.unavailable();
                 self.output_routing.unavailable_all();
-                self.status = TransportStatus::Paused;
                 return Err(error);
             }
-        }
-        self.native_playback_supported = true;
-        self.availability_reason = None;
-        let rebuild = self.ensure_runtime(!auxiliary_only, true, recovery_destinations.is_none());
-        if let Err(error) = rebuild {
-            self.status = TransportStatus::Paused;
-            self.native_playback_supported = false;
-            self.availability_reason = Some(error.clone());
-            self.output_route.unavailable();
-            self.output_routing.unavailable_all();
-            return Err(error);
-        }
-        for runtime in self.runtimes() {
-            seek_runtime_workers(runtime, self.position_seconds, self.diagnostics_generation);
-        }
-        if previous_status == TransportStatus::Playing {
-            let prebuffer_failure = self
-                .runtimes()
-                .find_map(|runtime| wait_for_runtime_prebuffer(runtime).err());
-            if let Some(cause) = prebuffer_failure {
-                let error = cause.message().to_string();
+            for runtime in self.runtimes() {
+                seek_runtime_workers(runtime, self.position_seconds, self.diagnostics_generation);
+            }
+            if previous_status == TransportStatus::Playing {
+                let prebuffer_failure = self
+                    .runtimes()
+                    .find_map(|runtime| wait_for_runtime_prebuffer(runtime).err());
+                if let Some(cause) = prebuffer_failure {
+                    let error = cause.message().to_string();
+                    self.status = TransportStatus::Paused;
+                    self.native_playback_supported = false;
+                    self.availability_reason = Some(error.clone());
+                    self.output_route.unavailable();
+                    self.output_routing.unavailable_all();
+                    self.stop_runtime();
+                    return Err(error);
+                }
+            }
+            let mut restore_error = None;
+            for runtime in self.runtimes() {
+                let mut shared = runtime
+                    .shared
+                    .lock()
+                    .map_err(|_| "Native playback state is unavailable.".to_string())?;
+                if shared.standalone_bus {
+                    if let Some((old_sample_rate, click)) = &old_standalone {
+                        let rate_ratio =
+                            f64::from(shared.sample_rate) / f64::from((*old_sample_rate).max(1));
+                        shared.click = click.clone();
+                        shared.click.free_run_frame =
+                            ((shared.click.free_run_frame as f64) * rate_ratio) as u64;
+                    }
+                }
+                if shared.cue_bus {
+                    if let Some((old_sample_rate, voices, cues)) = &old_cue {
+                        let rate_ratio =
+                            f64::from(shared.sample_rate) / f64::from((*old_sample_rate).max(1));
+                        shared.cue_voices = voices
+                            .iter()
+                            .cloned()
+                            .map(|mut voice| {
+                                voice.phase = ((voice.phase as f64) * rate_ratio) as usize;
+                                voice.frames = ((voice.frames as f64) * rate_ratio) as usize;
+                                voice
+                            })
+                            .collect();
+                        shared.pending_cues = cues.clone();
+                    }
+                }
+                for lane in &mut shared.lanes {
+                    if let Some(gain) = old_lane_gains.get(&lane.id) {
+                        lane.current_gain = *gain;
+                    }
+                }
+                shared.position_seconds = self.position_seconds;
+                shared.output_route = self.output_route.snapshot();
+                shared.output_routing = self.output_routing.snapshot();
+                if let Err(error) = resume_handoff_runtime(&mut shared, previous_status, handoff) {
+                    restore_error = Some(error);
+                    break;
+                }
+            }
+            if let Some(error) = restore_error {
                 self.status = TransportStatus::Paused;
                 self.native_playback_supported = false;
                 self.availability_reason = Some(error.clone());
@@ -1378,66 +1511,76 @@ impl TransportState {
                 self.stop_runtime();
                 return Err(error);
             }
-        }
-        let mut restore_error = None;
-        for runtime in self.runtimes() {
-            let mut shared = runtime
-                .shared
-                .lock()
-                .map_err(|_| "Native playback state is unavailable.".to_string())?;
-            if shared.standalone_bus {
-                if let Some((old_sample_rate, click)) = &old_standalone {
-                    let rate_ratio =
-                        f64::from(shared.sample_rate) / f64::from((*old_sample_rate).max(1));
-                    shared.click = click.clone();
-                    shared.click.free_run_frame =
-                        ((shared.click.free_run_frame as f64) * rate_ratio) as u64;
+            self.status = previous_status;
+            if previous_status == TransportStatus::Playing {
+                self.started_at = Some(Instant::now());
+                self.transport_playing.store(true, Ordering::Release);
+            }
+            Ok(self.snapshot())
+        })();
+        match replacement {
+            Ok(snapshot) => {
+                for runtime in previous_runtime.into_iter().chain(previous_others) {
+                    shutdown_runtime(runtime);
                 }
+                Ok(snapshot)
             }
-            if shared.cue_bus {
-                if let Some((old_sample_rate, voices, cues)) = &old_cue {
-                    let rate_ratio =
-                        f64::from(shared.sample_rate) / f64::from((*old_sample_rate).max(1));
-                    shared.cue_voices = voices
-                        .iter()
-                        .cloned()
-                        .map(|mut voice| {
-                            voice.phase = ((voice.phase as f64) * rate_ratio) as usize;
-                            voice.frames = ((voice.frames as f64) * rate_ratio) as usize;
-                            voice
-                        })
-                        .collect();
-                    shared.pending_cues = cues.clone();
+            Err(error) => {
+                self.stop_runtime();
+                let candidate_error = previous_runtime.iter().chain(previous_others.iter()).find_map(|runtime| {
+                    runtime.shared.lock().ok().and_then(|shared| {
+                        terminal_runtime_message(&shared).or_else(|| shared.recovery_pending.map(|code| code.terminal_message().to_string()))
+                    }).or_else(|| {
+                        (runtime.audio_thread.as_ref().is_some_and(JoinHandle::is_finished)
+                            || runtime.reporter_thread.as_ref().is_some_and(JoinHandle::is_finished)
+                            || runtime.worker_threads.iter().any(JoinHandle::is_finished))
+                            .then(|| "Previous native output stopped during handoff.".to_string())
+                    })
+                });
+                if recovery_destinations.is_some() || candidate_error.is_some() {
+                    self.status = TransportStatus::Paused;
+                    self.started_at = None;
+                    self.native_playback_supported = false;
+                    self.availability_reason = Some(candidate_error.unwrap_or_else(|| error.clone()));
+                    self.output_route.unavailable();
+                    self.output_routing.unavailable_all();
+                    for runtime in previous_runtime.into_iter().chain(previous_others) {
+                        shutdown_runtime(runtime);
+                    }
+                    return Err(error);
                 }
-            }
-            for lane in &mut shared.lanes {
-                if let Some(gain) = old_lane_gains.get(&lane.id) {
-                    lane.current_gain = *gain;
+                self.output_route = previous_route;
+                self.output_routing = previous_routing;
+                self.native_playback_supported = previous_supported;
+                self.availability_reason = previous_reason;
+                self.position_seconds = self.clamp_position(position);
+                self.status = previous_status;
+                self.started_at = (previous_status == TransportStatus::Playing).then(Instant::now);
+                self.runtime = previous_runtime;
+                self.other_runtimes = previous_others;
+                for (timeline, mut previous, suspended) in previous_timelines {
+                    previous.resume_output(suspended, timeline::native_time_us());
+                    if let Ok(mut timeline) = timeline.lock() { *timeline = previous; }
                 }
+                for runtime in self.runtimes() {
+                    if let Ok(mut shared) = runtime.shared.lock() {
+                        shared.status = previous_status;
+                        shared.buffering = false;
+                        shared.suppress_events = false;
+                        shared.output_suspended = false;
+                        shared.handoff_committed = false;
+                        shared.runtime_incarnation = self.runtime_incarnation;
+                        if shared.cue_bus {
+                            if let Some((_, _, cues)) = &old_cue {
+                                shared.pending_cues = cues.clone();
+                            }
+                        }
+                    }
+                }
+                self.transport_playing.store(previous_status == TransportStatus::Playing, Ordering::Release);
+                Err(error)
             }
-            shared.position_seconds = self.position_seconds;
-            shared.output_route = self.output_route.snapshot();
-            shared.output_routing = self.output_routing.snapshot();
-            if let Err(error) = resume_handoff_runtime(&mut shared, previous_status, handoff) {
-                restore_error = Some(error);
-                break;
-            }
         }
-        if let Some(error) = restore_error {
-            self.status = TransportStatus::Paused;
-            self.native_playback_supported = false;
-            self.availability_reason = Some(error.clone());
-            self.output_route.unavailable();
-            self.output_routing.unavailable_all();
-            self.stop_runtime();
-            return Err(error);
-        }
-        self.status = previous_status;
-        if previous_status == TransportStatus::Playing {
-            self.started_at = Some(Instant::now());
-            self.transport_playing.store(true, Ordering::Release);
-        }
-        Ok(self.snapshot())
     }
 
     pub fn has_runtime(&self) -> bool {
@@ -1535,6 +1678,67 @@ impl TransportState {
             auxiliary_only: true,
             destinations: vec![RoutedDestination::Cue],
         });
+    }
+
+    #[cfg(all(test, any(mobile, target_os = "linux", target_os = "macos")))]
+    pub(crate) fn install_test_project_pcm_runtime(&mut self, samples: &[f32]) -> TestPlaybackRuntime {
+        // Inject PCM after prepare; device creation and decoding remain outside this seam.
+        assert!(self.runtime.is_none());
+        assert_eq!(self.lanes.len(), 1);
+        self.install_test_auxiliary_runtime();
+        let runtime = self.runtime.as_mut().unwrap();
+        runtime.auxiliary_only = false;
+        let mut shared = runtime.shared.lock().unwrap();
+        shared.session_id = self.session_id.clone();
+        shared.duration_seconds = self.duration_seconds;
+        shared.snapshot_lanes = self.lanes.clone();
+        shared.standalone_bus = self.click.enabled && !self.click.follow_transport;
+        shared
+            .timeline
+            .lock()
+            .unwrap()
+            .configure_sample_rate(shared.sample_rate);
+        let lane = &self.lanes[0];
+        let mut ring = RingBuffer::new(samples.len());
+        assert!(ring.push_samples(samples));
+        let ring = Arc::new(Mutex::new(ring));
+        let refill_ring = ring.clone();
+        let samples = samples.to_vec();
+        let capacity_samples = samples.len();
+        let (worker_sender, worker_receiver) = mpsc::channel();
+        runtime.worker_control_senders.push(worker_sender);
+        runtime.worker_threads.push(thread::spawn(move || {
+            while let Ok(command) = worker_receiver.recv() {
+                match command {
+                    WorkerControl::Seek { .. } => {
+                        let mut ring = refill_ring.lock().unwrap();
+                        ring.clear();
+                        assert!(ring.push_samples(&samples));
+                    }
+                    WorkerControl::Stop => break,
+                    _ => {}
+                }
+            }
+        }));
+        shared.lanes = vec![PlaybackLane {
+            id: lane.id.clone(),
+            artifact_id: lane.artifact_id.clone(),
+            role: lane.role,
+            muted: lane.muted,
+            solo: lane.solo,
+            current_gain: lane.effective_gain,
+            target_gain: lane.effective_gain,
+            scratch: vec![0.0; capacity_samples],
+            source: PlaybackLaneSource::Stream(Arc::new(StreamingLane {
+                ring,
+                capacity_samples,
+                eof: Arc::new(AtomicBool::new(false)),
+            })),
+            underrun_count: 0,
+            worker_error_count: 0,
+            last_worker_error: None,
+        }];
+        TestPlaybackRuntime(runtime.shared.clone())
     }
 
     pub fn begin_explicit_attempt(&mut self, capabilities: AudioCapabilities) {
@@ -1848,6 +2052,8 @@ impl TransportState {
         let previous_started_at = self.started_at;
         #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
         let previous_app = self.app.clone();
+        #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
+        let previous_had_runtime = self.runtime.is_some();
         let state = self.apply_standalone_metronome(&request)?;
         #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
         let lifecycle_result = (|| {
@@ -1876,11 +2082,34 @@ impl TransportState {
             if !self.click.enabled && self.status != TransportStatus::Playing {
                 self.release_for_transfer().map_err(str::to_string)?;
             }
+            if self.runtime.is_some() {
+                let previous_independent = previous_click.enabled && !previous_click.follow_transport;
+                let next_independent = self.click.enabled && !self.click.follow_transport;
+                let auxiliary = self.runtime.as_ref().is_some_and(|runtime| runtime.auxiliary_only);
+                let different_output = self.output_route.target_device_id()
+                    != self.output_routing.cue().target_device_id();
+                if different_output && ((auxiliary && previous_click.follow_transport != self.click.follow_transport)
+                    || (!auxiliary && previous_independent != next_independent)) {
+                    self.handoff_output(None, None, None)?;
+                } else {
+                    for runtime in self.runtimes() {
+                        if let Ok(mut shared) = runtime.shared.lock() {
+                            if !different_output && shared.cue_bus {
+                                shared.standalone_bus = next_independent;
+                            }
+                        }
+                    }
+                }
+            }
             Ok::<(), String>(())
         })();
         #[cfg(not(any(mobile, target_os = "linux", target_os = "macos")))]
         let lifecycle_result = Ok::<(), String>(());
         if let Err(error) = lifecycle_result {
+            #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
+            let lost_runtime = previous_had_runtime && self.runtime.is_none();
+            #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
+            let failed_reason = self.availability_reason.clone();
             self.click = previous_click;
             self.standalone_metronome = previous_control;
             self.session_id = previous_session_id;
@@ -1893,6 +2122,12 @@ impl TransportState {
             #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
             {
                 self.app = previous_app;
+                if lost_runtime {
+                    self.status = TransportStatus::Paused;
+                    self.started_at = None;
+                    self.native_playback_supported = false;
+                    self.availability_reason = Some(failed_reason.unwrap_or_else(|| error.clone()));
+                }
             }
             #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
             for runtime in self.runtimes() {
@@ -1901,12 +2136,6 @@ impl TransportState {
                 }
             }
             return Err(error);
-        }
-        #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
-        if self.runtime.is_some() && self.app.is_some()
-            && (previous_click.enabled != self.click.enabled
-                || previous_click.follow_transport != self.click.follow_transport) {
-            self.handoff_output(None, None, None)?;
         }
         Ok(state)
     }
@@ -6680,6 +6909,167 @@ mod tests {
         let step = (1.0 / (1_000.0 * GAIN_RAMP_SECONDS)) as f32;
         assert!((shared.count_in_output.gain() - (1.0 - step)).abs() < f32::EPSILON);
         assert!((shared.metronome_output.gain() - (0.8 - step)).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
+    fn inactive_route_metadata_does_not_replace_playing_output_groups() {
+        use super::super::output_device::{LaneRouteSelection, OutputRoutingRequest, RouteSelection};
+        for multiple_outputs in [false, true] {
+            let mut state = TransportState::default();
+            state.native_playback_supported = true;
+            state.duration_seconds = 10.0;
+            state.status = TransportStatus::Playing;
+            state.raw_lanes = vec![AudioLaneRequest { id: "primary".into(), artifact_id: None,
+                source_path: Some("synthetic.wav".into()), role: AudioLaneRole::Primary,
+                gain: 1.0, muted: false, solo: false }];
+            state.output_route.select(Some("headphones".into()));
+            let request = OutputRoutingRequest {
+                cue: if multiple_outputs { RouteSelection::SystemDefault } else { RouteSelection::Inherit },
+                ..Default::default()
+            };
+            state.output_routing.select(request.clone(), &state.output_route).unwrap();
+            state.output_routing.route_for_lane_mut("primary").fallback_to_default();
+            state.install_test_auxiliary_runtime();
+            state.runtime.as_mut().unwrap().auxiliary_only = false;
+            state.runtime.as_ref().unwrap().shared.lock().unwrap().status = TransportStatus::Playing;
+            if multiple_outputs {
+                let mut other = TransportState::default();
+                other.install_test_auxiliary_runtime();
+                state.other_runtimes.push(other.runtime.take().unwrap());
+            }
+            let runtime = state.runtime.as_ref().unwrap().shared.clone();
+            let incarnation = state.runtime_incarnation;
+            let mut next = request;
+            next.lanes.push(LaneRouteSelection { lane_id: "new-stem".into(), parent_lane_id: None,
+                selection: RouteSelection::ExplicitDevice { device_id: "unused-output".into() } });
+            state.select_output_routing(next).unwrap();
+            assert_eq!(state.runtime_incarnation, incarnation);
+            assert!(Arc::ptr_eq(&runtime, &state.runtime.as_ref().unwrap().shared));
+            assert_eq!(state.status, TransportStatus::Playing);
+            assert!(state.output_routing.project().snapshot().fallback_latched);
+        }
+    }
+
+    #[test]
+    #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
+    fn identical_routing_preserves_activated_metadata_and_retries_latched_fallback() {
+        use super::super::output_device::{LaneRouteSelection, OutputRoutingRequest, RouteSelection};
+        let mut state = TransportState::default();
+        let explicit = |id: &str| RouteSelection::ExplicitDevice { device_id: id.into() };
+        let request = OutputRoutingRequest { project: explicit("project"), cue: explicit("cue"),
+            lanes: vec![LaneRouteSelection { lane_id: "lead".into(), parent_lane_id: None,
+                selection: explicit("lead-output") }] };
+        state.raw_lanes = vec![AudioLaneRequest { id: "lead".into(), artifact_id: None,
+            source_path: Some("synthetic.wav".into()), role: AudioLaneRole::Primary,
+            gain: 1.0, muted: false, solo: false }];
+        state.output_routing.select(request.clone(), &state.output_route).unwrap();
+        state.output_routing.route_for_lane_mut("primary").activate();
+        state.output_routing.route_for_lane_mut("lead").activate();
+        state.output_routing.cue_mut().activate();
+        state.install_test_auxiliary_runtime();
+        state.runtime.as_mut().unwrap().auxiliary_only = false;
+        let runtime = state.runtime.as_ref().unwrap().shared.clone();
+        let previous = serde_json::to_value(state.output_routing.snapshot()).unwrap();
+        state.select_output_routing(request.clone()).unwrap();
+        assert!(Arc::ptr_eq(&runtime, &state.runtime.as_ref().unwrap().shared));
+        assert_eq!(serde_json::to_value(state.output_routing.snapshot()).unwrap(), previous);
+        state.output_routing.route_for_lane_mut("lead").fallback_to_default();
+        state.fail_next_runtime_start = true;
+        assert_eq!(state.select_output_routing(request).unwrap_err(), "injected_runtime_start_failure");
+        assert!(!state.fail_next_runtime_start, "explicit retry must attempt the preferred device");
+        assert!(state.output_routing.route_for_lane("lead").snapshot().fallback_latched);
+    }
+
+    #[test]
+    #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
+    fn failed_replacement_never_revives_a_failed_handoff_candidate() {
+        for code in [NativeAudioErrorCode::StreamInvalidated, NativeAudioErrorCode::DecoderWorkerFailure] {
+            let mut state = TransportState::default();
+            state.install_test_auxiliary_runtime();
+            state.status = TransportStatus::Playing;
+            state.native_playback_supported = true;
+            state.runtime.as_mut().unwrap().auxiliary_only = false;
+            state.runtime.as_ref().unwrap().shared.lock().unwrap().status = TransportStatus::Playing;
+            state.fail_next_runtime_start = true;
+            state.fail_next_handoff_candidate = Some(code);
+            assert!(state.handoff_output(None, None, None).is_err());
+            assert!(!state.has_runtime());
+            assert_eq!(state.status, TransportStatus::Paused);
+            assert!(!state.native_playback_supported);
+            assert_eq!(state.availability_reason.as_deref(), Some(code.terminal_message()));
+        }
+    }
+
+    #[test]
+    #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
+    fn enabling_follow_preserves_playing_runtime_and_fires_the_next_grid_beat() {
+        use super::super::output_device::{OutputRoutingRequest, RouteSelection};
+        for multiple_outputs in [false, true] {
+            let mut state = TransportState::default();
+            state.output_route.select(Some("headphones".into()));
+            state.output_routing.select(OutputRoutingRequest {
+                cue: if multiple_outputs { RouteSelection::SystemDefault } else { RouteSelection::Inherit },
+                ..Default::default()
+            }, &state.output_route).unwrap();
+            state.install_test_auxiliary_runtime();
+            state.runtime.as_mut().unwrap().auxiliary_only = false;
+            state.status = TransportStatus::Playing;
+            state.duration_seconds = 10.0;
+            let runtime = state.runtime.as_ref().unwrap().shared.clone();
+            {
+                let shared = runtime.lock().unwrap();
+                let mut timeline = shared.timeline.lock().unwrap();
+                timeline.reset(1, 10.0, 1.0);
+                timeline.configure_sample_rate(1_000);
+                timeline.arm(1, Some(0.75), None, 0).unwrap();
+            }
+            state.fail_next_runtime_start = true;
+            state.set_standalone_metronome_inner(None,
+                standalone_request(true, "start", None, None), capabilities()).unwrap();
+            assert!(state.fail_next_runtime_start, "Follow must not reopen streams");
+            assert!(Arc::ptr_eq(&runtime, &state.runtime.as_ref().unwrap().shared));
+            let shared = runtime.lock().unwrap();
+            let mut timeline = shared.timeline.lock().unwrap();
+            let revision = timeline.revision();
+            timeline.schedule(revision, (0..5).map(|index| timeline::CueRequest {
+                cue_index: index, position_seconds: f64::from(index) * 0.5,
+                kind: timeline::CueKind::Metronome, accent: index % 4 == 0, gain: 1.0,
+            }).collect()).unwrap();
+            let advanced = timeline.advance(300, 0);
+            assert_eq!(advanced.cues.len(), 1);
+            assert_eq!(advanced.cues[0].event.cue_index, 2);
+            assert_eq!(advanced.cues[0].frame_offset, 250);
+            assert!(!advanced.cues[0].event.accent);
+        }
+    }
+
+    #[test]
+    #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
+    fn standalone_topology_failure_rolls_back_authority_for_retry_and_stop() {
+        use super::super::output_device::{OutputRoutingRequest, RouteSelection};
+        let mut state = TransportState::default();
+        state.output_route.select(Some("headphones".into()));
+        state.output_routing.select(OutputRoutingRequest {
+            cue: RouteSelection::SystemDefault, ..Default::default()
+        }, &state.output_route).unwrap();
+        let started = state.set_standalone_metronome_inner(None,
+            standalone_request(true, "start", None, None), capabilities()).unwrap();
+        state.install_test_auxiliary_runtime();
+        let previous_runtime = state.runtime.as_ref().unwrap().shared.clone();
+        state.fail_next_runtime_start = true;
+        let mut change = standalone_request(true, "independent", Some(started.generation), Some(started.revision));
+        change.follow_playback = false;
+        assert_eq!(state.set_standalone_metronome_inner(None, change.clone(), capabilities()).unwrap_err(),
+            "injected_runtime_start_failure");
+        assert_eq!(state.standalone_metronome.revision, started.revision);
+        assert!(state.click.follow_transport);
+        assert!(Arc::ptr_eq(&previous_runtime, &state.runtime.as_ref().unwrap().shared));
+        assert!(!state.runtime.as_ref().unwrap().shared.lock().unwrap().output_suspended);
+        let retried = state.set_standalone_metronome_inner(None, change, capabilities()).unwrap();
+        let stopped = state.set_standalone_metronome_inner(None,
+            standalone_request(false, "stop", Some(retried.generation), Some(retried.revision)), capabilities()).unwrap();
+        assert!(!stopped.enabled);
     }
 
     fn standalone_request(

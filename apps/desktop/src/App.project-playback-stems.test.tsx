@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   emitMockNativeAudioTerminal,
+  emitMockNativePlaybackPosition,
   resetAppTestHarness,
   flushPendingPreview,
   findAudioByArtifactId,
@@ -29,6 +30,8 @@ import {
   openPlaybackWorkspace,
   openStudioPanel,
 } from "./test/projectTestActions";
+
+import { readPlaybackLiveDiagnostics } from "./lib/playbackDiagnostics";
 
 function setPlaybackPosition(value: string) {
   fireEvent.change(screen.getByLabelText("Playback position"), { target: { value } });
@@ -780,6 +783,90 @@ describe("Desktop app project playback stems", () => {
 
     await waitFor(() => expect(screen.getByRole("button", { name: "Play playback" })).toBeInTheDocument());
     expect(screen.getByRole("button", { name: "Play playback" })).toBeInTheDocument();
+  });
+
+  it.each([false, true])("continues native playback when a practice mix automatically completes (Follow %s)", async (followPlayback) => {
+    const user = userEvent.setup();
+    const restoreRuntime = enableNativePlayback();
+    setDeferredPreviewCompletion(true);
+    const invoke = getMockInvoke();
+    const initialInvoke = invoke.getMockImplementation()!;
+    // Standalone metronome has its own lease; it does not acquire the Playback owner.
+    invoke.mockImplementation(async (command, args) => {
+      if (command === "audio_set_standalone_metronome") {
+        const payload = (args as { payload: Record<string, unknown> }).payload;
+        return { ...payload, leaseId: "standalone-metronome", generation: 1, revision: 1, nativeTimeUs: 1 };
+      }
+      return initialInvoke(command, args);
+    });
+    const { queryClient } = renderApp(["/projects/proj_123"]);
+    try {
+      expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+      await ensureInspectorVisible(user);
+      const sourceList = screen.getByRole("group", { name: "Source and mix list" });
+      await user.click(within(sourceList).getByRole("button", { name: /Source Track/i }));
+      await user.click(screen.getByRole("button", { name: "Play playback" }));
+      await openPlaybackWorkspace(user);
+      if (!followPlayback) await user.click(screen.getByLabelText("Metronome Follow"));
+      await user.click(screen.getByRole("button", { name: "Start metronome" }));
+      await screen.findByRole("button", { name: "Stop metronome" });
+      act(() => emitMockNativePlaybackPosition({ sessionId: "proj_123:native:art_source", state: "playing",
+        positionSeconds: 14, durationSeconds: 180 }));
+      await user.click(screen.getByRole("tab", { name: "Project" }));
+      await openStudioPanel(user);
+      await user.click(screen.getByLabelText("Raise target key"));
+      await user.click(screen.getByRole("button", { name: "Create Mix" }));
+      await waitFor(() => expect(mockCreatePreview).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+      const originalInvoke = invoke.getMockImplementation()!;
+      let releasePrepare!: () => void;
+      const prepare = new Promise<void>((resolve) => { releasePrepare = resolve; });
+      invoke.mockImplementation(async (command, args) => {
+        if (command === "audio_prepare_session") {
+          await prepare;
+          setMockNativeAudioState({ snapshot: { generation: 2, timelineRevision: 1 } });
+        }
+        const result = await originalInvoke(command, args) as Record<string, unknown>;
+        if (command === "audio_play") {
+          const playing = { ...result, timelineRevision: Number(result.timelineRevision) + 1 };
+          setMockNativeAudioState({ snapshot: playing });
+          return playing;
+        }
+        return result;
+      });
+      await act(async () => {
+        flushPendingPreview("proj_123");
+        const [{ artifacts }, { jobs }] = await Promise.all([
+          mockListArtifacts("proj_123"), mockListJobs({ project_id: "proj_123" }),
+        ]);
+        queryClient.setQueryData(["artifacts", "proj_123"], artifacts);
+        queryClient.setQueryData(["jobs", { projectId: "proj_123" }], jobs);
+      });
+      await screen.findByRole("heading", { name: "Practice Mix" });
+      await waitFor(() => expect(invokeCalls("audio_prepare_session")).toHaveLength(2));
+      await act(async () => {
+        const { artifacts } = await mockListArtifacts("proj_123");
+        queryClient.setQueryData(["artifacts", "proj_123"], artifacts.map((artifact) => ({ ...artifact })));
+        releasePrepare();
+      });
+      await waitFor(() => expect(readPlaybackLiveDiagnostics().currentState).toBe("playing"));
+      expect(invokeCalls("audio_play")).toHaveLength(2);
+      const prepared = invokeCalls("audio_prepare_session")[1]?.[1] as { payload: { sessionId: string } };
+      const played = invokeCalls("audio_play")[1]?.[1] as { payload: { timelineRevision: number } };
+      expect(played).toMatchObject({ payload: { generation: 2, startTimeSeconds: 14 } });
+      act(() => emitMockNativePlaybackPosition({ sessionId: prepared.payload.sessionId, generation: 2,
+        timelineRevision: played.payload.timelineRevision + 1, state: "playing", positionSeconds: 14.25,
+        durationSeconds: 180 }));
+      expect(readPlaybackLiveDiagnostics()).toMatchObject({ currentState: "playing", currentPath: "native", statusMessage: null });
+      expect(screen.getByLabelText("Playback position")).toHaveValue("14.25");
+      await openPlaybackWorkspace(user);
+      expect(screen.getByRole("button", { name: "Stop metronome" })).toBeInTheDocument();
+      expect(played).toMatchObject({ payload: followPlayback
+        ? { metronomeCues: expect.any(Array) } : { precount: null } });
+      if (!followPlayback) expect((played.payload as Record<string, unknown>).metronomeCues).toBeUndefined();
+      expect(getMockAudioContexts()).toHaveLength(0);
+      expect(await screen.findByRole("heading", { name: "Practice Mix" })).toBeInTheDocument();
+    } finally { restoreRuntime(); }
   });
 
   it("selects a newly created mix after preview completion", async () => {

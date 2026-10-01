@@ -20,6 +20,7 @@ export type ProjectPlaybackSession = {
   drumMode?: "original" | "split";
   drumSourceArtifactId?: string | null;
   onDrumModeRollback?: () => void;
+  onPlaybackSourceRollback?: () => void;
   playbackArtifactIds: string[];
   artifactPathsById: Record<string, string>;
   artifactFormatsById: Record<string, string>;

@@ -2791,6 +2791,10 @@ export function useProjectViewModel() {
         setDrumModesBySource((current) => ({ ...current, [selectedPrimaryArtifact.id]: drumMode }));
         if (selectedArtifact?.id) setSelectedArtifactId(selectedArtifact.id);
       },
+      onPlaybackSourceRollback: () => {
+        setSelectedPrimaryArtifactId(selectedPrimaryArtifact?.id ?? null);
+        setSelectedArtifactId(selectedArtifact?.id ?? selectedPlaybackArtifact.id);
+      },
       playbackArtifactIds: nativePlaybackArtifacts.map((artifact) => artifact.id),
       artifactPathsById: Object.fromEntries(nativePlaybackArtifacts.map((artifact) => [
         artifact.id,

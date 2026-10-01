@@ -166,6 +166,11 @@ may use the phone speaker) and retains the selected choice for the session. A fa
 pauses at the current position until Play. Settings imports, exports, and local preferences never
 store an Android output device ID.
 
+Playback's Practice Controls drawer includes project, stem, and shared cue routes. Android keeps
+explicit project route IDs only for the current process, alongside the global choice; Follow and
+System Default survive locally. iOS remains System Default only and keeps unsupported saved choices
+visible without claiming a physical route. These preferences are installation-local, not synced.
+
 Mobile stores synced desktop outputs as library data, not as ad hoc downloads. Generation capability
 is separate from data readability: unsupported mobile generation shows `Unavailable on this device`,
 not a failed or pending job.

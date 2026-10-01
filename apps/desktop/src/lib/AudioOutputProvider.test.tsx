@@ -233,6 +233,42 @@ describe("AudioOutputProvider", () => {
       .toMatchObject({ defaultOutputDeviceId: selected });
   });
 
+  it("keeps the newest native inventory and does not retry a latched output on refresh", async () => {
+    const saved = "coreaudio:headphones";
+    const fallback = {
+      preferredDeviceId: saved, activeDeviceId: "coreaudio:speakers",
+      status: "fallback-default", fallbackLatched: true, generation: 4,
+    };
+    window.localStorage.setItem("tuneforge.ui-preferences", JSON.stringify({
+      defaultOutputDeviceId: saved,
+    }));
+    mockGetNativeOutputRoute.mockResolvedValue(fallback);
+    mockSetNativeOutputDevice.mockResolvedValue({ outputRoute: fallback });
+    let resolveInitial!: (value: unknown) => void;
+    let resolveRefresh!: (value: unknown) => void;
+    mockListNativeOutputDevices
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveInitial = resolve; }))
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveRefresh = resolve; }));
+
+    render(<PreferencesProvider><AudioOutputProvider><Probe /></AudioOutputProvider></PreferencesProvider>);
+    await waitFor(() => expect(mockListNativeOutputDevices).toHaveBeenCalledTimes(1));
+    if (!currentOutput) throw new Error("Expected audio output context.");
+    act(() => { void currentOutput?.refreshOutputDevices?.(); });
+    await waitFor(() => expect(mockListNativeOutputDevices).toHaveBeenCalledTimes(2));
+    await act(async () => resolveRefresh({ supported: true, devices: [
+      { id: saved, label: "Headphones", isDefault: false },
+    ], error: null }));
+    expect(currentOutput?.outputDevices?.devices.map((device) => device.id)).toEqual([saved]);
+    const routeCalls = mockSetNativeOutputDevice.mock.calls.length;
+
+    await act(async () => resolveInitial({ supported: true, devices: [], error: null }));
+    expect(currentOutput?.outputDevices?.devices.map((device) => device.id)).toEqual([saved]);
+    expect(currentOutput?.outputRoute).toMatchObject(fallback);
+    expect(mockSetNativeOutputDevice).toHaveBeenCalledTimes(routeCalls);
+    expect(JSON.parse(window.localStorage.getItem("tuneforge.ui-preferences") ?? "{}"))
+      .toMatchObject({ defaultOutputDeviceId: saved });
+  });
+
   it("keeps Android output selection in native process state across WebView remount", async () => {
     vi.spyOn(navigator, "userAgent", "get").mockReturnValue("Android test WebView");
     const selected = "aaudio:42";

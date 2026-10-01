@@ -26,6 +26,8 @@ import { TargetKeySelector } from "./TargetKeySelector";
 import { useProjectViewModelContext } from "./useProjectViewModelContext";
 import { OutputVolumeControl } from "../../../components/OutputVolumeControl";
 import { useAudioOutput } from "../../../lib/audioOutputContext";
+import { useMetronome } from "../../tools/metronome-context";
+import { OutputRoutingPanel, ProjectOutputRoute, RoutingTabs } from "./OutputRoutingControls";
 
 export type PlaybackPracticeRailHandle = {
   flushPendingTempo: () => void;
@@ -36,6 +38,8 @@ export const PlaybackPracticeRail = forwardRef<
   { variant?: "desktop" | "drawer" }
 >(function PlaybackPracticeRail({ variant = "desktop" }, ref) {
   const appOutput = useAudioOutput();
+  const { errorMessage: metronomeError, followPlayback, isRunning: metronomeRunning,
+    setFollowPlaybackEnabled, startMetronome, stopMetronome } = useMetronome();
   const {
     capoKey,
     capoOptionRefs,
@@ -136,6 +140,10 @@ export const PlaybackPracticeRail = forwardRef<
         : tempoDisplayBpm.toFixed(1),
   );
   const tempoCommitTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const railRef = useRef<HTMLElement>(null);
+  const pointerFocusRef = useRef(false);
+  const [routingTab, setRoutingTab] = useState<"stems" | "outputs">("stems");
+  const [followError, setFollowError] = useState<string | null>(null);
   const tempoDraftDirty = useRef(false);
   const flushTempoDraftRef = useRef<() => void>(() => undefined);
   const skipNextTempoBlurCommit = useRef(false);
@@ -250,6 +258,14 @@ export const PlaybackPracticeRail = forwardRef<
     <aside
       className={`panel playback-practice-rail playback-practice-rail--${variant}`}
       data-practice-controls-variant={variant}
+      ref={railRef}
+      onPointerDownCapture={() => { pointerFocusRef.current = true; }}
+      onKeyDownCapture={() => { pointerFocusRef.current = false; }}
+      onPointerLeave={() => {
+        if (pointerFocusRef.current && railRef.current?.contains(document.activeElement)) {
+          (document.activeElement as HTMLElement).blur();
+        }
+      }}
       onBlur={(event) => {
         const nextTarget = event.relatedTarget;
         if (!(nextTarget instanceof Node) || !event.currentTarget.contains(nextTarget)) {
@@ -510,6 +526,7 @@ export const PlaybackPracticeRail = forwardRef<
               <span className="artifact-pill__meta">{artifactSummary(sourceArtifact)}</span>
             </button>
           ) : null}
+          <ProjectOutputRoute />
           {previewArtifacts.map((artifact) => (
             <button
               key={artifact.id}
@@ -528,7 +545,8 @@ export const PlaybackPracticeRail = forwardRef<
         </div>
       </section>
 
-      <section className="playback-picker-group playback-picker-group--compact playback-picker-group--stems">
+      <RoutingTabs active={routingTab} label="Playback routes and stems" onChange={setRoutingTab} />
+      {routingTab === "stems" ? <section className="playback-picker-group playback-picker-group--compact playback-picker-group--stems">
         <div className="playback-picker-group__header">
           <div>
             <p className="metric-label">Stem Practice</p>
@@ -648,8 +666,37 @@ export const PlaybackPracticeRail = forwardRef<
         ) : (
           <p className="artifact-meta">{stemEmptyCopy}</p>
         )}
-      </section>
+      </section> : <OutputRoutingPanel stemArtifacts={displayStemArtifacts} />}
       <section className="playback-picker-group playback-global-level">
+        <div className="button-row">
+          <label className="playback-metronome-follow">
+            <input
+              aria-label="Metronome Follow"
+              checked={followPlayback}
+              onChange={(event) => {
+                setFollowError(null);
+                void setFollowPlaybackEnabled(event.target.checked).catch(() => {
+                  setFollowError("Metronome Follow could not be changed. Try again.");
+                });
+              }}
+              type="checkbox"
+            />
+            <span>Metronome Follow</span>
+          </label>
+          <button
+            aria-label={metronomeRunning ? "Stop metronome" : "Start metronome"}
+            className="button button--ghost button--small"
+            onClick={() => {
+              if (metronomeRunning) stopMetronome();
+              else void startMetronome();
+            }}
+            type="button"
+          >
+            {metronomeRunning ? "Stop" : "Start"}
+          </button>
+        </div>
+        {metronomeError ? <p className="field-error" role="alert">{metronomeError}</p> : null}
+        {followError ? <p className="field-error" role="alert">{followError}</p> : null}
         <OutputVolumeControl
           gain={appOutput.metronomeOutputGain}
           label="Metronome volume"

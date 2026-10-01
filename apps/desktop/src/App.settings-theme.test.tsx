@@ -497,6 +497,39 @@ describe("Desktop app settings theme", () => {
     ).toBe(first));
   });
 
+  it("refreshes Settings outputs on pointer and keyboard opening without changing the selection", async () => {
+    mockTauriRuntime();
+    setMockNativeAudioState({
+      capabilities: {
+        platform: "macos", nativePlaybackSupported: true,
+        outputSelectionPersistence: "persistent", outputRouteVerification: "backend-selected",
+      },
+      outputDevices: { supported: true, devices: [], error: null },
+    });
+    renderApp(["/settings"]);
+    const selector = await screen.findByLabelText("Audio output");
+    await waitFor(() => expect(mockInvoke.mock.calls.some(([name]) =>
+      name === "audio_list_output_devices")).toBe(true));
+    const routeCalls = () => mockInvoke.mock.calls.filter(([name]) =>
+      name === "audio_set_output_device").length;
+    const initialRouteCalls = routeCalls();
+    setMockNativeAudioState({ outputDevices: { devices: [
+      { id: "coreaudio:usb", label: "USB speakers", isDefault: false },
+    ] } });
+    fireEvent.pointerDown(selector);
+    await waitFor(() => expect(within(selector).getByRole("option", { name: "USB speakers" }))
+      .toBeInTheDocument());
+    setMockNativeAudioState({ outputDevices: { devices: [
+      { id: "coreaudio:usb", label: "USB speakers", isDefault: false },
+      { id: "coreaudio:headphones", label: "Headphones", isDefault: false },
+    ] } });
+    fireEvent.keyDown(selector, { key: "ArrowDown" });
+    await waitFor(() => expect(within(selector).getByRole("option", { name: "Headphones" }))
+      .toBeInTheDocument());
+    expect(selector).toHaveValue("default");
+    expect(routeCalls()).toBe(initialRouteCalls);
+  });
+
   it("shows native output inventory uncertainty and keeps Android fallback session scoped", async () => {
     mockTauriRuntime();
     vi.spyOn(navigator, "userAgent", "get").mockReturnValue("Android WebView");

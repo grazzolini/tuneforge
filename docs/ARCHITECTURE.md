@@ -223,6 +223,9 @@ Validation failures return `INVALID_REQUEST` with serialized validation details.
 - Normal Tauri project playback, metronome output, and tuner microphone capture use the native
   audio control plane. Native failure remains terminal until a later explicit action; it does not
   fall back to Web Audio. Browser, non-Tauri, and forced-Web Tauri builds use Web Audio.
+- Native output groups own separate streams, decoders, and timelines for resolved device IDs while
+  sharing logical transport commands. Browser routing uses sink-selectable destinations in one
+  AudioContext where supported. Local routing preferences stay outside backend and sync contracts.
 - Native desktop tempo playback uses `signalsmith-stretch` for pitch preservation.
 - Native desktop playback decodes local files through a WAV fast path or Symphonia. FFmpeg remains
   separate conversion infrastructure and does not replace realtime playback.

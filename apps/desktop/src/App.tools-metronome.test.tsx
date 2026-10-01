@@ -174,7 +174,7 @@ describe("Desktop app tools metronome", () => {
     expect(reset).toHaveTextContent("80%");
   });
 
-  it("opens from the project analysis tempo action", async () => {
+  it("keeps analyzed tempo available in Tools without an Analysis shortcut", async () => {
     const user = userEvent.setup();
     setProjectAnalysis("proj_123", {
       project_id: "proj_123",
@@ -190,13 +190,15 @@ describe("Desktop app tools metronome", () => {
 
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
     await user.click(screen.getByRole("tab", { name: "Analysis" }));
-    await user.click(screen.getByRole("link", { name: "Follow on metronome at 121.5 BPM" }));
+    expect(screen.queryByRole("link", { name: /Follow on metronome/ })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("link", { name: "Tools" }));
+    await user.click(await screen.findByRole("tab", { name: "Metronome" }));
 
     expect(await screen.findByRole("heading", { name: "Metronome" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Metronome" })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByLabelText("Tempo BPM")).toHaveValue(121.5);
     expect(screen.getByLabelText("Follow project playback")).toBeChecked();
-    expect(screen.getByRole("button", { name: "Stop" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Start" })).toBeInTheDocument();
   });
 
   it("follows active project playback when sync is enabled", async () => {
@@ -763,10 +765,12 @@ describe("Desktop app tools metronome", () => {
 
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
     await user.click(screen.getByRole("tab", { name: "Analysis" }));
-    await user.click(screen.getByRole("link", { name: "Follow on metronome at 121.5 BPM" }));
+    await user.click(screen.getByRole("link", { name: "Tools" }));
+    await user.click(await screen.findByRole("tab", { name: "Metronome" }));
     expect(await screen.findByRole("heading", { name: "Metronome" })).toBeInTheDocument();
     expect(screen.getByLabelText("Tempo BPM")).toHaveValue(121.5);
     expect(screen.getByLabelText("Follow project playback")).toBeChecked();
+    await user.click(screen.getByRole("button", { name: "Start" }));
 
     await user.click(screen.getByRole("link", { name: "Library" }));
     await user.click(await screen.findByRole("link", { name: "Open Bass Drill project" }));

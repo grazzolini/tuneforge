@@ -69,12 +69,10 @@ export function PlaybackWorkspace({
         />
         {projectOutputSaveError ? <p className="field-error" role="alert">{projectOutputSaveError}</p> : null}
       </div>
-      {isMobileRuntime ? (
-        <PlaybackPracticeControlsDrawer
-          open={practiceControlsOpen}
-          onDismiss={onClosePracticeControls}
-        />
-      ) : null}
+      <PlaybackPracticeControlsDrawer
+        open={practiceControlsOpen}
+        onDismiss={onClosePracticeControls}
+      />
     </div>
   );
 }

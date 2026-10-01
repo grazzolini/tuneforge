@@ -6,6 +6,7 @@ import { markPlaybackStarting } from "./lib/playbackDiagnostics";
 import { updateBrowserWakeLockStatus } from "./lib/powerInhibition";
 import {
   findAudioByArtifactId,
+  getMockMediaDevices,
   emitMockNativePlaybackPosition,
   markAudioReady,
   mockCancelJob,
@@ -17,6 +18,7 @@ import {
   mockGetLyrics,
   mockInvoke,
   mockListArtifacts,
+  mockListProjects,
   mockListJobs,
   mockGetMobileCapabilities,
   mockCreateChords,
@@ -27,8 +29,10 @@ import {
   setProjectChords,
   setProjectLyrics,
   setProjectArtifacts,
+  setProjects,
   setMockNativeAudioState,
   setJobs,
+  triggerMockIntersectionObserver,
 } from "./test/appTestHarness";
 
 const originalUserAgent = navigator.userAgent;
@@ -188,9 +192,57 @@ describe("Desktop app mobile capability gates", () => {
     renderApp(["/"]);
 
     expect(await screen.findByRole("heading", { name: "Practice Projects" })).toBeInTheDocument();
+    await waitFor(() => expect(mockListProjects).toHaveBeenCalled());
+    await act(async () => { await mockListProjects.mock.results[0].value; });
+    const mediaDevices = getMockMediaDevices();
+    const enumerateCalls = mediaDevices.enumerateDevices.mock.calls.length;
+    mediaDevices.setDevices([{
+      deviceId: "speaker-2", groupId: "output-group", kind: "audiooutput", label: "USB Output",
+      toJSON: () => ({}),
+    }]);
+    const deviceChange = vi.mocked(navigator.mediaDevices.addEventListener).mock.calls
+      .find(([event]) => event === "devicechange")?.[1];
+    if (typeof deviceChange !== "function") throw new Error("Expected output device listener.");
+    await act(async () => { deviceChange(new Event("devicechange")); });
+    await waitFor(() => expect(mediaDevices.enumerateDevices.mock.calls.length).toBeGreaterThan(enumerateCalls));
+
     expect(screen.queryByRole("link", { name: "Open Demo Song project" })).not.toBeInTheDocument();
     expect(screen.queryByText("Show file details")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Import Track(s)" })).not.toBeInTheDocument();
+    if (state === "failed") {
+      enableIOSRuntime();
+      await userEvent.setup().click(screen.getByRole("button", { name: "Retry" }));
+      expect(await screen.findByRole("link", { name: "Open Demo Song project" })).toBeInTheDocument();
+    }
+  });
+
+  it("loads the next library page after iOS capability retry", async () => {
+    setIOSUserAgent();
+    mockGetMobileCapabilities.mockRejectedValueOnce(new Error("capabilities unavailable"));
+    setProjects(Array.from({ length: 55 }, (_, index) => ({
+      id: `proj_${index + 1}`,
+      display_name: `Project ${index + 1}`,
+      source_path: `/tmp/project-${index + 1}.wav`,
+      imported_path: `/tmp/projects/project-${index + 1}.wav`,
+      duration_seconds: 120,
+      sample_rate: 44100,
+      channels: 2,
+      created_at: "2026-04-18T13:16:00.000Z",
+      updated_at: "2026-04-18T13:16:00.000Z",
+    })));
+    renderApp(["/"]);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not verify library support.");
+    await waitFor(() => expect(mockListProjects).toHaveBeenCalledWith({ limit: 50, offset: 0 }));
+    await act(async () => { await mockListProjects.mock.results[0].value; });
+    expect(screen.queryByRole("heading", { name: "Project 1", level: 2 })).not.toBeInTheDocument();
+
+    enableIOSRuntime();
+    await userEvent.setup().click(screen.getByRole("button", { name: "Retry" }));
+    expect(await screen.findByText("50 of 55 projects loaded")).toBeInTheDocument();
+    act(() => { triggerMockIntersectionObserver(); });
+    expect(await screen.findByRole("heading", { name: "Project 55", level: 2 })).toBeInTheDocument();
+    expect(mockListProjects).toHaveBeenCalledWith({ limit: 50, offset: 50 });
   });
 
   it("opens an iOS project directly in the constrained playback workspace", async () => {

@@ -11,6 +11,7 @@ import {
 } from "../../lib/nativeAudio";
 import { useStableCallback } from "../../lib/useStableCallback";
 import { useAudioOutput } from "../../lib/audioOutputContext";
+import { releaseBrowserOutputContext, retryBrowserOutputRouting, setBrowserMetronomeFollow } from "../../lib/audioOutput";
 import { nextTimedBeatIndex, type AnalysisTimingBeat } from "../../lib/timingGrid";
 import {
   activateWebAudioContext,
@@ -74,6 +75,7 @@ export function MetronomeProvider({ children }: { children: ReactNode }) {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const accentFirstBeatRef = useRef(accentFirstBeat);
   const activeBeatTimeoutsRef = useRef<number[]>([]);
+  const activeClicksRef = useRef(new Set<() => void>());
   const audioContextRef = useRef<AudioContext | null>(null);
   const beatsPerBarRef = useRef(beatsPerBar);
   const bpmRef = useRef(bpm);
@@ -107,6 +109,7 @@ export function MetronomeProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     followPlaybackRef.current = followPlayback;
+    setBrowserMetronomeFollow(followPlayback);
   }, [followPlayback]);
 
   useEffect(() => {
@@ -124,6 +127,8 @@ export function MetronomeProvider({ children }: { children: ReactNode }) {
       schedulerIntervalRef.current = null;
     }
     clearBeatTimeouts();
+    activeClicksRef.current.forEach((cancel) => cancel());
+    activeClicksRef.current.clear();
     setActiveBeat(null);
   });
 
@@ -134,6 +139,7 @@ export function MetronomeProvider({ children }: { children: ReactNode }) {
     const audioContext = audioContextRef.current;
     audioContextRef.current = null;
     if (audioContext && audioContext.state !== "closed") {
+      releaseBrowserOutputContext(audioContext);
       void audioContext.close().catch(() => undefined);
     }
   });
@@ -177,12 +183,14 @@ export function MetronomeProvider({ children }: { children: ReactNode }) {
     const accent = timingBeat
       ? accentFirstBeatRef.current && timingBeat.beat_in_bar === 1
       : isAccentBeat(beatIndex, beatsPerBarRef.current, accentFirstBeatRef.current);
-    scheduleMetronomeClick({
+    const cancelClick = scheduleMetronomeClick({
       accent,
       audioContext,
       sound: DEFAULT_METRONOME_SOUND,
       startTimeSeconds,
+      onEnded: () => { if (cancelClick) activeClicksRef.current.delete(cancelClick); },
     });
+    if (cancelClick) activeClicksRef.current.add(cancelClick);
 
     const timeoutId = window.setTimeout(
       () => setActiveBeat(beatNumber),
@@ -361,6 +369,7 @@ export function MetronomeProvider({ children }: { children: ReactNode }) {
       }
       return;
     }
+    retryBrowserOutputRouting();
     const audioContext = await activateAudioContext();
     if (!audioContext) {
       return;
@@ -493,8 +502,7 @@ export function MetronomeProvider({ children }: { children: ReactNode }) {
     }
     void activateAudioContext().then((audioContext) => {
       if (!audioContext || !isRunningRef.current) return;
-      const snapshot = getPlaybackSnapshot();
-      if (!followPlaybackRef.current || !snapshot.session || !snapshot.isPlaying) {
+      if (!followPlaybackRef.current) {
         startFreeRunClock(audioContext);
       } else {
         clearScheduler();
@@ -532,11 +540,9 @@ export function MetronomeProvider({ children }: { children: ReactNode }) {
         return;
       }
       if (!snapshot.session || !snapshot.isPlaying) {
+        clearScheduler();
         lastSyncedPlaybackTimeRef.current = null;
         lastSyncedScheduledBeatRef.current = null;
-        if (schedulerIntervalRef.current === null) {
-          startFreeRunClock(audioContext);
-        }
       } else {
         if (schedulerIntervalRef.current !== null) {
           clearScheduler();
@@ -560,8 +566,11 @@ export function MetronomeProvider({ children }: { children: ReactNode }) {
     getPlaybackSnapshot,
     isRunning,
     scheduleSynced,
-    startFreeRunClock,
   ]);
+
+  useEffect(() => {
+    if (followPlayback && !isPlaying) clearScheduler();
+  }, [clearScheduler, followPlayback, isPlaying]);
 
   useEffect(() => {
     if (!isTauriRuntime() || isWebAudioBackendForced()) return;
@@ -694,7 +703,9 @@ export function MetronomeProvider({ children }: { children: ReactNode }) {
     : followPlayback && session && isPlaying
       ? `Following ${session.projectName} playback`
       : followPlayback && session
-        ? `${freeRunningStatus} · follows ${session.projectName} when playback starts`
+        ? `Waiting for ${session.projectName} playback at ${tempoStatus}`
+        : followPlayback
+          ? `Waiting for project playback at ${tempoStatus}`
         : freeRunningStatus;
 
   const value = useMemo(

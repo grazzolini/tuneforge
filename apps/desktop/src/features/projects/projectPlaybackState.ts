@@ -11,6 +11,13 @@ import {
 import { normalizeTempoTargetBpm } from "./playbackTempo";
 import type { GeneratedExportDocumentId } from "../../lib/api";
 import { normalizeOutputGain } from "../../lib/preferences";
+import {
+  DEFAULT_PROJECT_OUTPUT_ROUTING_PREFERENCES,
+  isAndroidOutputRuntime,
+  normalizeProjectOutputRoutingPreferences,
+  persistableOutputRoutingPreferences,
+  type ProjectOutputRoutingPreferences,
+} from "../../lib/outputRouting";
 import type { DrumMode } from "./drumStemGroup";
 
 export type ProjectPanelMode = "studio" | "analysis" | "export";
@@ -63,11 +70,13 @@ export type StoredProjectPlaybackState = {
   drumModeParentKeysBySource: Record<string, string>;
   projectOutputGain: number;
   projectOutputMuted: boolean;
+  outputRouting: ProjectOutputRoutingPreferences;
   dismissedStemJobIds: string[];
   exportWorkspace: ExportWorkspaceState | null;
 };
 
 const STORAGE_KEY = "tuneforge.project-playback-state";
+const processOnlyOutputRouting = new Map<string, ProjectOutputRoutingPreferences>();
 
 const DEFAULT_STORED_PROJECT_PLAYBACK_STATE: StoredProjectPlaybackState = {
   selectedArtifactId: null,
@@ -90,6 +99,7 @@ const DEFAULT_STORED_PROJECT_PLAYBACK_STATE: StoredProjectPlaybackState = {
   drumModeParentKeysBySource: {},
   projectOutputGain: 1,
   projectOutputMuted: false,
+  outputRouting: DEFAULT_PROJECT_OUTPUT_ROUTING_PREFERENCES,
   dismissedStemJobIds: [],
   exportWorkspace: null,
 };
@@ -268,6 +278,7 @@ function normalizeStoredProjectPlaybackState(value: unknown): StoredProjectPlayb
     drumModeParentKeysBySource,
     projectOutputGain: normalizeOutputGain(candidate.projectOutputGain),
     projectOutputMuted: Boolean(candidate.projectOutputMuted),
+    outputRouting: normalizeProjectOutputRoutingPreferences(candidate.outputRouting),
     dismissedStemJobIds,
     exportWorkspace: normalizeExportWorkspaceState(candidate.exportWorkspace),
   };
@@ -305,7 +316,9 @@ function writePlaybackStateMap(value: Record<string, StoredProjectPlaybackState>
 }
 
 export function readProjectPlaybackState(projectId: string): StoredProjectPlaybackState {
-  return readPlaybackStateMap()[projectId] ?? DEFAULT_STORED_PROJECT_PLAYBACK_STATE;
+  const stored = readPlaybackStateMap()[projectId] ?? DEFAULT_STORED_PROJECT_PLAYBACK_STATE;
+  const processRouting = isAndroidOutputRuntime() ? processOnlyOutputRouting.get(projectId) : null;
+  return processRouting ? { ...stored, outputRouting: processRouting } : stored;
 }
 
 export function hasProjectPlaybackState(projectId: string) {
@@ -317,11 +330,15 @@ export function writeProjectPlaybackState(
   playbackState: StoredProjectPlaybackState,
 ) {
   const next = readPlaybackStateMap();
-  next[projectId] = normalizeStoredProjectPlaybackState(playbackState);
+  const normalized = normalizeStoredProjectPlaybackState(playbackState);
+  if (isAndroidOutputRuntime()) processOnlyOutputRouting.set(projectId, normalized.outputRouting);
+  next[projectId] = { ...normalized,
+    outputRouting: persistableOutputRoutingPreferences(normalized.outputRouting) };
   writePlaybackStateMap(next);
 }
 
 export function clearProjectPlaybackState(projectId: string) {
+  processOnlyOutputRouting.delete(projectId);
   const next = readPlaybackStateMap();
   delete next[projectId];
   writePlaybackStateMap(next);

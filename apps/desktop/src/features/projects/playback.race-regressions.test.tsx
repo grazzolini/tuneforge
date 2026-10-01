@@ -26,6 +26,9 @@ import {
   type MetronomeContextValue,
 } from "../tools/metronome-context";
 import { AudioOutputContext } from "../../lib/audioOutputContext";
+import { markBrowserOutputDisconnected, setBrowserOutputRouting } from "../../lib/audioOutput";
+import { DEFAULT_PROJECT_OUTPUT_ROUTING } from "../../lib/outputRouting";
+import { readProjectPlaybackState, writeProjectPlaybackState } from "./projectPlaybackState";
 
 let playback: PlaybackContextValue;
 let metronome: MetronomeContextValue;
@@ -119,6 +122,13 @@ function activePlaybackContextValue(
     activateStemPlayback: async () => undefined,
     primeWebAudioForGesture: async () => undefined,
     projectOutputSaveError: null,
+    outputRoutingSaveError: null,
+    outputRouting: { project: { kind: "inherit" }, cue: { kind: "inherit" }, stems: {} },
+    outputRoutingSnapshot: null,
+    setProjectOutputRoute: () => undefined,
+    setCueOutputRoute: () => undefined,
+    setStemOutputRoute: () => undefined,
+    resetOutputRoutes: () => undefined,
     registerProjectSession: () => undefined,
     setProjectOutputGain: () => undefined,
     setProjectOutputMuted: () => undefined,
@@ -240,6 +250,143 @@ describe("stem playback activation backend selection", () => {
 });
 
 describe("native playback race regressions", () => {
+  it("restores native route IDs and sends drum inheritance through the owned session", async () => {
+    enableNativePlayback();
+    const stored = readProjectPlaybackState("synthetic");
+    writeProjectPlaybackState("synthetic", { ...stored, outputRouting: {
+      native: { project: { kind: "explicit-device", deviceId: "native-project" },
+        cue: { kind: "inherit" }, stems: {
+          "source:drums": { kind: "explicit-device", deviceId: "native-drums" },
+        } },
+      browser: { project: { kind: "explicit-device", deviceId: "browser-only" },
+        cue: { kind: "inherit" }, stems: {} },
+    } });
+    await setup(bufferedSession({
+      routeLanes: [{ laneId: "kick", stableKey: "source:kick",
+        parentLaneId: "drums", parentStableKey: "source:drums" }],
+    }));
+    await act(async () => playback.playPlayback());
+
+    const prepareCalls = calls("audio_prepare_session");
+    const prepared = prepareCalls[prepareCalls.length - 1]?.[1] as {
+      payload: { outputRouting: Record<string, unknown> };
+    };
+    expect(prepared.payload.outputRouting).toEqual({
+      project: { kind: "explicit-device", deviceId: "native-project" },
+      cue: { kind: "inherit" },
+      lanes: [
+        { laneId: "drums", selection: { kind: "explicit-device", deviceId: "native-drums" } },
+        { laneId: "kick", parentLaneId: "drums", selection: { kind: "inherit" } },
+      ],
+    });
+
+    act(() => playback.setCueOutputRoute({ kind: "system-default" }));
+    await flush();
+    const mutations = calls("audio_set_output_routing");
+    const mutation = mutations[mutations.length - 1]?.[1] as {
+      payload: { cue: { kind: string } };
+      control: { generation: number; timelineRevision: number };
+    };
+    expect(mutation.payload.cue.kind).toBe("system-default");
+    expect(mutation.control.generation).toBeGreaterThan(0);
+    expect(mutation.control.timelineRevision).toBeGreaterThan(0);
+    expect(readProjectPlaybackState("synthetic").outputRouting.browser.project)
+      .toEqual({ kind: "explicit-device", deviceId: "browser-only" });
+  });
+
+  it("applies a route chosen during native prepare before Play", async () => {
+    enableNativePlayback();
+    await setup(bufferedSession());
+    const invoke = getMockInvoke();
+    const originalInvoke = invoke.getMockImplementation()!;
+    const releasePrepare = deferred<void>();
+    invoke.mockImplementation((command, args) => command === "audio_prepare_session"
+      ? releasePrepare.promise.then(() => originalInvoke(command, args))
+      : originalInvoke(command, args));
+
+    let play!: Promise<void>;
+    act(() => { play = playback.playPlayback(); });
+    await flush();
+    expect(calls("audio_prepare_session")).toHaveLength(1);
+    act(() => playback.setProjectOutputRoute({ kind: "explicit-device", deviceId: "late-route" }));
+    releasePrepare.resolve();
+    await act(async () => play);
+    await flush();
+
+    const commands = invoke.mock.calls.map(([command]) => command);
+    expect(commands.indexOf("audio_set_output_routing")).toBeGreaterThan(commands.indexOf("audio_prepare_session"));
+    expect(commands.indexOf("audio_set_output_routing")).toBeLessThan(commands.indexOf("audio_play"));
+    const mutation = calls("audio_set_output_routing")[0]?.[1] as {
+      payload: { project: { deviceId: string } };
+    };
+    expect(mutation.payload.project.deviceId).toBe("late-route");
+    expect(playback.isPlaying).toBe(true);
+  });
+
+  it("retries an unchanged native selection after fallback without passive retries", async () => {
+    enableNativePlayback();
+    await setup(bufferedSession());
+    await act(async () => playback.playPlayback());
+    const invoke = getMockInvoke();
+    const originalInvoke = invoke.getMockImplementation()!;
+    let routingAttempts = 0;
+    invoke.mockImplementation(async (command, args) => {
+      const result = await originalInvoke(command, args);
+      if (command !== "audio_set_output_routing" || ++routingAttempts !== 1) return result;
+      const snapshot = result as { outputRouting: { project: Record<string, unknown> } };
+      return { ...snapshot, outputRouting: { ...snapshot.outputRouting,
+        project: { ...snapshot.outputRouting.project, effectiveDeviceId: null,
+          fallbackLatched: true, status: "fallback-default" } } };
+    });
+
+    act(() => playback.setProjectOutputRoute({ kind: "explicit-device", deviceId: "native-speaker" }));
+    await flush();
+    expect(calls("audio_set_output_routing")).toHaveLength(1);
+    expect(playback.outputRoutingSnapshot?.project.fallbackLatched).toBe(true);
+
+    act(() => playback.registerProjectSession(bufferedSession({ projectOutputGain: 0.8 })));
+    await flush();
+    expect(calls("audio_set_output_routing")).toHaveLength(1);
+
+    act(() => playback.setProjectOutputRoute({ kind: "explicit-device", deviceId: "native-speaker" }));
+    await flush();
+    expect(calls("audio_set_output_routing")).toHaveLength(2);
+    expect(playback.outputRoutingSnapshot?.project.fallbackLatched).toBe(false);
+    expect(playback.outputRoutingSnapshot?.project.effectiveDeviceId).toBe("native-speaker");
+  });
+
+  it("uses the initial prepare attempt for a same-route action during preparation", async () => {
+    enableNativePlayback();
+    const stored = readProjectPlaybackState("synthetic");
+    writeProjectPlaybackState("synthetic", { ...stored, outputRouting: {
+      ...stored.outputRouting,
+      native: { ...stored.outputRouting.native,
+        project: { kind: "explicit-device", deviceId: "native-speaker" } },
+    } });
+    await setup(bufferedSession());
+    const invoke = getMockInvoke();
+    const originalInvoke = invoke.getMockImplementation()!;
+    const releasePrepare = deferred<void>();
+    invoke.mockImplementation((command, args) => command === "audio_prepare_session"
+      ? releasePrepare.promise.then(() => originalInvoke(command, args))
+      : originalInvoke(command, args));
+
+    let play!: Promise<void>;
+    act(() => { play = playback.playPlayback(); });
+    await flush();
+    act(() => playback.setProjectOutputRoute({ kind: "explicit-device", deviceId: "native-speaker" }));
+    releasePrepare.resolve();
+    await act(async () => play);
+    expect(calls("audio_prepare_session")[0]?.[1]).toMatchObject({
+      payload: { outputRouting: { project: { kind: "explicit-device", deviceId: "native-speaker" } } },
+    });
+    expect(calls("audio_set_output_routing")).toHaveLength(0);
+
+    act(() => playback.setProjectOutputRoute({ kind: "explicit-device", deviceId: "native-speaker" }));
+    await flush();
+    expect(calls("audio_set_output_routing")).toHaveLength(1);
+  });
+
   it("requires an acknowledged native Stop before releasing playback handles", async () => {
     enableNativePlayback();
     await setup(bufferedSession());
@@ -810,6 +957,11 @@ describe("native playback race regressions", () => {
         metronomeOutputGain: 0.8,
         metronomeOutputMuted: false,
         outputSaveError: null,
+        browserOutputDeviceId: null,
+        browserOutputSelectionSupported: false,
+        browserOutputDevices: [],
+        selectBrowserOutputDevice: async () => undefined,
+        authorizeBrowserOutputDevice: async () => null,
         ensureAppOutputReady: () => ready.promise,
         setAppOutputGain: () => undefined,
         setAppOutputMuted: () => undefined,
@@ -1180,6 +1332,182 @@ describe("native playback race regressions", () => {
 });
 
 describe("buffered Web playback race regressions", () => {
+  it("discards deferred buffers when selected and Default outputs fail during startup", async () => {
+    const mediaSink = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, "setSinkId");
+    const mediaSinkId = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, "sinkId");
+    const streamDestination = Object.getOwnPropertyDescriptor(AudioContext.prototype,
+      "createMediaStreamDestination");
+    const selected = new WeakMap<HTMLMediaElement, string>();
+    Object.defineProperty(HTMLMediaElement.prototype, "sinkId", { configurable: true,
+      get(this: HTMLMediaElement) { return selected.get(this) ?? ""; } });
+    Object.defineProperty(HTMLMediaElement.prototype, "setSinkId", { configurable: true,
+      value: vi.fn(function(this: HTMLMediaElement, deviceId: string) {
+        if (!deviceId) return Promise.reject(new Error("Default unavailable"));
+        selected.set(this, deviceId);
+        return Promise.resolve();
+      }) });
+    Object.defineProperty(AudioContext.prototype, "createMediaStreamDestination", {
+      configurable: true, value: vi.fn(() => ({ stream: { getTracks: () => [] } })),
+    });
+    try {
+      const buffers = deferred<Response>();
+      getMockFetch().mockImplementationOnce(() => buffers.promise);
+      await setup(bufferedSession({ precountEnabled: true,
+        routeLanes: [{ laneId: "stem", stableKey: "stem" }] }));
+      act(() => playback.setProjectOutputRoute({ kind: "explicit-device", deviceId: "speaker" }));
+      await flush();
+      expect(playback.outputRoutingSnapshot?.lanes[0]?.effectiveDeviceId).toBe("speaker");
+
+      let play!: Promise<void>;
+      act(() => { play = playback.playPlayback(); });
+      await flush();
+      expect(getMockFetch()).toHaveBeenCalledTimes(1);
+      expect(playback.isPrecounting).toBe(false);
+
+      act(() => markBrowserOutputDisconnected("speaker"));
+      await flush();
+      expect(playback.isPlaying).toBe(false);
+      expect(playback.isPrecounting).toBe(false);
+
+      await act(async () => {
+        buffers.resolve(new Response(new ArrayBuffer(8), { status: 200 }));
+        await play;
+      });
+      await flush();
+      expect(getMockAudioContexts().flatMap((context) => context.createdSources)).toHaveLength(0);
+      expect(getMockAudioContexts().flatMap((context) => context.createdOscillators)).toHaveLength(0);
+      expect(playback.isPlaying).toBe(false);
+      expect(playback.isPrecounting).toBe(false);
+    } finally {
+      setBrowserOutputRouting({ projectId: null, globalDeviceId: null,
+        routing: DEFAULT_PROJECT_OUTPUT_ROUTING, lanes: [] });
+      if (mediaSink) Object.defineProperty(HTMLMediaElement.prototype, "setSinkId", mediaSink);
+      else Reflect.deleteProperty(HTMLMediaElement.prototype, "setSinkId");
+      if (mediaSinkId) Object.defineProperty(HTMLMediaElement.prototype, "sinkId", mediaSinkId);
+      else Reflect.deleteProperty(HTMLMediaElement.prototype, "sinkId");
+      if (streamDestination) Object.defineProperty(AudioContext.prototype,
+        "createMediaStreamDestination", streamDestination);
+      else Reflect.deleteProperty(AudioContext.prototype, "createMediaStreamDestination");
+    }
+  });
+
+  it("keeps the new project's startup intent when old buffers settle", async () => {
+    const mediaSink = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, "setSinkId");
+    const mediaSinkId = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, "sinkId");
+    const streamDestination = Object.getOwnPropertyDescriptor(AudioContext.prototype,
+      "createMediaStreamDestination");
+    const selected = new WeakMap<HTMLMediaElement, string>();
+    Object.defineProperty(HTMLMediaElement.prototype, "sinkId", { configurable: true,
+      get(this: HTMLMediaElement) { return selected.get(this) ?? ""; } });
+    Object.defineProperty(HTMLMediaElement.prototype, "setSinkId", { configurable: true,
+      value: vi.fn(function(this: HTMLMediaElement, deviceId: string) {
+        if (!deviceId) return Promise.reject(new Error("Default unavailable"));
+        selected.set(this, deviceId);
+        return Promise.resolve();
+      }) });
+    Object.defineProperty(AudioContext.prototype, "createMediaStreamDestination", {
+      configurable: true, value: vi.fn(() => ({ stream: { getTracks: () => [] } })),
+    });
+    try {
+      const oldBuffers = deferred<Response>();
+      const newBuffers = deferred<Response>();
+      getMockFetch().mockImplementationOnce(() => oldBuffers.promise)
+        .mockImplementationOnce(() => newBuffers.promise);
+      await setup(bufferedSession({ precountEnabled: true,
+        routeLanes: [{ laneId: "stem", stableKey: "stem" }] }));
+      act(() => playback.setProjectOutputRoute({ kind: "explicit-device", deviceId: "speaker" }));
+      await flush();
+      let oldPlay!: Promise<void>;
+      act(() => { oldPlay = playback.playPlayback(); });
+      await flush();
+
+      const newProject = bufferedSession({ projectId: "other", precountEnabled: true,
+        routeLanes: [{ laneId: "stem", stableKey: "stem" }] });
+      act(() => playback.registerProjectSession(newProject));
+      act(() => playback.setProjectOutputRoute({ kind: "explicit-device", deviceId: "speaker" }));
+      await flush();
+      let newPlay!: Promise<void>;
+      act(() => { newPlay = playback.playPlayback(); });
+      await flush();
+      expect(getMockFetch()).toHaveBeenCalledTimes(2);
+
+      await act(async () => {
+        oldBuffers.resolve(new Response(new ArrayBuffer(8), { status: 200 }));
+        await oldPlay;
+      });
+      expect(playback.outputRoutingSnapshot?.lanes[0]?.effectiveDeviceId).toBe("speaker");
+      act(() => markBrowserOutputDisconnected("speaker"));
+      await flush();
+      await act(async () => {
+        newBuffers.resolve(new Response(new ArrayBuffer(8), { status: 200 }));
+        await newPlay;
+      });
+      expect(getMockAudioContexts().flatMap((context) => context.createdSources)).toHaveLength(0);
+      expect(getMockAudioContexts().flatMap((context) => context.createdOscillators)).toHaveLength(0);
+      expect(playback.isPlaying).toBe(false);
+      expect(playback.isPrecounting).toBe(false);
+    } finally {
+      setBrowserOutputRouting({ projectId: null, globalDeviceId: null,
+        routing: DEFAULT_PROJECT_OUTPUT_ROUTING, lanes: [] });
+      if (mediaSink) Object.defineProperty(HTMLMediaElement.prototype, "setSinkId", mediaSink);
+      else Reflect.deleteProperty(HTMLMediaElement.prototype, "setSinkId");
+      if (mediaSinkId) Object.defineProperty(HTMLMediaElement.prototype, "sinkId", mediaSinkId);
+      else Reflect.deleteProperty(HTMLMediaElement.prototype, "sinkId");
+      if (streamDestination) Object.defineProperty(AudioContext.prototype,
+        "createMediaStreamDestination", streamDestination);
+      else Reflect.deleteProperty(AudioContext.prototype, "createMediaStreamDestination");
+    }
+  });
+
+  it("cancels count-in when selected and Default outputs both fail", async () => {
+    const mediaSink = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, "setSinkId");
+    const mediaSinkId = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, "sinkId");
+    const streamDestination = Object.getOwnPropertyDescriptor(AudioContext.prototype,
+      "createMediaStreamDestination");
+    const selected = new WeakMap<HTMLMediaElement, string>();
+    Object.defineProperty(HTMLMediaElement.prototype, "sinkId", { configurable: true,
+      get(this: HTMLMediaElement) { return selected.get(this) ?? ""; } });
+    const setSinkId = vi.fn(function(this: HTMLMediaElement, deviceId: string) {
+      if (!deviceId) return Promise.reject(new Error("Default unavailable"));
+      selected.set(this, deviceId);
+      return Promise.resolve();
+    });
+    Object.defineProperty(HTMLMediaElement.prototype, "setSinkId", { configurable: true,
+      value: setSinkId });
+    Object.defineProperty(AudioContext.prototype, "createMediaStreamDestination", {
+      configurable: true, value: vi.fn(() => ({ stream: { getTracks: () => [] } })),
+    });
+    try {
+      await setup(session({ precountEnabled: true }));
+      act(() => playback.setProjectOutputRoute({ kind: "explicit-device", deviceId: "speaker" }));
+      await flush();
+      await act(async () => playback.playPlayback());
+      await flush();
+      expect(playback.isPrecounting).toBe(true);
+      const sinkCalls = setSinkId.mock.calls.length;
+      act(() => playback.setProjectOutputGain(0.7));
+      await flush();
+      expect(setSinkId).toHaveBeenCalledTimes(sinkCalls);
+
+      markBrowserOutputDisconnected("speaker");
+      await flush();
+      expect(playback.isPrecounting).toBe(false);
+      expect(playback.isPlaying).toBe(false);
+      await new Promise((resolve) => window.setTimeout(resolve, 2_100));
+      expect(playback.isPlaying).toBe(false);
+    } finally {
+      setBrowserOutputRouting({ projectId: null, globalDeviceId: null,
+        routing: DEFAULT_PROJECT_OUTPUT_ROUTING, lanes: [] });
+      if (mediaSink) Object.defineProperty(HTMLMediaElement.prototype, "setSinkId", mediaSink);
+      else Reflect.deleteProperty(HTMLMediaElement.prototype, "setSinkId");
+      if (mediaSinkId) Object.defineProperty(HTMLMediaElement.prototype, "sinkId", mediaSinkId);
+      else Reflect.deleteProperty(HTMLMediaElement.prototype, "sinkId");
+      if (streamDestination) Object.defineProperty(AudioContext.prototype,
+        "createMediaStreamDestination", streamDestination);
+      else Reflect.deleteProperty(AudioContext.prototype, "createMediaStreamDestination");
+    }
+  });
+
   it("re-arms song count-in after natural EOF across three plays", async () => {
     vi.useFakeTimers();
     await setup(bufferedSession({ precountEnabled: true }));

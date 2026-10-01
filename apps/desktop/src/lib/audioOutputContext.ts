@@ -14,6 +14,11 @@ export type AudioOutputContextValue = {
   outputDevices?: NativeAudioDevices | null;
   outputRoute?: NativeOutputRoute | null;
   outputDeviceError?: string | null;
+  browserOutputDeviceId: string | null;
+  browserOutputSelectionSupported: boolean;
+  browserOutputDevices: MediaDeviceInfo[];
+  selectBrowserOutputDevice: (deviceId: string | null) => Promise<void>;
+  authorizeBrowserOutputDevice: (deviceId: string) => Promise<string | null>;
   refreshOutputDevices?: () => Promise<void>;
   retryOutputControls?: () => void;
   selectOutputDevice?: (deviceId: string | null) => Promise<void>;
@@ -36,6 +41,11 @@ const fallbackAudioOutput: AudioOutputContextValue = {
   metronomeOutputGain: 0.8,
   metronomeOutputMuted: false,
   outputSaveError: null,
+  browserOutputDeviceId: null,
+  browserOutputSelectionSupported: false,
+  browserOutputDevices: [],
+  selectBrowserOutputDevice: () => Promise.resolve(),
+  authorizeBrowserOutputDevice: async () => null,
   ensureAppOutputReady: () => Promise.resolve(),
   setAppOutputGain: (gain) => setBrowserAppOutput({ gain, muted: false }),
   setAppOutputMuted: (muted) => setBrowserAppOutput({ gain: 1, muted }),

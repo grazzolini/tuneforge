@@ -947,6 +947,13 @@ const {
           preferredDeviceId: null, activeDeviceId: null, status: "system-default",
           fallbackLatched: false, generation: 0,
         },
+        outputRouting: {
+          project: { selection: { kind: "inherit" }, preferredDeviceId: null,
+            effectiveDeviceId: null, status: "system-default", fallbackLatched: false },
+          cue: { selection: { kind: "inherit" }, preferredDeviceId: null,
+            effectiveDeviceId: null, status: "system-default", fallbackLatched: false },
+          lanes: [], generation: 0,
+        },
       },
       nativeAudioStartError: null,
       nativeAudioPlayError: null,
@@ -1604,6 +1611,32 @@ const {
           workerErrorCount: 0,
           lastWorkerError: null,
         })),
+      };
+      return clone(state.nativeAudioSnapshot);
+    }
+
+    if (command === "audio_set_output_routing") {
+      validateNativeOutputControl(args?.control);
+      const payload = (args?.payload ?? {}) as {
+        project?: { kind: string; deviceId?: string };
+        cue?: { kind: string; deviceId?: string };
+        lanes?: Array<{ laneId: string; selection: { kind: string; deviceId?: string } }>;
+      };
+      const route = (selection: { kind: string; deviceId?: string }) => ({
+        selection, preferredDeviceId: selection.deviceId ?? null,
+        effectiveDeviceId: selection.deviceId ?? null,
+        status: selection.deviceId ? "selected" : "system-default",
+        fallbackLatched: false,
+      });
+      state.nativeAudioSnapshot = {
+        ...state.nativeAudioSnapshot,
+        timelineRevision: Number(state.nativeAudioSnapshot.timelineRevision) + 1,
+        outputRouting: {
+          project: route(payload.project ?? { kind: "inherit" }),
+          cue: route(payload.cue ?? { kind: "inherit" }),
+          lanes: (payload.lanes ?? []).map((lane) => ({ laneId: lane.laneId, ...route(lane.selection) })),
+          generation: Number(state.nativeAudioSnapshot.generation),
+        },
       };
       return clone(state.nativeAudioSnapshot);
     }

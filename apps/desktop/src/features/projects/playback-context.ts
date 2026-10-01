@@ -1,5 +1,11 @@
 import { createContext, useContext } from "react";
 import type { NativeAudioCue, NativeAudioSessionSnapshot } from "../../lib/nativeAudio";
+import type { NativeOutputRouting } from "../../lib/nativeAudio";
+import type {
+  OutputRouteSelection,
+  PlaybackRouteLane,
+  ProjectOutputRouting,
+} from "../../lib/outputRouting";
 import type { AnalysisTimingGrid } from "../../lib/timingGrid";
 import type { ChordDictionaryFollowProjectContext } from "./chordDictionaryFollowContext";
 import type { PlaybackLoopRange, StemControlState } from "./projectPlaybackState";
@@ -18,6 +24,7 @@ export type ProjectPlaybackSession = {
   artifactPathsById: Record<string, string>;
   artifactFormatsById: Record<string, string>;
   visibleStemArtifactIds: string[];
+  routeLanes?: PlaybackRouteLane[];
   stemControls: Record<string, StemControlState>;
   projectOutputGain: number;
   projectOutputMuted: boolean;
@@ -48,6 +55,13 @@ export type PlaybackContextValue = {
   isPrecounting: boolean;
   isPlaying: boolean;
   projectOutputSaveError: string | null;
+  outputRoutingSaveError: string | null;
+  outputRouting: ProjectOutputRouting;
+  outputRoutingSnapshot: NativeOutputRouting | null;
+  setProjectOutputRoute: (selection: OutputRouteSelection) => void;
+  setCueOutputRoute: (selection: OutputRouteSelection) => void;
+  setStemOutputRoute: (stableKey: string, selection: OutputRouteSelection) => void;
+  resetOutputRoutes: () => void;
   activateStemPlayback: () => Promise<void>;
   primeWebAudioForGesture: () => Promise<void>;
   getPlaybackSnapshot: () => PlaybackSnapshot;

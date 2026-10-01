@@ -2504,6 +2504,7 @@ export function useProjectViewModel() {
     persistedStemSourceArtifactId.current = selectedStemSourceArtifactId;
     try {
       writeProjectPlaybackState(projectId, {
+        ...readProjectPlaybackState(projectId),
       selectedArtifactId,
       selectedPrimaryArtifactId,
       selectedStemSourceArtifactId,
@@ -2800,6 +2801,14 @@ export function useProjectViewModel() {
         isIOSRuntime ? "wav" : artifact.format,
       ])),
       visibleStemArtifactIds: visibleStemArtifacts.map((artifact) => artifact.id),
+      routeLanes: visibleStemArtifacts.map((artifact) => ({
+        laneId: artifact.id,
+        stableKey: stemControlKey(artifact),
+        ...(isDrumSubstem(artifact) && drumGroup ? {
+          parentLaneId: drumGroup.parent.id,
+          parentStableKey: stemControlKey(drumGroup.parent),
+        } : {}),
+      })),
       stemControls: effectiveStemControls,
       projectOutputGain,
       projectOutputMuted,
@@ -2820,6 +2829,7 @@ export function useProjectViewModel() {
     hydratedProjectId,
     isStemPlayback,
     drumMode,
+    drumGroup,
     isIOSRuntime,
     projectId,
     projectQuery.data?.duration_seconds,

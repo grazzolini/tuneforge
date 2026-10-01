@@ -575,7 +575,7 @@ describe("Desktop app activity", () => {
     renderApp(["/activity"]);
 
     const row = await screen.findByRole("article", { name: "lyrics completed job" });
-    expect(within(row).getByRole("link", { name: "Open Deep Catalog Song project" })).toHaveAttribute(
+    expect(await within(row).findByRole("link", { name: "Open Deep Catalog Song project" })).toHaveAttribute(
       "href",
       `/projects/${deepProjectId}`,
     );
@@ -4857,14 +4857,14 @@ describe("Desktop app activity", () => {
       "export pending job",
       "lyrics completed job",
     ]);
-    expect(within(rows[0]).getByRole("link", { name: "Open Bass Drill project" })).toHaveAttribute(
+    expect(await within(rows[0]).findByRole("link", { name: "Open Bass Drill project" })).toHaveAttribute(
       "href",
       "/projects/proj_2",
     );
     expect(within(rows[0]).getByText("Running")).toHaveClass("activity-job-row__stage");
     expect(within(rows[0]).getByText("MPS")).toHaveClass("activity-job-row__runtime");
     expect(within(rows[0]).getByText("Default (6 stems model)")).toHaveClass("activity-job-row__details");
-    expect(within(rows[1]).getByRole("link", { name: "Open Ambient Wash project" })).toHaveAttribute(
+    expect(await within(rows[1]).findByRole("link", { name: "Open Ambient Wash project" })).toHaveAttribute(
       "href",
       "/projects/proj_1",
     );

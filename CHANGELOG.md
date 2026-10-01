@@ -5,6 +5,8 @@ download, installation, verification, signature, and publication instructions.
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-10-02
+
 ### Added
 
 - Added project, stem, and shared cue output routing in Playback and Studio, with inherited routes,
@@ -235,7 +237,8 @@ download, installation, verification, signature, and publication instructions.
 
 - Development used `0.1.0` metadata; `v1.0.0` was the first tagged release.
 
-[Unreleased]: https://github.com/grazzolini/tuneforge/compare/v1.6.0...main
+[Unreleased]: https://github.com/grazzolini/tuneforge/compare/v1.7.0...main
+[1.7.0]: https://github.com/grazzolini/tuneforge/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/grazzolini/tuneforge/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/grazzolini/tuneforge/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/grazzolini/tuneforge/compare/v1.3.0...v1.4.0

@@ -130,9 +130,10 @@ At each aligned sample/channel, the bound is the greater of summed positive samp
 absolute sum of negative samples. A common `min(1, 0.9 / bound)` gain is applied before encoding;
 the final decoded files must satisfy the bound, with at most three total encoding attempts.
 This bounds an isolated drum subset under attenuation-only controls. It does not establish
-full-mix or true-peak safety. Production gain, switching, and isolated part quality still need
-focused listening; packaged macOS/Flatpak and unavailable accelerator hardware remain release
-gates.
+full-mix or true-peak safety. Packaged macOS/Flatpak first-use and offline smoke, plus focused
+listening for production gain, switching, and isolated part quality, remain release gates.
+Accelerator-device detection and inference evidence is optional when hardware is unavailable;
+report it as unverified.
 
 ## Chord refresh hidden non-vocal mix
 

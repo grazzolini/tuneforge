@@ -9,8 +9,8 @@ on:
       - .github/workflows/ci-image.yml
       - packaging/soxr/sources.lock.json
       - packaging/soxr/patches/android-unversioned-soname.patch
-      - scripts/build-soxr.mjs
-      - scripts/flatpak-source-snapshots.mjs
+      - scripts/build-soxr-runtime.mjs
+      - scripts/deterministic-source-snapshot.mjs
   workflow_dispatch:
 
 permissions: {}

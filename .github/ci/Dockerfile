@@ -19,12 +19,12 @@ RUN set -eux; \
 
 WORKDIR /workspace
 
-COPY scripts/build-soxr.mjs scripts/flatpak-source-snapshots.mjs scripts/
+COPY scripts/build-soxr-runtime.mjs scripts/deterministic-source-snapshot.mjs scripts/
 COPY packaging/soxr/sources.lock.json packaging/soxr/sources.lock.json
 COPY packaging/soxr/patches/android-unversioned-soname.patch packaging/soxr/patches/android-unversioned-soname.patch
 
 RUN set -eux; \
-    node scripts/build-soxr.mjs \
+    node scripts/build-soxr-runtime.mjs \
       --target host-test \
       --output-dir /opt/tuneforge-ci/soxr/host-test; \
     soxr_library="$(find /opt/tuneforge-ci/soxr/host-test/lib -maxdepth 1 \
@@ -52,8 +52,8 @@ RUN set -eux; \
     { cc --version | sed -n '1p'; cmake --version | sed -n '1p'; node --version; } \
       > /opt/tuneforge-ci/soxr/build-tools.txt; \
     sha256sum \
-      scripts/build-soxr.mjs \
-      scripts/flatpak-source-snapshots.mjs \
+      scripts/build-soxr-runtime.mjs \
+      scripts/deterministic-source-snapshot.mjs \
       packaging/soxr/sources.lock.json \
       packaging/soxr/patches/android-unversioned-soname.patch \
       > /opt/tuneforge-ci/soxr/build-inputs.sha256; \

@@ -15,6 +15,9 @@ const buildInputs = [
   "packaging/soxr/sources.lock.json",
   "packaging/soxr/patches/android-unversioned-soname.patch",
 ];
+const producerInputs = fs.readFileSync(path.join(repositoryRoot, ".github/ci/Dockerfile"), "utf8")
+  .match(/    sha256sum \\\n([\s\S]*?)      > \/opt\/tuneforge-ci\/soxr\/build-inputs\.sha256/)[1]
+  .split("\n").map((line) => line.trim().replace(/ \\$/, "")).filter(Boolean);
 
 function sha256(file) {
   return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
@@ -27,7 +30,7 @@ function files(directory) {
   });
 }
 
-function fixture() {
+function fixture(inputs = buildInputs) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "tuneforge-ci-image-verifier-"));
   const workspace = path.join(root, "workspace");
   const soxr = path.join(root, "soxr");
@@ -36,16 +39,16 @@ function fixture() {
   fs.mkdirSync(path.join(runtime, "include"), { recursive: true });
   fs.mkdirSync(path.join(runtime, "lib"), { recursive: true });
   fs.mkdirSync(bin, { recursive: true });
-  for (const relative of buildInputs) {
+  for (const relative of inputs) {
     const destination = path.join(workspace, relative);
     fs.mkdirSync(path.dirname(destination), { recursive: true });
-    fs.writeFileSync(destination, `${relative}\n`);
+    fs.copyFileSync(path.join(repositoryRoot, relative), destination);
   }
   fs.writeFileSync(path.join(runtime, "include/soxr.h"), "header\n");
   fs.writeFileSync(path.join(runtime, "lib/libsoxr.so"), "library\n");
   fs.writeFileSync(path.join(runtime, "provenance.json"),
     `${JSON.stringify({ cmake: ["-DWITH_PFFFT=ON"] }, null, 2)}\n`);
-  fs.writeFileSync(path.join(soxr, "build-inputs.sha256"), buildInputs
+  fs.writeFileSync(path.join(soxr, "build-inputs.sha256"), inputs
     .map((relative) => `${sha256(path.join(workspace, relative))}  ${relative}`)
     .join("\n") + "\n");
   const payload = files(soxr)
@@ -115,4 +118,38 @@ test("CI image verifier rejects missing, corrupt, and stale SoXR state", () => {
       fs.rmSync(value.root, { recursive: true, force: true });
     }
   }
+});
+
+test("unchanged strict verifier accepts new producer inputs and rejects every old/new hashed input mutation", () => {
+  for (const [profile, inputs] of [["legacy", buildInputs], ["producer", producerInputs]]) {
+    for (const relative of inputs) {
+      const value = fixture(inputs);
+      try {
+        assert.equal(run(value).status, 0, `${profile} matching manifest must pass`);
+        fs.appendFileSync(path.join(value.workspace, relative), "\nmutated input\n");
+        const result = run(value);
+        assert.notEqual(result.status, 0, `${profile}: ${relative} mutation must fail`);
+        assert.match(result.stderr, /build inputs do not match/);
+      } finally {
+        fs.rmSync(value.root, { recursive: true, force: true });
+      }
+    }
+  }
+});
+
+test("new producer manifest survives Flatpak source-list, epoch, and cache configuration changes", (context) => {
+  const value = fixture(producerInputs);
+  context.after(() => fs.rmSync(value.root, { recursive: true, force: true }));
+  const mutations = [
+    ["scripts/flatpak-source-snapshots.mjs", '"package.json"', '"new-frontend-policy.json"'],
+    ["scripts/generate-flatpak-sources.mjs", "return process.env.SOURCE_DATE_EPOCH;", 'return "999";'],
+    ["scripts/package-flatpak.mjs", '"flatpak-cache-v1"', '"flatpak-cache-v2"'],
+  ];
+  for (const [relative, before, after] of mutations) {
+    const source = fs.readFileSync(path.join(repositoryRoot, relative), "utf8");
+    assert.ok(source.includes(before), `${relative} must contain its policy fixture target`);
+    fs.writeFileSync(path.join(value.workspace, relative), source.replaceAll(before, after));
+  }
+  const result = run(value);
+  assert.equal(result.status, 0, result.stderr);
 });

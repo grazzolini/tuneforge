@@ -5,6 +5,8 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import "./build-soxr-runtime.test.mjs";
+
 import { validateCiImagePolicy } from "./ci-image-policy.mjs";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -22,7 +24,8 @@ const fixtureFiles = [
   ".github/workflows/ci.yml",
   ".github/workflows/pages.yml",
   ".github/dependabot.yml",
-  "scripts/build-soxr.mjs",
+  "scripts/build-soxr-runtime.mjs",
+  "scripts/deterministic-source-snapshot.mjs",
   "scripts/verify-ci-image.sh",
 ];
 
@@ -103,15 +106,15 @@ test("SoXR image context rejects additional checkout files", (context) => {
 
 test("SoXR build-input manifest requires every reviewed input", () =>
   assertMutationsFail(".github/ci/Dockerfile", [
-    ["      scripts/build-soxr.mjs \\\n", ""],
-    ["      scripts/flatpak-source-snapshots.mjs \\\n", ""],
+    ["      scripts/build-soxr-runtime.mjs \\\n", ""],
+    ["      scripts/deterministic-source-snapshot.mjs \\\n", ""],
     ["      packaging/soxr/sources.lock.json \\\n", ""],
     ["      packaging/soxr/patches/android-unversioned-soname.patch \\\n", ""],
   ], /build-input manifest must hash the exact reviewed recipe, helper, lock, and patch/));
 
 test("SoXR host recipe and corresponding sources exclude repository-wide notices", () =>
-  assertMutationsFail("scripts/build-soxr.mjs", [
-    [', "scripts/flatpak-source-snapshots.mjs"];', "];"],
+  assertMutationsFail("scripts/build-soxr-runtime.mjs", [
+    [', "scripts/deterministic-source-snapshot.mjs"];', "];"],
     [
       '...(target === "android-arm64-v8a" ? ["THIRD_PARTY_NOTICES.md"] : [])',
       '"THIRD_PARTY_NOTICES.md"',
@@ -124,7 +127,7 @@ test("SoXR host recipe and corresponding sources exclude repository-wide notices
       "const correspondingSourceFiles = [lock.patch.path,",
       'const correspondingSourceFiles = ["THIRD_PARTY_NOTICES.md", lock.patch.path,',
     ],
-    ['"node scripts/build-soxr.mjs --target host-test"', '"node scripts/build-soxr.mjs --target android-arm64-v8a"'],
+    ['"node scripts/build-soxr-runtime.mjs --target host-test"', '"node scripts/build-soxr-runtime.mjs --target android-arm64-v8a"'],
   ], /host corresponding sources must include/));
 
 test("untrusted and broad publisher triggers fail closed", (context) => {
@@ -150,8 +153,8 @@ test("repository-wide notices do not trigger CI image publication", (context) =>
   replace(
     root,
     ".github/workflows/ci-image.yml",
-    "      - scripts/flatpak-source-snapshots.mjs\n",
-    "      - scripts/flatpak-source-snapshots.mjs\n      - THIRD_PARTY_NOTICES.md\n",
+    "      - scripts/deterministic-source-snapshot.mjs\n",
+    "      - scripts/deterministic-source-snapshot.mjs\n      - THIRD_PARTY_NOTICES.md\n",
   );
 
   assert.throws(
@@ -326,4 +329,11 @@ test("release-facing workflow stays separate from CI image", (context) => {
   fs.appendFileSync(target, "\n# ghcr.io/grazzolini/tuneforge-ci\n");
 
   assert.throws(() => validateCiImagePolicy(root), /Pages\/release media workflow/);
+});
+
+test("neutral serializer rejects Flatpak policy coupling", () => {
+  assertMutationsFail("scripts/deterministic-source-snapshot.mjs", [
+    ['const blockSize = 512;', 'const blockSize = 512;\nconst epoch = process.env.SOURCE_DATE_EPOCH;'],
+    ['const blockSize = 512;', 'const blockSize = 512;\nimport "./flatpak-source-snapshots.mjs";'],
+  ], /serializer must remain independent/);
 });

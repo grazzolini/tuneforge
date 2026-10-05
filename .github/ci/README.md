@@ -9,8 +9,7 @@ anything from this image.
 
 - Base: Ubuntu 24.04, pinned in `Dockerfile` to a Linux AMD64 manifest digest.
 - FFmpeg: Ubuntu Noble `ffmpeg=7:6.1.1-3ubuntu5` from the official Ubuntu
-  archive. The downloaded package SHA-256 is
-  `1a23baace5f2688a47e28119aedae6993cd638e6279a7227dfc52d9a337a1c17`.
+  archive. The downloaded package SHA-256 is pinned in `Dockerfile`.
 - FFmpeg binaries: the build fails unless `/usr/bin/ffmpeg` and
   `/usr/bin/ffprobe` match the SHA-256 values pinned in `Dockerfile`.
 - Playwright: Ubuntu 24.04 Chromium system dependencies reviewed against
@@ -42,12 +41,13 @@ SoXR records separate evidence under `/opt/tuneforge-ci/soxr/`:
 - `build-inputs.sha256`
 - `payload.sha256`
 - `host-test/provenance.json`
-- `TuneForge_soxr-a66f3eee_corresponding-sources.tar`
+- Corresponding-source archive named in `host-test/provenance.json`.
 
-Image producer changes leave CI consumers and their current image digest
-unchanged. After those changes merge to `main`, publish and verify the resulting
-image. A second PR can then pin that digest, verify its exact checkout inputs,
-and point Tauri at the installed payload.
+The producer uses `scripts/build-soxr-runtime.mjs` and the neutral TAR serializer
+in `scripts/deterministic-source-snapshot.mjs`. Corresponding sources include
+the build inputs, pinned upstream archive, and rebuild instructions. Flatpak
+source lists, epoch selection, and cache configuration are outside the image
+inputs and publication paths.
 
 The build generates a synthetic one-second sine wave and proves PCM/WAV, FLAC,
 `libmp3lame` MP3 at 192 kbps, and AAC-LC/M4A at 192 kbps. No user or copyrighted
@@ -73,9 +73,10 @@ the application's host-installed FFmpeg boundary.
 2. When Playwright changes in `apps/desktop/package.json` and `pnpm-lock.yaml`,
    review its Ubuntu 24.04 Chromium dependency list. Update both the packages in
    `Dockerfile` and `PLAYWRIGHT_VERSION`; the policy check rejects version drift.
-3. SoXR recipe, source lock, patch, and helper changes rebuild the same
-   shared image. Review `build-tools.txt`, both SHA-256 manifests, provenance,
-   corresponding sources, and the synthetic resampling check.
+3. Changes to the permanent SoXR runtime recipe, source lock, patch, and neutral
+   helper rebuild the same shared image. Review `build-tools.txt`, both SHA-256
+   manifests, provenance, licenses, corresponding sources, and the synthetic
+   resampling check.
 4. For an FFmpeg update, verify the official package checksum, extract the AMD64
    package, update both binary hashes, then perform two clean builds:
 
@@ -88,16 +89,17 @@ the application's host-installed FFmpeg boundary.
    docker run --rm tuneforge-ci:check-2 sha256sum /usr/bin/ffmpeg /usr/bin/ffprobe
    ```
 
-5. Merge this producer-only change with separate approval. It leaves the
-   existing consumer workflow and image digest unchanged. The resulting trusted
-   `main` publication creates only
+5. Merge producer changes in a dedicated PR. The trusted `main` publication
+   workflow builds the image; do not dispatch a branch image. Keep the consumer
+   digest unchanged until verification completes. Publication creates only
    `sha-<commit>-run-<run-id>-attempt-<attempt>` and prints its manifest digest,
    package evidence paths, SBOM, and provenance status in the job summary.
-6. Review the build logs, inventory, licenses, codec and SoXR evidence, SBOM, provenance,
-   tag, and digest. The first GHCR package is private; changing it to public is a
-   separate authorized GitHub operation.
+6. Verify the immutable digest and review build logs, inventory, licenses, codec
+   evidence, SoXR payload and build-input manifests, corresponding sources,
+   synthetic resampling, SBOM, and `mode=max` provenance. GHCR visibility changes
+   remain a separate authorized GitHub operation.
 7. Verify repository linkage and an anonymous Linux AMD64 pull by digest.
-8. Promote that exact digest through a second PR, which adds the consumer
-   verifier and Tauri SoXR configuration. Never consume a moving tag, delete a
-   referenced image version, or migrate CI before publication and public-pull
-   proof succeed.
+8. After those checks pass, promote the exact verified digest in a separate
+   consumer PR. Preserve the strict input verifier and Tauri SoXR configuration.
+   Never consume a moving tag, delete a referenced image version, or migrate CI
+   before publication and anonymous-pull proof succeed.

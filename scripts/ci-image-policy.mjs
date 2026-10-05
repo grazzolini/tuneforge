@@ -12,7 +12,8 @@ const paths = {
   mainWorkflow: ".github/workflows/ci.yml",
   pagesWorkflow: ".github/workflows/pages.yml",
   dependabot: ".github/dependabot.yml",
-  buildSoxr: "scripts/build-soxr.mjs",
+  buildSoxr: "scripts/build-soxr-runtime.mjs",
+  sourceSnapshot: "scripts/deterministic-source-snapshot.mjs",
   imageVerifier: "scripts/verify-ci-image.sh",
 };
 
@@ -225,6 +226,7 @@ export function validateCiImagePolicy(root) {
   const pagesWorkflow = read(root, paths.pagesWorkflow);
   const dependabot = read(root, paths.dependabot);
   const buildSoxr = read(root, paths.buildSoxr);
+  const sourceSnapshot = read(root, paths.sourceSnapshot);
   const imageVerifier = read(root, paths.imageVerifier);
   const errors = [];
   const check = (condition, message) => {
@@ -277,7 +279,7 @@ export function validateCiImagePolicy(root) {
   check(
     dockerfile.includes("      cmake \\\n") &&
       dockerfile.includes("      nodejs \\\n") &&
-      dockerfile.includes("node scripts/build-soxr.mjs \\\n      --target host-test") &&
+      dockerfile.includes("node scripts/build-soxr-runtime.mjs \\\n      --target host-test") &&
       dockerfile.includes("COPY --from=soxr-builder /opt/tuneforge-ci/soxr /opt/tuneforge-ci/soxr"),
     "CI image must build pinned host SoXR in its disposable builder and copy only the finished payload",
   );
@@ -291,8 +293,8 @@ export function validateCiImagePolicy(root) {
   );
   const soxrBuildInputManifest = [
     "    sha256sum \\",
-    "      scripts/build-soxr.mjs \\",
-    "      scripts/flatpak-source-snapshots.mjs \\",
+    "      scripts/build-soxr-runtime.mjs \\",
+    "      scripts/deterministic-source-snapshot.mjs \\",
     "      packaging/soxr/sources.lock.json \\",
     "      packaging/soxr/patches/android-unversioned-soname.patch \\",
     "      > /opt/tuneforge-ci/soxr/build-inputs.sha256; \\",
@@ -315,7 +317,7 @@ export function validateCiImagePolicy(root) {
     "Publish job must scope contents: read and packages: write",
   );
   check(
-    /push:\n    branches:\n      - main\n    paths:\n      - \.github\/ci\/\*\*\n      - \.github\/workflows\/ci-image\.yml\n      - packaging\/soxr\/sources\.lock\.json\n      - packaging\/soxr\/patches\/android-unversioned-soname\.patch\n      - scripts\/build-soxr\.mjs\n      - scripts\/flatpak-source-snapshots\.mjs\n  workflow_dispatch:/.test(imageWorkflow),
+    /push:\n    branches:\n      - main\n    paths:\n      - \.github\/ci\/\*\*\n      - \.github\/workflows\/ci-image\.yml\n      - packaging\/soxr\/sources\.lock\.json\n      - packaging\/soxr\/patches\/android-unversioned-soname\.patch\n      - scripts\/build-soxr-runtime\.mjs\n      - scripts\/deterministic-source-snapshot\.mjs\n  workflow_dispatch:/.test(imageWorkflow),
     "CI image workflow must publish only for trusted main image inputs or manual dispatch",
   );
   check(
@@ -357,7 +359,7 @@ export function validateCiImagePolicy(root) {
     "FFmpeg AMD64 package must be downloaded, checksum-verified, then installed",
   );
   const expectedCopies = [
-    "scripts/build-soxr.mjs scripts/flatpak-source-snapshots.mjs scripts/",
+    "scripts/build-soxr-runtime.mjs scripts/deterministic-source-snapshot.mjs scripts/",
     "packaging/soxr/sources.lock.json packaging/soxr/sources.lock.json",
     "packaging/soxr/patches/android-unversioned-soname.patch packaging/soxr/patches/android-unversioned-soname.patch",
     "--from=soxr-builder /opt/tuneforge-ci/soxr /opt/tuneforge-ci/soxr",
@@ -367,18 +369,23 @@ export function validateCiImagePolicy(root) {
     "**", "!.github/", "!.github/ci/", "!.github/ci/README.md", "!packaging/",
     "!packaging/soxr/", "!packaging/soxr/patches/",
     "!packaging/soxr/patches/android-unversioned-soname.patch",
-    "!packaging/soxr/sources.lock.json", "!scripts/", "!scripts/build-soxr.mjs",
-    "!scripts/flatpak-source-snapshots.mjs", "",
+    "!packaging/soxr/sources.lock.json", "!scripts/", "!scripts/build-soxr-runtime.mjs",
+    "!scripts/deterministic-source-snapshot.mjs", "",
   ].join("\n");
   check(
     JSON.stringify(copyInstructions) === JSON.stringify(expectedCopies) &&
       dockerignore === expectedDockerignore,
     "CI image repository context must allow and copy only reviewed SoXR inputs and its image README",
   );
+  check(
+    buildSoxr.includes('from "./deterministic-source-snapshot.mjs"') &&
+      !/flatpak|process\.env|SOURCE_DATE_EPOCH/i.test(sourceSnapshot),
+    "SoXR snapshot serializer must remain independent of Flatpak source, epoch, and cache policy",
+  );
   const soxrNoticeLines = buildSoxr.split("\n")
     .filter((line) => line.includes("THIRD_PARTY_NOTICES.md"));
   check(
-    buildSoxr.includes('"scripts/build-soxr.mjs", "scripts/flatpak-source-snapshots.mjs"];') &&
+    buildSoxr.includes('"scripts/build-soxr-runtime.mjs", "scripts/deterministic-source-snapshot.mjs"];') &&
       buildSoxr.includes(
         '...(target === "android-arm64-v8a" ? ["THIRD_PARTY_NOTICES.md"] : [])',
       ) &&
@@ -386,7 +393,7 @@ export function validateCiImagePolicy(root) {
         'if (target === "android-arm64-v8a") correspondingSourceFiles.push("THIRD_PARTY_NOTICES.md");',
       ) &&
       soxrNoticeLines.every((line) => line.includes('target === "android-arm64-v8a"')) &&
-      buildSoxr.includes('"node scripts/build-soxr.mjs --target host-test"'),
+      buildSoxr.includes('"node scripts/build-soxr-runtime.mjs --target host-test"'),
     "SoXR host corresponding sources must include the helper and rebuild command without repository-wide notices",
   );
   check(

@@ -1,5 +1,7 @@
 fn main() {
     println!("cargo:rerun-if-env-changed=TUNEFORGE_GIT_REF");
+    println!("cargo:rerun-if-env-changed=TUNEFORGE_PACKAGE_ID");
+    println!("cargo:rerun-if-env-changed=TUNEFORGE_PACKAGE_DATA_ROOT");
     if let Some(git_ref) = git_ref() {
         println!("cargo:rustc-env=TUNEFORGE_GIT_REF={git_ref}");
     }

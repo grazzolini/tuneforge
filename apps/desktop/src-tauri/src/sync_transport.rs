@@ -4750,6 +4750,9 @@ mod desktop {
         }
         #[cfg(not(mobile))]
         {
+            if let Some(root) = crate::package_identity::packaged_test_data_root()? {
+                return Ok(root.join("sync-transport"));
+            }
             let transport_override = env::var("TUNEFORGE_SYNC_TRANSPORT_DATA_DIR").ok();
             let data_root_override = env::var("TUNEFORGE_DATA_DIR").ok();
             resolve_sync_transport_data_dir(
@@ -4778,57 +4781,11 @@ mod desktop {
             .map_or_else(|| fallback().map(|path| path.join("sync-transport")), Ok)
     }
 
-    #[cfg(all(not(target_os = "android"), target_os = "macos"))]
+    #[cfg(not(mobile))]
     fn platform_app_data_dir() -> Result<PathBuf, String> {
-        home_dir()
-            .map(|home| {
-                home.join("Library")
-                    .join("Application Support")
-                    .join("com.tuneforge.desktop")
-            })
-            .ok_or_else(|| {
-                "Could not resolve the home directory for Iroh transport state.".to_string()
-            })
+        crate::storage_profile::native_data_root()
     }
 
-    #[cfg(all(not(target_os = "android"), target_os = "windows"))]
-    fn platform_app_data_dir() -> Result<PathBuf, String> {
-        env::var("APPDATA")
-            .map(|path| PathBuf::from(path).join("com.tuneforge.desktop"))
-            .map_err(|_| "Could not resolve APPDATA for Iroh transport state.".to_string())
-    }
-
-    #[cfg(all(
-        not(target_os = "android"),
-        not(target_os = "macos"),
-        not(target_os = "windows")
-    ))]
-    fn platform_app_data_dir() -> Result<PathBuf, String> {
-        if let Ok(path) = env::var("XDG_DATA_HOME") {
-            let trimmed = path.trim();
-            if !trimmed.is_empty() {
-                return Ok(PathBuf::from(trimmed).join("com.tuneforge.desktop"));
-            }
-        }
-        home_dir()
-            .map(|home| {
-                home.join(".local")
-                    .join("share")
-                    .join("com.tuneforge.desktop")
-            })
-            .ok_or_else(|| {
-                "Could not resolve the home directory for Iroh transport state.".to_string()
-            })
-    }
-
-    #[cfg(not(target_os = "android"))]
-    fn home_dir() -> Option<PathBuf> {
-        env::var("HOME")
-            .ok()
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty())
-            .map(PathBuf::from)
-    }
 
     fn load_or_create_iroh_secret_key(iroh_dir: &Path) -> Result<SecretKey, String> {
         let key_path = iroh_dir.join("endpoint.key");

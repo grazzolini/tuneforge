@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import os
-import sys
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from urllib.parse import urlparse
 
+from app.storage_profile import default_data_root
 from app.utils.model_cache import whisper_cache_dir
 
 _ALLOWED_BACKEND_HOSTS = ("127.0.0.1", "localhost")
@@ -17,10 +17,7 @@ def _default_data_root() -> Path:
     override = os.environ.get("TUNEFORGE_DATA_DIR")
     if override:
         return Path(override).expanduser().resolve()
-    home = Path.home()
-    if sys.platform == "darwin":
-        return home / "Library" / "Application Support" / "Tuneforge"
-    return home / ".local" / "share" / "tuneforge"
+    return default_data_root()
 
 
 @dataclass(frozen=True)

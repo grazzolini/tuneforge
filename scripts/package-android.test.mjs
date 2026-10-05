@@ -12,6 +12,8 @@ import {
   configureProfileableManifest,
   configurePublishableSigning,
   configureReleaseDebugSigning,
+  configureTestAdaptiveIcon,
+  configureTestStrings,
   generatedState,
   ensureLocalTestKeystore,
   normalizeFingerprint,
@@ -40,7 +42,9 @@ import {
   verifyLocalSigner,
   verifyProfileable,
   withTemporaryConfigurations,
+  withTemporaryAndroidIcons,
 } from "./package-android.mjs";
+import { TEST_PACKAGE } from "./package-profile.mjs";
 
 test("Android model bundle remains explicit and composes with build modes", () => {
   assert.deepEqual(parseAndroidOptions([]), {
@@ -119,13 +123,83 @@ test("Android packaging verifies the pinned ONNX Runtime AAR", (t) => {
 });
 test("test APK identity is verified from packaged badging", () => {
   const tools = { aapt2: "/sdk/aapt2" };
-  const good = () => ({ ok: true, output: "package: name='com.tuneforge.desktop.test' versionCode='1'" });
-  assert.doesNotThrow(() => verifyApplicationId("app.apk", tools, "com.tuneforge.desktop.test", {
+  const good = () => ({ ok: true, output: `package: name='${TEST_PACKAGE.id}' versionCode='1'` });
+  assert.doesNotThrow(() => verifyApplicationId("app.apk", tools, TEST_PACKAGE.id, {
     runCapture: good,
   }));
-  assert.throws(() => verifyApplicationId("app.apk", tools, "com.tuneforge.desktop.test", {
+  assert.throws(() => verifyApplicationId("app.apk", tools, TEST_PACKAGE.id, {
     runCapture: () => ({ ok: true, output: "package: name='com.tuneforge.desktop'" }),
   }), /applicationId/);
+});
+
+test("local Android label and icons restore after success and failure", (t) => {
+  const root = temp(t);
+  const strings = path.join(root, "strings.xml");
+  const resourceRoot = path.join(root, "res");
+  const iconRoot = path.join(root, "test-icons", "android");
+  const icon = path.join("mipmap-mdpi", "ic_launcher.png");
+  const background = path.join("values", "ic_launcher_background.xml");
+  const adaptive = path.join("mipmap-anydpi-v26", "ic_launcher.xml");
+  const monochrome = path.join("drawable", "ic_launcher_monochrome.xml");
+  for (const base of [resourceRoot, iconRoot]) {
+    fs.mkdirSync(path.join(base, "mipmap-mdpi"), { recursive: true });
+    fs.mkdirSync(path.join(base, "values"), { recursive: true });
+    fs.mkdirSync(path.join(base, "mipmap-anydpi-v26"), { recursive: true });
+  }
+  const productionIcon = Buffer.from([0, 255, 17, 32]);
+  const testIcon = Buffer.from([0, 1, 240, 255]);
+  const adaptiveXml = '<?xml version="1.0"?><adaptive-icon>' +
+    '<foreground android:drawable="@mipmap/ic_launcher_foreground"/>' +
+    '<background android:drawable="@color/ic_launcher_background"/></adaptive-icon>';
+  fs.writeFileSync(strings,
+    '<resources><string name="app_name">TuneForge</string><string name="main_activity_title">TuneForge</string></resources>');
+  fs.writeFileSync(path.join(resourceRoot, icon), productionIcon);
+  fs.writeFileSync(path.join(resourceRoot, background), "production-background");
+  fs.writeFileSync(path.join(resourceRoot, adaptive), adaptiveXml);
+  fs.writeFileSync(path.join(iconRoot, icon), testIcon);
+  fs.writeFileSync(path.join(iconRoot, background), "test-background");
+  fs.writeFileSync(path.join(iconRoot, adaptive), adaptiveXml);
+  const build = () => withTemporaryConfigurations([{ file: strings, configure: configureTestStrings }],
+    () => withTemporaryAndroidIcons(resourceRoot, iconRoot, () => {
+      assert.match(fs.readFileSync(strings, "utf8"), /TuneForge Test/);
+      assert.deepEqual(fs.readFileSync(path.join(resourceRoot, icon)), testIcon);
+      assert.match(fs.readFileSync(path.join(resourceRoot, adaptive), "utf8"),
+        /<monochrome android:drawable="@drawable\/ic_launcher_monochrome"\/>/);
+      assert.match(fs.readFileSync(path.join(resourceRoot, monochrome), "utf8"), /android:pathData=/);
+    }));
+  build();
+  assert.deepEqual(fs.readFileSync(path.join(resourceRoot, icon)), productionIcon);
+  assert.equal(fs.readFileSync(path.join(resourceRoot, background), "utf8"), "production-background");
+  assert.equal(fs.readFileSync(path.join(resourceRoot, adaptive), "utf8"), adaptiveXml);
+  assert.equal(fs.existsSync(path.join(resourceRoot, monochrome)), false);
+  assert.doesNotMatch(fs.readFileSync(strings, "utf8"), /TuneForge Test/);
+  assert.throws(() => withTemporaryConfigurations([{ file: strings, configure: configureTestStrings }],
+    () => withTemporaryAndroidIcons(resourceRoot, iconRoot, () => { throw new Error("build failed"); })), /build failed/);
+  assert.deepEqual(fs.readFileSync(path.join(resourceRoot, icon)), productionIcon);
+  assert.equal(fs.readFileSync(path.join(resourceRoot, adaptive), "utf8"), adaptiveXml);
+  assert.equal(fs.existsSync(path.join(resourceRoot, monochrome)), false);
+  assert.doesNotMatch(fs.readFileSync(strings, "utf8"), /TuneForge Test/);
+  assert.throws(() => configureTestStrings('<resources><string name="app_name">TuneForge</string></resources>'),
+    /main_activity_title/);
+  assert.throws(() => configureTestAdaptiveIcon("<adaptive-icon></adaptive-icon>"), /marker/);
+});
+
+test("generated Android quoted labels keep their quotes and restore exactly", (t) => {
+  const strings = path.join(temp(t), "strings.xml");
+  const original = '<resources>\n    <string name="app_name">"TuneForge"</string>\n' +
+    '    <string name="main_activity_title">"TuneForge"</string>\n</resources>\n';
+  fs.writeFileSync(strings, original);
+  const configuration = [{ file: strings, configure: configureTestStrings }];
+  withTemporaryConfigurations(configuration, () => {
+    assert.match(fs.readFileSync(strings, "utf8"), /<string name="app_name">"TuneForge Test"<\/string>/);
+    assert.match(fs.readFileSync(strings, "utf8"), /<string name="main_activity_title">"TuneForge Test"<\/string>/);
+  });
+  assert.equal(fs.readFileSync(strings, "utf8"), original);
+  assert.throws(() => withTemporaryConfigurations(configuration, () => { throw new Error("build failed"); }),
+    /build failed/);
+  assert.equal(fs.readFileSync(strings, "utf8"), original);
+  assert.throws(() => configureTestStrings('<string name="app_name">"TuneForge"</string>'),
+    /main_activity_title/);
 });
 function temp(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "tuneforge-android-"));

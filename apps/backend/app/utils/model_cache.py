@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 
+from app.storage_profile import default_model_cache_root
+
 
 @dataclass(frozen=True)
 class ExpectedModelFile:
@@ -34,7 +36,7 @@ def torch_checkpoint_dir(env: Mapping[str, str] | None = None) -> Path:
     if xdg_cache_home:
         return Path(xdg_cache_home).expanduser().resolve() / "torch" / "hub" / "checkpoints"
 
-    return Path.home() / ".cache" / "torch" / "hub" / "checkpoints"
+    return default_model_cache_root() / "torch" / "hub" / "checkpoints"
 
 
 def whisper_cache_dir(env: Mapping[str, str] | None = None) -> Path:
@@ -42,7 +44,7 @@ def whisper_cache_dir(env: Mapping[str, str] | None = None) -> Path:
     xdg_cache_home = current_env.get("XDG_CACHE_HOME")
     if xdg_cache_home:
         return Path(xdg_cache_home).expanduser().resolve() / "whisper"
-    return Path.home() / ".cache" / "whisper"
+    return default_model_cache_root() / "whisper"
 
 
 def invalid_model_files(expected_files: Sequence[ExpectedModelFile]) -> tuple[InvalidModelFile, ...]:

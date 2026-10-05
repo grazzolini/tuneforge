@@ -20,6 +20,7 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 beat_this_engine = importlib.import_module("app.engines.beat_this")
+storage_profile = importlib.import_module("app.storage_profile")
 
 SOURCE_INPUT = "source"
 STEM_INPUTS = ("drums", "bass")
@@ -155,10 +156,7 @@ def default_data_dir() -> Path:
     override = os.environ.get("TUNEFORGE_DATA_DIR")
     if override:
         return Path(override).expanduser().resolve()
-    home = Path.home()
-    if sys.platform == "darwin":
-        return home / "Library" / "Application Support" / "Tuneforge"
-    return home / ".local" / "share" / "tuneforge"
+    return storage_profile.default_data_root()
 
 
 def is_relative_to(path: Path, parent: Path) -> bool:

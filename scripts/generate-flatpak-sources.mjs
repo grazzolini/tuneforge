@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { parsePnpmLock } from "../packaging/flatpak/seed-pnpm-store.mjs";
 import { buildModelBundlePlan } from "./model-bundle-metadata.mjs";
 import { parsePackageOptions } from "./package-options.mjs";
+import { PRODUCTION_PACKAGE, TEST_PACKAGE, profilesFromConfig, testTauriOverlay } from "./package-profile.mjs";
 import { createFlatpakSourceSnapshot, flatpakSourceSnapshotInputs } from "./flatpak-source-snapshots.mjs";
 import { assertPythonVersionCompatibility, readPythonVersion } from "./python-version.mjs";
 
@@ -71,6 +72,7 @@ const selectedPythonExtras = [
 export const flatpakPythonBuildRequirementNames = Object.freeze(["setuptools", "wheel", "hatchling"]);
 export const flatpakDesktopSourceSnapshotInputs = Object.freeze([
   ...flatpakSourceSnapshotInputs.desktop,
+  "apps/backend/app/storage-profile.json",
   "apps/desktop/src-tauri/native/whisper-rs-sys",
 ]);
 
@@ -598,7 +600,7 @@ export function assertDefaultCpuTorchClosure(packages) {
 
 export const TORCH_EXTENSION_PROFILES = Object.freeze({
   Nvidia: Object.freeze({
-    ref_prefix: "com.tuneforge.desktop.Torch.Stack.Nvidia",
+    ref_prefix: `${PRODUCTION_PACKAGE.id}.Torch.Stack.Nvidia`,
     torch_version: "2.13.0",
     torchaudio_version: "2.11.0",
     triton_version: "3.7.1",
@@ -606,7 +608,7 @@ export const TORCH_EXTENSION_PROFILES = Object.freeze({
     pair_id: "5655bca4c785fdcc9390b2c3ed9c58b6a69eeee3b383d2aaf3f7903bbec3abc2",
   }),
   LegacyNvidia: Object.freeze({
-    ref_prefix: "com.tuneforge.desktop.Torch.Stack.LegacyNvidia",
+    ref_prefix: `${PRODUCTION_PACKAGE.id}.Torch.Stack.LegacyNvidia`,
     torch_version: "2.13.0+cu126",
     torchaudio_version: "2.11.0+cu126",
     triton_version: "3.7.1",
@@ -723,7 +725,7 @@ export function assertTorchExtensionProfile(packages, profileName, expectedAccel
   }
 }
 
-export function torchExtensionMarker(profileName, role, pairId) {
+export function torchExtensionMarker(profileName, role, pairId, { packageId = PRODUCTION_PACKAGE.id } = {}) {
   const profile = TORCH_EXTENSION_PROFILES[profileName];
   if (!profile) throw new Error(`Unknown Torch extension profile: ${profileName}`);
   if (!["core", "runtime"].includes(role)) throw new Error(`Unknown Torch extension role: ${role}`);
@@ -734,7 +736,7 @@ export function torchExtensionMarker(profileName, role, pairId) {
     contract: "profile-pair-v1",
     profile: profileName,
     role,
-    ref_id: `${profile.ref_prefix}.${refRole}`,
+    ref_id: `${profile.ref_prefix.replace(PRODUCTION_PACKAGE.id, packageId)}.${refRole}`,
     python_abi: "cp314",
     torch_version: profile.torch_version,
     torchaudio_version: profile.torchaudio_version,
@@ -819,7 +821,8 @@ function generatePythonSources() {
       writePythonPackageSet(`python-${stem}-torch-${role}`, partition[role]);
       writeGeneratedJson(
         `${stem}-torch-${role}-profile.json`,
-        torchExtensionMarker(profileName, role, pairId),
+        torchExtensionMarker(profileName, role, pairId, { packageId: packageOptions.testPackage
+          ? TEST_PACKAGE.id : PRODUCTION_PACKAGE.id }),
       );
     }
     extensionPackageCount += packageRows(packages).length;
@@ -895,7 +898,8 @@ export function createFlatpakDesktopSourceSnapshot({ root, outputPath, sourceDat
   });
 }
 
-export function generateFlatpakSourceSnapshots({ root, generatedRoot: snapshotRoot, sourceDateEpoch }) {
+export function generateFlatpakSourceSnapshots({ root, generatedRoot: snapshotRoot, sourceDateEpoch,
+  testPackage = false }) {
   const createSnapshot = (name, inputs) => createFlatpakSourceSnapshot({
     root, inputs: inputs.map((input) => typeof input === "string" ? { source: input } : input),
     outputPath: path.join(snapshotRoot, `${name}-snapshot.tar`), sourceDateEpoch,
@@ -904,9 +908,57 @@ export function generateFlatpakSourceSnapshots({ root, generatedRoot: snapshotRo
   if (existsSync(path.join(root, "packaging/demucs/drumsep-model.json"))) {
     backendInputs.push({ source: "packaging/demucs/drumsep-model.json", destination: "apps/backend/drumsep-model.json" });
   }
+  const desktopInputs = flatpakDesktopSourceSnapshotInputs.map((source) => ({ source }));
+  if (testPackage) {
+    const baseConfig = JSON.parse(readRequiredFile(path.join(root, "apps/desktop/src-tauri/tauri.conf.json")));
+    const testProfile = profilesFromConfig(baseConfig).test;
+    const overlay = testTauriOverlay(baseConfig);
+    mkdirSync(snapshotRoot, { recursive: true });
+    writeFileSync(path.join(snapshotRoot, "test-tauri.conf.json"), `${JSON.stringify({
+      ...baseConfig, ...overlay,
+      app: { ...baseConfig.app, ...overlay.app },
+      bundle: { ...baseConfig.bundle, ...overlay.bundle },
+    }, null, 2)}\n`);
+    // Cargo merges the test overlay through TAURI_CONFIG; keep the authoritative base ID.
+
+    const desktopSource = readRequiredFile(path.join(root, "packaging/flatpak/com.tuneforge.desktop.desktop"));
+    const appStreamSource = readRequiredFile(path.join(root, "packaging/flatpak/com.tuneforge.desktop.metainfo.xml"));
+    const templateId = appStreamSource.match(/<id>([^<]+)<\/id>/)?.[1];
+    if (!templateId) throw new Error("Flatpak AppStream template ID is missing.");
+    const desktopEntry = desktopSource
+      .replace("Name=TuneForge", `Name=${testProfile.name}`)
+      .replace("Exec=tuneforge", `Exec=${testProfile.binary}`)
+      .replaceAll(templateId, testProfile.id)
+      .replace("StartupWMClass=Tuneforge", "StartupWMClass=Tuneforge-test");
+    const appStream = appStreamSource
+      .replace("<name>TuneForge</name>", `<name>${testProfile.name}</name>`)
+      .replaceAll(templateId, testProfile.id);
+    writeFileSync(path.join(snapshotRoot, "test.desktop"), desktopEntry);
+    writeFileSync(path.join(snapshotRoot, "test.metainfo.xml"), appStream);
+    const backendReplacements = new Map([
+      ["packaging/flatpak/com.tuneforge.desktop.desktop", {
+        source: path.relative(root, path.join(snapshotRoot, "test.desktop")),
+        destination: `${testProfile.id}.desktop`,
+      }],
+      ["packaging/flatpak/com.tuneforge.desktop.metainfo.xml", {
+        source: path.relative(root, path.join(snapshotRoot, "test.metainfo.xml")),
+        destination: `${testProfile.id}.metainfo.xml`,
+      }],
+    ]);
+    for (const size of ["32x32", "128x128", "512x512"]) {
+      backendReplacements.set(`apps/desktop/src-tauri/icons/${size}.png`, {
+        source: `apps/desktop/src-tauri/icons/test/${size}.png`, destination: `icons/${size}.png`,
+      });
+    }
+    for (let index = 0; index < backendInputs.length; index += 1) {
+      const input = backendInputs[index];
+      const source = typeof input === "string" ? input : input.source;
+      if (backendReplacements.has(source)) backendInputs[index] = backendReplacements.get(source);
+    }
+  }
   return [
     createSnapshot("frontend", flatpakSourceSnapshotInputs.frontend),
-    createFlatpakDesktopSourceSnapshot({ root, outputPath: path.join(snapshotRoot, "desktop-snapshot.tar"), sourceDateEpoch }),
+    createSnapshot("desktop", desktopInputs),
     createSnapshot("backend", backendInputs),
   ];
 }
@@ -925,6 +977,7 @@ function main() {
     root: workspaceRoot,
     generatedRoot,
     sourceDateEpoch: resolveSourceDateEpoch(),
+    testPackage: packageOptions.testPackage,
   });
 
   process.stdout.write(

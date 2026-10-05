@@ -4,6 +4,7 @@ import { Link } from "react-router-dom";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import { api, type BeatBackendSchema, type ChordBackendSchema, type StemModelSchema } from "../../lib/api";
 import { FRONTEND_VERSION_INFO } from "../../lib/buildInfo";
+import { usePackageIdentity } from "../../lib/packageIdentity";
 import { DURABLE_AUDIO_CAPABILITIES_QUERY_KEY } from "../../lib/durableAudio";
 import {
   getPlaybackDiagnosticsVersion,
@@ -664,6 +665,7 @@ function PreferenceToggle({
 }
 
 export function SettingsView() {
+  const packageIdentity = usePackageIdentity();
   const {
     effectiveTheme,
     replaceThemeState,
@@ -1544,6 +1546,10 @@ export function SettingsView() {
             <section className="settings-diagnostics__group" aria-labelledby="diagnostics-configuration">
               <h3 id="diagnostics-configuration">Configuration</h3>
               <dl className="details-grid details-grid--single-column">
+                <div>
+                  <dt>Installed Package ID</dt>
+                  <dd className="path">{packageIdentity?.packageId ?? "Unavailable"}</dd>
+                </div>
                 <div>
                   <dt>Status</dt>
                   <dd>{healthQuery.data?.status ?? "Unknown"}</dd>

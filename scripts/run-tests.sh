@@ -75,6 +75,11 @@ android_package_start=${SECONDS}
   node --test scripts/package-android.test.mjs
   node --test scripts/build-ffmpeg.test.mjs
   node --test scripts/package-dmg.test.mjs
+  node --test scripts/package-profile.test.mjs
+  node --test scripts/dev.test.mjs
+  node --test scripts/package-options.test.mjs
+  node --test scripts/flatpak-options.test.mjs
+  node --test scripts/flatpak-cache.test.mjs
 )
 android_package_elapsed=$((SECONDS - android_package_start))
 printf '\n[tests] Packaging helper tests finished in %ss\n' "${android_package_elapsed}"

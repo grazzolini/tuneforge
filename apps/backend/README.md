@@ -210,6 +210,12 @@ The API is served at `http://127.0.0.1:8765/api/v1`. OpenAPI documentation is at
 
 All configuration is environment-driven (see [`app/config.py`](./app/config.py)):
 
+Production data and model-cache defaults are defined in `app/storage-profile.json`.
+The backend preserves its legacy defaults, including ignoring `XDG_DATA_HOME` for its
+data root. Root `pnpm dev` selects isolated test file storage and caches;
+`pnpm dev --production-data` preserves production overrides. Packaged test builds derive
+their own root and ignore inherited production data/cache/sync overrides.
+
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `TUNEFORGE_HOST` | `127.0.0.1` | Dev/test-only loopback override. Allowed values: `127.0.0.1` or `localhost`. |

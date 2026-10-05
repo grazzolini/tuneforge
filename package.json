@@ -12,7 +12,7 @@
     "soxr:build": "node scripts/build-soxr.mjs",
     "chords:benchmark": "bash -c 'if [[ \"${1:-}\" == \"--\" ]]; then shift; fi; exec bash scripts/run-backend-module.sh app.benchmarks.chords \"$@\"' --",
     "contracts:generate": "pnpm --filter @tuneforge/shared-types generate",
-    "dev": "concurrently -n backend,desktop -c blue,green \"pnpm dev:backend\" \"pnpm dev:desktop\"",
+    "dev": "node scripts/dev.mjs",
     "android:studio:shim": "bash scripts/android-studio-root-shim.sh",
     "dev:android:studio": "pnpm --filter @tuneforge/desktop android:studio",
     "dev:backend": "bash scripts/run-backend-module.sh uvicorn app.main:app --reload --host 127.0.0.1 --port 8765",

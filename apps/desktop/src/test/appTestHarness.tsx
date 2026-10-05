@@ -2922,6 +2922,7 @@ export {
   emitMockNativeAudioSession,
   emitMockNativeAudioTerminal,
   mockInvoke,
+  mockInvokeImplementation,
   mockListProjects,
   mockImportProject,
   mockGetProject,

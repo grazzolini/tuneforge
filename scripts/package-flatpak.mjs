@@ -28,6 +28,8 @@ import {
   printModelBundleWarning,
   validatePackageOptions,
 } from "./package-options.mjs";
+import { packageProfile, PRODUCTION_PACKAGE, TEST_PACKAGE, profilesFromConfig, testTauriOverlay } from "./package-profile.mjs";
+import { STORAGE_PROFILE, deriveTestRoot, flatpakProductionRoot } from "./storage-profile.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const scriptDir = path.dirname(__filename);
@@ -36,7 +38,9 @@ const flatpakRoot = path.join(workspaceRoot, "packaging", "flatpak");
 const baseManifestPath = path.join(flatpakRoot, "com.tuneforge.desktop.yml");
 const flatpakVersionInfoPath = path.join(flatpakRoot, "generated", "version.json");
 const frontendVersionInfoPath = path.join(flatpakRoot, "generated", "frontend-version.json");
-const appId = "com.tuneforge.desktop";
+const testPackage = process.argv.slice(2).includes("--test");
+const currentProfile = packageProfile(testPackage);
+const appId = currentProfile.id;
 const nvidiaTorchCoreRef = `${appId}.Torch.Stack.Nvidia.Core`;
 const nvidiaTorchRuntimeRef = `${appId}.Torch.Stack.Nvidia.Runtime`;
 const legacyTorchCoreRef = `${appId}.Torch.Stack.LegacyNvidia.Core`;
@@ -51,7 +55,10 @@ const torchProfileArtifacts = {
     { id: "legacy-nvidia-runtime", refId: legacyTorchRuntimeRef, module: "legacy-nvidia-torch-runtime-extension" },
   ],
 };
-const localRepoRemote = "tuneforge-local";
+export function localRepoRemoteFor(isTestPackage) {
+  return isTestPackage ? "tuneforge-test-local" : "tuneforge-local";
+}
+const localRepoRemote = localRepoRemoteFor(testPackage);
 const cacheSchema = "flatpak-cache-v1";
 const outputStateSchema = "flatpak-output-state-v1";
 const bundleStateSchema = "flatpak-bundle-state-v1";
@@ -60,20 +67,21 @@ const bundleCommandContract = "flatpak build-bundle [--runtime] --arch=x86_64 <r
 const gibibyte = 1024 ** 3;
 const flatpakBundleHardLimitBytes = 2 * gibibyte;
 const flatpakBundleTargetBytes = 1.9 * gibibyte;
-const buildDir = process.env.FLATPAK_BUILD_DIR ?? path.join(flatpakRoot, "build-dir");
-const repoDir = process.env.FLATPAK_REPO_DIR ?? path.join(flatpakRoot, "repo");
+const buildDir = process.env.FLATPAK_BUILD_DIR ?? path.join(flatpakRoot, testPackage ? "build-dir-test" : "build-dir");
+const repoDir = process.env.FLATPAK_REPO_DIR ?? path.join(flatpakRoot, testPackage ? "repo-test" : "repo");
 const appVersion = JSON.parse(
   readFileSync(path.join(workspaceRoot, "apps", "desktop", "src-tauri", "tauri.conf.json"), "utf8"),
 ).version;
-const defaultBundlePath = path.join(flatpakRoot, `Tuneforge_${appVersion}_x86_64.flatpak`);
+const bundleStem = testPackage ? "Tuneforge_Test" : "Tuneforge";
+const defaultBundlePath = path.join(flatpakRoot, `${bundleStem}_${appVersion}_x86_64.flatpak`);
 const defaultNvidiaTorchCoreBundlePath =
-  path.join(flatpakRoot, `Tuneforge_${appVersion}_Torch_Nvidia_Core_x86_64.flatpak`);
+  path.join(flatpakRoot, `${bundleStem}_${appVersion}_Torch_Nvidia_Core_x86_64.flatpak`);
 const defaultNvidiaTorchRuntimeBundlePath =
-  path.join(flatpakRoot, `Tuneforge_${appVersion}_Torch_Nvidia_Runtime_x86_64.flatpak`);
+  path.join(flatpakRoot, `${bundleStem}_${appVersion}_Torch_Nvidia_Runtime_x86_64.flatpak`);
 const defaultLegacyTorchCoreBundlePath =
-  path.join(flatpakRoot, `Tuneforge_${appVersion}_Torch_LegacyNvidia_Core_x86_64.flatpak`);
+  path.join(flatpakRoot, `${bundleStem}_${appVersion}_Torch_LegacyNvidia_Core_x86_64.flatpak`);
 const defaultLegacyTorchRuntimeBundlePath =
-  path.join(flatpakRoot, `Tuneforge_${appVersion}_Torch_LegacyNvidia_Runtime_x86_64.flatpak`);
+  path.join(flatpakRoot, `${bundleStem}_${appVersion}_Torch_LegacyNvidia_Runtime_x86_64.flatpak`);
 const bundlePath = process.env.FLATPAK_BUNDLE_PATH ?? defaultBundlePath;
 const nvidiaTorchCoreBundlePath = process.env.FLATPAK_NVIDIA_TORCH_CORE_BUNDLE_PATH ??
   defaultNvidiaTorchCoreBundlePath;
@@ -95,11 +103,11 @@ const currentDefaultBundlePaths = [
   defaultLegacyTorchRuntimeBundlePath,
 ];
 const obsoleteDefaultBundlePaths = [
-  path.join(flatpakRoot, `Tuneforge_${appVersion}_Torch_Nvidia_x86_64.flatpak`),
-  path.join(flatpakRoot, `Tuneforge_${appVersion}_Torch_LegacyNvidia_x86_64.flatpak`),
+  path.join(flatpakRoot, `${bundleStem}_${appVersion}_Torch_Nvidia_x86_64.flatpak`),
+  path.join(flatpakRoot, `${bundleStem}_${appVersion}_Torch_LegacyNvidia_x86_64.flatpak`),
 ];
 const sha256SumsPath =
-  process.env.FLATPAK_SHA256SUMS_PATH ?? path.join(flatpakRoot, "generated", "SHA256SUMS");
+  process.env.FLATPAK_SHA256SUMS_PATH ?? path.join(flatpakRoot, "generated", testPackage ? "TEST-SHA256SUMS" : "SHA256SUMS");
 export const frontendModuleInputPaths = [
   "package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", "scripts/build-info.mjs",
   "packaging/flatpak/seed-pnpm-store.mjs", "apps/desktop/package.json",
@@ -168,26 +176,20 @@ function commandVersion(command) {
   return result.stdout.trim();
 }
 
-function generatedManifestPath(options, cacheRoot, namespace, frontendGitRef) {
-  const generatedManifestPath = path.join(flatpakRoot, "com.tuneforge.desktop.generated.yml");
+export function generatedManifestPath(options, cacheRoot, namespace, frontendGitRef,
+  outputPath = path.join(flatpakRoot, `${packageProfile(options.testPackage).id}.generated.yml`)) {
   const baseManifest = readFileSync(baseManifestPath, "utf8");
-  let manifest = manifestWithPackageOptions(baseManifest, options);
+  const templateId = baseManifest.match(/^app-id: (.+)$/m)?.[1];
+  if (!templateId) throw new Error("Flatpak template app ID is missing.");
+  let manifest = manifestWithPackageOptions(baseManifest.replaceAll(templateId, PRODUCTION_PACKAGE.id), options);
   manifest = manifest
     .replaceAll('"@@FLATPAK_CACHE_BIND@@"', JSON.stringify(`--bind-mount=/run/tuneforge-cache=${cacheRoot}`))
     .replaceAll("@@FLATPAK_CACHE_NAMESPACE@@", namespace);
-  manifest = replaceManifestFragment(
-    manifest,
-    "@@TUNEFORGE_FRONTEND_GIT_REF@@",
-    frontendGitRef.replaceAll("'", "''"),
-  );
-  if (options.sandboxData) {
-    manifest = replaceManifestFragment(manifest, "  - --filesystem=xdg-data/tuneforge:create\n", "");
-    manifest = replaceManifestFragment(
-      manifest,
-      "  - --env=TUNEFORGE_DATA_DIR=~/.local/share/tuneforge\n",
-      "  - --env=TUNEFORGE_DATA_DIR=/var/data/tuneforge\n",
-    );
-  }
+  const productionRoot = flatpakProductionRoot(options);
+  manifest = manifest.replace(/^  - --env=TUNEFORGE_DATA_DIR=.*$/m, "  - --env=TUNEFORGE_DATA_DIR=" + productionRoot);
+  manifest = manifest.replace("  - --filesystem=xdg-data/tuneforge:create\n",
+    options.sandboxData ? "" : "  - --filesystem=" + flatpakDataGrant(productionRoot) + ":create\n");
+
   if (options.modelBundle || options.crema === "onnx") {
     manifest = replaceManifestFragment(
       manifest,
@@ -235,9 +237,15 @@ function generatedManifestPath(options, cacheRoot, namespace, frontendGitRef) {
     `      - /app/lib/tuneforge/backend/python/bin/python3.14 -c "import ${imports.join(", ")}"\n` +
       lvChordiaValidation,
   );
-  mkdirSync(path.dirname(generatedManifestPath), { recursive: true });
-  writeFileSync(generatedManifestPath, manifest);
-  return generatedManifestPath;
+  if (options.testPackage) manifest = manifestForTestPackage(manifest, options);
+  manifest = replaceManifestFragment(
+    manifest,
+    "@@TUNEFORGE_FRONTEND_GIT_REF@@",
+    frontendGitRef.replaceAll("'", "''"),
+  );
+  mkdirSync(path.dirname(outputPath), { recursive: true });
+  writeFileSync(outputPath, manifest);
+  return outputPath;
 }
 
 export function manifestWithPackageOptions(manifest, options) {
@@ -293,6 +301,43 @@ export function manifestWithPackageOptions(manifest, options) {
       result = disableManifestExtensionBundle(result, refId);
     }
   }
+  return result;
+}
+
+export function manifestForTestPackage(manifest, options = {}) {
+  const testProfile = options.baseConfig ? profilesFromConfig(options.baseConfig).test : TEST_PACKAGE;
+  const from = manifest.match(/^app-id: (.+)$/m)?.[1];
+  if (!from) throw new Error("Flatpak app ID is missing.");
+  const to = testProfile.id;
+  let result = manifest.replaceAll(from, to);
+  result = replaceManifestFragment(result, "command: tuneforge\n", `command: ${testProfile.binary}\n`);
+  result = replaceManifestFragment(result,
+    "      - install -Dm755 apps/desktop/src-tauri/target/release/tuneforge /app/bin/tuneforge\n",
+    `      - install -Dm755 apps/desktop/src-tauri/target/release/tuneforge /app/bin/${testProfile.binary}\n`,
+  );
+  const selected = flatpakProductionRoot({ sandboxData: options.sandboxData, profile: options.storageProfile ?? STORAGE_PROFILE });
+  const root = deriveTestRoot(selected, "linux");
+  result = result.replace("  - --filesystem=" + flatpakDataGrant(selected) + ":create\n", "")
+    .replace("  - --filesystem=xdg-data/tuneforge:create\n", "")
+    .replace(/^  - --filesystem=xdg-cache\/(?:torch|whisper):create\n/gm, "");
+  if (!options.sandboxData) {
+    const grant = flatpakDataGrant(root);
+    result = result.replace("finish-args:\n", "finish-args:\n  - --filesystem=" + grant + ":create\n");
+  }
+  result = result.replace(/^  - --env=TUNEFORGE_DATA_DIR=.*$/m, "  - --env=TUNEFORGE_DATA_DIR=" + root);
+  result = result.replace(/^  - --env=TORCH_HOME=.*\n  - --env=TUNEFORGE_LYRICS_CACHE_DIR=.*$/m,
+    "  - --env=XDG_CACHE_HOME=" + root + "/cache\n" +
+    "  - --env=TORCH_HOME=" + root + "/cache/torch\n" +
+    "  - --env=HF_HOME=" + root + "/cache/huggingface\n" +
+    "  - --env=TUNEFORGE_LYRICS_CACHE_DIR=" + root + "/cache/whisper\n" +
+    "  - --env=TUNEFORGE_SYNC_TRANSPORT_DATA_DIR=" + root + "/sync-transport");
+  result = replaceManifestFragment(result,
+    "        TUNEFORGE_GIT_REF: '@@TUNEFORGE_FRONTEND_GIT_REF@@'\n",
+    "        TUNEFORGE_GIT_REF: '@@TUNEFORGE_FRONTEND_GIT_REF@@'\n" +
+    `        TUNEFORGE_PACKAGE_ID: ${testProfile.id}\n` +
+    `        TUNEFORGE_PACKAGE_DATA_ROOT: ${selected}\n` +
+    `        TAURI_CONFIG: '${JSON.stringify(testTauriOverlay(options.baseConfig)).replaceAll("'", "''")}'\n`,
+  );
   return result;
 }
 
@@ -385,7 +430,7 @@ export function cacheNamespace(options, version = appVersion) {
   );
   const inputs = {
     schema: cacheSchema,
-    app: `${appId}@${version}`,
+    app: `${packageProfile(options.testPackage).id}@${version}`,
     arch: "x86_64",
     runtime: "org.gnome.Platform/50",
     tools: "node26-llvm20-rust-stable-pnpm11.22.0-sccache0.17.0",
@@ -401,8 +446,8 @@ function pathsOverlap(left, right) {
 }
 
 export function resolveCacheRoots({
-  stateRoot = process.env.FLATPAK_STATE_DIR ?? path.join(workspaceRoot, ".flatpak-builder", "tuneforge-state"),
-  cacheRoot = process.env.FLATPAK_CACHE_DIR ?? path.join(workspaceRoot, ".flatpak-builder", "tuneforge-cache"),
+  stateRoot = process.env.FLATPAK_STATE_DIR ?? path.join(workspaceRoot, ".flatpak-builder", testPackage ? "tuneforge-test-state" : "tuneforge-state"),
+  cacheRoot = process.env.FLATPAK_CACHE_DIR ?? path.join(workspaceRoot, ".flatpak-builder", testPackage ? "tuneforge-test-cache" : "tuneforge-cache"),
   outputRoots = [buildDir, repoDir],
 } = {}) {
   const roots = { stateRoot: path.resolve(stateRoot), cacheRoot: path.resolve(cacheRoot) };
@@ -416,6 +461,39 @@ export function resolveCacheRoots({
     throw new Error("FLATPAK_STATE_DIR and FLATPAK_CACHE_DIR must not overlap.");
   }
   return roots;
+}
+
+export function assertTestFlatpakOutputIsolation({
+  testBuildDir = buildDir,
+  testRepoDir = repoDir,
+  testBundlePaths = configuredBundlePaths,
+  testChecksumPath = sha256SumsPath,
+  testStateRoot,
+  testCacheRoot,
+} = {}) {
+  const prodBuildDir = path.join(flatpakRoot, "build-dir");
+  const prodRepoDir = path.join(flatpakRoot, "repo");
+  const prodStateRoot = path.join(workspaceRoot, ".flatpak-builder", "tuneforge-state");
+  const prodCacheRoot = path.join(workspaceRoot, ".flatpak-builder", "tuneforge-cache");
+  for (const [candidate, protectedRoot] of [
+    [testBuildDir, prodBuildDir], [testRepoDir, prodRepoDir],
+    [testStateRoot, prodStateRoot], [testCacheRoot, prodCacheRoot],
+  ]) {
+    if (candidate && (pathsOverlap(candidate, protectedRoot) || pathsOverlap(protectedRoot, candidate))) {
+      throw new Error(`Test Flatpak output overlaps production path: ${candidate}`);
+    }
+  }
+  const protectedFiles = [
+    ...["", "_Torch_Nvidia_Core", "_Torch_Nvidia_Runtime",
+      "_Torch_LegacyNvidia_Core", "_Torch_LegacyNvidia_Runtime"]
+      .map((suffix) => path.join(flatpakRoot, `Tuneforge_${appVersion}${suffix}_x86_64.flatpak`)),
+    path.join(flatpakRoot, "generated", "SHA256SUMS"),
+  ];
+  for (const candidate of [...testBundlePaths, testChecksumPath]) {
+    if (protectedFiles.some((file) => path.resolve(file) === path.resolve(candidate))) {
+      throw new Error(`Test Flatpak output collides with production artifact: ${candidate}`);
+    }
+  }
 }
 
 function numericTotal(value, label) {
@@ -1489,6 +1567,7 @@ async function main() {
   const namespace = cacheNamespace(packageOptions);
   const sourceDateEpoch = resolveSourceDateEpoch();
   const { stateRoot, cacheRoot } = resolveCacheRoots();
+  if (packageOptions.testPackage) assertTestFlatpakOutputIsolation({ testStateRoot: stateRoot, testCacheRoot: cacheRoot });
   const stateDir = path.join(stateRoot, namespace.name);
   const namespaceRoot = path.join(cacheRoot, namespace.name);
   const outputStatePath = flatpakOutputStatePath(stateDir);
@@ -1718,4 +1797,8 @@ if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
       process.exitCode = 1;
     }
   }
+}
+
+function flatpakDataGrant(root) {
+  return root.startsWith("~/.local/share/") ? "xdg-data/" + root.slice("~/.local/share/".length) : root;
 }

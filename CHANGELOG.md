@@ -5,6 +5,13 @@ download, installation, verification, signature, and publication instructions.
 
 ## [Unreleased]
 
+### Added
+
+- Added separately installable TuneForge Test packages for macOS, Android, and Linux Flatpak,
+  with distinct identity, icon, data, and model caches from production packages.
+- Development now defaults to separate test file storage, with TEST visuals in both modes;
+  `pnpm dev --production-data` opens the existing production library and file settings.
+
 ## [1.7.0] - 2026-10-02
 
 ### Added

@@ -7,11 +7,13 @@ import {
   parsePackageOptions,
   printModelBundleWarning,
 } from "./package-options.mjs";
+import { writeTestTauriOverlay } from "./package-profile.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const scriptDir = path.dirname(__filename);
 const workspaceRoot = path.resolve(scriptDir, "..");
 const backendRoot = path.join(workspaceRoot, "apps", "backend");
+const tauriRoot = path.join(workspaceRoot, "apps", "desktop", "src-tauri");
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
@@ -57,11 +59,16 @@ function main() {
   ]);
 
   run("uv", backendSyncArgs(options), { cwd: backendRoot });
-  run("pnpm", ["--filter", "@tuneforge/desktop", "tauri", "build", "--bundles", "app"], {
-    env: packageOptionsEnvironment(options),
+  const configArgs = options.testPackage
+    ? ["--config", writeTestTauriOverlay(tauriRoot)] : [];
+  run("pnpm", ["--filter", "@tuneforge/desktop", "tauri", "build", "--bundles", "app", ...configArgs], {
+    env: {
+      ...packageOptionsEnvironment(options),
+      ...(options.testPackage ? { CARGO_TARGET_DIR: path.join(tauriRoot, "target", "test-package") } : {}),
+    },
   });
   if (!appOnly) {
-    run(process.execPath, [path.join("scripts", "package-dmg.mjs")]);
+    run(process.execPath, [path.join("scripts", "package-dmg.mjs"), ...(options.testPackage ? ["--test"] : [])]);
   }
 }
 

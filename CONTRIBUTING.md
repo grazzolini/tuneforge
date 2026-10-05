@@ -99,7 +99,15 @@ Or both at once:
 pnpm dev
 ```
 
-The backend serves on `http://127.0.0.1:8765/api/v1`. The Tauri dev shell connects to it.
+`pnpm dev` uses the production default root with a ` Test` suffix on macOS or `-test`
+on Linux. Its model caches and sync state stay under that test root. Use
+`pnpm dev --production-data` for the existing production file storage, model overrides,
+and sync state. Both modes show TEST visuals and retain the current dev WebView identity,
+origin (`http://127.0.0.1:1420`), and browser settings. The launcher selects a free backend
+port, verifies child liveness and matching health metadata, and cleans up its own children
+on exit. A genuinely isolated `TUNEFORGE_DATA_DIR` fixture override remains supported;
+overlap with production paths requires `--production-data`. Low-level helpers use the
+existing backend URL `http://127.0.0.1:8765/api/v1`.
 
 ## Release Media
 

@@ -179,6 +179,7 @@ a {
 }
 
 .brand__mark {
+  position: relative;
   display: inline-grid;
   flex: 0 0 2.45rem;
   inline-size: 2.45rem;
@@ -187,6 +188,23 @@ a {
   border: 1px solid color-mix(in srgb, var(--divider) 72%, transparent);
   border-radius: 14px;
   background: color-mix(in srgb, var(--panel-strong) 72%, var(--sidebar-bg) 28%);
+}
+
+.brand__test-tab {
+  position: absolute;
+  z-index: 1;
+  inset-block-end: -0.4rem;
+  inset-inline-end: -0.36rem;
+  padding: 0.08rem 0.18rem;
+  border: 1px solid var(--sidebar-bg);
+  border-radius: 0.2rem;
+  background: #00b9cf;
+  color: #08151e;
+  font-size: 0.5rem;
+  font-weight: 900;
+  line-height: 1;
+  letter-spacing: 0.01em;
+  pointer-events: none;
 }
 
 .brand__icon,

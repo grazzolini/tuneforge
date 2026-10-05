@@ -138,6 +138,9 @@ impl PlaybackSourceError {
 
 #[cfg(any(target_os = "linux", target_os = "macos", test))]
 fn backend_data_root() -> Result<PathBuf, String> {
+    if let Some(root) = crate::package_identity::packaged_test_data_root()? {
+        return Ok(root);
+    }
     let home = home_dir()?;
     let cwd = env::current_dir().unwrap_or_else(|_| home.clone());
     Ok(backend_data_root_from_parts(
@@ -175,12 +178,9 @@ fn backend_data_root_from_parts(
 fn default_backend_data_root(home: &Path, platform: BackendPlatform) -> PathBuf {
     match platform {
         #[cfg(any(target_os = "macos", test))]
-        BackendPlatform::Macos => home
-            .join("Library")
-            .join("Application Support")
-            .join("Tuneforge"),
+        BackendPlatform::Macos => crate::storage_profile::default_backend_root(home, "darwin"),
         #[cfg(any(target_os = "linux", test))]
-        BackendPlatform::Linux => home.join(".local").join("share").join("tuneforge"),
+        BackendPlatform::Linux => crate::storage_profile::default_backend_root(home, "linux"),
     }
 }
 

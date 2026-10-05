@@ -15,6 +15,7 @@ import { PreferencesProvider } from "./lib/preferences";
 import { AudioOutputProvider } from "./lib/AudioOutputProvider";
 import { useAudioOutput } from "./lib/audioOutputContext";
 import { OutputVolumeControl } from "./components/OutputVolumeControl";
+import { usePackageIdentity } from "./lib/packageIdentity";
 import { ThemeProvider } from "./lib/theme";
 
 function MiniMetallicGlyphDefs({ gradientId }: { gradientId: string }) {
@@ -165,6 +166,8 @@ function BackgroundPlaybackCard() {
 }
 
 function AppChrome() {
+  const packageIdentity = usePackageIdentity();
+  const testVisuals = packageIdentity?.isTestPackage || (import.meta.env.DEV && import.meta.env.VITE_TUNEFORGE_DEV_TEST_VISUALS === "1");
   const location = useLocation();
   const { dismissSession, session } = usePlayback();
   const routeProjectId =
@@ -183,10 +186,18 @@ function AppChrome() {
   return (
     <div className={`app-shell${compactChrome ? " app-shell--compact" : ""}`}>
       <aside className="sidebar">
-        <Link aria-label="TuneForge library" className="brand" title="TuneForge" to="/">
+        <Link
+          aria-label="TuneForge library"
+          aria-describedby={testVisuals ? "test-build-description" : undefined}
+          className="brand"
+          title={testVisuals ? "TuneForge Test" : "TuneForge"}
+          to="/"
+        >
           <span className="brand__mark" aria-hidden="true">
             <Music2 className="brand__icon" />
+            {testVisuals && <span className="brand__test-tab">TEST</span>}
           </span>
+          {testVisuals && <span className="sr-only" id="test-build-description">Test build</span>}
           <span className="brand__copy">
             <span className="brand__eyebrow">TuneForge</span>
             <strong>Local Practice Rig</strong>

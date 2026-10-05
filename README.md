@@ -206,7 +206,12 @@ Or both at once:
 pnpm dev
 ```
 
-The backend serves the local API on `http://127.0.0.1:8765/api/v1`.
+`pnpm dev` uses separate test file storage and model caches by default. Use
+`pnpm dev --production-data` to open the existing production library and retain its cache
+and sync overrides. Both modes show the TEST icon, window title, and in-app marker; both
+retain the current dev WebView identity, origin, and browser settings. The launcher owns an
+available loopback backend port and verifies its API URL and data root before starting
+the desktop. Low-level `dev:backend` and `dev:desktop` helpers retain their existing behavior.
 
 Native audio notes and the Web Audio fallback override are in [docs/NATIVE_AUDIO.md](docs/NATIVE_AUDIO.md).
 

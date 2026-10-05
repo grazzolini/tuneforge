@@ -6,6 +6,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { selectAndroidTools } from "./validate-android-release-jni.mjs";
 import { validateSoxrOutput } from "./build-soxr.mjs";
+import { PRODUCTION_PACKAGE, TEST_PACKAGE } from "./package-profile.mjs";
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDir, "..");
 const desktopDir = path.join(repoRoot, "apps/desktop");
@@ -107,7 +108,7 @@ export function parseAndroidOptions(argv) {
 }
 
 export function validateLocalPackageName(value) {
-  if (value === "com.tuneforge.desktop") throw new Error("The production Android application ID is reserved for publishable builds.");
+  if (value === PRODUCTION_PACKAGE.id) throw new Error("The production Android application ID is reserved for publishable builds.");
   const segments = value.split(".");
   if (segments.length < 2 || segments.some((segment) => !/^[A-Za-z][A-Za-z0-9_]*$/.test(segment))) {
     throw new Error("--package-name must be a valid Android application ID with at least two segments.");
@@ -514,7 +515,7 @@ export function configureLocalBuild(contents, applicationId) {
   const buildTypes = "    buildTypes {";
   const debug = '        getByName("debug") {';
   const release = '        getByName("release") {';
-  const identity = '        applicationId = "com.tuneforge.desktop"';
+  const identity = `        applicationId = "${PRODUCTION_PACKAGE.id}"`;
   if (!clean.includes(buildTypes) || !clean.includes(debug) || !clean.includes(release) || !clean.includes(identity)) {
     throw new Error("Generated local Android build markers are missing.");
   }
@@ -544,6 +545,58 @@ export function configureProfileableManifest(contents) {
   const application = /<application\b[\s\S]*?>/.exec(contents);
   if (!application) throw new Error("Generated Android application manifest marker is missing.");
   return contents.replace(application[0], `${application[0]}\n        <profileable android:shell="true" />`);
+}
+export function configureTestStrings(contents) {
+  let result = contents;
+  for (const name of ["app_name", "main_activity_title"]) {
+    const marker = new RegExp(`(<string\\s+name="${name}">)("?)TuneForge\\2(</string>)`);
+    if (!marker.test(result)) throw new Error(`Generated Android ${name} string marker is missing.`);
+    result = result.replace(marker, (_, opening, quote, closing) =>
+      `${opening}${quote}${TEST_PACKAGE.name}${quote}${closing}`);
+  }
+  return result;
+}
+
+export function configureTestAdaptiveIcon(contents) {
+  const closing = "</adaptive-icon>";
+  if (!contents.includes(closing) || !contents.includes('<foreground android:drawable="@mipmap/ic_launcher_foreground"/>') ||
+      !contents.includes('<background android:drawable="@color/ic_launcher_background"/>') ||
+      /<monochrome\b/.test(contents)) {
+    throw new Error("Generated Android adaptive icon marker is missing or already configured.");
+  }
+  return contents.replace(closing,
+    '  <monochrome android:drawable="@drawable/ic_launcher_monochrome"/>\n' + closing);
+}
+
+export function withTemporaryAndroidIcons(resourceRoot, generatedIconsRoot, action) {
+  const sourceFiles = fs.readdirSync(generatedIconsRoot, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && entry.name.startsWith("mipmap-"))
+    .flatMap((entry) => fs.readdirSync(path.join(generatedIconsRoot, entry.name))
+      .map((name) => path.join(entry.name, name)));
+  sourceFiles.push(path.join("values", "ic_launcher_background.xml"));
+  const monochrome = path.join("drawable", "ic_launcher_monochrome.xml");
+  sourceFiles.push(monochrome);
+  const snapshots = sourceFiles.map((relative) => {
+    const destination = path.join(resourceRoot, relative);
+    return { relative, destination, original: fs.existsSync(destination) ? fs.readFileSync(destination) : null };
+  });
+  try {
+    for (const { relative, destination } of snapshots) {
+      fs.mkdirSync(path.dirname(destination), { recursive: true });
+      const source = relative === monochrome
+        ? path.join(desktopDir, "src-tauri/icons/test/android/ic_launcher_monochrome.xml")
+        : path.join(generatedIconsRoot, relative);
+      fs.copyFileSync(source, destination);
+    }
+    const adaptiveIcon = path.join(resourceRoot, "mipmap-anydpi-v26", "ic_launcher.xml");
+    fs.writeFileSync(adaptiveIcon, configureTestAdaptiveIcon(fs.readFileSync(adaptiveIcon, "utf8")));
+    return action();
+  } finally {
+    for (const { destination, original } of snapshots.reverse()) {
+      if (original === null) fs.rmSync(destination, { force: true });
+      else fs.writeFileSync(destination, original);
+    }
+  }
 }
 export function withTemporaryConfigurations(configurations, action, {
   read = (file) => fs.readFileSync(file, "utf8"), write = fs.writeFileSync,
@@ -723,6 +776,9 @@ export function main(argv = process.argv.slice(2)) {
       TUNEFORGE_ANDROID_SOXR_ROOT: soxrRoot,
       LLVM_READELF: llvmReadelf,
     };
+    if (!publishable) {
+      env.CARGO_TARGET_DIR = path.join(desktopDir, "src-tauri/target", `android-test-ndk-${ndk.version.replaceAll(".", "-")}`);
+    }
     prepareNativeProject({ env, ffmpegRoot, soxrRoot, sourceEnv });
     const localSigning = mode !== "prepare" && !publishable
       ? ensureLocalTestKeystore(java, { env: cleanEnv }) : undefined;
@@ -776,13 +832,21 @@ export function main(argv = process.argv.slice(2)) {
       console.log(`[android package] publishable APK: ${output}`);
       console.log("[android package] completion (publishable, release-key signed)");
     } else {
+      const localPackageId = packageName ?? TEST_PACKAGE.id;
       const configurations = [{ file: buildFile, configure: (contents) => configureLocalBuild(
-        contents, packageName ?? "com.tuneforge.desktop.test") }];
+        contents, localPackageId) }, {
+        file: path.join(androidDir, "app/src/main/res/values/strings.xml"),
+        configure: configureTestStrings,
+      }];
       if (profile) configurations.push({
         file: path.join(androidDir, "app/src/main/AndroidManifest.xml"),
         configure: configureProfileableManifest,
       });
-      withTemporaryConfigurations(configurations, () => {
+      const testIconRoot = path.join(desktopDir, "src-tauri/target/android-test-icons");
+      run(tauriCli, ["icon", "--output", testIconRoot, "src-tauri/icons/test/icon.png"],
+        { cwd: desktopDir, env: buildEnv, label: "Android test icon generation" });
+      withTemporaryConfigurations(configurations, () => withTemporaryAndroidIcons(
+        path.join(androidDir, "app/src/main/res"), path.join(testIconRoot, "android"), () => {
         console.log(`[android package] build (${profile ? "profile" : mode})`);
         const args = [androidEnv, tauriCli, "android", "build", "--ci", "--target", "aarch64", "--apk"];
         if (debug) args.push("--debug");
@@ -794,7 +858,7 @@ export function main(argv = process.argv.slice(2)) {
         verifyOnnxRuntimeAar(buildEnv.GRADLE_USER_HOME);
         requireExecutables(debug ? [tools.aapt2, tools.apksigner] : [tools.aapt2, tools.apksigner, tools.dexdump]);
         const artifact = verifySpecific(debug, tools, buildEnv);
-        verifyApplicationId(artifact.apk, tools, packageName ?? "com.tuneforge.desktop.test", { env: buildEnv });
+        verifyApplicationId(artifact.apk, tools, localPackageId, { env: buildEnv });
         verifyLocalSigner(artifact.apk, tools, localSigning.fingerprint, { env: buildEnv });
         if (!debug) run(process.execPath, [path.join(scriptDir, "validate-android-release-jni.mjs")],
           { env, label: "Android release JNI validation" });
@@ -805,9 +869,22 @@ export function main(argv = process.argv.slice(2)) {
           console.log(`[android package] native profile symbols: ${symbols}`);
           console.log(`[android package] R8 mapping: ${mapping}`);
         }
-        console.log(`[android package] ${debug ? "debug" : "optimized release-profile"} APK: ${artifact.apk}`);
+        const tauriConfig = JSON.parse(fs.readFileSync(path.join(desktopDir, "src-tauri/tauri.conf.json"), "utf8"));
+        const outputDir = path.join(desktopDir, "src-tauri/target/test-package", debug ? "debug" : "release", "bundle/apk");
+        const identitySuffix = localPackageId === TEST_PACKAGE.id ? "" : `_${localPackageId.replaceAll(".", "_")}`;
+        const output = path.join(outputDir,
+          `TuneForge_Test_${tauriConfig.version}_android_aarch64_${profile ? "profile" : mode}${identitySuffix}.apk`);
+        fs.mkdirSync(outputDir, { recursive: true });
+        const staging = `${output}.${lock.token}.tmp`;
+        try {
+          fs.copyFileSync(artifact.apk, staging);
+          fs.renameSync(staging, output);
+        } finally {
+          fs.rmSync(staging, { force: true });
+        }
+        console.log(`[android package] ${debug ? "debug" : "optimized release-profile"} APK: ${output}`);
         console.log(`[android package] completion (${profile ? "profile, " : ""}${mode}, debug-key signed)`);
-      });
+      }));
     }
   } finally {
     try {

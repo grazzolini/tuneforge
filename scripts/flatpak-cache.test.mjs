@@ -26,6 +26,10 @@ import {
   flatpakSizeReport,
   frontendModuleInputPaths,
   manifestWithPackageOptions,
+  manifestForTestPackage,
+  generatedManifestPath,
+  localRepoRemoteFor,
+  assertTestFlatpakOutputIsolation,
   isValidPnpmCacheReport,
   normalizeGeneratedModelBundleManifest,
   parseSccacheStats,
@@ -48,6 +52,7 @@ import {
 import { parsePackageOptions } from "./package-options.mjs";
 import { compareUtf8, createFlatpakSourceSnapshot, flatpakSourceSnapshotInputs } from "./flatpak-source-snapshots.mjs";
 import { createFlatpakDesktopSourceSnapshot, flatpakDesktopSourceSnapshotInputs, generateFlatpakSourceSnapshots } from "./generate-flatpak-sources.mjs";
+import { PRODUCTION_PACKAGE, TEST_PACKAGE } from "./package-profile.mjs";
 
 const manifest = readFileSync(
   new URL("../packaging/flatpak/com.tuneforge.desktop.yml", import.meta.url),
@@ -56,6 +61,89 @@ const manifest = readFileSync(
 const packageScript = readFileSync(new URL("./package-flatpak.mjs", import.meta.url), "utf8");
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
 
+test("test Flatpak uses private identity, data, cache, and extension refs", () => {
+  const options = parsePackageOptions(["--test", "--nvidia"], { platform: "linux" });
+  const generated = manifestForTestPackage(manifestWithPackageOptions(manifest, options));
+  assert.match(generated, /^app-id: com\.tuneforge\.desktop\.test$/m);
+  assert.match(generated, /^command: tuneforge-test$/m);
+  assert.match(generated, /TUNEFORGE_PACKAGE_ID: com\.tuneforge\.desktop\.test/);
+  assert.match(generated, /install -Dm755 apps\/desktop\/src-tauri\/target\/release\/tuneforge \/app\/bin\/tuneforge-test/);
+  assert.match(generated, /com\.tuneforge\.desktop\.test\.Torch\.Stack\.Nvidia\.Core/);
+  assert.match(generated, /--env=TUNEFORGE_DATA_DIR=~\/\.local\/share\/tuneforge-test/);
+  assert.match(generated, /--env=TORCH_HOME=~\/\.local\/share\/tuneforge-test\/cache\/torch/);
+  assert.match(generated, /--env=HF_HOME=~\/\.local\/share\/tuneforge-test\/cache\/huggingface/);
+  assert.doesNotMatch(generated, /--filesystem=xdg-data\/tuneforge:create|--filesystem=xdg-cache\/(torch|whisper)/);
+  assert.equal(cacheNamespace(options).inputs.app.split("@")[0], TEST_PACKAGE.id);
+  assert.throws(() => assertTestFlatpakOutputIsolation({
+    testBuildDir: path.join(repositoryRoot, "packaging/flatpak/build-dir"),
+    testRepoDir: path.join(repositoryRoot, "packaging/flatpak/repo-test"),
+    testBundlePaths: [], testChecksumPath: "test-SHA256SUMS",
+  }), /overlaps production/);
+});
+
+test("test Flatpak manifest generation resolves Git ref with and without sandbox-data", (t) => {
+  const output = mkdtempSync(path.join(os.tmpdir(), "tuneforge-test-flatpak-manifest-"));
+  t.after(() => rmSync(output, { recursive: true, force: true }));
+  for (const flags of [["--test", "--cpu"], ["--test", "--cpu", "--sandbox-data"]]) {
+    const options = parsePackageOptions(flags, { platform: "linux" });
+    const destination = path.join(output, `manifest-${flags.length}.yml`);
+    assert.equal(generatedManifestPath(options, path.join(output, "cache"), "test-namespace",
+      "resolved-test-ref", destination), destination);
+    const generated = readFileSync(destination, "utf8");
+    assert.match(generated, /^app-id: com\.tuneforge\.desktop\.test$/m);
+    assert.match(generated, /TUNEFORGE_GIT_REF: 'resolved-test-ref'/);
+    assert.match(generated, /TUNEFORGE_PACKAGE_ID: com\.tuneforge\.desktop\.test/);
+    assert.ok(generated.includes("--env=TUNEFORGE_DATA_DIR=" + (options.sandboxData ? "/var/data/tuneforge-test" : "~/.local/share/tuneforge-test")));
+    assert.doesNotMatch(generated, /@@TUNEFORGE_FRONTEND_GIT_REF@@|--filesystem=xdg-data\/tuneforge:create/);
+  }
+  assert.equal(localRepoRemoteFor(false), "tuneforge-local");
+  assert.equal(localRepoRemoteFor(true), "tuneforge-test-local");
+});
+
+test("test Flatpak snapshots contain test Tauri, desktop, AppStream, and icon inputs", (t) => {
+  const parent = path.join(repositoryRoot, "packaging/flatpak/generated");
+  mkdirSync(parent, { recursive: true });
+  const output = mkdtempSync(path.join(parent, "test-snapshot-"));
+  t.after(() => rmSync(output, { recursive: true, force: true }));
+  const fixture = path.join(output, "fixture");
+  for (const input of [...flatpakSourceSnapshotInputs.frontend, ...flatpakDesktopSourceSnapshotInputs, ...flatpakSourceSnapshotInputs.backend]) {
+    const source = typeof input === "string" ? input : input.source;
+    const target = path.join(fixture, source);
+    mkdirSync(path.dirname(target), { recursive: true });
+    if (statSync(path.join(repositoryRoot, source)).isDirectory()) mkdirSync(target, { recursive: true });
+    else cpSync(path.join(repositoryRoot, source), target);
+  }
+  cpSync(path.join(repositoryRoot, "apps/desktop/src-tauri/icons/test"), path.join(fixture, "apps/desktop/src-tauri/icons/test"), { recursive: true });
+  generateFlatpakSourceSnapshots({ root: fixture, generatedRoot: path.join(fixture, "generated"),
+    sourceDateEpoch: "1", testPackage: true });
+  const generated = path.join(fixture, "generated");
+  const config = JSON.parse(readFileSync(path.join(generated, "test-tauri.conf.json"), "utf8"));
+  const desktop = readFileSync(path.join(generated, "test.desktop"), "utf8");
+  const appStream = readFileSync(path.join(generated, "test.metainfo.xml"), "utf8");
+  assert.equal(config.identifier, TEST_PACKAGE.id);
+  assert.equal(config.mainBinaryName, TEST_PACKAGE.binary);
+  assert.match(desktop, /^Exec=tuneforge-test$/m);
+  assert.match(appStream, /<id>com\.tuneforge\.desktop\.test<\/id>/);
+  const backendMembers = tarMembers(readFileSync(path.join(generated, "backend-snapshot.tar")))
+    .map(({ name }) => name);
+  assert.ok(backendMembers.includes(`${TEST_PACKAGE.id}.desktop`));
+  assert.ok(backendMembers.includes(`${TEST_PACKAGE.id}.metainfo.xml`));
+  assert.ok(backendMembers.includes("icons/32x32.png"));
+  const desktopMembers = tarMembers(readFileSync(path.join(generated, "desktop-snapshot.tar")))
+    .map(({ name }) => name);
+  assert.equal(desktopMembers.filter((name) => name === "apps/desktop/src-tauri/tauri.conf.json").length, 1);
+  assert.ok(desktopMembers.includes("apps/backend/app/storage-profile.json"));
+  const baseMember = tarMembers(readFileSync(path.join(generated, "desktop-snapshot.tar"))).find(({ name }) => name === "apps/desktop/src-tauri/tauri.conf.json");
+  assert.equal(JSON.parse(baseMember.contents).identifier, PRODUCTION_PACKAGE.id);
+  const renamed = JSON.parse(readFileSync(path.join(fixture, "apps/desktop/src-tauri/tauri.conf.json")));
+  renamed.identifier = "org.example.renamed";
+  writeFileSync(path.join(fixture, "apps/desktop/src-tauri/tauri.conf.json"), JSON.stringify(renamed));
+  generateFlatpakSourceSnapshots({ root: fixture, generatedRoot: generated, sourceDateEpoch: "1", testPackage: true });
+  assert.equal(JSON.parse(readFileSync(path.join(generated, "test-tauri.conf.json"))).identifier, "org.example.renamed.test");
+  assert.ok(readFileSync(path.join(generated, "test.desktop"), "utf8").includes("Icon=org.example.renamed.test"));
+  assert.ok(readFileSync(path.join(generated, "test.metainfo.xml"), "utf8").includes("<id>org.example.renamed.test</id>"));
+});
+
 function tarMembers(archive) {
   const members = [];
   for (let offset = 0; offset < archive.length - 1024;) {
@@ -63,7 +151,9 @@ function tarMembers(archive) {
     const prefix = archive.subarray(offset + 345, offset + 500).toString("utf8").replace(/\0.*$/, "");
     const size = Number.parseInt(archive.subarray(offset + 124, offset + 136).toString("utf8"), 8);
     if (!name) break;
-    members.push({ name: prefix ? `${prefix}/${name}` : name, mode: archive.subarray(offset + 100, offset + 108).toString("utf8"), type: String.fromCharCode(archive[offset + 156]), link: archive.subarray(offset + 157, offset + 257).toString("utf8").replace(/\0.*$/, "") });
+    const member = { name: prefix ? `${prefix}/${name}` : name, mode: archive.subarray(offset + 100, offset + 108).toString("utf8"), type: String.fromCharCode(archive[offset + 156]), link: archive.subarray(offset + 157, offset + 257).toString("utf8").replace(/\0.*$/, "") };
+    Object.defineProperty(member, "contents", { value: archive.subarray(offset + 512, offset + 512 + size).toString("utf8") });
+    members.push(member);
     offset += 512 + Math.ceil(size / 512) * 512;
   }
   return members;
@@ -391,7 +481,7 @@ test("source snapshots use byte ordering and retain the exact Flatpak input mapp
 
 test("Flatpak generator desktop snapshot includes the complete local whisper crate and tracks its files", () => {
   const source = "apps/desktop/src-tauri/native/whisper-rs-sys";
-  assert.deepEqual(flatpakDesktopSourceSnapshotInputs, [...flatpakSourceSnapshotInputs.desktop, source]);
+  assert.deepEqual(flatpakDesktopSourceSnapshotInputs, [...flatpakSourceSnapshotInputs.desktop, "apps/backend/app/storage-profile.json", source]);
   const root = mkdtempSync(path.join(os.tmpdir(), "tuneforge-whisper-snapshot-"));
   try {
     const generated = path.join(root, "generated");

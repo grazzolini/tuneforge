@@ -27,6 +27,8 @@ mod mobile_backend;
 mod mobile_ffmpeg;
 mod mobile_media_transport;
 mod native_audio;
+mod package_identity;
+mod storage_profile;
 pub mod power_inhibition;
 mod sync_transport;
 mod system_media;
@@ -116,7 +118,7 @@ fn allocate_port() -> Result<u16, Box<dyn std::error::Error>> {
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
-fn try_health_check(port: u16) -> bool {
+fn try_health_check(port: u16, expected_data_root: Option<&Path>) -> bool {
     let mut stream = match TcpStream::connect(("127.0.0.1", port)) {
         Ok(stream) => stream,
         Err(_) => return false,
@@ -137,14 +139,44 @@ fn try_health_check(port: u16) -> bool {
         return false;
     }
 
-    response.starts_with("HTTP/1.1 200") || response.starts_with("HTTP/1.0 200")
+    health_response_matches(&response, port, expected_data_root)
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
-fn wait_for_backend(port: u16, timeout: Duration) -> Result<(), Box<dyn std::error::Error>> {
+fn health_response_matches(response: &str, port: u16, expected_data_root: Option<&Path>) -> bool {
+    let status_ok = response.starts_with("HTTP/1.1 200") || response.starts_with("HTTP/1.0 200");
+    if !status_ok {
+        return false;
+    }
+    let Some((_, body)) = response.split_once("\r\n\r\n") else {
+        return false;
+    };
+    let Ok(health) = serde_json::from_str::<serde_json::Value>(body) else {
+        return false;
+    };
+    let expected_base_url = format!("http://127.0.0.1:{port}/api/v1");
+    health.get("status").and_then(|value| value.as_str()) == Some("ok")
+        && health.get("api_base_url").and_then(|value| value.as_str())
+            == Some(expected_base_url.as_str())
+        && expected_data_root.is_none_or(|root| {
+            health.get("data_root").and_then(|value| value.as_str())
+                == root.to_str()
+        })
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn wait_for_backend(
+    child: &mut Child,
+    port: u16,
+    expected_data_root: Option<&Path>,
+    timeout: Duration,
+) -> Result<(), Box<dyn std::error::Error>> {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
-        if try_health_check(port) {
+        if let Some(status) = child.try_wait()? {
+            return Err(format!("Bundled backend exited before readiness: {status}").into());
+        }
+        if try_health_check(port, expected_data_root) {
             return Ok(());
         }
         thread::sleep(Duration::from_millis(250));
@@ -228,6 +260,7 @@ fn expected_torch_extension_profile(name: &str, role: &str) -> TorchExtensionPro
         .profiles
         .get(name)
         .expect("fixed Torch extension name");
+    let package_id = option_env!("TUNEFORGE_PACKAGE_ID").unwrap_or(storage_profile::production_id());
     let ref_role = match role {
         "core" => "Core",
         "runtime" => "Runtime",
@@ -238,7 +271,7 @@ fn expected_torch_extension_profile(name: &str, role: &str) -> TorchExtensionPro
         contract: policy.contract.clone(),
         profile: name.to_string(),
         role: role.to_string(),
-        ref_id: format!("{}.{ref_role}", profile.ref_prefix),
+        ref_id: format!("{package_id}.Torch.{}.{ref_role}", profile.ref_prefix.split_once(".Torch.").expect("Torch extension ref suffix").1),
         python_abi: policy.python_abi.clone(),
         torch_version: profile.torch_version.clone(),
         torchaudio_version: profile.torchaudio_version.clone(),
@@ -407,6 +440,10 @@ fn find_executable_in_path(binary_name: &str, search_path: &OsString) -> Option<
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn spawn_packaged_backend(app: &AppHandle) -> Result<BackendRuntime, Box<dyn std::error::Error>> {
+    package_identity::ensure_compiled_identity_matches(app)
+        .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
+    let test_data_root = package_identity::packaged_test_data_root()
+        .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
     let bundled_backend_root = resolve_bundled_backend_root(app)?;
     let bundled_python_root = bundled_backend_root.join("python");
     let backend_source_root = bundled_backend_root.join("src");
@@ -455,6 +492,21 @@ fn spawn_packaged_backend(app: &AppHandle) -> Result<BackendRuntime, Box<dyn std
     let model_bundle_dir = bundled_backend_root.join("models").join("bundle");
 
     let mut command = Command::new(&python);
+    if let Some(data_root) = &test_data_root {
+        let cache_root = data_root.join("cache");
+        command
+            .env("TUNEFORGE_DATA_DIR", data_root)
+            .env("TUNEFORGE_SYNC_TRANSPORT_DATA_DIR", data_root.join("sync-transport"))
+            .env("XDG_CACHE_HOME", &cache_root)
+            .env("TORCH_HOME", cache_root.join("torch"))
+            .env("HF_HOME", cache_root.join("huggingface"))
+            .env("TUNEFORGE_LYRICS_CACHE_DIR", cache_root.join("whisper"))
+            .env_remove("TUNEFORGE_DEMUCS_MODEL_REPO")
+            .env_remove("TUNEFORGE_MODEL_BUNDLE_DIR")
+            .env_remove("HF_HUB_CACHE")
+            .env_remove("HUGGINGFACE_HUB_CACHE")
+            .env_remove("TRANSFORMERS_CACHE");
+    }
     command
         .args([
             "-m",
@@ -497,9 +549,12 @@ fn spawn_packaged_backend(app: &AppHandle) -> Result<BackendRuntime, Box<dyn std
         }
     }
 
-    let child = command.spawn()?;
-
-    wait_for_backend(port, Duration::from_secs(30))?;
+    let mut child = command.spawn()?;
+    if let Err(error) = wait_for_backend(&mut child, port, test_data_root.as_deref(), Duration::from_secs(30)) {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(error);
+    }
 
     Ok(BackendRuntime::new(base_url, Some(child)))
 }
@@ -677,7 +732,8 @@ pub fn run() {
             mobile_backend::mobile_import_sync_project,
             mobile_backend::mobile_plan_sync_reconciliation,
             mobile_backend::mobile_apply_sync_reconciliation,
-            mobile_media_transport::mobile_media_base_url
+            mobile_media_transport::mobile_media_base_url,
+            package_identity::get_package_identity
         ])
         .build(tauri::generate_context!())
         .expect("error while building tuneforge");
@@ -713,6 +769,20 @@ pub fn run() {
 
 #[cfg(all(test, not(any(target_os = "android", target_os = "ios"))))]
 mod tests {
+    #[test]
+    fn backend_readiness_requires_expected_owned_root_and_endpoint() {
+        let response = |base: &str, root: &str| format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{{\"status\":\"ok\",\"api_base_url\":\"{base}\",\"data_root\":\"{root}\"}}"
+        );
+        let owned = std::path::Path::new("/synthetic/test-data");
+        assert!(super::health_response_matches(
+            &response("http://127.0.0.1:4567/api/v1", "/synthetic/test-data"), 4567, Some(owned)));
+        assert!(!super::health_response_matches(
+            &response("http://127.0.0.1:8765/api/v1", "/synthetic/test-data"), 4567, Some(owned)));
+        assert!(!super::health_response_matches(
+            &response("http://127.0.0.1:4567/api/v1", "/synthetic/production-data"), 4567, Some(owned)));
+    }
+
     use super::*;
 
     #[test]

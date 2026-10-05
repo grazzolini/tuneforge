@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from app.config import _parse_additional_cors_origins, _parse_backend_host, get_settings
@@ -87,3 +89,31 @@ def test_additional_cors_origins_accepts_loopback_http_origins() -> None:
 def test_additional_cors_origins_rejects_non_loopback_http_origins(origin: str) -> None:
     with pytest.raises(ValueError):
         _parse_additional_cors_origins(origin)
+
+
+@pytest.mark.parametrize("platform", ["darwin", "linux"])
+def test_storage_defaults_use_shared_definition(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, platform: str
+) -> None:
+    from app import storage_profile
+    from app.config import _default_data_root
+
+    relative = "Library/Application Support/Renamed" if platform == "darwin" else ".local/share/renamed"
+    monkeypatch.setitem(storage_profile._PROFILE["backend"], platform, relative)
+    monkeypatch.setattr(storage_profile.sys, "platform", platform)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.delenv("TUNEFORGE_DATA_DIR")
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "ignored-xdg"))
+    assert _default_data_root() == tmp_path / relative
+    monkeypatch.setenv("TUNEFORGE_DATA_DIR", str(tmp_path / "explicit"))
+    assert _default_data_root() == (tmp_path / "explicit").resolve()
+
+
+def test_model_defaults_use_shared_definition(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from app import storage_profile
+    from app.utils.model_cache import torch_checkpoint_dir, whisper_cache_dir
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setitem(storage_profile._PROFILE, "modelCache", ".renamed-cache")
+    assert whisper_cache_dir({"unrelated": "value"}) == tmp_path / ".renamed-cache/whisper"
+    assert torch_checkpoint_dir({"unrelated": "value"}) == tmp_path / ".renamed-cache/torch/hub/checkpoints"

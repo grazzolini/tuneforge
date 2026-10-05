@@ -3,6 +3,7 @@ import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rm
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { packageProfile } from "./package-profile.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const scriptDir = path.dirname(__filename);
@@ -10,16 +11,23 @@ const workspaceRoot = path.resolve(scriptDir, "..");
 const tauriRoot = path.join(workspaceRoot, "apps", "desktop", "src-tauri");
 const tauriConfig = JSON.parse(readFileSync(path.join(tauriRoot, "tauri.conf.json"), "utf8"));
 
-const productName = tauriConfig.productName;
 const version = tauriConfig.version;
 const arch = process.arch === "arm64" ? "aarch64" : process.arch;
-const appBundlePath = path.join(tauriRoot, "target", "release", "bundle", "macos", `${productName}.app`);
-const dmgOutputPath = path.join(tauriRoot, "target", "release", "bundle", "dmg", `${productName}_${version}_${arch}.dmg`);
+
+export function dmgPaths(testPackage = false) {
+  const profile = packageProfile(testPackage);
+  const bundleRoot = path.join(tauriRoot, "target", ...(testPackage ? ["test-package"] : []), "release", "bundle");
+  return {
+    source: path.join(bundleRoot, "macos", `${profile.name}.app`),
+    output: path.join(bundleRoot, "dmg", `${profile.name}_${version}_${arch}.dmg`),
+    name: profile.name,
+  };
+}
 
 export function createDmg({
-  source = appBundlePath,
-  output = dmgOutputPath,
-  name = productName,
+  source = dmgPaths().source,
+  output = dmgPaths().output,
+  name = dmgPaths().name,
   copy = cpSync,
   execute = execFileSync,
   temporaryRoot = os.tmpdir(),
@@ -48,5 +56,9 @@ export function createDmg({
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
-  createDmg();
+  const args = process.argv.slice(2);
+  if (args.length > 1 || args.some((arg) => arg !== "--test")) {
+    throw new Error("Usage: package-dmg.mjs [--test]");
+  }
+  createDmg(dmgPaths(args.includes("--test")));
 }

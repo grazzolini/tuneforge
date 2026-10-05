@@ -18,6 +18,7 @@ const OPTION_ALIASES = new Map([
   ["--model-bundle", ["modelBundle", true]],
   ["--no-bundle", ["noBundle", true]],
   ["--sandbox-data", ["sandboxData", true]],
+  ["--test", ["testPackage", true]],
 ]);
 
 export const FLATPAK_PROFILE_IDS = Object.freeze(["cpu", "nvidia", "legacy-nvidia"]);
@@ -45,6 +46,7 @@ export function defaultPackageOptions() {
     modelBundle: false,
     noBundle: false,
     sandboxData: false,
+    testPackage: false,
     flatpakProfiles: [...FLATPAK_PROFILE_IDS],
   };
 }
@@ -111,6 +113,7 @@ export function validatePackageOptions(rawOptions, { platform } = {}) {
     modelBundle: Boolean(options.modelBundle),
     noBundle: Boolean(options.noBundle),
     sandboxData: Boolean(options.sandboxData),
+    testPackage: Boolean(options.testPackage),
     flatpakProfiles: normalizeFlatpakProfiles(options.flatpakProfiles),
   };
 }
@@ -151,6 +154,9 @@ export function packageOptionsToGeneratorArgs(options) {
   }
   if (validated.modelBundle) {
     args.push("--model-bundle");
+  }
+  if (validated.testPackage) {
+    args.push("--test");
   }
   args.push(...validated.flatpakProfiles.map((profile) => `--${profile}`));
   return args;

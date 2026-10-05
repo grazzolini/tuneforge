@@ -194,7 +194,20 @@ Build the app bundle and DMG with:
 
 ```sh
 pnpm package:mac
+pnpm package:mac -- --test
 ```
+
+`--test` builds a separate `TuneForge Test.app` with bundle ID `com.tuneforge.desktop.test`,
+binary `tuneforge-test`, and a distinct icon. It uses its own Tauri target directory and
+`~/Library/Application Support/Tuneforge Test` for application data. Its model and
+dependency caches are private to that data directory. The production command and artifacts
+keep their existing identity and paths.
+
+Package IDs derive from the base `apps/desktop/src-tauri/tauri.conf.json` identifier
+plus `.test`. Production storage defaults live in `apps/backend/app/storage-profile.json`;
+Python, Rust, and packaging/dev scripts consume that definition. Test paths derive from
+the resolved production root's final component. Packaged tests ignore inherited production
+data, model-cache, and sync overrides. Existing installs are not migrated or deleted.
 
 macOS packaging downloads verified missing sources and builds the owned runtime when absent,
 outdated, or invalid. A current validated runtime is reused. `pnpm setup:dev` performs none of this.
@@ -229,6 +242,9 @@ The generated artifacts are written under `apps/desktop/src-tauri/target/release
 - `macos/TuneForge.app`
 - `dmg/TuneForge_<version>_<arch>.dmg`
 
+Test artifacts use `apps/desktop/src-tauri/target/test-package/release/bundle/` with
+`macos/TuneForge Test.app` and `dmg/TuneForge Test_<version>_<arch>.dmg`.
+
 Run packaging from a normal macOS shell with `diskutil`; it creates an APFS UDZO disk image from
 the staged app and Applications link. The generated app is unsigned and not notarized.
 
@@ -252,6 +268,13 @@ pnpm package:android
 pnpm package:android:release
 ```
 
+`pnpm package:android` and `pnpm package:android:debug` build the local
+`com.tuneforge.desktop.test` package, labeled TuneForge Test, with its own icon and private Android
+application data. Its model and dependency caches remain inside that package's data directory.
+The APK is written under `apps/desktop/src-tauri/target/test-package/`. Android keeps the
+production release command fixed to `com.tuneforge.desktop`; preparation does not choose an
+application identity.
+
 For an optimized local APK eligible for Android process CPU profiling, add the opt-in flag:
 
 ```sh
@@ -261,7 +284,7 @@ pnpm package:android -- --profile
 This keeps release optimizations and the local test identity/signature, leaves the APK non-debuggable,
 and temporarily enables shell profiling. Generated files are restored even when the build fails. Keep
 the matching
-`apps/desktop/src-tauri/target/android-ndk-*/aarch64-linux-android/release/libtuneforge.so` and
+`apps/desktop/src-tauri/target/android-test-ndk-*/aarch64-linux-android/release/libtuneforge.so` and
 `apps/desktop/src-tauri/gen/android/app/build/outputs/mapping/universalRelease/mapping.txt`; they
 provide native function names and Java/Kotlin deobfuscation for that exact build. Source-line symbols
 are not enabled.
@@ -342,7 +365,19 @@ Build the local Flatpak package with:
 
 ```sh
 pnpm package:linux:flatpak
+pnpm package:linux:flatpak -- --test
 ```
+
+`--test` builds the separate `com.tuneforge.desktop.test` Flatpak with the TuneForge Test name, icon,
+desktop entry, and `tuneforge-test` command. It has its own `~/.var/app/com.tuneforge.desktop.test`
+WebView directory. File storage derives from the selected production mode:
+`~/.local/share/tuneforge-test` by default or `/var/data/tuneforge-test` with
+`--sandbox-data`. Model caches and sync transport stay beneath that test file root.
+Host mode grants access to the derived test directory; sandbox mode needs no host data
+grant. Its Builder checkout, repository, bundle, and state/cache defaults have distinct
+test paths. Production packaging retains its existing identity and outputs.
+For `--no-bundle` installs, use the printed `tuneforge-test-local` remote for the test
+repository; production continues to use `tuneforge-local`.
 
 For faster local iteration, skip the single-file bundle step:
 
@@ -483,8 +518,9 @@ not probe beat-this.
 
 By default, the Flatpak grants access to `xdg-data/tuneforge`, `xdg-cache/torch`, and
 `xdg-cache/whisper`. Packaged runs therefore use the same data root and model caches as
-`pnpm dev`: `~/.local/share/tuneforge`, `~/.cache/torch`, and `~/.cache/whisper`. Do
-not run the Flatpak app and `pnpm dev` against that shared library at the same time;
+`pnpm dev --production-data`: `~/.local/share/tuneforge`, `~/.cache/torch`, and
+`~/.cache/whisper`. Default `pnpm dev` uses derived test storage. Do not run the Flatpak
+app and `pnpm dev --production-data` against that shared library at the same time;
 SQLite is local and TuneForge is not designed for concurrent backends writing the same
 library.
 

@@ -195,6 +195,7 @@ test("package option parser accepts feature aliases", () => {
       modelBundle: true,
       noBundle: false,
       sandboxData: false,
+      testPackage: false,
       flatpakProfiles: ["cpu", "nvidia", "legacy-nvidia"],
     },
   );
@@ -207,6 +208,7 @@ test("package option parser accepts feature aliases", () => {
       modelBundle: false,
       noBundle: false,
       sandboxData: false,
+      testPackage: false,
       flatpakProfiles: ["cpu", "nvidia", "legacy-nvidia"],
     },
   );
@@ -222,6 +224,7 @@ test("package option parser includes advanced dependencies by default", () => {
     modelBundle: false,
     noBundle: false,
     sandboxData: false,
+    testPackage: false,
     flatpakProfiles: ["cpu", "nvidia", "legacy-nvidia"],
   });
   assert.deepEqual(packageOptionsToGeneratorArgs(options), [
@@ -620,6 +623,9 @@ test("Torch extension profiles enforce exact versions, closure, and immutable ma
     cuda_family: "13",
     pair_id: pairId,
   });
+  assert.equal(torchExtensionMarker("Nvidia", "core", pairId,
+    { packageId: "com.tuneforge.test" }).ref_id,
+  "com.tuneforge.test.Torch.Stack.Nvidia.Core");
 });
 
 test("Rust launcher and Flatpak generator share the exact Torch extension contract", () => {

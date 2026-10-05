@@ -1,0 +1,21 @@
+{
+  "backend": {
+    "darwin": "Library/Application Support/Tuneforge",
+    "linux": ".local/share/tuneforge",
+    "win32": ".local/share/tuneforge"
+  },
+  "native": {
+    "darwin": "Library/Application Support/{packageId}",
+    "linux": ".local/share/{packageId}",
+    "win32": "{appData}/{packageId}"
+  },
+  "modelCache": ".cache",
+  "flatpak": {
+    "sandboxBase": "/var/data"
+  },
+  "testSuffix": {
+    "darwin": " Test",
+    "linux": "-test",
+    "win32": "-test"
+  }
+}

@@ -374,8 +374,10 @@ WebView directory. File storage derives from the selected production mode:
 `~/.local/share/tuneforge-test` by default or `/var/data/tuneforge-test` with
 `--sandbox-data`. Model caches and sync transport stay beneath that test file root.
 Host mode grants access to the derived test directory; sandbox mode needs no host data
-grant. Its Builder checkout, repository, bundle, and state/cache defaults have distinct
-test paths. Production packaging retains its existing identity and outputs.
+grant. Its manifest, Builder checkout, repository, bundle, history, and evidence paths remain
+distinct. Production and test builds share Builder state, downloads, pnpm, and compiler caches
+as described in [Flatpak Build Caches and Evidence](#flatpak-build-caches-and-evidence).
+Production packaging retains its existing identity and outputs.
 For `--no-bundle` installs, use the printed `tuneforge-test-local` remote for the test
 repository; production continues to use `tuneforge-local`.
 
@@ -399,78 +401,89 @@ match that root pin.
 
 ### Flatpak Build Caches and Evidence
 
-Flatpak packaging runs `flatpak-builder --force-clean`, so `packaging/flatpak/build-dir` is always a
-clean output. Durable state and dependency/compiler caches default to
-`.flatpak-builder/tuneforge-state` and `.flatpak-builder/tuneforge-cache`. Set absolute
-`FLATPAK_STATE_DIR` and `FLATPAK_CACHE_DIR` paths to move them. Packaging rejects unsafe or
-overlapping roots; valid caches persist until deleted.
+Flatpak packaging keeps Builder, downloads, pnpm, and sccache storage under
+`.flatpak-builder/tuneforge-state` and `.flatpak-builder/tuneforge-cache`.
+The first run discovers and adopts existing production storage in place, then persists its
+selection. Production and TEST share those locations across versions, Git commits, package
+options, and lockfile changes; Builder's module keys decide reuse. Existing TEST native history
+is imported with OSTree without moving or deleting its original directories. Shared storage does
+not guarantee module hits across application identities. Each identity retains its stable manifest
+path, native history, output-state evidence, repository, checkout, bundles, and checksums.
+`FLATPAK_STATE_DIR` and `FLATPAK_CACHE_DIR` select alternate roots; unsafe or overlapping
+roots fail closed. Packaging holds one checkout-wide lock for all writes and builds. Dependency
+installation stays frozen and offline; integrity failures stop the build without automatic repair.
 
-Caches are namespaced by the `flatpak-cache-v1` contract: application, architecture, runtime,
-toolchain, and non-profile package options. CPU, NVIDIA, legacy NVIDIA, and the default/all
-selection reuse one Builder, pnpm, and sccache namespace; Flatpak Builder's per-module input keys
-decide which extension module must execute. Reports use the same `flatpak-cache-v1` contract.
-Outputs remain selection-specific. Packaging holds one checkout-wide Linux
-lock while it generates sources, runs Builder, reconciles refs, and writes reports, so concurrent
-commands wait without a timeout rather than corrupting shared state. Dependency installation remains frozen and offline.
-Integrity, lock, or cache failures stop the build without network fallback or automatic repair.
-Deterministic timestamps keep repeated build payloads comparable.
-
-After a successful export, the selected state directory stores ignored atomic
-`flatpak-output-state-v1.json` evidence: namespace, normalized profiles, payload digest, ordered
-OSTree ref commits, and checkout size evidence. On an ordinary same-profile warm run, exact state
-and repository refs are preserved and Builder receives `--require-changes`; unchanged refs report
-`preserved-unchanged` and reuse that bound payload/size evidence. Missing, corrupt, stale, or
-profile-mismatched state is discarded, selected refs are reconciled, and one normal export restores
-state. A Builder no-op may remove its checkout; the valid saved state remains sufficient for the
-next same-profile no-op. Changing profiles likewise exports once.
-
-Before Flatpak Builder runs, packaging writes deterministic USTAR snapshots for the frontend,
-desktop Rust shell, and backend static inputs. Snapshots include dirty and untracked inputs,
-dotfiles, empty directories, file and directory modes, and symlink targets with normalized `0777`
-modes; they use `SOURCE_DATE_EPOCH` (or the HEAD
-timestamp) and are ignored build outputs. A source change invalidates modules whose snapshots include
-it, then any downstream modules Builder must rebuild.
-Generated version metadata and Cargo, pnpm, and Python dependency sources remain separate.
-
-The backend version in installed `version.json` describes the whole checkout. The frontend version
-uses the last commit affecting the exact Vite module inputs plus scoped dirty detection, so the
-displayed refs can intentionally differ. `TUNEFORGE_FRONTEND_GIT_REF` overrides only the frontend
-ref; `TUNEFORGE_GIT_REF` overrides the checkout/backend ref.
-
-Every successful build writes the ignored, sanitized
-`packaging/flatpak/generated/cache-report.json`. Override it with
-`FLATPAK_CACHE_REPORT_PATH`. `flatpak-cache-v1` records ordered module observations from Builder
-output (`cached`, `executed`, or `unknown`), observation completeness, first invalidated module,
-cache mode, dependency/compiler evidence, timings, deterministic payload digest, and selected
-repository commits. Its `output` observation records whether refs were exported or preserved and
-where payload evidence came from. Its independent `bundleCache` observation records per-ref bundle
-reuse or rebuild status, bytes, SHA-256, and the first rebuilt artifact; `--no-bundle` reports
-`not-requested`, while evidence mode reports `disabled-for-evidence`. Module/output comparisons do
-not infer bundle reuse. Unknown or incomplete observations do not fail a normal build; they fail a
-cold/warm comparison. Reports contain no host cache paths.
-
-Use the normal Linux x86_64 checkout paths for a cold/warm comparison. Save the first report, then
-use it as the same-selection baseline:
+Inspect the selected storage, planned history import, direct-input invalidation, output paths,
+and disk budget before building:
 
 ```sh
-export FLATPAK_CACHE_REPORT_PATH="$PWD/packaging/flatpak/generated/cache-cold.json"
+pnpm package:linux:flatpak -- --preflight --cpu --nvidia --legacy-nvidia --no-bundle
+```
+
+`--preflight` is read-only: it neither creates directories nor acquires the packaging lock,
+generates sources, imports history, or starts Builder. Read-only Git, OSTree, and filesystem probes
+are allowed. Disk thresholds include a 5 GiB reserve: 20 GiB for known application-only work,
+35 GiB for uncertain reuse or a transition, and 44 GiB for fresh storage. Import growth estimates
+cover missing native objects; build and export growth depend on the selected workload. Direct-input
+predictions supplement actual Builder observations and cannot prove chained module-cache hits.
+
+After a successful export, each identity's history directory stores atomic
+`flatpak-output-state-v1.json` evidence: logical namespace, normalized profiles, payload digest,
+ordered OSTree ref commits, and checkout size. On an ordinary same-profile warm run, matching
+state and repository refs enable `--require-changes`. Unchanged refs report
+`preserved-unchanged` and reuse the bound payload/size evidence. Missing, corrupt, stale, or
+profile-mismatched state triggers a normal export. A Builder no-op may remove its checkout; valid
+saved evidence still supports the next no-op. Profile changes export once.
+
+All snapshot producers use the canonical frontend, desktop, and backend lists in
+`scripts/flatpak-source-snapshots.mjs` and the neutral deterministic TAR serializer. Desktop
+inputs include the complete local Whisper crate and storage-profile JSON; backend inputs retain
+that JSON through their application source tree. Snapshots include dirty and untracked files,
+dotfiles, empty directories, modes, and symlink targets. Their default epoch is `1`; an explicit
+validated `SOURCE_DATE_EPOCH` is preserved. Git timestamps never select the default epoch.
+Generated dependency sources and version metadata remain separate. The legacy SoXR entrypoint
+`scripts/build-soxr.mjs` forwards to the permanent runtime recipe; published producer inputs stay
+independent of this Flatpak policy.
+
+Stable native, Python, and Torch modules precede frontend, desktop, and backend modules; frontend
+still precedes desktop. Builder's linear chain can rebuild downstream application modules after a
+frontend edit even when their own archives are unchanged. The final `tuneforge-build-info` module installs whole-checkout
+`version.json`. A packaging-only commit with unchanged scoped inputs therefore changes that
+provenance module and export, while application modules remain reusable. The frontend ref uses the
+last commit affecting its exact inputs plus scoped dirty detection, so a frontend-scoped commit can
+still change it. `TUNEFORGE_FRONTEND_GIT_REF` overrides that ref;
+`TUNEFORGE_GIT_REF` overrides the checkout/backend ref.
+
+Successful runs write `packaging/flatpak/generated/cache-report.json` for production or
+`TEST-cache-report.json` for TEST; `FLATPAK_CACHE_REPORT_PATH` overrides the latest report.
+Each run also retains a Builder log and report under `generated/evidence/<identity>/`.
+Reports retain the `flatpak-cache-v1` logical namespace contract for comparisons; it no longer
+selects physical storage. They record ordered module hits, first invalidation, dependency/compiler
+evidence, observed module/export phases, source and payload-scan timings, output decisions, bundle
+timing per artifact, selected ref commits, and filesystem growth. Filesystem deltas can include
+other activity. Unknown observations remain explicit. Unchanged exports and bundles keep their
+existing avoidance checks; `--no-bundle` reports bundles as `not-requested`.
+
+Save a same-identity, same-selection report, then compare the identical repeat:
+
+```sh
+export FLATPAK_CACHE_REPORT_PATH="$PWD/packaging/flatpak/generated/cache-first.json"
 pnpm package:linux:flatpak -- --no-bundle
 
 export FLATPAK_CACHE_BASELINE_REPORT="$FLATPAK_CACHE_REPORT_PATH"
-export FLATPAK_CACHE_REPORT_PATH="$PWD/packaging/flatpak/generated/cache-warm.json"
+export FLATPAK_CACHE_REPORT_PATH="$PWD/packaging/flatpak/generated/cache-repeat.json"
 export FLATPAK_CACHE_COMPARISON_REPORT_PATH="$PWD/packaging/flatpak/generated/cache-comparison.json"
 pnpm package:linux:flatpak -- --no-bundle
 ```
 
-The warm comparison requires `flatpak-cache-v1` reports, complete matching module observations, every warm module
-cached, no warm invalidation, matching namespaces, payloads, repository commits, and a
-`preserved-unchanged` warm output observation. It fails closed otherwise. `FLATPAK_CACHE_EVIDENCE=1`
-always performs a normal export and deliberately disables Builder's module-result cache to inspect
-pnpm and sccache behavior; its report says `disabled-for-evidence`, so it is not a normal module-cache
-warm comparison. To prove profile reuse, set `FLATPAK_CACHE_CROSS_PROFILE_BASELINE_REPORT` to a
-previous selection report before building a different selection; its target must be an exported
-report with a cached shared prefix.
-`FLATPAK_BUILD_DIR`, `FLATPAK_REPO_DIR`, and `FLATPAK_BUNDLE_PATH` configure output paths.
+The comparison requires complete matching observations, every repeat module cached, no invalidation,
+matching logical namespaces, payloads and repository commits, and `preserved-unchanged` output.
+It fails closed otherwise. Compare identities separately. `FLATPAK_CACHE_EVIDENCE=1` deliberately
+disables Builder's module cache to inspect pnpm and sccache, performs a normal export, and reports
+`disabled-for-evidence`; it is not a normal warm comparison. Profile comparisons use
+`FLATPAK_CACHE_CROSS_PROFILE_BASELINE_REPORT` and require an exported target with a cached
+shared prefix. `FLATPAK_BUILD_DIR`, `FLATPAK_REPO_DIR`, and `FLATPAK_BUNDLE_PATH`
+configure output paths.
 
 CPU and legacy NVIDIA Torch wheels come from reviewed committed pylocks under
 `packaging/flatpak/locks/`; normal packaging never resolves them. Refresh a reviewed lock explicitly
@@ -551,7 +564,8 @@ Without profile flags or `--no-bundle`, packaging writes five independent bundle
 
 Selective builds write only the CPU bundle and the two bundles for each selected accelerator. The
 ignored `packaging/flatpak/generated/SHA256SUMS` contains exactly the artifacts from that run.
-The shared namespace stores atomic ignored `flatpak-bundle-state-v1.json` state whose header binds
+Each identity's history directory stores atomic ignored `flatpak-bundle-state-v1.json` state whose
+header binds
 the namespace, exact Flatpak version, x86_64, stable, and canonical `build-bundle`. Each entry binds
 one output path and basename to its full ref, verified
 OSTree commit, app/runtime role, byte size, and SHA-256. There is no whole-profile bundle cache key.

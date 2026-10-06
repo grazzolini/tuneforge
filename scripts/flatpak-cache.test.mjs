@@ -1,3 +1,4 @@
+import "./flatpak-cache-storage.test.mjs";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
@@ -26,6 +27,7 @@ import {
   flatpakSizeReport,
   frontendModuleInputPaths,
   manifestWithPackageOptions,
+  manifestWithSourceSnapshotChecksums,
   manifestForTestPackage,
   generatedManifestPath,
   localRepoRemoteFor,
@@ -84,20 +86,61 @@ test("test Flatpak uses private identity, data, cache, and extension refs", () =
 test("test Flatpak manifest generation resolves Git ref with and without sandbox-data", (t) => {
   const output = mkdtempSync(path.join(os.tmpdir(), "tuneforge-test-flatpak-manifest-"));
   t.after(() => rmSync(output, { recursive: true, force: true }));
+  for (const name of Object.keys(flatpakSourceSnapshotInputs)) {
+    writeFileSync(path.join(output, `${name}-snapshot.tar`), `${name} fixture`);
+  }
   for (const flags of [["--test", "--cpu"], ["--test", "--cpu", "--sandbox-data"]]) {
     const options = parsePackageOptions(flags, { platform: "linux" });
     const destination = path.join(output, `manifest-${flags.length}.yml`);
     assert.equal(generatedManifestPath(options, path.join(output, "cache"), "test-namespace",
-      "resolved-test-ref", destination), destination);
+      "resolved-test-ref", destination, output), destination);
     const generated = readFileSync(destination, "utf8");
     assert.match(generated, /^app-id: com\.tuneforge\.desktop\.test$/m);
     assert.match(generated, /TUNEFORGE_GIT_REF: 'resolved-test-ref'/);
     assert.match(generated, /TUNEFORGE_PACKAGE_ID: com\.tuneforge\.desktop\.test/);
     assert.ok(generated.includes("--env=TUNEFORGE_DATA_DIR=" + (options.sandboxData ? "/var/data/tuneforge-test" : "~/.local/share/tuneforge-test")));
     assert.doesNotMatch(generated, /@@TUNEFORGE_FRONTEND_GIT_REF@@|--filesystem=xdg-data\/tuneforge:create/);
+    for (const name of Object.keys(flatpakSourceSnapshotInputs)) {
+      const checksum = createHash("sha256").update(readFileSync(path.join(output, `${name}-snapshot.tar`))).digest("hex");
+      assert.ok(generated.includes(`path: generated/${name}-snapshot.tar\n        sha256: ${checksum}\n`));
+    }
   }
   assert.equal(localRepoRemoteFor(false), "tuneforge-local");
   assert.equal(localRepoRemoteFor(true), "tuneforge-test-local");
+});
+
+test("local Flatpak snapshot checksums track same-size source mutations and reject missing or duplicate archives", (t) => {
+  const output = mkdtempSync(path.join(os.tmpdir(), "tuneforge-flatpak-snapshot-checksums-"));
+  t.after(() => rmSync(output, { recursive: true, force: true }));
+  const source = path.join(output, "source");
+  mkdirSync(source);
+  const snapshots = (value) => {
+    writeFileSync(path.join(source, "value.txt"), value);
+    for (const name of Object.keys(flatpakSourceSnapshotInputs)) {
+      createFlatpakSourceSnapshot({ root: source, outputPath: path.join(output, `${name}-snapshot.tar`),
+        inputs: [{ source: "value.txt" }], sourceDateEpoch: "1" });
+    }
+  };
+  snapshots("first");
+  const pinned = manifestWithSourceSnapshotChecksums(manifest, output);
+  assert.equal(manifestWithSourceSnapshotChecksums(manifest, output), pinned);
+  const before = readFileSync(path.join(output, "desktop-snapshot.tar"));
+  writeFileSync(path.join(source, "value.txt"), "other");
+  createFlatpakSourceSnapshot({ root: source, outputPath: path.join(output, "desktop-snapshot.tar"),
+    inputs: [{ source: "value.txt" }], sourceDateEpoch: "1" });
+  const after = readFileSync(path.join(output, "desktop-snapshot.tar"));
+  assert.equal(after.length, before.length);
+  assert.notDeepEqual(after, before);
+  const changed = manifestWithSourceSnapshotChecksums(manifest, output);
+  for (const name of Object.keys(flatpakSourceSnapshotInputs)) {
+    const sourceBlock = new RegExp(`path: generated/${name}-snapshot\\.tar\\n        sha256: ([a-f0-9]{64})`);
+    const current = sourceBlock.exec(changed)?.[1];
+    assert.equal(current, createHash("sha256").update(readFileSync(path.join(output, `${name}-snapshot.tar`))).digest("hex"));
+    assert.equal(current === sourceBlock.exec(pinned)?.[1], name !== "desktop");
+    const archive = `      - type: archive\n        path: generated/${name}-snapshot.tar\n`;
+    assert.throws(() => manifestWithSourceSnapshotChecksums(manifest.replace(archive, ""), output), /exactly one/);
+    assert.throws(() => manifestWithSourceSnapshotChecksums(manifest.replace(archive, archive + archive), output), /exactly one/);
+  }
 });
 
 test("test Flatpak snapshots contain test Tauri, desktop, AppStream, and icon inputs", (t) => {
@@ -308,7 +351,7 @@ test("frontend ref dirtiness is limited to exact frontend module inputs and supp
   writeFileSync(path.join(root, "backend.txt"), "backend\n");
   runGit(root, "add", ".");
   runGit(root, "commit", "--quiet", "-m", "fixture");
-  assert.equal(resolveSourceDateEpoch({ root }), runGit(root, "log", "-1", "--format=%ct", "HEAD"));
+  assert.equal(resolveSourceDateEpoch({ root }), "1");
   const clean = resolveFrontendGitRef({ root, inputPaths: ["frontend.txt"] });
 
   writeFileSync(path.join(root, "backend.txt"), "backend dirty\n");
@@ -331,9 +374,7 @@ test("Flatpak modules split frontend, Rust, and backend source boundaries", () =
     [
       "pnpm",
       "node-sources",
-      "tuneforge-frontend",
       "sccache",
-      "tuneforge-desktop",
       "cpython-3.14",
       "python-runtime-deps",
       "nvidia-torch-core-extension",
@@ -341,11 +382,14 @@ test("Flatpak modules split frontend, Rust, and backend source boundaries", () =
       "legacy-nvidia-torch-core-extension",
       "legacy-nvidia-torch-runtime-extension",
       "wireplumber-wpctl",
+      "tuneforge-frontend",
+      "tuneforge-desktop",
       "tuneforge-backend",
+      "tuneforge-build-info",
     ],
   );
-  const frontend = moduleSource("tuneforge-frontend", "sccache");
-  const desktop = moduleSource("tuneforge-desktop", "cpython-3.14");
+  const frontend = moduleSource("tuneforge-frontend", "tuneforge-desktop");
+  const desktop = moduleSource("tuneforge-desktop", "tuneforge-backend");
   const backend = moduleSource("tuneforge-backend");
   assert.match(frontend, /generated\/frontend-snapshot\.tar/);
   assert.match(frontend, /frontend-version\.json/);
@@ -355,6 +399,8 @@ test("Flatpak modules split frontend, Rust, and backend source boundaries", () =
   assert.match(desktop, /generated\/desktop-snapshot\.tar/);
   assert.doesNotMatch(desktop, /apps\/backend|apps\/desktop\/src$/m);
   assert.match(backend, /generated\/backend-snapshot\.tar/);
+  assert.doesNotMatch(moduleSource("tuneforge-backend", "tuneforge-build-info"), /version\.json/);
+  assert.match(moduleSource("tuneforge-build-info"), /install -Dm644 version\.json/);
   assert.doesNotMatch(backend, /cargo-sources|seed-pnpm-store|vite\.config/);
   assert.match(manifest, /sccache-v0\.17\.0-x86_64-unknown-linux-musl\.tar\.gz/);
   assert.match(manifest, /67c4a96dd237c1f518f6b36083f270f9976d516f1e57fce891755ea782e50006/);
@@ -362,7 +408,7 @@ test("Flatpak modules split frontend, Rust, and backend source boundaries", () =
 });
 
 test("WirePlumber's Lua wrap builds offline and ships upstream license files", () => {
-  const wireplumber = moduleSource("wireplumber-wpctl", "tuneforge-backend");
+  const wireplumber = moduleSource("wireplumber-wpctl", "tuneforge-frontend");
   assert.match(wireplumber, /- -Dsystem-lua=false/);
   assert.match(wireplumber, /- --wrap-mode=nodownload/);
   for (const source of [
@@ -464,6 +510,7 @@ test("source snapshots use byte ordering and retain the exact Flatpak input mapp
       "apps/desktop/src-tauri/Cargo.lock", "apps/desktop/src-tauri/Cargo.toml", "apps/desktop/src-tauri/build.rs",
       "apps/desktop/src-tauri/tauri.conf.json", "apps/desktop/src-tauri/capabilities", "apps/desktop/src-tauri/icons",
       "apps/desktop/src-tauri/resources", "apps/desktop/src-tauri/src",
+      "apps/backend/app/storage-profile.json", "apps/desktop/src-tauri/native/whisper-rs-sys",
     ]);
     assert.deepEqual(flatpakSourceSnapshotInputs.backend.map((input) => typeof input === "string" ? input : `${input.source}:${input.destination}`), [
       "README.md", "LICENSE", "THIRD_PARTY_NOTICES.md", "LICENSES/crema-0.2.0-BSD-2-Clause.txt", "docs/PACKAGING.md",
@@ -481,7 +528,7 @@ test("source snapshots use byte ordering and retain the exact Flatpak input mapp
 
 test("Flatpak generator desktop snapshot includes the complete local whisper crate and tracks its files", () => {
   const source = "apps/desktop/src-tauri/native/whisper-rs-sys";
-  assert.deepEqual(flatpakDesktopSourceSnapshotInputs, [...flatpakSourceSnapshotInputs.desktop, "apps/backend/app/storage-profile.json", source]);
+  assert.deepEqual(flatpakDesktopSourceSnapshotInputs, flatpakSourceSnapshotInputs.desktop);
   const root = mkdtempSync(path.join(os.tmpdir(), "tuneforge-whisper-snapshot-"));
   try {
     const generated = path.join(root, "generated");
@@ -1494,10 +1541,12 @@ test("Flatpak bundle workers reserve one core, use five workers when available, 
   const run = (bundlePlan, concurrency) => {
     const children = [];
     const spawned = [];
+    const completed = [];
     const operation = buildFlatpakBundles({
       bundlePlan,
       repository: "/tmp/repo",
       concurrency,
+      onArtifactCompleted: (observation) => completed.push(observation),
       spawnProcess: (_command, args) => {
         const child = new EventEmitter();
         child.kill = () => queueMicrotask(() => child.emit("exit", null, "SIGTERM"));
@@ -1506,13 +1555,15 @@ test("Flatpak bundle workers reserve one core, use five workers when available, 
         return child;
       },
     });
-    return { children, operation, spawned };
+    return { children, operation, spawned, completed };
   };
 
   const five = run(plan(5), 7);
   assert.equal(five.spawned.length, 5);
   for (const child of five.children) child.emit("exit", 0, null);
   await five.operation;
+  assert.deepEqual(five.completed.map(({ refId }) => refId), five.spawned);
+  assert.ok(five.completed.every(({ seconds, failed }) => Number.isFinite(seconds) && seconds >= 0 && !failed));
 
   const larger = run(plan(8), 7);
   assert.equal(larger.spawned.length, 7);

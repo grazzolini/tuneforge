@@ -79,6 +79,19 @@ test("new entrypoint imports without a build and exports its runner and legacy h
   const direct = spawnSync(process.execPath, [entrypoint, "--target", "unsupported"], { encoding: "utf8" });
   assert.equal(direct.status, 1);
   assert.match(direct.stderr, /--target must be android-arm64-v8a or host-test/);
+  const legacy = await import("./build-soxr.mjs");
+  assert.equal(legacy.buildSoxr, buildSoxr);
+  assert.equal(legacy.validateSoxrOutput, validateSoxrOutput);
+  assert.equal(legacy.soxrCorrespondingSourcesFileName, soxrCorrespondingSourcesFileName);
+  const oldEntrypoint = path.join(root, "scripts/build-soxr.mjs");
+  const oldImported = spawnSync(process.execPath, ["--input-type=module", "-e",
+    `await import(${JSON.stringify(pathToFileURL(oldEntrypoint).href)})`], { cwd: directory, encoding: "utf8" });
+  assert.equal(oldImported.status, 0, oldImported.stderr);
+  assert.equal(oldImported.stdout, "");
+  assert.deepEqual(fs.readdirSync(directory), []);
+  const oldDirect = spawnSync(process.execPath, [oldEntrypoint, "--target", "unsupported"], { encoding: "utf8" });
+  assert.equal(oldDirect.status, 1);
+  assert.equal(oldDirect.stderr, direct.stderr);
 });
 
 test("corresponding-source TAR is complete, reproducible, and imports its copied rebuild entrypoint", async (context) => {
@@ -140,9 +153,9 @@ test("producer identity and publication include genuine inputs and exclude Flatp
     fs.writeFileSync(destination, originalBytes);
   }
   const excludedMutations = [
-    ["scripts/build-soxr.mjs", "async function main(argv)", "async function legacyMain(argv)"],
+    ["scripts/build-soxr.mjs", "buildSoxr(process.argv.slice(2))", 'buildSoxr(["--target", "unsupported"])'],
     ["scripts/flatpak-source-snapshots.mjs", '"package.json"', '"new-frontend-policy.json"'],
-    ["scripts/generate-flatpak-sources.mjs", "return process.env.SOURCE_DATE_EPOCH;", 'return "999";'],
+    ["scripts/flatpak-source-snapshots.mjs", 'override === undefined ? "1"', 'override === undefined ? "999"'],
     ["scripts/package-flatpak.mjs", '"flatpak-cache-v1"', '"flatpak-cache-v2"'],
   ];
   for (const [relative, before, after] of excludedMutations) {

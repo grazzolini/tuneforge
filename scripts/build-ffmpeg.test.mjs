@@ -3,6 +3,8 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 import { acquirePinnedFile, ffmpegCorrespondingSourcesFileName, reusableOutput } from "./build-ffmpeg.mjs";
 import { soxrCorrespondingSourcesFileName, validateSoxrOutput } from "./build-soxr.mjs";
@@ -67,6 +69,60 @@ for (const [name, fetchImpl, expected] of [
 test("corresponding-source name carries recipe identity", () => {
   assert.match(ffmpegCorrespondingSourcesFileName(),
     /^TuneForge_ffmpeg-9\.0\.1-lame-4\.0-1_[0-9a-f]{16}_corresponding-sources\.tar$/);
+});
+
+test("FFmpeg corresponding sources import independently and hash the packaged serializer", { skip: process.platform === "win32" }, async (t) => {
+  const { root } = fixture(t);
+  const repository = fileURLToPath(new URL("../", import.meta.url));
+  const checkout = path.join(root, "checkout");
+  const lock = JSON.parse(fs.readFileSync(path.join(repository, "packaging/ffmpeg/sources.lock.json"), "utf8"));
+  for (const relative of ["scripts/build-ffmpeg.mjs", "scripts/validate-packaged-ffmpeg.mjs",
+    "scripts/deterministic-source-snapshot.mjs", "THIRD_PARTY_NOTICES.md", "package.json",
+    ...(lock.patches ?? []).map(({ path: relative }) => relative)]) {
+    fs.mkdirSync(path.dirname(path.join(checkout, relative)), { recursive: true });
+    fs.copyFileSync(path.join(repository, relative), path.join(checkout, relative));
+  }
+  const cache = path.join(checkout, "packaging/ffmpeg/cache");
+  fs.mkdirSync(cache, { recursive: true });
+  const synthetic = (name) => {
+    const bytes = Buffer.from(`synthetic source fixture: ${name}\n`);
+    fs.writeFileSync(path.join(cache, name), bytes);
+    return crypto.createHash("sha256").update(bytes).digest("hex");
+  };
+  for (const source of Object.values(lock.sources)) source.sha256 = synthetic(path.basename(new URL(source.url).pathname));
+  lock.sources.ffmpeg.signatureSha256 = synthetic(path.basename(new URL(lock.sources.ffmpeg.signatureUrl).pathname));
+  lock.sources.ffmpeg.signingKeySha256 = synthetic("ffmpeg-devel.asc");
+  fs.writeFileSync(path.join(checkout, "packaging/ffmpeg/sources.lock.json"), `${JSON.stringify(lock, null, 2)}\n`);
+  const bins = path.join(root, "bin");
+  fs.mkdirSync(bins);
+  // This fixture tests source packaging, not upstream signature authenticity or compilation.
+  fs.writeFileSync(path.join(bins, "gpg"), `#!/bin/sh\ncase "$*" in *--fingerprint*) echo 'fpr:::::::::${lock.sources.ffmpeg.signingFingerprint}:';; esac\n`, { mode: 0o755 });
+  const packaged = spawnSync(process.execPath, [path.join(checkout, "scripts/build-ffmpeg.mjs"), "--source-only", "--cache-dir", cache], {
+    cwd: checkout, encoding: "utf8", env: { ...process.env, PATH: `${bins}:${process.env.PATH}` },
+  });
+  assert.equal(packaged.status, 0, packaged.error?.message ?? packaged.stderr);
+  const source = JSON.parse(packaged.stdout);
+  const extracted = path.join(root, "extracted");
+  fs.mkdirSync(extracted);
+  const extraction = spawnSync("tar", ["-xf", path.join(checkout, "packaging/ffmpeg/generated", source.fileName), "-C", extracted], { encoding: "utf8" });
+  assert.equal(extraction.status, 0, extraction.error?.message ?? extraction.stderr);
+  const payload = path.join(extracted, `TuneForge-${lock.runtimeVersion}-sources`);
+  assert.deepEqual(fs.readdirSync(path.join(payload, "scripts")).sort(), [
+    "build-ffmpeg.mjs", "deterministic-source-snapshot.mjs", "validate-packaged-ffmpeg.mjs",
+  ]);
+  const recipe = await import(pathToFileURL(path.join(payload, "scripts/build-ffmpeg.mjs")));
+  const name = recipe.ffmpegCorrespondingSourcesFileName();
+  assert.equal(name, source.fileName);
+  const serializer = path.join(payload, "scripts/deterministic-source-snapshot.mjs");
+  const original = fs.readFileSync(serializer);
+  fs.appendFileSync(serializer, "\n// changed serialization dependency\n");
+  assert.notEqual(recipe.ffmpegCorrespondingSourcesFileName(), name);
+  fs.writeFileSync(serializer, original);
+  fs.writeFileSync(path.join(payload, "scripts/flatpak-source-snapshots.mjs"), "unrelated Flatpak policy\n");
+  assert.equal(recipe.ffmpegCorrespondingSourcesFileName(), name);
+  const manifest = JSON.parse(fs.readFileSync(path.join(payload, "MANIFEST.json"), "utf8"));
+  assert.ok(manifest.files.some(({ path: relative }) => relative === "scripts/deterministic-source-snapshot.mjs"));
+  assert.ok(!manifest.files.some(({ path: relative }) => relative === "scripts/flatpak-source-snapshots.mjs"));
 });
 
 test("package commands ensure default runtimes without changing setup", () => {

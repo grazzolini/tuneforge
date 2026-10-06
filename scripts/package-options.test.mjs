@@ -305,7 +305,7 @@ test("Flatpak package options are scoped to the TuneForge module build environme
   );
   const frontendModule = manifest.slice(
     manifest.indexOf("  - name: tuneforge-frontend"),
-    manifest.indexOf("  - name: sccache"),
+    manifest.indexOf("  - name: tuneforge-desktop"),
   );
 
   assert.equal(cpythonModule.includes("TUNEFORGE_PACKAGE_OPTIONS"), false);

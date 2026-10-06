@@ -108,29 +108,6 @@ modules:
       - install -dm755 /app/share/tuneforge/node-sources
       - cp node-sources/*.tgz /app/share/tuneforge/node-sources/
 
-  - name: tuneforge-frontend
-    buildsystem: simple
-    build-options:
-      append-path: /app/bin:/usr/lib/sdk/node26/bin
-      build-args:
-        - "@@FLATPAK_CACHE_BIND@@"
-      env:
-        HUSKY: "0"
-        TUNEFORGE_VERSION_FILE: /run/build/tuneforge-frontend/frontend-version.json
-    sources:
-      - type: archive
-        path: generated/frontend-snapshot.tar
-        archive-type: tar
-        strip-components: 0
-      - type: file
-        path: generated/frontend-version.json
-        dest-filename: frontend-version.json
-    build-commands:
-      - node seed-pnpm-store.mjs /app/share/tuneforge/node-sources /run/tuneforge-cache/@@FLATPAK_CACHE_NAMESPACE@@/pnpm/store /run/tuneforge-cache/@@FLATPAK_CACHE_NAMESPACE@@/pnpm/cache /app/bin/pnpm /run/tuneforge-cache/@@FLATPAK_CACHE_NAMESPACE@@/pnpm-report.json
-      - /app/bin/pnpm --filter @tuneforge/desktop build
-      - install -dm755 /app/share/tuneforge/build/frontend-dist
-      - cp -a apps/desktop/dist/. /app/share/tuneforge/build/frontend-dist/
-
   - name: sccache
     buildsystem: simple
     sources:
@@ -140,33 +117,6 @@ modules:
     build-commands:
       - install -Dm755 sccache /app/bin/sccache
       - /app/bin/sccache --version
-
-  - name: tuneforge-desktop
-    buildsystem: simple
-    build-options:
-      append-path: /app/bin:/usr/lib/sdk/llvm20/bin:/usr/lib/sdk/rust-stable/bin
-      build-args:
-        - "@@FLATPAK_CACHE_BIND@@"
-      env:
-        CARGO_HOME: /run/build/tuneforge-desktop/cargo-home
-        CARGO_INCREMENTAL: "0"
-        CARGO_NET_OFFLINE: "true"
-        LIBCLANG_PATH: /usr/lib/sdk/llvm20/lib
-        RUSTC_WRAPPER: /app/bin/sccache
-        SCCACHE_DIR: /run/tuneforge-cache/@@FLATPAK_CACHE_NAMESPACE@@/sccache
-        TUNEFORGE_GIT_REF: '@@TUNEFORGE_FRONTEND_GIT_REF@@'
-    sources:
-      - type: archive
-        path: generated/desktop-snapshot.tar
-        archive-type: tar
-        strip-components: 0
-      - generated/cargo-sources.json
-    build-commands:
-      - install -dm755 apps/desktop/dist
-      - cp -a /app/share/tuneforge/build/frontend-dist/. apps/desktop/dist/
-      - bash cargo-checksums.sh
-      - flock /run/tuneforge-cache/@@FLATPAK_CACHE_NAMESPACE@@/sccache.lock sh -c 'set -eu; sccache --start-server; trap "sccache --stop-server >/dev/null 2>&1 || true" EXIT; sccache --zero-stats; cargo build --release --locked --features custom-protocol --manifest-path apps/desktop/src-tauri/Cargo.toml; sccache --show-stats --stats-format=json > /run/tuneforge-cache/@@FLATPAK_CACHE_NAMESPACE@@/sccache-stats.json.tmp; mv /run/tuneforge-cache/@@FLATPAK_CACHE_NAMESPACE@@/sccache-stats.json.tmp /run/tuneforge-cache/@@FLATPAK_CACHE_NAMESPACE@@/sccache-stats.json'
-      - install -Dm755 apps/desktop/src-tauri/target/release/tuneforge /app/bin/tuneforge
 
   - name: cpython-3.14
     buildsystem: simple
@@ -330,6 +280,56 @@ modules:
       - /share/bash-completion
       - /share/zsh
 
+  - name: tuneforge-frontend
+    buildsystem: simple
+    build-options:
+      append-path: /app/bin:/usr/lib/sdk/node26/bin
+      build-args:
+        - "@@FLATPAK_CACHE_BIND@@"
+      env:
+        HUSKY: "0"
+        TUNEFORGE_VERSION_FILE: /run/build/tuneforge-frontend/frontend-version.json
+    sources:
+      - type: archive
+        path: generated/frontend-snapshot.tar
+        archive-type: tar
+        strip-components: 0
+      - type: file
+        path: generated/frontend-version.json
+        dest-filename: frontend-version.json
+    build-commands:
+      - node seed-pnpm-store.mjs /app/share/tuneforge/node-sources /run/tuneforge-cache/@@FLATPAK_CACHE_NAMESPACE@@/pnpm/store /run/tuneforge-cache/@@FLATPAK_CACHE_NAMESPACE@@/pnpm/cache /app/bin/pnpm /run/tuneforge-cache/@@FLATPAK_CACHE_NAMESPACE@@/pnpm-report.json
+      - /app/bin/pnpm --filter @tuneforge/desktop build
+      - install -dm755 /app/share/tuneforge/build/frontend-dist
+      - cp -a apps/desktop/dist/. /app/share/tuneforge/build/frontend-dist/
+
+  - name: tuneforge-desktop
+    buildsystem: simple
+    build-options:
+      append-path: /app/bin:/usr/lib/sdk/llvm20/bin:/usr/lib/sdk/rust-stable/bin
+      build-args:
+        - "@@FLATPAK_CACHE_BIND@@"
+      env:
+        CARGO_HOME: /run/build/tuneforge-desktop/cargo-home
+        CARGO_INCREMENTAL: "0"
+        CARGO_NET_OFFLINE: "true"
+        LIBCLANG_PATH: /usr/lib/sdk/llvm20/lib
+        RUSTC_WRAPPER: /app/bin/sccache
+        SCCACHE_DIR: /run/tuneforge-cache/@@FLATPAK_CACHE_NAMESPACE@@/sccache
+        TUNEFORGE_GIT_REF: '@@TUNEFORGE_FRONTEND_GIT_REF@@'
+    sources:
+      - type: archive
+        path: generated/desktop-snapshot.tar
+        archive-type: tar
+        strip-components: 0
+      - generated/cargo-sources.json
+    build-commands:
+      - install -dm755 apps/desktop/dist
+      - cp -a /app/share/tuneforge/build/frontend-dist/. apps/desktop/dist/
+      - bash cargo-checksums.sh
+      - flock /run/tuneforge-cache/@@FLATPAK_CACHE_NAMESPACE@@/sccache.lock sh -c 'set -eu; sccache --start-server; trap "sccache --stop-server >/dev/null 2>&1 || true" EXIT; sccache --zero-stats; cargo build --release --locked --features custom-protocol --manifest-path apps/desktop/src-tauri/Cargo.toml; sccache --show-stats --stats-format=json > /run/tuneforge-cache/@@FLATPAK_CACHE_NAMESPACE@@/sccache-stats.json.tmp; mv /run/tuneforge-cache/@@FLATPAK_CACHE_NAMESPACE@@/sccache-stats.json.tmp /run/tuneforge-cache/@@FLATPAK_CACHE_NAMESPACE@@/sccache-stats.json'
+      - install -Dm755 apps/desktop/src-tauri/target/release/tuneforge /app/bin/tuneforge
+
   - name: tuneforge-backend
     buildsystem: simple
     build-options:
@@ -341,15 +341,12 @@ modules:
         path: generated/backend-snapshot.tar
         archive-type: tar
         strip-components: 0
-      - type: file
-        path: generated/version.json
     build-commands:
       - install -Dm755 ffmpeg /app/bin/ffmpeg
       - install -Dm755 ffprobe /app/bin/ffprobe
       - /app/bin/ffmpeg -version
       - /app/bin/ffprobe -version
       - /app/bin/wpctl --help
-      - install -Dm644 version.json /app/lib/tuneforge/backend/version.json
       - install -dm755 /app/lib/tuneforge/backend/src
       - cp -a apps/backend/app /app/lib/tuneforge/backend/src/app
       - cp -a apps/backend/alembic /app/lib/tuneforge/backend/src/alembic
@@ -368,3 +365,11 @@ modules:
       - install -Dm644 icons/512x512.png /app/share/icons/hicolor/512x512/apps/com.tuneforge.desktop.png
       - /app/lib/tuneforge/backend/python/bin/python3.14 -c "import fastapi, demucs_infer, whisper, torch"
       - rm -rf /app/share/tuneforge/build /app/share/tuneforge/node-sources /app/lib/pnpm /app/bin/pnpm /app/bin/pnpx /app/bin/sccache
+
+  - name: tuneforge-build-info
+    buildsystem: simple
+    sources:
+      - type: file
+        path: generated/version.json
+    build-commands:
+      - install -Dm644 version.json /app/lib/tuneforge/backend/version.json

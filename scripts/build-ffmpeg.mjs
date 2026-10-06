@@ -22,7 +22,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { createFlatpakSourceSnapshot } from "./flatpak-source-snapshots.mjs";
+import { createDeterministicSourceSnapshot } from "./deterministic-source-snapshot.mjs";
 import { validateOwnedFfmpeg } from "./validate-packaged-ffmpeg.mjs";
 
 const scriptPath = fileURLToPath(import.meta.url);
@@ -139,7 +139,7 @@ function recipeIdentity() {
     "packaging/ffmpeg/sources.lock.json",
     "scripts/build-ffmpeg.mjs",
     "scripts/validate-packaged-ffmpeg.mjs",
-    "scripts/flatpak-source-snapshots.mjs",
+    "scripts/deterministic-source-snapshot.mjs",
     "THIRD_PARTY_NOTICES.md",
     "package.json",
     ...(lock.patches ?? []).map((entry) => entry.path),
@@ -222,7 +222,7 @@ function materializeCorrespondingSources(cacheDir, outputParent, recipeDigest) {
       "packaging/ffmpeg/sources.lock.json",
       "scripts/build-ffmpeg.mjs",
       "scripts/validate-packaged-ffmpeg.mjs",
-      "scripts/flatpak-source-snapshots.mjs",
+      "scripts/deterministic-source-snapshot.mjs",
       "THIRD_PARTY_NOTICES.md",
       "package.json",
     ]) {
@@ -253,11 +253,11 @@ function materializeCorrespondingSources(cacheDir, outputParent, recipeDigest) {
     };
     writeFileSync(path.join(payload, "MANIFEST.json"), `${JSON.stringify(manifest, null, 2)}\n`);
     const stagedOutput = path.join(staging, fileName);
-    createFlatpakSourceSnapshot({
+    createDeterministicSourceSnapshot({
       root: staging,
       outputPath: stagedOutput,
       inputs: [{ source: "payload", destination: `TuneForge-${lock.runtimeVersion}-sources` }],
-      sourceDateEpoch: "1",
+      epoch: "1",
     });
     const metadata = { fileName, sha256: sha256(stagedOutput), size: statSync(stagedOutput).size };
     renameSync(stagedOutput, output);

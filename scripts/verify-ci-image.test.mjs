@@ -142,7 +142,7 @@ test("new producer manifest survives Flatpak source-list, epoch, and cache confi
   context.after(() => fs.rmSync(value.root, { recursive: true, force: true }));
   const mutations = [
     ["scripts/flatpak-source-snapshots.mjs", '"package.json"', '"new-frontend-policy.json"'],
-    ["scripts/generate-flatpak-sources.mjs", "return process.env.SOURCE_DATE_EPOCH;", 'return "999";'],
+    ["scripts/flatpak-source-snapshots.mjs", 'override === undefined ? "1"', 'override === undefined ? "999"'],
     ["scripts/package-flatpak.mjs", '"flatpak-cache-v1"', '"flatpak-cache-v2"'],
   ];
   for (const [relative, before, after] of mutations) {

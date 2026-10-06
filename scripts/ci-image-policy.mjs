@@ -54,7 +54,7 @@ const playwrightNoblePackages = [
 ];
 
 const ciImageReference =
-  "ghcr.io/grazzolini/tuneforge-ci@sha256:38326e7dd4f7d86257e0187cf72558fdbddab17817f68f83f379d8250c2906aa";
+  "ghcr.io/grazzolini/tuneforge-ci@sha256:01e4207497cab9110b1857a32fcb38596c001e346296181c47405439f77c995c";
 const ciImageConsumers = ["backend", "e2e", "desktop_tauri"];
 function read(root, relativePath) {
   return fs.readFileSync(path.join(root, relativePath), "utf8");

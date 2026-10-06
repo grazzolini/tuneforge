@@ -1,106 +1,23 @@
-import { Buffer } from "node:buffer";
-import { lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { createDeterministicSourceSnapshot } from "./deterministic-source-snapshot.mjs";
+import { profilesFromConfig, testTauriOverlay } from "./package-profile.mjs";
+export { compareUtf8 } from "./deterministic-source-snapshot.mjs";
 
-const blockSize = 512;
-export const compareUtf8 = (left, right) => Buffer.compare(Buffer.from(left), Buffer.from(right));
-
-function posixPath(value, label) {
-  const normalized = value.split(path.sep).join("/").replace(/^\.\//, "");
-  if (!normalized || normalized.startsWith("/") || normalized.split("/").includes("..")) {
-    throw new Error(`Unsafe snapshot ${label}: ${value}`);
+export function validatedSourceDateEpoch(value, label = "SOURCE_DATE_EPOCH") {
+  const epoch = Number(value);
+  if (typeof value !== "string" || !/^[1-9][0-9]*$/.test(value) || !Number.isSafeInteger(epoch) || epoch > 253402300799) {
+    throw new Error(`${label} must be a positive integer Unix timestamp.`);
   }
-  return normalized;
+  return value;
 }
 
-function octal(value, width, label) {
-  const text = value.toString(8);
-  if (text.length > width - 1) throw new Error(`USTAR ${label} overflow.`);
-  return `${"0".repeat(width - 1 - text.length)}${text}\0`;
+export function resolveSourceDateEpoch({ override = process.env.SOURCE_DATE_EPOCH } = {}) {
+  return override === undefined ? "1" : validatedSourceDateEpoch(override);
 }
 
-function tarPath(value) {
-  if (Buffer.byteLength(value) <= 100) return { name: value, prefix: "" };
-  const slash = value.lastIndexOf("/", 155);
-  if (slash <= 0 || Buffer.byteLength(value.slice(0, slash)) > 155 || Buffer.byteLength(value.slice(slash + 1)) > 100) {
-    throw new Error(`USTAR path overflow: ${value}`);
-  }
-  return { prefix: value.slice(0, slash), name: value.slice(slash + 1) };
-}
-
-function put(buffer, offset, width, value) {
-  const bytes = Buffer.from(value, "utf8");
-  if (bytes.length > width) throw new Error("USTAR field overflow.");
-  bytes.copy(buffer, offset);
-}
-
-function header(entry, epoch) {
-  const output = Buffer.alloc(blockSize);
-  const target = tarPath(entry.path);
-  put(output, 0, 100, target.name);
-  put(output, 100, 8, octal(entry.mode, 8, "mode"));
-  put(output, 108, 8, octal(0, 8, "uid"));
-  put(output, 116, 8, octal(0, 8, "gid"));
-  put(output, 124, 12, octal(entry.size, 12, "size"));
-  put(output, 136, 12, octal(epoch, 12, "mtime"));
-  output.fill(0x20, 148, 156);
-  put(output, 156, 1, entry.type);
-  put(output, 157, 100, entry.link ?? "");
-  put(output, 257, 6, "ustar\0");
-  put(output, 263, 2, "00");
-  put(output, 345, 155, target.prefix);
-  const checksum = output.reduce((total, byte) => total + byte, 0);
-  put(output, 148, 8, `${octal(checksum, 7, "checksum")} `);
-  return output;
-}
-
-function collectEntry(root, source, destination, entries) {
-  const absolute = path.resolve(root, source);
-  const rootRelative = path.relative(root, absolute);
-  if (rootRelative.startsWith("..") || path.isAbsolute(rootRelative)) throw new Error(`Unsafe snapshot source: ${source}`);
-  const stats = lstatSync(absolute);
-  const archivePath = posixPath(destination, "path");
-  if (stats.isDirectory()) {
-    entries.push({ path: `${archivePath}/`, mode: stats.mode & 0o7777, size: 0, type: "5" });
-    for (const name of readdirSync(absolute).sort(compareUtf8)) {
-      collectEntry(root, path.join(source, name), `${archivePath}/${name}`, entries);
-    }
-  } else if (stats.isFile()) {
-    entries.push({ path: archivePath, mode: stats.mode & 0o7777, size: stats.size, type: "0", absolute });
-  } else if (stats.isSymbolicLink()) {
-    const link = readlinkSync(absolute);
-    if (Buffer.byteLength(link) > 100) throw new Error(`USTAR symlink target overflow: ${archivePath}`);
-    entries.push({ path: archivePath, mode: 0o777, size: 0, type: "2", link });
-  } else {
-    throw new Error(`Unsupported snapshot entry type: ${source}`);
-  }
-}
-
-export function createFlatpakSourceSnapshot({ root, outputPath, inputs, sourceDateEpoch }) {
-  const epoch = Number(sourceDateEpoch);
-  if (!Number.isSafeInteger(epoch) || epoch < 1) throw new Error("SOURCE_DATE_EPOCH must be a positive integer.");
-  const entries = [];
-  for (const { source, destination = source } of inputs) collectEntry(root, source, destination, entries);
-  entries.sort((left, right) => compareUtf8(left.path, right.path));
-  for (let index = 1; index < entries.length; index += 1) {
-    if (entries[index - 1].path === entries[index].path) throw new Error(`Duplicate snapshot path: ${entries[index].path}`);
-  }
-  const chunks = [];
-  for (const entry of entries) {
-    chunks.push(header(entry, epoch));
-    if (entry.type === "0") {
-      const contents = readFileSync(entry.absolute);
-      chunks.push(contents);
-      const padding = (blockSize - (contents.length % blockSize)) % blockSize;
-      if (padding) chunks.push(Buffer.alloc(padding));
-    }
-  }
-  chunks.push(Buffer.alloc(blockSize * 2));
-  mkdirSync(path.dirname(outputPath), { recursive: true });
-  const temporary = `${outputPath}.tmp-${process.pid}`;
-  writeFileSync(temporary, Buffer.concat(chunks));
-  renameSync(temporary, outputPath);
-  return { entryCount: entries.length, outputPath };
+export function createFlatpakSourceSnapshot({ root, outputPath, inputs, sourceDateEpoch = resolveSourceDateEpoch() }) {
+  return createDeterministicSourceSnapshot({ root, outputPath, inputs, epoch: validatedSourceDateEpoch(sourceDateEpoch) });
 }
 
 export const flatpakSourceSnapshotInputs = {
@@ -116,6 +33,7 @@ export const flatpakSourceSnapshotInputs = {
     "apps/desktop/src-tauri/build.rs", "apps/desktop/src-tauri/tauri.conf.json",
     "apps/desktop/src-tauri/capabilities", "apps/desktop/src-tauri/icons",
     "apps/desktop/src-tauri/resources", "apps/desktop/src-tauri/src",
+    "apps/backend/app/storage-profile.json", "apps/desktop/src-tauri/native/whisper-rs-sys",
   ],
   backend: [
     "README.md", "LICENSE", "THIRD_PARTY_NOTICES.md", "LICENSES/crema-0.2.0-BSD-2-Clause.txt",
@@ -131,11 +49,78 @@ export const flatpakSourceSnapshotInputs = {
   ],
 };
 
-export function generateFlatpakSourceSnapshots({ root, generatedRoot, sourceDateEpoch }) {
-  return Object.entries(flatpakSourceSnapshotInputs).map(([name, inputs]) => createFlatpakSourceSnapshot({
+export const flatpakDesktopSourceSnapshotInputs = Object.freeze(flatpakSourceSnapshotInputs.desktop);
+
+export function createFlatpakDesktopSourceSnapshot({ root, outputPath, sourceDateEpoch }) {
+  return createFlatpakSourceSnapshot({
     root,
-    inputs: inputs.map((input) => typeof input === "string" ? { source: input } : input),
-    outputPath: path.join(generatedRoot, `${name}-snapshot.tar`),
+    inputs: flatpakDesktopSourceSnapshotInputs.map((source) => ({ source })),
+    outputPath,
     sourceDateEpoch,
-  }));
+  });
+}
+
+export function generateFlatpakSourceSnapshots({ root, generatedRoot: snapshotRoot, sourceDateEpoch = resolveSourceDateEpoch(),
+  testPackage = false }) {
+  const createSnapshot = (name, inputs) => createFlatpakSourceSnapshot({
+    root, inputs: inputs.map((input) => typeof input === "string" ? { source: input } : input),
+    outputPath: path.join(snapshotRoot, `${name}-snapshot.tar`), sourceDateEpoch,
+  });
+  const backendInputs = [...flatpakSourceSnapshotInputs.backend];
+  if (existsSync(path.join(root, "packaging/demucs/drumsep-model.json"))) {
+    backendInputs.push({ source: "packaging/demucs/drumsep-model.json", destination: "apps/backend/drumsep-model.json" });
+  }
+  const desktopInputs = flatpakDesktopSourceSnapshotInputs.map((source) => ({ source }));
+  if (testPackage) {
+    const baseConfig = JSON.parse(readFileSync(path.join(root, "apps/desktop/src-tauri/tauri.conf.json"), "utf8"));
+    const testProfile = profilesFromConfig(baseConfig).test;
+    const overlay = testTauriOverlay(baseConfig);
+    mkdirSync(snapshotRoot, { recursive: true });
+    writeFileSync(path.join(snapshotRoot, "test-tauri.conf.json"), `${JSON.stringify({
+      ...baseConfig, ...overlay,
+      app: { ...baseConfig.app, ...overlay.app },
+      bundle: { ...baseConfig.bundle, ...overlay.bundle },
+    }, null, 2)}\n`);
+    // Cargo merges the test overlay through TAURI_CONFIG; keep the authoritative base ID.
+
+    const desktopSource = readFileSync(path.join(root, "packaging/flatpak/com.tuneforge.desktop.desktop"), "utf8");
+    const appStreamSource = readFileSync(path.join(root, "packaging/flatpak/com.tuneforge.desktop.metainfo.xml"), "utf8");
+    const templateId = appStreamSource.match(/<id>([^<]+)<\/id>/)?.[1];
+    if (!templateId) throw new Error("Flatpak AppStream template ID is missing.");
+    const desktopEntry = desktopSource
+      .replace("Name=TuneForge", `Name=${testProfile.name}`)
+      .replace("Exec=tuneforge", `Exec=${testProfile.binary}`)
+      .replaceAll(templateId, testProfile.id)
+      .replace("StartupWMClass=Tuneforge", "StartupWMClass=Tuneforge-test");
+    const appStream = appStreamSource
+      .replace("<name>TuneForge</name>", `<name>${testProfile.name}</name>`)
+      .replaceAll(templateId, testProfile.id);
+    writeFileSync(path.join(snapshotRoot, "test.desktop"), desktopEntry);
+    writeFileSync(path.join(snapshotRoot, "test.metainfo.xml"), appStream);
+    const backendReplacements = new Map([
+      ["packaging/flatpak/com.tuneforge.desktop.desktop", {
+        source: path.relative(root, path.join(snapshotRoot, "test.desktop")),
+        destination: `${testProfile.id}.desktop`,
+      }],
+      ["packaging/flatpak/com.tuneforge.desktop.metainfo.xml", {
+        source: path.relative(root, path.join(snapshotRoot, "test.metainfo.xml")),
+        destination: `${testProfile.id}.metainfo.xml`,
+      }],
+    ]);
+    for (const size of ["32x32", "128x128", "512x512"]) {
+      backendReplacements.set(`apps/desktop/src-tauri/icons/${size}.png`, {
+        source: `apps/desktop/src-tauri/icons/test/${size}.png`, destination: `icons/${size}.png`,
+      });
+    }
+    for (let index = 0; index < backendInputs.length; index += 1) {
+      const input = backendInputs[index];
+      const source = typeof input === "string" ? input : input.source;
+      if (backendReplacements.has(source)) backendInputs[index] = backendReplacements.get(source);
+    }
+  }
+  return [
+    createSnapshot("frontend", flatpakSourceSnapshotInputs.frontend),
+    createSnapshot("desktop", desktopInputs),
+    createSnapshot("backend", backendInputs),
+  ];
 }

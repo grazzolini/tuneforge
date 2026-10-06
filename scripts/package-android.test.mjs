@@ -409,7 +409,7 @@ test("credential preflight is secret-safe and reports categorical failures", (t)
   const runner = (failure, calls = []) => (command, args, options) => {
     calls.push({ command, args, options });
     if (failure === "store" && args.includes("-list") || failure === "alias" && args.includes("-exportcert") ||
-        failure === "key" && command.endsWith("jarsigner")) return { ok: false, output: "secret diagnostic" };
+        failure === "key" && command.endsWith("jarsigner")) return { ok: false, output: `secret diagnostic ${env.TUNEFORGE_ANDROID_RELEASE_STORE_PASSWORD} ${env.TUNEFORGE_ANDROID_RELEASE_KEY_PASSWORD}` };
     if (command.endsWith("keytool") && args.includes("-exportcert")) return { ok: true,
       output: failure === "fingerprint" ? Buffer.from("other cert") : harness.certificate };
     if (command.endsWith("jarsigner")) fs.writeFileSync(args[args.indexOf("-signedjar") + 1], "signed");
@@ -721,4 +721,21 @@ test("all Android package modes share one native preparation path", () => {
   const privateSourceTerms = [["kee", "pass", "xc"], ["password", " manager"], ["attach", "ment"]]
     .map((parts) => parts.join(""));
   assert.doesNotMatch(tracked, new RegExp(privateSourceTerms.join("|"), "i"));
+});
+
+
+test("CLI credential-preflight failure excludes synthetic signing secrets", (t) => {
+  const root = temp(t);
+  const storeSecret = "synthetic-store-sentinel-584";
+  const keySecret = "synthetic-key-sentinel-584";
+  const env = { ...sanitizedEnv(process.env), ...signingEnv(path.join(root, "missing.p12")),
+    TUNEFORGE_ANDROID_RELEASE_STORE_PASSWORD: storeSecret,
+    TUNEFORGE_ANDROID_RELEASE_KEY_PASSWORD: keySecret };
+  const result = spawnSync(process.execPath, [path.resolve("scripts/package-android.mjs"), "--publishable"],
+    { env, encoding: "utf8" });
+  assert.equal(result.status, 1);
+  const output = `${result.stdout}${result.stderr}`;
+  assert.match(output, /readable regular file/);
+  assert.equal(output.includes(storeSecret), false);
+  assert.equal(output.includes(keySecret), false);
 });

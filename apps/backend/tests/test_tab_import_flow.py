@@ -1,9 +1,20 @@
 from __future__ import annotations
 
+from multiprocessing import get_context
+from multiprocessing.queues import Queue
 from pathlib import Path
+from time import perf_counter
+
+import pytest
 
 from app.engines.lyrics import LyricsTranscription
-from app.services.tabs import _match_tab_lyrics_to_segments
+from app.services.tabs import (
+    _match_tab_lyrics_to_segments,
+    _parse_directive,
+    _parse_inline_chords,
+    _parse_section,
+    parse_tab_text,
+)
 
 from .conftest import import_project_without_jobs, wait_for_job
 
@@ -238,3 +249,88 @@ def test_lyrics_refresh_clears_current_tab_state(client, monkeypatch, sample_aud
 
     assert client.get(f"/api/v1/projects/{project['id']}/tabs/{tab_import['id']}").status_code == 404
     assert client.get(f"/api/v1/projects/{project['id']}/sections").json()["sections"] == []
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        ("{  SoC  : arbitrary annotation }", {"type": "section", "label": "Chorus"}),
+        ("{sov}", {"type": "section", "label": "Verse"}),
+        ("{sob:}", {"type": "section", "label": "Bridge"}),
+        ("{eot: custom}", {"type": "directive", "name": "eot", "value": "custom"}),
+        ("{eot custom}", None),
+        ("{eot: custom} extra", None),
+        ("{eot: custom}inside}", None),
+        ("{:value}", None),
+    ],
+)
+def test_tab_directive_grammar(line: str, expected: dict | None) -> None:
+    assert _parse_directive(line) == expected
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        ("[  Verse 2  ] annotation", "Verse 2"),
+        ("[Pré-Refrão] 2x", "Pré-Refrão"),
+        ("[Verse]annotation", None),
+        ("[Verse", None),
+        ("[[Verse]]", None),
+        ("Chorus 3:", None),
+    ],
+)
+def test_tab_section_grammar(line: str, expected: str | None) -> None:
+    assert _parse_section(line) == expected
+
+
+def test_tab_inline_brackets_preserve_invalid_text_and_chord_anchors() -> None:
+    parsed = _parse_inline_chords("[][[C]] [nonsense] [ Am ]Hello [G]world")
+    assert parsed is not None
+    assert parsed["text"] == "[][[C]] [nonsense] Hello world"
+    assert [(chord["label"], chord["column"], chord["word_index"]) for chord in parsed["chords"]] == [
+        ("Am", 19, 2), ("G", 25, 3),
+    ]
+    assert _parse_inline_chords("[C][G]") is None
+    assert _parse_inline_chords("[C]Hello [unclosed") is not None
+
+
+def test_tab_parser_preserves_precedence_raw_text_and_line_numbers() -> None:
+    raw = "\n  {key: D}  \n[Tab]\n{soc}\n[Verse 1] annotation\n[C]Hello [G]world\n"
+    parsed = parse_tab_text(raw)
+    assert [(line["type"], line["line_number"]) for line in parsed["lines"]] == [
+        ("key", 2), ("ignored", 3), ("section", 4), ("section", 5), ("lyrics", 6),
+    ]
+    assert parsed["lines"][0]["raw"] == "  {key: D}"
+    assert parsed["lyrics"][0]["text"] == "Hello world"
+    assert [(chord["label"], chord["column"], chord["word_index"]) for chord in parsed["lyrics"][0]["chords"]] == [
+        ("C", 0, 0), ("G", 6, 1),
+    ]
+
+
+def _measure_malformed_tab_growth(queue: Queue[list[float]]) -> None:
+    measurements = []
+    for size in (50_000, 100_000, 200_000):
+        start = perf_counter()
+        assert _parse_directive("{" + " " * size + "!") is None
+        assert _parse_section("[" + " " * size + "!") is None
+        assert _parse_inline_chords("[" * size + "!") is None
+        measurements.append(perf_counter() - start)
+    queue.put(measurements)
+
+
+def test_malformed_tab_delimiters_have_bounded_growth() -> None:
+    # A subprocess bounds pathological regressions without hanging the test suite.
+    context = get_context("spawn")
+    queue = context.Queue()
+    process = context.Process(target=_measure_malformed_tab_growth, args=(queue,))
+    process.start()
+    process.join(timeout=10)
+    if process.is_alive():
+        process.terminate()
+        process.join()
+        pytest.fail("Malformed delimiter parsing exceeded the bounded regression budget")
+    assert process.exitcode == 0
+    measurements = queue.get(timeout=2)
+    queue.close()
+    # Generous scheduling allowance; input sizes increase fourfold.
+    assert measurements[-1] <= measurements[0] * 8 + 0.1

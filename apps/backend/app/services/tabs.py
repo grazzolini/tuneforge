@@ -54,8 +54,6 @@ CHORDPRO_SECTION_ALIASES = {
     "sob": "Bridge",
     "start_of_bridge": "Bridge",
 }
-DIRECTIVE_RE = re.compile(r"^\{\s*([^}:]+)\s*:?\s*([^}]*)\}\s*$")
-INLINE_CHORD_RE = re.compile(r"\[([^\]]+)\]")
 KEY_RE = re.compile(
     r"\b(?:key|tom|tone|tonality)\s*[:=-]\s*([A-Ga-g](?:#|b)?\s*(?:m|min|minor|major)?)\b",
     re.IGNORECASE,
@@ -400,11 +398,15 @@ def _looks_like_lyric_line(line: str) -> bool:
 
 
 def _parse_directive(line: str) -> dict[str, Any] | None:
-    match = DIRECTIVE_RE.match(line)
-    if not match:
+    stripped = line.rstrip()
+    if not stripped.startswith("{") or not stripped.endswith("}"):
         return None
-    name = match.group(1).strip().lower()
-    value = match.group(2).strip()
+    body = stripped[1:-1]
+    if "}" in body:
+        return None
+    name, _, value = body.partition(":")
+    name = name.strip().lower()
+    value = value.strip()
     if name in {"key", "meta-key"}:
         key = _parse_key(value)
         return {"type": "key", "key": key} if key is not None else None
@@ -416,8 +418,11 @@ def _parse_directive(line: str) -> dict[str, Any] | None:
 
 
 def _parse_section(line: str) -> str | None:
-    section_match = re.match(r"^\[\s*([^\]]+?)\s*\](?:\s+.*)?$", line)
-    bracketed = section_match.group(1).strip() if section_match else line
+    bracketed = line
+    if line.startswith("["):
+        end = line.find("]", 1)
+        if end > 1 and (end == len(line) - 1 or line[end + 1].isspace()):
+            bracketed = line[1:end].strip()
     normalized = _normalize_section_label(bracketed)
     if normalized in SECTION_LABELS:
         return bracketed.strip()
@@ -429,15 +434,23 @@ def _parse_inline_chords(line: str) -> dict[str, Any] | None:
     lyric_parts: list[str] = []
     cursor = 0
     lyric_cursor = 0
-    for match in INLINE_CHORD_RE.finditer(line):
-        raw_chord = match.group(1).strip()
-        if not _is_chord_token(raw_chord):
+    search_cursor = 0
+    while search_cursor < len(line):
+        start = line.find("[", search_cursor)
+        if start < 0:
+            break
+        end = line.find("]", start + 1)
+        if end < 0:
+            break
+        search_cursor = end + 1
+        raw_chord = line[start + 1 : end].strip()
+        if not raw_chord or not _is_chord_token(raw_chord):
             continue
-        before = line[cursor:match.start()]
+        before = line[cursor:start]
         lyric_parts.append(before)
         lyric_cursor += len(before)
         chords.append({"label": raw_chord, "column": lyric_cursor, "word_index": None})
-        cursor = match.end()
+        cursor = end + 1
 
     if not chords:
         return None
@@ -935,11 +948,18 @@ def _normalize_text(value: str) -> str:
 
 def _normalize_section_label(value: str) -> str:
     folded = _fold_text(value).lower().strip()
-    folded = re.sub(r"\s+\d+$", "", folded)
-    folded = re.sub(r"\s*\(\d+x\)$", "", folded)
+    digit_start = len(folded)
+    while digit_start > 0 and folded[digit_start - 1].isdigit():
+        digit_start -= 1
+    if 0 < digit_start < len(folded) and folded[digit_start - 1].isspace():
+        folded = folded[:digit_start].rstrip()
+    if folded.endswith("x)"):
+        repeat_start = folded.rfind("(")
+        if repeat_start >= 0 and folded[repeat_start + 1 : -2].isdigit():
+            folded = folded[:repeat_start].rstrip()
     folded = folded.replace("_", " ")
-    folded = re.sub(r"\s*-\s*", "-", folded)
     folded = re.sub(r"\s+", " ", folded)
+    folded = folded.replace(" -", "-").replace("- ", "-")
     return folded
 
 

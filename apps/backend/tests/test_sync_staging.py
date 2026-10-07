@@ -268,3 +268,42 @@ def test_require_staged_artifact_rejects_missing_staged_content(
 
     assert exc.value.code == "SYNC_STAGING_FILE_MISSING"
     assert exc.value.status_code == 404
+
+
+@pytest.mark.parametrize("relative_path", ["../outside.bin", "/outside.bin", "sha256/../../outside.bin"])
+def test_staged_record_rejects_traversal_without_modifying_outside_file(
+    client: object, tmp_path: Path, relative_path: str,
+) -> None:
+    outside = tmp_path / "outside.bin"
+    outside.write_bytes(b"outside sentinel")
+    content_sha256 = file_sha256(outside)
+    assert content_sha256 is not None
+    with SessionLocal() as session:
+        staged = stage_sync_artifact(session, source_path=outside, content_sha256=content_sha256, size_bytes=16)
+        record = session.get(SyncStagedArtifact, content_sha256)
+        assert record is not None
+        record.relative_path = relative_path
+        with pytest.raises(AppError) as exc:
+            require_staged_artifact(session, content_sha256=content_sha256)
+        assert exc.value.code == "SYNC_STAGING_RELATIVE_PATH_INVALID"
+        assert staged.resolved_path.read_bytes() == b"outside sentinel"
+    assert outside.read_bytes() == b"outside sentinel"
+
+
+def test_staging_rejects_symlink_destination_before_outside_write(client: object, tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"fixture source")
+    content_sha256 = file_sha256(source)
+    assert content_sha256 is not None
+    staging_root = get_settings().data_root / "sync" / "staging"
+    staging_root.mkdir(parents=True, exist_ok=True)
+    (staging_root / "sha256").symlink_to(outside, target_is_directory=True)
+    with SessionLocal() as session:
+        with pytest.raises(AppError) as exc:
+            stage_sync_artifact(session, source_path=source, content_sha256=content_sha256, size_bytes=14)
+        assert exc.value.code == "SYNC_STAGING_DESTINATION_INVALID"
+        assert session.get(SyncStagedArtifact, content_sha256) is None
+    assert list(outside.iterdir()) == []
+    assert source.read_bytes() == b"fixture source"

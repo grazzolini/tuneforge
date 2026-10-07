@@ -2,3 +2,6 @@ packages:
   - apps/desktop
   - apps/site
   - packages/shared-types
+
+overrides:
+  'concurrently@10.0.5>shell-quote': 1.11.0

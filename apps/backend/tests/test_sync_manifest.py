@@ -2843,3 +2843,36 @@ def test_sync_project_manifest_api_round_trips_staged_import(
     with SessionLocal() as session:
         job_types = set(session.scalars(select(Job.type).where(Job.project_id == fixture.project_id)))
         assert not job_types.intersection({"analyze", "chords"})
+
+
+@pytest.mark.parametrize("attack", ["traversal", "staging_symlink", "destination_symlink"])
+def test_staged_manifest_rejects_path_escape_before_any_outside_write(
+    client: object, tmp_path: Path, attack: str,
+) -> None:
+    export_manifest, import_manifest = _sync_manifest_services()
+    staging_root = tmp_path / "staging"
+    outside_root = tmp_path / "outside"
+    outside_root.mkdir()
+    sentinel = outside_root / "sentinel.bin"
+    sentinel.write_bytes(b"outside sentinel")
+    with SessionLocal() as session:
+        fixture = _create_project_with_artifacts(session, tmp_path)
+        manifest = _plain_manifest(export_manifest(session, project_id=fixture.project_id))
+        _stage_manifest_files(manifest, staging_root=staging_root, source_root=fixture.root)
+        _delete_live_project(session, fixture)
+        if attack == "traversal":
+            manifest["artifacts"][0]["relative_path"] = "../outside/sentinel.bin"
+        elif attack == "staging_symlink":
+            source = staging_root / fixture.source_relative_path
+            source.unlink()
+            source.symlink_to(sentinel)
+        else:
+            root = project_root(fixture.project_id)
+            root.mkdir(parents=True, exist_ok=True)
+            (root / "source").symlink_to(outside_root, target_is_directory=True)
+        with pytest.raises(AppError) as exc:
+            import_manifest(session, manifest=manifest, staging_root=staging_root)
+        assert exc.value.code in {"SYNC_MANIFEST_RELATIVE_PATH_INVALID", "SYNC_MANIFEST_PATH_OUTSIDE_ROOT"}
+        assert session.get(Project, fixture.project_id) is None
+    assert sentinel.read_bytes() == b"outside sentinel"
+    assert list(outside_root.iterdir()) == [sentinel]

@@ -140,7 +140,10 @@ def sync_reconciliation_apply(
     payload: SyncReconciliationApplyRequest,
     session: Session = Depends(get_db),
 ) -> SyncReconciliationApplyResponse:
-    result = apply_sync_reconciliation(session, payload)
+    result = apply_sync_reconciliation(
+        session,
+        payload.model_copy(update={"staging_root": None, "use_content_addressed_staging": True}),
+    )
     return SyncReconciliationApplyResponse.model_validate(result)
 
 
@@ -348,8 +351,8 @@ def sync_project_import(
 
     import_kwargs: dict[str, Any] = {
         "manifest": payload.manifest.model_dump(mode="python"),
-        "staging_root": payload.staging_root,
-        "use_content_addressed_staging": payload.use_content_addressed_staging is True,
+        "staging_root": None,
+        "use_content_addressed_staging": True,
     }
 
     project = import_staged_project_manifest(session, **import_kwargs)

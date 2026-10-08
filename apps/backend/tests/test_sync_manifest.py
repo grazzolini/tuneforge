@@ -911,10 +911,9 @@ def test_export_project_manifest_includes_analysis_divergence_metadata(
 
         manifest = _plain_manifest(export_manifest(session, project_id=fixture.project_id))
 
-    analysis_artifact = _artifacts_by_id(manifest)["art_analysis_json"]
-    assert analysis_artifact["relative_path"] == "analysis/analysis.json"
-    assert analysis_artifact["content_sha256"] == analysis_hash
-    assert analysis_artifact["metadata"] == analysis_metadata
+    assert "art_analysis_json" not in _artifacts_by_id(manifest)
+    assert analysis_path.exists()
+    assert analysis_path.read_bytes() == json.dumps(analysis_payload, sort_keys=True).encode("utf-8")
 
 
 def test_export_project_manifest_keeps_legacy_analysis_metadata_db_backed(
@@ -976,11 +975,9 @@ def test_export_project_manifest_keeps_legacy_analysis_metadata_db_backed(
         manifest = _plain_manifest(export_manifest(session, project_id=fixture.project_id))
         batch = _to_plain(module.export_project_manifests(session, project_ids=[fixture.project_id]))
 
-    analysis_artifact = _artifacts_by_id(manifest)["art_legacy_analysis_json"]
-    assert analysis_artifact["metadata"] == analysis_metadata
+    assert "art_legacy_analysis_json" not in _artifacts_by_id(manifest)
     batch_manifest = batch["project_manifests"][0]
-    batch_artifact = _artifacts_by_id(batch_manifest)["art_legacy_analysis_json"]
-    assert batch_artifact["metadata"] == analysis_metadata
+    assert "art_legacy_analysis_json" not in _artifacts_by_id(batch_manifest)
 
 
 def test_export_project_manifest_includes_entity_revisions_without_local_paths(
@@ -2810,8 +2807,6 @@ def test_sync_project_manifest_api_round_trips_staged_import(
     client: Any,
     tmp_path: Path,
 ) -> None:
-    staging_root = tmp_path / "staging"
-
     with SessionLocal() as session:
         fixture = _create_project_with_artifacts(session, tmp_path)
 
@@ -2826,23 +2821,28 @@ def test_sync_project_manifest_api_round_trips_staged_import(
     _assert_no_absolute_local_paths(manifest, (tmp_path, fixture.root))
     _assert_no_local_path_keys(manifest)
 
-    _stage_manifest_files(manifest, staging_root=staging_root, source_root=fixture.root)
     with SessionLocal() as session:
+        _stage_manifest_content_addressed_files(session, manifest, source_root=fixture.root)
         _delete_live_project(session, fixture)
 
     import_response = client.post(
         "/api/v1/sync/projects/import",
-        json={"manifest": manifest, "staging_root": str(staging_root)},
+        json={"manifest": manifest},
     )
 
     assert import_response.status_code == 200
     project = import_response.json()["project"]
     assert project["id"] == fixture.project_id
     assert project["display_name"] == "Sync Fixture"
+    imported_manifest_response = client.get(f"/api/v1/sync/projects/{fixture.project_id}/manifest")
+    assert imported_manifest_response.status_code == 200
+    imported_manifest = imported_manifest_response.json()["project_manifest"]
+    assert imported_manifest["artifacts"] == manifest["artifacts"]
+    assert imported_manifest["entity_revisions"] == manifest["entity_revisions"]
 
     with SessionLocal() as session:
         job_types = set(session.scalars(select(Job.type).where(Job.project_id == fixture.project_id)))
-        assert not job_types.intersection({"analyze", "chords"})
+        assert not job_types
 
 
 @pytest.mark.parametrize("attack", ["traversal", "staging_symlink", "destination_symlink"])

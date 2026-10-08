@@ -138,7 +138,7 @@ Filesystem storage holds:
 - preview and transformed audio
 - stem artifacts
 - export artifacts
-- future JSON artifacts such as tempo/beat maps
+- legacy result JSON files retained from earlier versions
 
 App-owned source audio, stems, and saved practice mixes may use PCM16 WAV, FLAC level 5,
 MP3 at 192 kbps, or AAC-LC M4A at 192 kbps. Each creation job captures one format; mixed-format
@@ -147,6 +147,20 @@ PCM WAV materializations when their durable input is compressed. Working WAVs ar
 never sync, and are removed when processing completes.
 
 Artifact rows include type, format, path, size, generation metadata, delete/regenerate flags, and creation time.
+
+Analysis, chord and lyric rows are canonical result documents. Each local generation or edit saves
+the row and matching `SyncEntityRevision` in one transaction. Result imports select the higher
+`(updated_at normalized to UTC, author_device_id, revision_id)` across desktop and Android.
+Hydration and repair use the same winner; stale replay cannot replace it. Analysis snapshots have
+no parent and only the current snapshot is advertised, while older rows remain local. Chord and
+lyric revision history remains available.
+
+New results do not write JSON sidecars. Legacy `analysis_json` artifacts are excluded centrally
+from sync metadata, manifests, announcements and artifact tombstones. Their files remain intact
+and may hydrate analysis only when no canonical revision exists. After local identity setup,
+upgrade materialization records unversioned results once using their recorded timestamps and
+provenance. Existing revisions hydrate their winner instead; deleted results stay deleted.
+Analysis job completion returns an empty `result_artifact_ids` array because results are documents.
 
 ### Database Migrations
 

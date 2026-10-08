@@ -357,12 +357,19 @@ pub(super) fn apply_delete_tombstone(
                 .map_err(|error| error.to_string())?;
         }
         "entity_revision" => {
+            let result_type: Option<String> = connection.query_row(
+                "SELECT entity_type FROM sync_entity_revisions WHERE id = ?1 AND project_id = ?2 AND entity_id = ?2 AND entity_type IN ('analysis', 'chords', 'lyrics')",
+                params![tombstone.target_id, tombstone.project_id], |row| row.get(0),
+            ).optional().map_err(|error| error.to_string())?;
             connection
                     .execute(
                         "UPDATE sync_entity_revisions SET state = 'deleted', updated_at = ?1 WHERE id = ?2 AND project_id = ?3",
                         params![now_iso(), tombstone.target_id, tombstone.project_id],
                     )
                     .map_err(|error| error.to_string())?;
+            if result_type.is_some() {
+                hydrate_canonical_result_read_models(connection, &tombstone.project_id)?;
+            }
         }
         _ => {}
     }
@@ -422,6 +429,18 @@ pub(super) fn import_entity_revisions(
     revisions: &[SyncProjectManifestEntityRevisionSchema],
 ) -> Result<(), String> {
     for revision in revisions {
+        match revision.entity_type.as_str() {
+            "analysis" => {
+                mobile_analysis_artifact_payload(&revision.payload, &revision.metadata)?;
+            }
+            "chords" | "chord_timeline" => {
+                mobile_chord_revision_payload(revision)?;
+            }
+            "lyrics" | "lyrics_transcript" => {
+                mobile_lyrics_revision_payload(revision)?;
+            }
+            _ => {}
+        }
         let existing_revision = connection
             .query_row(
                 &format!("SELECT {SYNC_ENTITY_REVISION_COLUMNS} FROM sync_entity_revisions WHERE id = ?1"),
@@ -488,6 +507,53 @@ pub(super) fn import_entity_revisions(
                 )
                 .map_err(|error| error.to_string())?;
     }
+    reconcile_current_revision_states(connection, None)?;
+    Ok(())
+}
+
+fn reconcile_current_revision_states(
+    connection: &Connection,
+    project_id: Option<&str>,
+) -> Result<(), String> {
+    let revisions = {
+        let mut statement = connection.prepare(&format!("SELECT {SYNC_ENTITY_REVISION_COLUMNS} FROM sync_entity_revisions WHERE state IN ('active', 'current') AND (?1 IS NULL OR project_id = ?1)"))
+            .map_err(|error| error.to_string())?;
+        let revisions = statement
+            .query_map(params![project_id], row_entity_revision)
+            .map_err(|error| error.to_string())?;
+        revisions
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?
+    };
+    let mut winners = BTreeMap::new();
+    for revision in &revisions {
+        let key = (
+            &revision.project_id,
+            &revision.entity_type,
+            &revision.entity_id,
+        );
+        let entry = winners.entry(key).or_insert(revision);
+        if super::storage::revision_lww_key(revision) > super::storage::revision_lww_key(entry) {
+            *entry = revision;
+        }
+    }
+    for revision in &revisions {
+        if winners[&(
+            &revision.project_id,
+            &revision.entity_type,
+            &revision.entity_id,
+        )]
+            .revision_id
+            != revision.revision_id
+        {
+            connection
+                .execute(
+                    "UPDATE sync_entity_revisions SET state = 'superseded' WHERE id = ?1",
+                    params![revision.revision_id],
+                )
+                .map_err(|error| error.to_string())?;
+        }
+    }
     Ok(())
 }
 
@@ -511,6 +577,26 @@ fn hydrate_analysis_result_from_artifact(
     connection: &Connection,
     project_id: &str,
 ) -> Result<(), String> {
+    if let Some(revision) =
+        super::storage::current_result_revision(connection, project_id, "analysis")?
+    {
+        return hydrate_analysis_revision(connection, &revision);
+    }
+    let canonical_count: i64 = connection.query_row("SELECT COUNT(*) FROM sync_entity_revisions WHERE project_id = ?1 AND entity_type = 'analysis'", params![project_id], |row| row.get(0))
+        .map_err(|error| error.to_string())?;
+    let deleted: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sync_delete_tombstones WHERE project_id = ?1 AND target_type = 'entity_revision' AND json_extract(prior_metadata_json, '$.entity_type') = 'analysis' AND json_extract(prior_metadata_json, '$.entity_id') = ?1)",
+        params![project_id], |row| row.get(0),
+    ).map_err(|error| error.to_string())?;
+    if canonical_count > 0 || deleted {
+        connection
+            .execute(
+                "DELETE FROM analysis_results WHERE project_id = ?1",
+                params![project_id],
+            )
+            .map_err(|error| error.to_string())?;
+        return Ok(());
+    }
     let analysis_artifact = connection
         .query_row(
             &format!(
@@ -571,23 +657,84 @@ fn hydrate_analysis_result_from_artifact(
     Ok(())
 }
 
+pub(super) fn result_source_artifact_id(
+    connection: &Connection,
+    project_id: &str,
+    source_artifact_id: Option<String>,
+    context: &str,
+) -> Result<Option<String>, String> {
+    let Some(source) = source_artifact_id else {
+        return Ok(None);
+    };
+    if source_artifact_belongs_to_project(connection, project_id, &source)? {
+        return Ok(Some(source));
+    }
+    let deleted = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sync_delete_tombstones WHERE project_id = ?1 AND target_type = 'artifact' AND target_id = ?2)",
+        params![project_id, source], |row| row.get::<_, bool>(0),
+    ).map_err(|error| error.to_string())?;
+    let exists = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM artifacts WHERE id = ?1)",
+            params![source],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(|error| error.to_string())?;
+    if deleted && !exists {
+        return Ok(None);
+    }
+    Err(format!(
+        "{context} source_artifact_id must belong to the manifest project."
+    ))
+}
+
+fn hydrate_analysis_revision(
+    connection: &Connection,
+    revision: &SyncProjectManifestEntityRevisionSchema,
+) -> Result<(), String> {
+    let mut parsed = mobile_analysis_artifact_payload(&revision.payload, &revision.metadata)?;
+    if parsed
+        .project_id
+        .as_deref()
+        .is_some_and(|project_id| project_id != revision.project_id)
+    {
+        return Err("Analysis entity revision belongs to a different project.".to_string());
+    }
+    parsed.source_artifact_id = parsed
+        .source_artifact_id
+        .or_else(|| revision.source_artifact_id.clone());
+    parsed.source_artifact_id = result_source_artifact_id(
+        connection,
+        &revision.project_id,
+        parsed.source_artifact_id,
+        "Analysis",
+    )?;
+    let updated = payload_optional_timestamp_string(
+        &revision.payload,
+        "updated_at",
+        "Analysis entity revision",
+    )?
+    .unwrap_or_else(|| revision.updated_at.clone());
+    connection.execute(
+        "INSERT INTO analysis_results (project_id, source_artifact_id, estimated_key, key_confidence, estimated_reference_hz, tuning_offset_cents, tempo_bpm, timing_json, analysis_version, created_at, updated_at, metadata_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12) ON CONFLICT(project_id) DO UPDATE SET source_artifact_id = excluded.source_artifact_id, estimated_key = excluded.estimated_key, key_confidence = excluded.key_confidence, estimated_reference_hz = excluded.estimated_reference_hz, tuning_offset_cents = excluded.tuning_offset_cents, tempo_bpm = excluded.tempo_bpm, timing_json = excluded.timing_json, analysis_version = excluded.analysis_version, created_at = excluded.created_at, updated_at = excluded.updated_at, metadata_json = excluded.metadata_json",
+        params![revision.project_id, parsed.source_artifact_id, parsed.estimated_key, parsed.key_confidence,
+            parsed.estimated_reference_hz, parsed.tuning_offset_cents, parsed.tempo_bpm, parsed.timing.map(|value| value.to_string()),
+            parsed.analysis_version, parsed.created_at.unwrap_or_else(|| revision.created_at.clone()), updated, revision.metadata.to_string()],
+    ).map_err(|error| error.to_string())?;
+    Ok(())
+}
+
 fn hydrate_chord_revision(
     connection: &Connection,
     revision: &SyncProjectManifestEntityRevisionSchema,
 ) -> Result<(), String> {
-    let parsed = mobile_chord_revision_payload(revision)?;
-    if let Some(source_artifact_id) = &parsed.source_artifact_id {
-        if !source_artifact_belongs_to_project(
-            connection,
-            &revision.project_id,
-            source_artifact_id,
-        )? {
-            return Err(
-                "Chord revision source_artifact_id must belong to the manifest project."
-                    .to_string(),
-            );
-        }
-    }
+    let mut parsed = mobile_chord_revision_payload(revision)?;
+    parsed.source_artifact_id = result_source_artifact_id(
+        connection,
+        &revision.project_id,
+        parsed.source_artifact_id,
+        "Chord revision",
+    )?;
     let source_segments_json =
         serde_json::to_string(&parsed.source_segments).map_err(|error| error.to_string())?;
     let segments_json =
@@ -621,19 +768,13 @@ fn hydrate_lyrics_revision(
     connection: &Connection,
     revision: &SyncProjectManifestEntityRevisionSchema,
 ) -> Result<(), String> {
-    let parsed = mobile_lyrics_revision_payload(revision)?;
-    if let Some(source_artifact_id) = &parsed.source_artifact_id {
-        if !source_artifact_belongs_to_project(
-            connection,
-            &revision.project_id,
-            source_artifact_id,
-        )? {
-            return Err(
-                "Lyrics revision source_artifact_id must belong to the manifest project."
-                    .to_string(),
-            );
-        }
-    }
+    let mut parsed = mobile_lyrics_revision_payload(revision)?;
+    parsed.source_artifact_id = result_source_artifact_id(
+        connection,
+        &revision.project_id,
+        parsed.source_artifact_id,
+        "Lyrics revision",
+    )?;
     let source_segments_json =
         serde_json::to_string(&parsed.source_segments).map_err(|error| error.to_string())?;
     let segments_json =
@@ -757,6 +898,7 @@ pub(super) fn hydrate_imported_read_models(
     connection: &Connection,
     project_id: &str,
 ) -> Result<(), String> {
+    reconcile_current_revision_states(connection, Some(project_id))?;
     let project = get_project_schema(connection, project_id)?;
     if project.sync_status == "deleted" {
         return Ok(());
@@ -786,6 +928,14 @@ pub(super) fn hydrate_imported_read_models(
             )
         }
     }
+    hydrate_canonical_result_read_models(connection, project_id)
+}
+
+pub(super) fn hydrate_canonical_result_read_models(
+    connection: &Connection,
+    project_id: &str,
+) -> Result<(), String> {
+    reconcile_current_revision_states(connection, Some(project_id))?;
     let mut statement = connection
         .prepare(
             &format!(
@@ -803,6 +953,10 @@ pub(super) fn hydrate_imported_read_models(
         }
         hydrate_chord_revision(connection, &row.map_err(|error| error.to_string())?)?;
         hydrated_chords = true;
+    }
+    if !hydrated_chords {
+        connection.execute("DELETE FROM chord_timelines WHERE project_id = ?1 AND EXISTS(SELECT 1 FROM sync_entity_revisions WHERE project_id = ?1 AND entity_type IN ('chords', 'chord_timeline'))", params![project_id])
+            .map_err(|error| error.to_string())?;
     }
     let lyrics_revision_count: i64 = connection
         .query_row(
@@ -914,10 +1068,15 @@ pub(super) fn manifest_artifact_merge(
             return Err("A synced artifact conflicts with an existing local artifact.".to_string());
         }
         if existing_artifact.r#type == "drums_stem" {
-            let local_updated_at =
-                parse_sync_timestamp_utc(&existing_artifact.updated_at, "local artifact updated_at")?;
+            let local_updated_at = parse_sync_timestamp_utc(
+                &existing_artifact.updated_at,
+                "local artifact updated_at",
+            )?;
             let remote_updated_at = parse_sync_timestamp_utc(
-                artifact.updated_at.as_deref().unwrap_or(&artifact.created_at),
+                artifact
+                    .updated_at
+                    .as_deref()
+                    .unwrap_or(&artifact.created_at),
                 "artifact updated_at",
             )?;
             if remote_updated_at < local_updated_at {
@@ -1085,14 +1244,35 @@ pub(super) fn project_manifest_mismatch(
             )
             .optional()
             .map_err(|error| error.to_string())?;
-        let Some(local) = local else {
-            return Ok(Some(ProjectManifestMismatch::RevisionMissing));
-        };
-        if local.content_sha256 != revision.content_sha256 {
+        if local
+            .as_ref()
+            .is_some_and(|local| local.content_sha256 != revision.content_sha256)
+        {
             return Err(
                 "A synced entity revision conflicts with an existing local revision.".to_string(),
             );
         }
+        if matches!(
+            revision.entity_type.as_str(),
+            "analysis" | "chords" | "lyrics"
+        ) && matches!(revision.state.as_str(), "active" | "current")
+        {
+            if let Some(winner) = super::storage::current_result_revision(
+                connection,
+                &revision.project_id,
+                &revision.entity_type,
+            )? {
+                if winner.revision_id != revision.revision_id
+                    && super::storage::revision_lww_key(&winner)
+                        > super::storage::revision_lww_key(revision)
+                {
+                    continue;
+                }
+            }
+        }
+        let Some(local) = local else {
+            return Ok(Some(ProjectManifestMismatch::RevisionMissing));
+        };
         if serde_json::to_value(local).map_err(|error| error.to_string())?
             != serde_json::to_value(revision).map_err(|error| error.to_string())?
         {
@@ -1646,6 +1826,7 @@ pub fn mobile_import_sync_project(
     app: AppHandle,
     payload: SyncProjectStagedImportRequest,
 ) -> Result<SyncProjectImportResponse, String> {
+    let payload = payload.into_public_staging()?;
     let connection = db(&app)?;
     let root = app_data_root(&app)?;
     Ok(SyncProjectImportResponse {

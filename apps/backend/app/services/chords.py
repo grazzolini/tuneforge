@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import tempfile
 from contextlib import ExitStack
 from copy import deepcopy
@@ -20,7 +19,6 @@ from app.services.chord_backends import (
     resolve_chord_backend,
     resolve_chord_backend_id,
 )
-from app.services.paths import project_analysis_dir
 from app.services.stem_models import NON_VOCAL_SIX_STEM_SOURCES, model_output_artifact_type
 from app.services.stem_signal_metadata import stem_signal_analysis_usable
 from app.services.sync_revisions import record_chord_revision
@@ -93,27 +91,6 @@ def detect_project_chords(
     session.flush()
     session.refresh(existing)
     record_chord_revision(session, chords=existing, revision_type="generated")
-
-    chord_path = project_analysis_dir(project.id) / "chords.json"
-    chord_path.parent.mkdir(parents=True, exist_ok=True)
-    chord_path.write_text(
-        json.dumps(
-            {
-                "project_id": project.id,
-                "backend": existing.backend,
-                "source_artifact_id": existing.source_artifact_id,
-                "source_segments": existing.source_segments_json,
-                "timeline": existing.segments_json,
-                "has_user_edits": existing.has_user_edits,
-                "source_kind": existing.source_kind,
-                "metadata": existing.metadata_json,
-                "created_at": existing.created_at.isoformat(),
-                "updated_at": existing.updated_at.isoformat() if existing.updated_at else None,
-            },
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
 
     return existing
 

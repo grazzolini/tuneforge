@@ -37,6 +37,11 @@ Codex audit. Improve Android packaging from Linux hosts and Web Audio output
 device discovery. Security readiness depends on verified outcomes; sensitive
 details remain private.
 
+Finish with canonical analysis, chord and lyric result revisions
+([#470](https://github.com/grazzolini/tuneforge/issues/470)), after
+[Android packaging #585](https://github.com/grazzolini/tuneforge/issues/585).
+This storage foundation precedes the cross-platform workflow work in 2.0.
+
 ## v1.9.0 — Musical Consistency and Processing
 
 [Milestone](https://github.com/grazzolini/tuneforge/milestone/23) ·
@@ -65,9 +70,11 @@ as evidence and implementation needs become clearer.
 Make everyday workflows reliable across supported desktop platforms and Android,
 with capabilities and interactions appropriate to each platform.
 
-Keep saved analysis, chords and lyrics compatible as their storage evolves.
-Support durable mixes at selected tempos and playback timing qualified through
-measurement for supported output combinations.
+Build on the result revision foundation scheduled for 1.8. The remaining work covers
+cross-platform workflows ([#448](https://github.com/grazzolini/tuneforge/issues/448)),
+durable mixes at selected tempos ([#529](https://github.com/grazzolini/tuneforge/issues/529)),
+and playback timing qualified through measurement for supported output combinations
+([#580](https://github.com/grazzolini/tuneforge/issues/580)).
 
 ## Continuing Product Boundaries
 

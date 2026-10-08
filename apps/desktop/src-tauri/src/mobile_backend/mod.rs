@@ -16,7 +16,7 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fs,
-    io::{self, Read, Write},
+    io::{self, Read},
     path::{Path, PathBuf},
     thread,
     time::Instant,
@@ -65,14 +65,13 @@ mod storage;
 #[cfg(all(test, not(target_os = "android")))]
 use self::storage::{
     app_data_root, create_completed_job, create_failed_job, create_running_job, db, db_at_root,
-    fail_running_job,
-    file_sha256, find_existing_project_source, get_project_manifest, get_project_schema,
-    get_source_artifact, get_staged_artifact, migrate_mobile_db, new_id, project_cleanup_root_path,
-    project_root_path, register_job_staging_path, relative_artifact_path, update_job_stage,
-    require_sync_editable_project, row_artifact, row_delete_tombstone, row_entity_revision,
-    row_job, row_project, safe_relative_path, source_format, verify_staged_artifact,
-    ARTIFACT_COLUMNS, JOB_COLUMNS, PROJECT_COLUMNS, SYNC_DELETE_TOMBSTONE_COLUMNS,
-    SYNC_ENTITY_REVISION_COLUMNS,
+    fail_running_job, file_sha256, find_existing_project_source, get_project_manifest,
+    get_project_schema, get_source_artifact, get_staged_artifact, migrate_mobile_db, new_id,
+    project_cleanup_root_path, project_root_path, register_job_staging_path,
+    relative_artifact_path, require_sync_editable_project, row_artifact, row_delete_tombstone,
+    row_entity_revision, row_job, row_project, safe_relative_path, source_format, update_job_stage,
+    verify_staged_artifact, ARTIFACT_COLUMNS, JOB_COLUMNS, PROJECT_COLUMNS,
+    SYNC_DELETE_TOMBSTONE_COLUMNS, SYNC_ENTITY_REVISION_COLUMNS,
 };
 
 #[cfg(all(test, not(target_os = "android")))]
@@ -155,11 +154,18 @@ fn local_identity(connection: &Connection) -> Result<SyncLocalIdentitySchema, St
 }
 
 #[cfg(all(test, not(target_os = "android")))]
-fn active_trusted_device_ids(_connection: &Connection) -> Result<HashSet<String>, String> {
-    Ok(HashSet::from([
-        "device_peer_1".to_string(),
-        "device_desktop_fixture".to_string(),
-    ]))
+fn active_trusted_device_ids(connection: &Connection) -> Result<HashSet<String>, String> {
+    let identity = local_identity(connection)?;
+    let mut statement = connection.prepare(
+        "SELECT device_id FROM sync_trusted_peers WHERE revoked_at IS NULL AND sync_group_id = ?1",
+    ).map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map(params![identity.sync_group_id], |row| {
+            row.get::<_, String>(0)
+        })
+        .map_err(|error| error.to_string())?;
+    rows.collect::<Result<HashSet<_>, _>>()
+        .map_err(|error| error.to_string())
 }
 
 #[cfg(all(test, not(target_os = "android")))]

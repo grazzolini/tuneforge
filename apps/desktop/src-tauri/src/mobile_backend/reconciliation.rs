@@ -668,6 +668,30 @@ fn plan_sync_reconciliation_parts(
             }
             continue;
         }
+        if matches!(revision.state.as_str(), "active" | "current") {
+            if let Some(local) = super::storage::current_result_revision(
+                connection,
+                &revision.project_id,
+                &revision.entity_type,
+            )? {
+                if super::storage::revision_lww_key(revision)
+                    <= super::storage::revision_lww_key(&local)
+                {
+                    items.push(reconciliation_item(
+                        "entity_revision",
+                        &revision.revision_id,
+                        Some(revision.project_id.clone()),
+                        "noop",
+                        Some(ACTION_NOOP),
+                        Some(revision.content_sha256.clone()),
+                        None,
+                        "Local entity revision wins last-write-wins ordering.",
+                        json!({"local_revision_id": local.revision_id}),
+                    ));
+                    continue;
+                }
+            }
+        }
         if get_project_schema(connection, &revision.project_id).is_ok() {
             items.push(reconciliation_item(
                 "entity_revision",
@@ -1069,6 +1093,7 @@ pub(super) fn mobile_apply_sync_reconciliation_with_compact_references(
     payload: SyncReconciliationApplyRequest,
     compact_staged_references: Vec<crate::sync_transport::CompactStagedReference>,
 ) -> Result<SyncReconciliationApplyResponse, String> {
+    let payload = payload.into_public_staging()?;
     let connection = db(&app)?;
     let root = app_data_root(&app)?;
     apply_sync_reconciliation_parts(&connection, &root, payload, compact_staged_references)
@@ -1164,6 +1189,357 @@ mod tests {
         ));
         fs::create_dir_all(&root).unwrap();
         root
+    }
+
+    fn python_result_fixture(
+        root: &Path,
+        count: usize,
+        variant: &str,
+        verify_native: Option<&Path>,
+    ) {
+        let backend = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../backend");
+        let mut command = std::process::Command::new("uv");
+        command
+            .current_dir(&backend)
+            .args([
+                "run",
+                "--offline",
+                "--no-sync",
+                "--python",
+                "3.14",
+                "python",
+                "tests/result_sync_fixture.py",
+            ])
+            .arg(root)
+            .env("PYTHONPATH", &backend)
+            .env("TUNEFORGE_DATA_DIR", root.join("backend-data"))
+            .env(
+                "TUNEFORGE_SYNC_TRANSPORT_DATA_DIR",
+                root.join("transport-data"),
+            )
+            .env("XDG_CACHE_HOME", root.join("model-cache"));
+        if let Some(path) = verify_native {
+            command.arg("--verify-native").arg(path);
+        } else {
+            command
+                .arg("--count")
+                .arg(count.to_string())
+                .arg("--variant")
+                .arg(variant);
+        }
+        let output = command.output().unwrap();
+        assert!(
+            output.status.success(),
+            "Synthetic Python fixture failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn apply_python_bundle(
+        connection: &Connection,
+        receiver_root: &Path,
+        bundle_root: &Path,
+    ) -> SyncReconciliationApplyResponse {
+        let bundle: Value =
+            serde_json::from_str(&fs::read_to_string(bundle_root.join("bundle.json")).unwrap())
+                .unwrap();
+        let manifests = bundle["project_manifests"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| {
+                serde_json::from_str::<SyncProjectManifestSchema>(
+                    &fs::read_to_string(bundle_root.join(entry["path"].as_str().unwrap())).unwrap(),
+                )
+                .unwrap()
+            })
+            .collect::<Vec<_>>();
+        if let Some(group) = manifests
+            .iter()
+            .flat_map(|manifest| &manifest.delete_tombstones)
+            .next()
+            .map(|tombstone| &tombstone.sync_group_id)
+        {
+            connection
+                .execute(
+                    "UPDATE sync_local_identities SET sync_group_id = ?1 WHERE id = 'local'",
+                    params![group],
+                )
+                .unwrap();
+            connection
+                .execute(
+                    "UPDATE sync_trusted_peers SET sync_group_id = ?1",
+                    params![group],
+                )
+                .unwrap();
+        }
+        let authors = manifests
+            .iter()
+            .flat_map(|manifest| {
+                manifest
+                    .entity_revisions
+                    .iter()
+                    .map(|revision| revision.author_device_id.clone())
+                    .chain(
+                        manifest
+                            .delete_tombstones
+                            .iter()
+                            .map(|tombstone| tombstone.author_device_id.clone()),
+                    )
+            })
+            .collect::<HashSet<_>>();
+        let group = local_identity(connection).unwrap().sync_group_id;
+        for author in authors {
+            connection.execute("INSERT OR IGNORE INTO sync_trusted_peers (device_id, sync_group_id, display_name, public_key, trusted_at, created_at, updated_at) VALUES (?1, ?2, 'Synthetic peer', ?3, ?4, ?4, ?4)", params![author, group, format!("synthetic_{author}"), now_iso()]).unwrap();
+        }
+        for blob in bundle["blobs"].as_array().unwrap() {
+            super::storage::stage_sync_artifact(
+                connection,
+                receiver_root,
+                SyncArtifactStagingRequest {
+                    source_path: bundle_root
+                        .join(blob["path"].as_str().unwrap())
+                        .to_string_lossy()
+                        .into_owned(),
+                    content_sha256: blob["content_sha256"].as_str().unwrap().to_string(),
+                    size_bytes: blob["size_bytes"].as_i64().unwrap(),
+                    provider_device_id: Some("device_peer_1".to_string()),
+                    metadata: json!({}),
+                },
+            )
+            .unwrap();
+        }
+        let payload = SyncReconciliationApplyRequest {
+            remote_library: SyncReconciliationRemoteLibrarySchema {
+                projects: manifests
+                    .iter()
+                    .map(|manifest| {
+                        serde_json::from_value(serde_json::to_value(&manifest.project).unwrap())
+                            .unwrap()
+                    })
+                    .collect(),
+                artifacts: manifests
+                    .iter()
+                    .flat_map(|manifest| {
+                        manifest.artifacts.iter().map(|artifact| {
+                            serde_json::from_value(serde_json::to_value(artifact).unwrap()).unwrap()
+                        })
+                    })
+                    .collect(),
+                entity_revisions: manifests
+                    .iter()
+                    .flat_map(|manifest| manifest.entity_revisions.clone())
+                    .collect(),
+                delete_tombstones: manifests
+                    .iter()
+                    .flat_map(|manifest| manifest.delete_tombstones.clone())
+                    .collect(),
+            },
+            project_manifests: manifests,
+            peer_inventory: vec![SyncPeerInventoryEntrySchema {
+                device_id: "device_peer_1".to_string(),
+                available_content_sha256: bundle["blobs"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|blob| blob["content_sha256"].as_str().unwrap().to_string())
+                    .collect(),
+                metadata: json!({}),
+            }],
+            staging_root: None,
+            use_content_addressed_staging: true,
+            project_ids: Vec::new(),
+            include_timing_evidence: false,
+        };
+        apply_sync_reconciliation_parts(connection, receiver_root, payload, Vec::new()).unwrap()
+    }
+
+    // Dedicated CI follow-up: TODO.md#cross-runtime-integration-ci.
+    #[test]
+    #[ignore = "Requires the prepared Python backend; dedicated cross-runtime CI is pending."]
+    fn python_producers_native_apply_result_matrix_and_bidirectional_replay() {
+        for (variant, count) in [
+            ("analysis", 1),
+            ("chords", 1),
+            ("stems", 1),
+            ("chords-stems", 1),
+            ("combined", 1),
+            ("analysis", 25),
+            ("analysis", 194),
+        ] {
+            let root = synthetic_root(&format!("results-{variant}-{count}"));
+            python_result_fixture(&root, count, variant, None);
+            let receiver_root = root.join("receiver");
+            let connection = super::storage::db_at_root(&receiver_root).unwrap();
+            insert_trusted_peer(&connection, "device_peer_1");
+            let started = std::time::Instant::now();
+            let baseline = apply_python_bundle(&connection, &receiver_root, &root.join("baseline"));
+            let baseline_ms = started.elapsed().as_millis();
+            assert_eq!(baseline.summary.failed_actions, 0, "baseline {variant}");
+            assert_eq!(
+                baseline.plan.summary.total_conflicts, 0,
+                "baseline {variant}"
+            );
+            let started = std::time::Instant::now();
+            let changed = apply_python_bundle(&connection, &receiver_root, &root.join("changed"));
+            let changed_ms = started.elapsed().as_millis();
+            assert_eq!(
+                changed.summary.failed_actions,
+                0,
+                "changed {variant}: {}",
+                serde_json::to_string(&changed.results).unwrap()
+            );
+            assert_eq!(changed.plan.summary.total_conflicts, 0, "changed {variant}");
+            let replay = apply_python_bundle(&connection, &receiver_root, &root.join("changed"));
+            assert!(
+                replay.plan.actions.is_empty(),
+                "replay {variant}: {}",
+                serde_json::to_string(&replay.plan.actions).unwrap()
+            );
+            if variant == "analysis" {
+                let stale =
+                    apply_python_bundle(&connection, &receiver_root, &root.join("baseline"));
+                assert!(
+                    stale.plan.actions.is_empty(),
+                    "stale analysis replay must preserve the current winner"
+                );
+            }
+            assert!(replay.results.is_empty());
+            let expected: Value =
+                serde_json::from_str(&fs::read_to_string(root.join("expected.json")).unwrap())
+                    .unwrap();
+            println!(
+                "python result library variant={variant} projects={count} metrics={}",
+                expected["metrics"]
+            );
+            let started = std::time::Instant::now();
+            let mut manifest_bytes = 0;
+            for project_id in expected["project_ids"].as_array().unwrap() {
+                let project_id = project_id.as_str().unwrap();
+                let analysis = super::audio::get_analysis_value(&connection, project_id)
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(
+                    analysis["tempo_bpm"],
+                    if matches!(variant, "analysis" | "combined") {
+                        json!(128.0)
+                    } else {
+                        json!(100.0)
+                    }
+                );
+                let manifest =
+                    get_project_manifest(&connection, &receiver_root, project_id).unwrap();
+                manifest_bytes += serde_json::to_vec(&manifest).unwrap().len();
+                assert_eq!(
+                    manifest
+                        .entity_revisions
+                        .iter()
+                        .filter(|revision| revision.entity_type == "analysis")
+                        .count(),
+                    1
+                );
+                assert!(!manifest
+                    .artifacts
+                    .iter()
+                    .any(|artifact| artifact.r#type == "analysis_json"));
+                let source = manifest
+                    .artifacts
+                    .iter()
+                    .find(|artifact| artifact.r#type == "source_audio")
+                    .unwrap();
+                assert_eq!(source.format, "m4a");
+                if matches!(variant, "stems" | "chords-stems" | "combined") {
+                    assert_eq!(
+                        manifest
+                            .artifacts
+                            .iter()
+                            .filter(|artifact| artifact.r#type.ends_with("_stem"))
+                            .count(),
+                        6
+                    );
+                }
+                if variant == "combined" {
+                    assert_eq!(
+                        super::audio::get_chord_response(&connection, project_id.to_string())
+                            .unwrap()
+                            .timeline[0]["label"],
+                        "G"
+                    );
+                    let lyrics: String = connection
+                        .query_row(
+                            "SELECT segments_json FROM lyrics_transcripts WHERE project_id = ?1",
+                            params![project_id],
+                            |row| row.get(0),
+                        )
+                        .unwrap();
+                    assert!(lyrics.contains("Canção 🎵"));
+                    super::audio::cache_source_reference_tuning(
+                        &connection,
+                        project_id,
+                        &source.artifact_id,
+                        432.0,
+                        -31.77,
+                    )
+                    .unwrap();
+                    let transaction = connection.unchecked_transaction().unwrap();
+                    transaction.execute("UPDATE chord_timelines SET segments_json = ?1, timeline_json = ?1, has_user_edits = 1, updated_at = ?2 WHERE project_id = ?3", params![json!([{"label":"Dm","start_seconds":0.0,"end_seconds":0.5}]).to_string(), now_iso(), project_id]).unwrap();
+                    transaction.execute("UPDATE lyrics_transcripts SET segments_json = ?1, has_user_edits = 1, updated_at = ?2 WHERE project_id = ?3", params![json!([{"text":"Native canção\u{7f} 🎵","start_seconds":0.0,"end_seconds":0.5}]).to_string(), now_iso(), project_id]).unwrap();
+                    super::storage::record_result_revision(
+                        &transaction,
+                        project_id,
+                        "chords",
+                        "user_edit",
+                    )
+                    .unwrap();
+                    super::storage::record_result_revision(
+                        &transaction,
+                        project_id,
+                        "lyrics",
+                        "user_edit",
+                    )
+                    .unwrap();
+                    transaction.commit().unwrap();
+                    let native_manifest =
+                        get_project_manifest(&connection, &receiver_root, project_id).unwrap();
+                    let path = root.join("native-manifest.json");
+                    fs::write(&path, serde_json::to_vec(&native_manifest).unwrap()).unwrap();
+                    python_result_fixture(&root, count, variant, Some(&path));
+                    let returned = apply_python_bundle(
+                        &connection,
+                        &receiver_root,
+                        &root.join("native-return"),
+                    );
+                    assert_eq!(returned.summary.failed_actions, 0);
+                    assert_eq!(returned.plan.summary.total_conflicts, 0);
+                    assert_eq!(
+                        super::audio::get_analysis_value(&connection, project_id)
+                            .unwrap()
+                            .unwrap()["estimated_reference_hz"],
+                        json!(432.0)
+                    );
+                }
+            }
+            let manifest_ms = started.elapsed().as_millis();
+            let started = std::time::Instant::now();
+            for _ in 0..10 {
+                let reopened = super::storage::db_at_root(&receiver_root).unwrap();
+                assert_eq!(
+                    reopened.total_changes(),
+                    0,
+                    "canonical DB opens must not write rows"
+                );
+                assert_eq!(
+                    reopened
+                        .query_row("SELECT COUNT(*) FROM analysis_results", [], |row| row
+                            .get::<_, i64>(0))
+                        .unwrap(),
+                    count as i64
+                );
+            }
+            println!("result matrix variant={variant} projects={count} initial_import_ms={baseline_ms} changed_import_ms={changed_ms} manifest_ms={manifest_ms} manifest_bytes={manifest_bytes} ten_db_open_reads_ms={}", started.elapsed().as_millis());
+            drop(connection);
+            fs::remove_dir_all(root).unwrap();
+        }
     }
 
     fn staged_wav(connection: &Connection, root: &Path, name: &str, phase: f32) -> (String, i64) {

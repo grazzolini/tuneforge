@@ -227,9 +227,7 @@ class SyncEntityRevision(Base):
     metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON(), default=dict)
     payload_json: Mapped[dict[str, Any]] = mapped_column(JSON(), default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow, onupdate=utcnow
-    )
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     project: Mapped[Project] = relationship(back_populates="sync_entity_revisions")
 
@@ -279,6 +277,8 @@ class AnalysisResult(Base):
     timing_json: Mapped[dict[str, Any] | None] = mapped_column(JSON(), nullable=True)
     analysis_version: Mapped[str] = mapped_column(String(32), default="v3")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON(), default=dict)
 
     project: Mapped[Project] = relationship(back_populates="analysis")
 

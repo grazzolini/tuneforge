@@ -7,7 +7,16 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import Artifact, Project, SyncDeleteTombstone, SyncEntityRevision, utcnow
+from app.models import (
+    AnalysisResult,
+    Artifact,
+    ChordTimeline,
+    LyricsTranscript,
+    Project,
+    SyncDeleteTombstone,
+    SyncEntityRevision,
+    utcnow,
+)
 from app.services.project_storage import queue_project_storage_reconciliation
 from app.services.sync_revisions import sanitize_revision_payload
 from app.services.sync_trust import get_or_create_local_identity
@@ -126,7 +135,32 @@ def apply_delete_tombstone(session: Session, tombstone: SyncDeleteTombstone) -> 
         revision = session.get(SyncEntityRevision, tombstone.target_id)
         if revision is None or revision.project_id != tombstone.project_id:
             return
+        entity_type, entity_id = revision.entity_type, revision.entity_id
         session.delete(revision)
+        session.flush()
+        result_model = {
+            "analysis": AnalysisResult, "chords": ChordTimeline, "lyrics": LyricsTranscript,
+        }.get(entity_type)
+        if result_model is None or entity_id != tombstone.project_id:
+            return
+        active = list(session.scalars(select(SyncEntityRevision).where(
+            SyncEntityRevision.project_id == tombstone.project_id,
+            SyncEntityRevision.entity_type == entity_type,
+            SyncEntityRevision.entity_id == entity_id,
+            SyncEntityRevision.state.in_(("active", "current")),
+        )))
+        if active:
+            from app.services.sync_manifest import _export_entity_revision_manifest, _hydrate_current_entity_revisions
+
+            project = session.get(Project, tombstone.project_id)
+            if project is not None:
+                _hydrate_current_entity_revisions(
+                    session, project, [_export_entity_revision_manifest(row) for row in active],
+                )
+        else:
+            result = session.get(result_model, tombstone.project_id)
+            if result is not None:
+                session.delete(result)
         session.flush()
 
 

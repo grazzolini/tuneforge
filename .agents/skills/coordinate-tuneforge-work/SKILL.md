@@ -73,6 +73,13 @@ dirt, branch, and fresh `origin/main` relationship; run the scope's live issue
 and PR checks; and classify affected surfaces and risks. Preserve user changes;
 do not update or rebase without authority.
 
+Consult relevant [TODO.md](../../../TODO.md) notes when planning; update or remove
+them when resolved. GitHub owns status, priority, scheduling, and release ordering.
+Notes do not authorize more work or external updates. Keep new GitHub issue numbers
+and URLs out of code comments, identifiers, and test names; use behavior-based names
+and repository documentation references. Issues may link to code and docs may link
+to issues. Apply this prospectively; do not clean up old references.
+
 Produce a decision-complete plan containing:
 
 - selected item, work kind, outcome, non-goals, and acceptance evidence;

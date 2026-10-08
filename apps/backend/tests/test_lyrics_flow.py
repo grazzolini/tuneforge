@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -255,7 +254,15 @@ def test_lyrics_job_persists_transcript_and_update_preserves_timings(
     assert created["language_override"] is None
     assert created["segments"][0]["text"] == "First line"
     assert created["segments"][0]["words"][0]["text"] == "First"
-    snapshot = json.loads((project_analysis_dir(project["id"]) / "lyrics.json").read_text(encoding="utf-8"))
+    assert not (project_analysis_dir(project["id"]) / "lyrics.json").exists()
+    with SessionLocal() as session:
+        snapshot = session.scalar(
+            select(SyncEntityRevision).where(
+                SyncEntityRevision.project_id == project["id"],
+                SyncEntityRevision.entity_type == "lyrics",
+                SyncEntityRevision.state == "active",
+            )
+        ).payload_json
     assert snapshot["language_override"] is None
 
     updated = client.put(
@@ -484,7 +491,15 @@ def test_lyrics_language_override_reaches_service_and_persists_metadata(
     assert requested_languages[-1] == "pt"
     assert created["language"] == "pt"
     assert created["language_override"] == "pt"
-    snapshot = json.loads((project_analysis_dir(project["id"]) / "lyrics.json").read_text(encoding="utf-8"))
+    assert not (project_analysis_dir(project["id"]) / "lyrics.json").exists()
+    with SessionLocal() as session:
+        snapshot = session.scalar(
+            select(SyncEntityRevision).where(
+                SyncEntityRevision.project_id == project["id"],
+                SyncEntityRevision.entity_type == "lyrics",
+                SyncEntityRevision.state == "active",
+            )
+        ).payload_json
     assert snapshot["language"] == "pt"
     assert snapshot["language_override"] == "pt"
 
@@ -544,7 +559,15 @@ def test_lyrics_no_lyrics_override_clears_transcript_without_transcribing(
     assert created["segments"] == []
     assert created["has_user_edits"] is False
 
-    snapshot = json.loads((project_analysis_dir(project_id) / "lyrics.json").read_text())
+    assert not (project_analysis_dir(project_id) / "lyrics.json").exists()
+    with SessionLocal() as session:
+        snapshot = session.scalar(
+            select(SyncEntityRevision).where(
+                SyncEntityRevision.project_id == project_id,
+                SyncEntityRevision.entity_type == "lyrics",
+                SyncEntityRevision.state == "active",
+            )
+        ).payload_json
     assert snapshot["language_override"] == "none"
     assert snapshot["segments"] == []
 

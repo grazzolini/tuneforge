@@ -469,10 +469,14 @@ Request fields:
 - `remote_library`
 - `project_manifests`
 - `peer_inventory`
-- `staging_root`
-- `use_content_addressed_staging`
+- `staging_root` - optional; only `null` is accepted.
+- `use_content_addressed_staging` - optional; defaults to `true` and only `true` is accepted.
 - `project_ids`
 - `include_timing_evidence`
+
+HTTP reconciliation consumes verified content from backend-managed content-addressed staging.
+Caller-selected staging directories and relative-folder mode are rejected with HTTP `422` before
+applying any state changes.
 
 Response fields:
 
@@ -604,9 +608,18 @@ Imports a project from a previously exported project manifest plus files that ha
 Request fields:
 
 - `manifest`
-- `staging_root`
+- `staging_root` - optional; only `null` is accepted.
+- `use_content_addressed_staging` - optional; defaults to `true` and only `true` is accepted.
 
-`staging_root` is a local directory containing the staged project files at the relative paths declared in the manifest. During import, the backend requires exactly one `source_audio` artifact. Durable sources, stems, and practice mixes accept exact `wav`/`.wav`, `flac`/`.flac`, `mp3`/`.mp3`, or AAC-LC `m4a`/`.m4a` pairs. The backend verifies size, SHA-256, readability, container, and codec before commit, rewrites accepted paths into this install's backend-managed project root, and persists the project through backend services instead of copying database rows from another device. Original absolute import paths are local provenance only and are not sync-operational inputs.
+Files must already be verified in backend-managed content-addressed staging, indexed by their
+manifest SHA-256 hashes. Caller-selected staging directories and relative-folder mode are rejected
+with HTTP `422` before import. During import, the backend requires exactly one `source_audio`
+artifact. Durable sources, stems, and practice mixes accept exact `wav`/`.wav`, `flac`/`.flac`,
+`mp3`/`.mp3`, or AAC-LC `m4a`/`.m4a` pairs. The backend verifies size, SHA-256, readability,
+container, and codec before commit, rewrites accepted paths into this install's backend-managed
+project root, and persists the project through backend services instead of copying database rows
+from another device. Original absolute import paths are local provenance only and are not
+sync-operational inputs.
 
 If the local library already contains the same canonical project or source SHA-256, staged import rejects the duplicate with HTTP `409` instead of creating a second project. The response uses the normal project wrapper shape:
 

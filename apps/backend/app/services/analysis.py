@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping
 from contextlib import ExitStack
 from datetime import UTC, datetime
@@ -14,10 +13,9 @@ from sqlalchemy.orm import Session
 from app.engines.analysis import AnalysisPayload, analyze_track
 from app.engines.beat_this import BeatThisRuntimeError, analyze_track_with_beat_this, beat_this_dependency_status
 from app.errors import AppError
-from app.models import AnalysisResult, Artifact, Project
-from app.services.artifacts import refresh_artifact_file_metadata, register_artifact
+from app.models import AnalysisResult, Artifact, Project, utcnow
 from app.services.audio_working import materialize_pcm_wav
-from app.services.paths import project_analysis_dir
+from app.services.sync_revisions import record_analysis_revision
 
 SOURCE_STEM_ARTIFACT_TYPES = ("drums_stem", "bass_stem")
 BUILT_IN_BEAT_BACKEND = "built-in"
@@ -31,14 +29,11 @@ def analyze_project(
     beat_backend: str = BEAT_THIS_BACKEND,
 ) -> AnalysisResult:
     source_artifact = _project_source_artifact(project)
-    source_stem_artifacts = (
-        _source_stem_artifacts(project, source_artifact) if source_artifact is not None else ()
-    )
+    source_stem_artifacts = _source_stem_artifacts(project, source_artifact) if source_artifact is not None else ()
     with ExitStack() as stack:
         source_path = stack.enter_context(materialize_pcm_wav(Path(project.imported_path)))
         source_stem_paths = tuple(
-            stack.enter_context(materialize_pcm_wav(Path(artifact.path)))
-            for artifact in source_stem_artifacts
+            stack.enter_context(materialize_pcm_wav(Path(artifact.path))) for artifact in source_stem_artifacts
         )
         results = _analyze_track_with_backend(
             source_path,
@@ -59,16 +54,17 @@ def analyze_project(
     analysis.tempo_bpm = results["tempo_bpm"]  # type: ignore[assignment]
     analysis.timing_json = results["timing"]  # type: ignore[assignment]
     analysis.analysis_version = "v3"
+    analysis.updated_at = utcnow()
     session.flush()
 
-    _write_analysis_artifact(
-        session,
-        project=project,
+    analysis.metadata_json = _analysis_artifact_metadata(
+        existing_artifact=_existing_analysis_artifact(session, project.id),
         analysis=analysis,
         analysis_backend=beat_backend,
         source_artifact=source_artifact,
         source_stem_artifacts=() if beat_backend == BEAT_THIS_BACKEND else source_stem_artifacts,
     )
+    record_analysis_revision(session, analysis)
 
     return analysis
 
@@ -147,61 +143,6 @@ def _is_source_analysis_stem(artifact: Artifact, source_artifact: Artifact) -> b
     return Path(artifact.path).exists()
 
 
-def _write_analysis_artifact(
-    session: Session,
-    *,
-    project: Project,
-    analysis: AnalysisResult,
-    analysis_backend: str | None,
-    source_artifact: Artifact | None,
-    source_stem_artifacts: tuple[Artifact, ...] | None,
-) -> None:
-    existing_artifact = _existing_analysis_artifact(session, project.id)
-    analysis_metadata = _analysis_artifact_metadata(
-        existing_artifact=existing_artifact,
-        analysis=analysis,
-        analysis_backend=analysis_backend,
-        source_artifact=source_artifact,
-        source_stem_artifacts=source_stem_artifacts,
-    )
-    analysis_payload = {
-        "project_id": project.id,
-        "estimated_key": analysis.estimated_key,
-        "key_confidence": analysis.key_confidence,
-        "estimated_reference_hz": analysis.estimated_reference_hz,
-        "tuning_offset_cents": analysis.tuning_offset_cents,
-        "tempo_bpm": analysis.tempo_bpm,
-        "timing": analysis.timing_json,
-        **analysis_metadata,
-    }
-    analysis_dir = project_analysis_dir(project.id)
-    analysis_dir.mkdir(parents=True, exist_ok=True)
-    analysis_path = analysis_dir / "analysis.json"
-    analysis_path.write_text(
-        json.dumps(analysis_payload, indent=2),
-        encoding="utf-8",
-    )
-
-    if existing_artifact is None:
-        register_artifact(
-            session,
-            project_id=project.id,
-            artifact_type="analysis_json",
-            artifact_format="json",
-            path=analysis_path,
-            metadata=analysis_metadata,
-            generated_by="analysis",
-        )
-    else:
-        refresh_artifact_file_metadata(existing_artifact, analysis_path)
-        existing_artifact.generated_by = "analysis"
-        existing_artifact.can_delete = True
-        existing_artifact.can_regenerate = True
-        existing_artifact.metadata_json = analysis_metadata
-
-    session.flush()
-
-
 def _existing_analysis_artifact(session: Session, project_id: str) -> Artifact | None:
     return session.scalar(
         select(Artifact)
@@ -218,7 +159,9 @@ def _analysis_artifact_metadata(
     source_artifact: Artifact | None,
     source_stem_artifacts: tuple[Artifact, ...] | None,
 ) -> dict[str, Any]:
-    existing_metadata = existing_artifact.metadata_json if existing_artifact is not None else {}
+    existing_metadata = analysis.metadata_json or (
+        existing_artifact.metadata_json if existing_artifact is not None else {}
+    )
     if not isinstance(existing_metadata, dict):
         existing_metadata = {}
 
@@ -270,9 +213,7 @@ def _source_stem_content_sha256s(
     if source_stem_artifacts is not None:
         return [artifact.content_sha256 for artifact in source_stem_artifacts]
     existing_sha256s = existing_metadata.get("source_stem_content_sha256s")
-    if isinstance(existing_sha256s, list) and all(
-        isinstance(item, str) or item is None for item in existing_sha256s
-    ):
+    if isinstance(existing_sha256s, list) and all(isinstance(item, str) or item is None for item in existing_sha256s):
         return list(existing_sha256s)
     return []
 

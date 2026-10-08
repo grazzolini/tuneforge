@@ -299,7 +299,7 @@ fn beat_this_preprocessing_provenance() -> Value {
 
 fn store_analysis_result(
     connection: &Connection,
-    root: &Path,
+    _root: &Path,
     project: &ProjectSchema,
     source_artifact: &ArtifactSchema,
     features: &MobileAudioFeatures,
@@ -334,32 +334,6 @@ fn store_analysis_result(
         "preprocessing": preprocessing.clone(),
         "created_at": timestamp,
     });
-
-    let _storage_guard = project_storage_mutation_guard();
-    let analysis_dir = project_root_path(root, &project.id)?.join("analysis");
-    fs::create_dir_all(&analysis_dir).map_err(|error| error.to_string())?;
-    let temporary_path = analysis_dir.join(format!(".{job_id}.json.tmp"));
-    let analysis_path = analysis_dir.join(format!("{job_id}.json"));
-    let bytes = serde_json::to_vec_pretty(&analysis).map_err(|error| error.to_string())?;
-    let mut temporary = fs::OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .open(&temporary_path)
-        .map_err(|error| error.to_string())?;
-    temporary
-        .write_all(&bytes)
-        .map_err(|error| error.to_string())?;
-    temporary.sync_all().map_err(|error| error.to_string())?;
-    drop(temporary);
-    fs::rename(&temporary_path, &analysis_path).map_err(|error| error.to_string())?;
-    let size_bytes = bytes.len() as i64;
-    let content_sha256 = match file_sha256(&analysis_path) {
-        Ok(hash) => hash,
-        Err(message) => {
-            let _ = fs::remove_file(&analysis_path);
-            return Err(message);
-        }
-    };
 
     connection
         .execute_batch("BEGIN IMMEDIATE")
@@ -396,7 +370,7 @@ fn store_analysis_result(
         .execute(
             "INSERT INTO analysis_results (project_id, source_artifact_id, estimated_key, key_confidence, estimated_reference_hz, tuning_offset_cents, tempo_bpm, timing_json, analysis_version, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
-             ON CONFLICT(project_id) DO UPDATE SET source_artifact_id = excluded.source_artifact_id, estimated_key = excluded.estimated_key, key_confidence = excluded.key_confidence, estimated_reference_hz = excluded.estimated_reference_hz, tuning_offset_cents = excluded.tuning_offset_cents, tempo_bpm = excluded.tempo_bpm, timing_json = excluded.timing_json, analysis_version = excluded.analysis_version, created_at = excluded.created_at",
+             ON CONFLICT(project_id) DO UPDATE SET source_artifact_id = excluded.source_artifact_id, estimated_key = excluded.estimated_key, key_confidence = excluded.key_confidence, estimated_reference_hz = excluded.estimated_reference_hz, tuning_offset_cents = excluded.tuning_offset_cents, tempo_bpm = excluded.tempo_bpm, timing_json = excluded.timing_json, analysis_version = excluded.analysis_version",
             params![
                 project.id,
                 source_artifact.id,
@@ -411,36 +385,22 @@ fn store_analysis_result(
             ],
         )
         .map_err(|error| error.to_string())?;
-        connection
-            .execute(
-                "DELETE FROM artifacts WHERE project_id = ?1 AND type = 'analysis_json'",
-                params![project.id],
-            )
-            .map_err(|error| error.to_string())?;
-        connection
-        .execute(
-            "INSERT INTO artifacts (id, project_id, type, format, path, content_sha256, size_bytes, generated_by, can_delete, can_regenerate, metadata_json, cache_key, created_at)
-             VALUES (?1, ?2, 'analysis_json', 'json', ?3, ?4, ?5, 'analysis', 0, 1, ?6, NULL, ?7)",
-            params![
-                new_artifact_id()?,
-                project.id,
-                analysis_path.to_string_lossy().into_owned(),
-                content_sha256,
-                size_bytes,
-                json!({
-                    "analysis_version": analysis_version,
-                    "source_artifact_id": source_artifact.id,
-                    "beat_backend": beat_backend,
-                    "runtime": if beat_result.is_some() { "executorch-1.4.0-xnnpack" } else { "native-cpu" },
-                    "model_revision": if beat_result.is_some() { Value::String("895b249c4ccabaedc0770b12935c2b7b2f60e145".to_string()) } else { Value::Null },
-                    "model_sha256": if beat_result.is_some() { Value::String("03b512e135edeb4f4644a7f05fa13ae20ba676484997548f81118fec13d42293".to_string()) } else { Value::Null },
-                    "preprocessing": preprocessing,
-                })
-                .to_string(),
-                timestamp,
-            ],
-        )
-        .map_err(|error| error.to_string())?;
+        let metadata = json!({
+            "analysis_generated_at": timestamp,
+            "analysis_backend": beat_backend,
+            "analysis_version": analysis_version,
+            "source_artifact_id": source_artifact.id,
+            "source_artifact_sha256": source_artifact.content_sha256,
+            "source_stem_artifact_ids": [],
+            "source_stem_content_sha256s": [],
+            "runtime": if beat_result.is_some() { "executorch-1.4.0-xnnpack" } else { "native-cpu" },
+            "model_revision": if beat_result.is_some() { Value::String("895b249c4ccabaedc0770b12935c2b7b2f60e145".to_string()) } else { Value::Null },
+            "model_sha256": if beat_result.is_some() { Value::String("03b512e135edeb4f4644a7f05fa13ae20ba676484997548f81118fec13d42293".to_string()) } else { Value::Null },
+            "preprocessing": preprocessing,
+        });
+        connection.execute("UPDATE analysis_results SET updated_at = ?1, metadata_json = ?2 WHERE project_id = ?3",
+            params![timestamp, metadata.to_string(), project.id]).map_err(|error| error.to_string())?;
+        super::storage::record_result_revision(connection, &project.id, "analysis", "generated")?;
         let payload_raw = connection
             .query_row(
                 "SELECT payload_json FROM jobs WHERE id = ?1",
@@ -469,13 +429,11 @@ fn store_analysis_result(
         Ok(()) => {
             if let Err(error) = connection.execute_batch("COMMIT") {
                 let _ = connection.execute_batch("ROLLBACK");
-                let _ = fs::remove_file(&analysis_path);
                 return Err(error.to_string());
             }
         }
         Err(message) => {
             let _ = connection.execute_batch("ROLLBACK");
-            let _ = fs::remove_file(&analysis_path);
             return Err(message);
         }
     }
@@ -518,44 +476,9 @@ enum ChordStoreOutcome {
     Preserved,
 }
 
-fn chord_snapshot_bytes(response: &ChordResponse) -> Result<Vec<u8>, String> {
-    serde_json::to_vec_pretty(response).map_err(|error| error.to_string())
-}
-
-fn write_synced_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    let mut file = fs::OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .open(path)
-        .map_err(|error| error.to_string())?;
-    file.write_all(bytes).map_err(|error| error.to_string())?;
-    file.sync_all().map_err(|error| error.to_string())
-}
-
-fn repair_chord_snapshot(root: &Path, response: &ChordResponse) -> Result<(), String> {
-    if response.created_at.is_none() {
-        return Ok(());
-    }
-    let bytes = chord_snapshot_bytes(response)?;
-    let _storage_guard = project_storage_mutation_guard();
-    let analysis_dir = project_root_path(root, &response.project_id)?.join("analysis");
-    fs::create_dir_all(&analysis_dir).map_err(|error| error.to_string())?;
-    let chord_path = analysis_dir.join("chords.json");
-    if fs::read(&chord_path).is_ok_and(|existing| existing == bytes) {
-        return Ok(());
-    }
-    let temporary_path = analysis_dir.join(format!(".chords.repair.{}.tmp", new_id("snapshot")));
-    write_synced_file(&temporary_path, &bytes)?;
-    let result = fs::rename(&temporary_path, &chord_path).map_err(|error| error.to_string());
-    if result.is_err() {
-        let _ = fs::remove_file(&temporary_path);
-    }
-    result
-}
-
 fn store_chord_timeline(
     connection: &Connection,
-    root: &Path,
+    _root: &Path,
     project: &ProjectSchema,
     source_artifact: &ArtifactSchema,
     timeline: Vec<Value>,
@@ -589,20 +512,9 @@ fn store_chord_timeline(
         created_at: Some(created_at.clone()),
         updated_at: Some(timestamp.clone()),
     };
-    let bytes = chord_snapshot_bytes(&response)?;
-    let _storage_guard = project_storage_mutation_guard();
-    let analysis_dir = project_root_path(root, &project.id)?.join("analysis");
-    fs::create_dir_all(&analysis_dir).map_err(|error| error.to_string())?;
-    let temporary_path = analysis_dir.join(format!(".chords.{job_id}.tmp"));
-    let backup_path = analysis_dir.join(format!(".chords.{job_id}.backup"));
-    let chord_path = analysis_dir.join("chords.json");
-    write_synced_file(&temporary_path, &bytes)?;
-
     connection
         .execute_batch("BEGIN IMMEDIATE")
         .map_err(|error| error.to_string())?;
-    let mut backed_up = false;
-    let mut published = false;
     let publish = (|| -> Result<ChordStoreOutcome, String> {
         let current_source: (String, String) = connection.query_row(
             "SELECT artifacts.path, projects.imported_path FROM artifacts JOIN projects ON projects.id = artifacts.project_id WHERE artifacts.id = ?1 AND artifacts.project_id = ?2 AND artifacts.type = 'source_audio'",
@@ -649,12 +561,6 @@ fn store_chord_timeline(
             }
             return Ok(ChordStoreOutcome::Preserved);
         }
-        if chord_path.exists() {
-            fs::rename(&chord_path, &backup_path).map_err(|error| error.to_string())?;
-            backed_up = true;
-        }
-        fs::rename(&temporary_path, &chord_path).map_err(|error| error.to_string())?;
-        published = true;
         connection.execute(
             "INSERT INTO chord_timelines (project_id, source_segments_json, segments_json, timeline_json, backend, source_artifact_id, source_kind, metadata_json, has_user_edits, created_at, updated_at)
              VALUES (?1, ?2, ?2, ?2, ?3, ?4, 'generated', ?5, 0, ?6, ?7)
@@ -662,6 +568,7 @@ fn store_chord_timeline(
             params![project.id, timeline_json, backend, source_artifact.id,
                 response.metadata.to_string(), created_at, timestamp],
         ).map_err(|error| error.to_string())?;
+        super::storage::record_result_revision(connection, &project.id, "chords", "generated")?;
         let payload_raw = connection
             .query_row(
                 "SELECT payload_json FROM jobs WHERE id = ?1",
@@ -686,28 +593,12 @@ fn store_chord_timeline(
         Ok(outcome) => {
             if let Err(error) = connection.execute_batch("COMMIT") {
                 let _ = connection.execute_batch("ROLLBACK");
-                if published {
-                    let _ = fs::remove_file(&chord_path);
-                }
-                if backed_up {
-                    let _ = fs::rename(&backup_path, &chord_path);
-                }
-                let _ = fs::remove_file(&temporary_path);
                 return Err(error.to_string());
             }
-            let _ = fs::remove_file(&backup_path);
-            let _ = fs::remove_file(&temporary_path);
             Ok(outcome)
         }
         Err(message) => {
             let _ = connection.execute_batch("ROLLBACK");
-            if published {
-                let _ = fs::remove_file(&chord_path);
-            }
-            if backed_up {
-                let _ = fs::rename(&backup_path, &chord_path);
-            }
-            let _ = fs::remove_file(&temporary_path);
             Err(message)
         }
     }
@@ -828,13 +719,18 @@ fn stored_source_reference_hz(
         .map_err(|error| error.to_string())
 }
 
-fn cache_source_reference_tuning(
+pub(super) fn cache_source_reference_tuning(
     connection: &Connection,
     project_id: &str,
     source_artifact_id: &str,
     reference_hz: f64,
     tuning_offset_cents: f64,
 ) -> Result<(), String> {
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(|error| error.to_string())?;
+    let connection = &transaction;
+    let timestamp = now_iso();
     let existing_source = connection
         .query_row(
             "SELECT source_artifact_id FROM analysis_results WHERE project_id = ?1",
@@ -846,21 +742,22 @@ fn cache_source_reference_tuning(
     match existing_source {
         Some(Some(existing)) if existing == source_artifact_id => {
             connection.execute(
-                "UPDATE analysis_results SET estimated_reference_hz = ?1, tuning_offset_cents = ?2 WHERE project_id = ?3 AND source_artifact_id = ?4",
-                params![reference_hz, tuning_offset_cents, project_id, source_artifact_id],
+                "UPDATE analysis_results SET estimated_reference_hz = ?1, tuning_offset_cents = ?2, updated_at = ?5 WHERE project_id = ?3 AND source_artifact_id = ?4",
+                params![reference_hz, tuning_offset_cents, project_id, source_artifact_id, timestamp],
             )
             .map_err(|error| error.to_string())?;
         }
         None => {
             connection.execute(
-                "INSERT INTO analysis_results (project_id, source_artifact_id, estimated_reference_hz, tuning_offset_cents, analysis_version, created_at) VALUES (?1, ?2, ?3, ?4, 'mobile-tuning-v1', ?5)",
-                params![project_id, source_artifact_id, reference_hz, tuning_offset_cents, now_iso()],
+                "INSERT INTO analysis_results (project_id, source_artifact_id, estimated_reference_hz, tuning_offset_cents, analysis_version, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, 'mobile-tuning-v1', ?5, ?5)",
+                params![project_id, source_artifact_id, reference_hz, tuning_offset_cents, timestamp],
             )
             .map_err(|error| error.to_string())?;
         }
-        _ => {}
+        _ => return transaction.commit().map_err(|error| error.to_string()),
     }
-    Ok(())
+    super::storage::record_result_revision(connection, project_id, "analysis", "tuning")?;
+    transaction.commit().map_err(|error| error.to_string())
 }
 
 #[cfg(target_os = "android")]
@@ -1618,10 +1515,8 @@ pub fn mobile_submit_chords(
 
 pub fn mobile_get_chords(app: AppHandle, project_id: String) -> Result<ChordResponse, String> {
     let connection = db(&app)?;
-    let root = app_data_root(&app)?;
     let _ = get_project_schema(&connection, &project_id)?;
     let response = get_chord_response(&connection, project_id)?;
-    let _ = repair_chord_snapshot(&root, &response);
     Ok(response)
 }
 
@@ -1792,16 +1687,15 @@ pub fn mobile_submit_transpose(
 mod tuning_tests {
     use super::{
         beat_this_preprocessing_provenance, cache_source_reference_tuning, get_analysis_value,
-        get_chord_response, repair_chord_snapshot, request_audio_job_cancellation, run_chord_job,
-        store_analysis_result, store_chord_timeline, AudioJobCancellation, ChordStoreOutcome,
-        MobileAudioFeatures,
+        get_chord_response, request_audio_job_cancellation, run_chord_job, store_analysis_result,
+        store_chord_timeline, AudioJobCancellation, ChordStoreOutcome, MobileAudioFeatures,
     };
     use crate::mobile_backend::{
         create_running_job, db_at_root, get_project_schema, get_source_artifact, new_id, now_iso,
         row_job, JOB_COLUMNS,
     };
     use rusqlite::params;
-    use serde_json::{json, Value};
+    use serde_json::json;
     use std::fs;
 
     #[test]
@@ -2020,13 +1914,15 @@ mod tuning_tests {
         assert!(reloaded["estimated_key"].is_string());
         assert!(reloaded["tempo_bpm"].is_null());
         assert!(reloaded["timing"].is_null());
-        let metadata: String = reopened.query_row(
-            "SELECT metadata_json FROM artifacts WHERE project_id = ?1 AND type = 'analysis_json'",
-            params![project_id],
-            |row| row.get(0),
-        ).unwrap();
+        let metadata: String = reopened
+            .query_row(
+                "SELECT metadata_json FROM analysis_results WHERE project_id = ?1",
+                params![project_id],
+                |row| row.get(0),
+            )
+            .unwrap();
         let metadata: serde_json::Value = serde_json::from_str(&metadata).unwrap();
-        assert_eq!(metadata["beat_backend"], "built-in");
+        assert_eq!(metadata["analysis_backend"], "built-in");
         assert_eq!(metadata["runtime"], "native-cpu");
         assert!(metadata["model_sha256"].is_null());
 
@@ -2055,7 +1951,7 @@ mod tuning_tests {
         assert_eq!(stored["preprocessing"]["sample_rate_hz"], 22_050);
         let metadata: String = reopened
             .query_row(
-                "SELECT metadata_json FROM artifacts WHERE project_id = ?1 AND type = 'analysis_json'",
+                "SELECT metadata_json FROM analysis_results WHERE project_id = ?1",
                 params![project_id],
                 |row| row.get(0),
             )
@@ -2188,13 +2084,13 @@ mod tuning_tests {
             panic!("expected stored timeline");
         };
         assert_eq!(response.backend.as_deref(), Some("tuneforge-fast"));
-        let snapshot: Value = serde_json::from_slice(&fs::read(&chord_path).unwrap()).unwrap();
-        assert_eq!(snapshot["backend"], "tuneforge-fast");
-        assert_eq!(snapshot["timeline"][0]["label"], "C");
-        fs::write(&chord_path, &old_snapshot).unwrap();
-        repair_chord_snapshot(&root, &response).unwrap();
-        let repaired: Value = serde_json::from_slice(&fs::read(&chord_path).unwrap()).unwrap();
-        assert_eq!(repaired["timeline"][0]["label"], "C");
+        assert_eq!(fs::read(&chord_path).unwrap(), old_snapshot);
+        let revision =
+            super::super::storage::current_result_revision(&connection, &project_id, "chords")
+                .unwrap()
+                .unwrap();
+        assert_eq!(revision.payload["backend"], "tuneforge-fast");
+        assert_eq!(revision.payload["timeline"][0]["label"], "C");
 
         let cancelled =
             create_running_job(&connection, &project_id, "chords", Some("source".into())).unwrap();

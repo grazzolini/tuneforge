@@ -164,38 +164,6 @@ fn active_lyrics_job(
         .map_err(|error| error.to_string())
 }
 
-fn stage_lyrics_snapshot(
-    root: &Path,
-    lyrics: &LyricsResponse,
-) -> Result<(PathBuf, PathBuf), String> {
-    let lyrics_path = project_root_path(root, &lyrics.project_id)?
-        .join("analysis")
-        .join("lyrics.json");
-    if let Some(parent) = lyrics_path.parent() {
-        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    }
-    let staging_path = lyrics_path.with_file_name(format!(".lyrics-{}.tmp", new_id("snapshot")));
-    fs::write(
-        &staging_path,
-        serde_json::to_vec_pretty(lyrics).map_err(|error| error.to_string())?,
-    )
-    .map_err(|error| error.to_string())?;
-    Ok((staging_path, lyrics_path))
-}
-
-fn promote_lyrics_snapshot(staged: &(PathBuf, PathBuf)) -> Result<(), String> {
-    fs::rename(&staged.0, &staged.1).map_err(|error| error.to_string())
-}
-
-fn write_lyrics_snapshot(root: &Path, lyrics: &LyricsResponse) -> Result<(), String> {
-    let staged = stage_lyrics_snapshot(root, lyrics)?;
-    if let Err(error) = promote_lyrics_snapshot(&staged) {
-        let _ = fs::remove_file(&staged.0);
-        return Err(error);
-    }
-    Ok(())
-}
-
 fn upsert_lyrics_transcript(
     connection: &Connection,
     project: &ProjectSchema,
@@ -232,7 +200,7 @@ fn upsert_lyrics_transcript(
 
 fn store_lyrics_transcript(
     connection: &Connection,
-    root: &Path,
+    _root: &Path,
     project: &ProjectSchema,
     source_artifact: &ArtifactSchema,
     transcription: MobileLyricsTranscription,
@@ -242,12 +210,8 @@ fn store_lyrics_transcript(
         .map_err(|error| error.to_string())?;
     upsert_lyrics_transcript(&transaction, project, source_artifact, &transcription)?;
     let response = get_lyrics_response(&transaction, project.id.clone())?;
-    let staged = stage_lyrics_snapshot(root, &response)?;
-    if let Err(error) = transaction.commit().map_err(|error| error.to_string()) {
-        let _ = fs::remove_file(&staged.0);
-        return Err(error);
-    }
-    promote_lyrics_snapshot(&staged)?;
+    super::storage::record_result_revision(&transaction, &project.id, "lyrics", "generated")?;
+    transaction.commit().map_err(|error| error.to_string())?;
     Ok(response)
 }
 
@@ -270,10 +234,14 @@ fn payload_lyrics_edits(payload: &Value) -> Result<Vec<String>, String> {
 
 fn update_lyrics_transcript(
     connection: &Connection,
-    root: &Path,
+    _root: &Path,
     project_id: String,
     payload: &Value,
 ) -> Result<LyricsResponse, String> {
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(|error| error.to_string())?;
+    let connection = &transaction;
     let edits = payload_lyrics_edits(payload)?;
     let (source_segments, current_segments): (Vec<Value>, Vec<Value>) = connection
         .query_row(
@@ -340,6 +308,11 @@ fn update_lyrics_transcript(
     }
 
     let has_user_edits = updated_segments != source_segments;
+    if updated_segments == current_segments {
+        let response = get_lyrics_response(connection, project_id)?;
+        transaction.commit().map_err(|error| error.to_string())?;
+        return Ok(response);
+    }
     let updated_segments_json =
         serde_json::to_string(&updated_segments).map_err(|error| error.to_string())?;
     connection
@@ -353,8 +326,11 @@ fn update_lyrics_transcript(
             ],
         )
         .map_err(|error| error.to_string())?;
+    if updated_segments != current_segments {
+        super::storage::record_result_revision(connection, &project_id, "lyrics", "user_edit")?;
+    }
     let response = get_lyrics_response(connection, project_id)?;
-    write_lyrics_snapshot(root, &response)?;
+    transaction.commit().map_err(|error| error.to_string())?;
     Ok(response)
 }
 
@@ -770,7 +746,7 @@ fn ensure_source_unchanged(
 
 fn finish_lyrics_job(
     connection: &Connection,
-    root: &Path,
+    _root: &Path,
     job_id: &str,
     project: &ProjectSchema,
     source_artifact: &ArtifactSchema,
@@ -799,6 +775,7 @@ fn finish_lyrics_job(
         );
     }
     upsert_lyrics_transcript(&transaction, project, source_artifact, &transcription)?;
+    super::storage::record_result_revision(&transaction, &project.id, "lyrics", "generated")?;
     let timestamp = now_iso();
     let payload = json!({
         "stage": "complete",
@@ -813,14 +790,7 @@ fn finish_lyrics_job(
     if updated != 1 || cancellation.requested() {
         return Err("LYRICS_CANCELLED".to_string());
     }
-    let response = get_lyrics_response(&transaction, project.id.clone())?;
-    let staged = stage_lyrics_snapshot(root, &response)?;
-    if let Err(error) = transaction.commit().map_err(|error| error.to_string()) {
-        let _ = fs::remove_file(&staged.0);
-        return Err(error);
-    }
-    promote_lyrics_snapshot(&staged)?;
-    Ok(())
+    transaction.commit().map_err(|error| error.to_string())
 }
 pub fn mobile_submit_lyrics(
     app: AppHandle,

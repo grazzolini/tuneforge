@@ -531,11 +531,13 @@ def _embedded_current_revision_missing_locally(
     revision: _RemoteEntityRevision,
     local: _LocalState,
 ) -> bool:
-    if revision.entity_type not in {"chords", "lyrics"}:
+    if revision.entity_type not in {"analysis", "chords", "lyrics"}:
         return False
     if not _remote_revision_is_current(revision):
         return False
     entity_key = (revision.project_id, revision.entity_type, revision.entity_id)
+    if revision.entity_type == "analysis":
+        return not local.entity_revisions_by_entity.get(entity_key)
     if revision.entity_type == "chords":
         if local.entity_revisions_by_entity.get(entity_key):
             return False
@@ -554,7 +556,7 @@ def _embedded_current_revision_replaces_local(
     revision: _RemoteEntityRevision,
     local: _LocalState,
 ) -> bool:
-    if revision.entity_type not in {"chords", "lyrics"}:
+    if revision.entity_type not in {"analysis", "chords", "lyrics"}:
         return False
     if not _remote_revision_is_current(revision):
         return False
@@ -654,7 +656,7 @@ def _embedded_missing_current_revision_chain_ids(
         current_counts = Counter(
             (revision.project_id, revision.entity_type)
             for revision in manifest_revisions_by_id.values()
-            if revision.entity_type in {"chords", "lyrics"} and _remote_revision_is_current(revision)
+            if revision.entity_type in {"analysis", "chords", "lyrics"} and _remote_revision_is_current(revision)
         )
         for revision in _sorted_remote_entity_revisions(manifest_revisions_by_id.values()):
             if not (
@@ -3744,6 +3746,10 @@ def _divergent_local_revision(
     remote_revision: _RemoteEntityRevision,
     local: _LocalState,
 ) -> SyncEntityRevision | None:
+    if remote_revision.entity_type in {"analysis", "chords", "lyrics"} and _remote_revision_is_current(remote_revision):
+        current = _local_current_revision_for_remote_entity(remote_revision, local)
+        if current is not None and current.id != remote_revision.revision_id:
+            return current
     key = (
         remote_revision.project_id,
         remote_revision.entity_type,

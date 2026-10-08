@@ -28,9 +28,11 @@ from app.services.sync_trust import get_or_create_local_identity
 from app.utils.hashing import file_sha256
 
 
+@pytest.mark.parametrize("staging_fields", [{}, {"staging_root": None, "use_content_addressed_staging": True}])
 def test_reconciliation_apply_imports_staged_project_manifest(
     client: TestClient,
     sample_audio_file: Path,
+    staging_fields: dict[str, Any],
 ) -> None:
     identity = _ensure_identity_and_peer("peer-apply-a")
     content_sha256 = hashlib.sha256(sample_audio_file.read_bytes()).hexdigest()
@@ -55,7 +57,7 @@ def test_reconciliation_apply_imports_staged_project_manifest(
                     "metadata": {"display_name": "Peer Apply"},
                 }
             ],
-            "use_content_addressed_staging": True,
+            **staging_fields,
         },
     )
 

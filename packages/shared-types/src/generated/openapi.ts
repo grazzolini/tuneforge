@@ -2579,10 +2579,18 @@ export interface components {
         /** SyncProjectStagedImportRequest */
         SyncProjectStagedImportRequest: {
             manifest: components["schemas"]["SyncProjectManifestSchema-Input"];
-            /** Staging Root */
-            staging_root?: string | null;
-            /** Use Content Addressed Staging */
-            use_content_addressed_staging?: boolean | null;
+            /**
+             * Staging Root
+             * @description HTTP imports use backend-managed staging; only null is accepted.
+             */
+            staging_root?: null;
+            /**
+             * Use Content Addressed Staging
+             * @description HTTP imports require verified content-addressed staging.
+             * @default true
+             * @constant
+             */
+            use_content_addressed_staging?: true;
         };
         /** SyncProjectStatusProjectMetadataSchema */
         SyncProjectStatusProjectMetadataSchema: {
@@ -2675,13 +2683,18 @@ export interface components {
             project_manifests?: components["schemas"]["SyncProjectManifestSchema-Input"][];
             /** Peer Inventory */
             peer_inventory: components["schemas"]["SyncPeerInventoryEntrySchema"][];
-            /** Staging Root */
-            staging_root?: string | null;
+            /**
+             * Staging Root
+             * @description HTTP imports use backend-managed staging; only null is accepted.
+             */
+            staging_root?: null;
             /**
              * Use Content Addressed Staging
+             * @description HTTP imports require verified content-addressed staging.
              * @default true
+             * @constant
              */
-            use_content_addressed_staging?: boolean;
+            use_content_addressed_staging?: true;
             /** Project Ids */
             project_ids?: string[];
             /**

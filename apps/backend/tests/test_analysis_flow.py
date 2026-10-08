@@ -12,7 +12,7 @@ from sqlalchemy import select
 from app.db import SessionLocal
 from app.engines import audio_features
 from app.errors import AppError
-from app.models import AnalysisResult, Artifact, Job, Project
+from app.models import AnalysisResult, Artifact, Job, Project, SyncEntityRevision
 from app.services import analysis as analysis_service
 from app.services.artifacts import register_artifact
 from app.services.paths import ensure_project_dirs
@@ -55,12 +55,13 @@ def test_analysis_job_persists_results(
 
     artifacts = client.get(f"/api/v1/projects/{project['id']}/artifacts").json()["artifacts"]
     source_artifact = next(artifact for artifact in artifacts if artifact["type"] == "source_audio")
-    analysis_artifacts = [artifact for artifact in artifacts if artifact["type"] == "analysis_json"]
-    assert len(analysis_artifacts) == 1
+    assert not any(artifact["type"] == "analysis_json" for artifact in artifacts)
+    assert final_job["result_artifact_ids"] == []
     assert analysis["source_artifact_id"] == source_artifact["id"]
-    assert analysis_artifacts[0]["metadata"]["source_artifact_id"] == source_artifact["id"]
-    analysis_payload = json.loads(Path(analysis_artifacts[0]["path"]).read_text(encoding="utf-8"))
-    assert analysis_payload["timing"] == analysis["timing"]
+    with SessionLocal() as session:
+        revision = _analysis_revision(session, project["id"])
+        assert revision.payload_json["timing"] == analysis["timing"]
+        assert revision.source_artifact_id == source_artifact["id"]
 
     refresh_job = client.post(
         f"/api/v1/projects/{project['id']}/analyze",
@@ -69,7 +70,7 @@ def test_analysis_job_persists_results(
     assert wait_for_job(client, refresh_job["id"])["status"] == "completed"
 
     refreshed_artifacts = client.get(f"/api/v1/projects/{project['id']}/artifacts").json()["artifacts"]
-    assert len([artifact for artifact in refreshed_artifacts if artifact["type"] == "analysis_json"]) == 1
+    assert not any(artifact["type"] == "analysis_json" for artifact in refreshed_artifacts)
 
 
 def test_analysis_passes_latest_source_drums_and_bass_stems_only(
@@ -128,7 +129,7 @@ def test_analysis_passes_latest_source_drums_and_bass_stems_only(
     assert captured["source_stem_paths"] == (source_drums_path, source_bass_path)
 
 
-def test_reanalysis_updates_analysis_artifact_sync_metadata(
+def test_reanalysis_records_independent_analysis_revision_with_provenance(
     client,
     sample_audio_file: Path,
     tmp_path: Path,
@@ -203,7 +204,7 @@ def test_reanalysis_updates_analysis_artifact_sync_metadata(
         project = session.get(Project, project_id)
         assert project is not None
         analysis_service.analyze_project(session, project, beat_backend="built-in")
-        first_artifact = _analysis_artifact(session, project_id)
+        first_artifact = _analysis_revision(session, project_id)
         source_artifact = session.get(Artifact, "art_analysis_source")
         drums_artifact = session.get(Artifact, "art_source_drums")
         bass_artifact = session.get(Artifact, "art_source_bass")
@@ -237,24 +238,25 @@ def test_reanalysis_updates_analysis_artifact_sync_metadata(
         "analysis_backend": "built-in",
         **expected_built_in_metadata,
     }
-    assert {key: first_payload[key] for key in first_artifact.metadata_json} == first_artifact.metadata_json
+    assert first_payload["timing"] == _timing_payload(source="built-in")
 
     with SessionLocal() as session:
         project = session.get(Project, project_id)
         assert project is not None
         analysis_service.analyze_project(session, project, beat_backend="beat-this")
-        second_artifact = _analysis_artifact(session, project_id)
+        second_artifact = _analysis_revision(session, project_id)
         session.commit()
 
     second_payload = _analysis_payload(second_artifact)
-    assert second_artifact.id == first_artifact_id
+    assert second_artifact.id != first_artifact_id
+    assert second_artifact.base_revision_id is None
     assert second_artifact.content_sha256 != first_content_sha256
     assert second_artifact.metadata_json == {
         "analysis_generated_at": "2026-01-03T03:04:05+00:00",
         "analysis_backend": "beat-this",
         **expected_beat_this_metadata,
     }
-    assert {key: second_payload[key] for key in second_artifact.metadata_json} == second_artifact.metadata_json
+    assert second_payload["timing"] == _timing_payload(source="beat-this")
     assert second_payload["estimated_key"] == "D minor"
 
 
@@ -427,9 +429,7 @@ def test_analysis_beat_this_backend_reports_known_runtime_failure(
     monkeypatch.setattr(analysis_service, "beat_this_dependency_status", lambda: (True, None))
 
     def fail_beat_this_analysis(*_args, **_kwargs):
-        raise analysis_service.BeatThisRuntimeError(
-            "Advanced Beat Analysis could not load the beat-this model."
-        )
+        raise analysis_service.BeatThisRuntimeError("Advanced Beat Analysis could not load the beat-this model.")
 
     monkeypatch.setattr(
         analysis_service,
@@ -626,21 +626,20 @@ def _forbid_analysis_signal_inspection(monkeypatch) -> None:
     monkeypatch.setattr("app.engines.stem_signal.inspect_stem_signal", raise_if_called)
 
 
-def _analysis_artifact(session, project_id: str) -> Artifact:
-    artifact = session.scalar(
-        select(Artifact).where(
-            Artifact.project_id == project_id,
-            Artifact.type == "analysis_json",
+def _analysis_revision(session, project_id: str) -> SyncEntityRevision:
+    revision = session.scalar(
+        select(SyncEntityRevision).where(
+            SyncEntityRevision.project_id == project_id,
+            SyncEntityRevision.entity_type == "analysis",
+            SyncEntityRevision.state == "active",
         )
     )
-    assert artifact is not None
-    return artifact
+    assert revision is not None
+    return revision
 
 
-def _analysis_payload(artifact: Artifact) -> dict:
-    payload = json.loads(Path(artifact.path).read_text(encoding="utf-8"))
-    assert isinstance(payload, dict)
-    return payload
+def _analysis_payload(revision: SyncEntityRevision) -> dict:
+    return revision.payload_json
 
 
 def _timing_payload(*, source: str = "detected") -> dict:

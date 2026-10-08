@@ -12,6 +12,15 @@ download, installation, verification, signature, and publication instructions.
 - Development now defaults to separate test file storage, with TEST visuals in both modes;
   `pnpm dev --production-data` opens the existing production library and file settings.
 
+### Fixed
+
+- Sync analysis, chords and lyrics as canonical result revisions on desktop and Android.
+  Reanalysis no longer conflicts over a legacy JSON artifact or prevents new stems from importing.
+  Existing result files remain local; upgrades preserve recorded result times and provenance.
+  Sync requires both peers to upgrade; older transport versions are rejected before data exchange.
+- HTTP and mobile sync imports now use verified content staged under app-owned hash paths;
+  caller-selected staging paths are rejected.
+
 ## [1.7.0] - 2026-10-02
 
 ### Added

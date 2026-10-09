@@ -128,6 +128,12 @@ When asked to implement a change:
 - Keep docs aligned with behavior; if user-visible behavior changed, update docs in the same PR.
 - Prefer updating existing docs under `docs/` instead of adding near-duplicate pages.
 - Link docs with relative paths and keep section anchors stable where practical.
+- Consult relevant [TODO.md](./TODO.md) notes during planning; update or remove them when resolved.
+  GitHub owns status, priority, scheduling, and release ordering; TODO.md retains deferred context.
+  Notes do not authorize additional work or external updates.
+- Keep new GitHub issue numbers and URLs out of code comments, identifiers, and test names.
+  Use behavior-based names and repository documentation references; GitHub issues may link to code,
+  and documentation may link to issues. Apply this prospectively without cleaning up old references.
 - Add a concise `CHANGELOG.md` `[Unreleased]` entry in the same PR for noteworthy product
   changes. Internal-only CI, test, dependency, and documentation changes do not need an entry.
 - During release preparation, reconcile Git and GitHub history, date and promote the release

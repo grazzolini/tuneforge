@@ -24,6 +24,7 @@ from app.db import SessionLocal, UnknownDatabaseRevisionError, reconfigure_engin
 from app.errors import AppError
 from app.schemas import ErrorInfo, ErrorResponse
 from app.services.jobs import InProcessJobRunner
+from app.services.sync_revisions import materialize_result_revisions
 
 logger = logging.getLogger("tuneforge.startup")
 
@@ -44,6 +45,8 @@ async def lifespan(app: FastAPI):
     except UnknownDatabaseRevisionError as error:
         logger.error("%s", error)
         raise
+    with SessionLocal.begin() as session:
+        materialize_result_revisions(session)
     runner = InProcessJobRunner(SessionLocal, max_workers=settings.max_workers)
     runner.recover_running_jobs()
     runner.start()

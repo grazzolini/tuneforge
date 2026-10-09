@@ -328,11 +328,7 @@ def _import_artifact_manifest(
         return _result(action, APPLY_STATUS_SKIPPED, "Project manifest is not present in the apply request.")
     project_manifest = _coerce_project_manifest(manifest)
     artifact_manifest = next(
-        (
-            artifact
-            for artifact in project_manifest.artifacts
-            if artifact.artifact_id == action.item_id
-        ),
+        (artifact for artifact in project_manifest.artifacts if artifact.artifact_id == action.item_id),
         None,
     )
     if artifact_manifest is None:
@@ -711,11 +707,7 @@ def _import_entity_revision(
         return _result(action, APPLY_STATUS_SKIPPED, "Project manifest is not present in the apply request.")
     project_manifest = _coerce_project_manifest(manifest)
     revision = next(
-        (
-            candidate
-            for candidate in project_manifest.entity_revisions
-            if candidate.revision_id == action.item_id
-        ),
+        (candidate for candidate in project_manifest.entity_revisions if candidate.revision_id == action.item_id),
         None,
     )
     if revision is None:
@@ -725,9 +717,9 @@ def _import_entity_revision(
     if existing_revision is not None:
         if _local_revision_content_sha256(existing_revision) == revision.content_sha256:
             if _normalize_revision_state(existing_revision.state) != remote_state:
-                _supersede_current_entity_revision_siblings(session, revision)
                 existing_revision.state = remote_state
                 existing_revision.updated_at = revision.updated_at
+                _hydrate_current_entity_revisions(session, project, [revision])
                 session.flush()
                 return _result(
                     action,
@@ -735,6 +727,7 @@ def _import_entity_revision(
                     "Entity revision state was updated from the project manifest.",
                     details={"revision_id": revision.revision_id, "project_id": project_id},
                 )
+            _hydrate_current_entity_revisions(session, project, [revision])
             return _result(action, APPLY_STATUS_SATISFIED, "Entity revision is already imported locally.")
         return _result(action, APPLY_STATUS_FAILED, "Entity revision conflicts with a local revision.")
 
@@ -755,7 +748,6 @@ def _import_entity_revision(
         updated_at=revision.updated_at,
     )
     session.add(row)
-    _supersede_current_entity_revision_siblings(session, revision)
     _hydrate_current_entity_revisions(session, project, [revision])
     session.flush()
     return _result(
@@ -938,12 +930,16 @@ def _local_artifact_satisfies_manifest(
     if artifact_id is None or project_id is None:
         return False
     artifact = session.get(Artifact, artifact_id)
-    return artifact is not None and _artifact_matches_manifest_metadata(
-        artifact,
-        project_id=project_id,
-        content_sha256=content_sha256,
-        size_bytes=size_bytes,
-    ) and _artifact_file_matches_recorded_size(artifact)
+    return (
+        artifact is not None
+        and _artifact_matches_manifest_metadata(
+            artifact,
+            project_id=project_id,
+            content_sha256=content_sha256,
+            size_bytes=size_bytes,
+        )
+        and _artifact_file_matches_recorded_size(artifact)
+    )
 
 
 def _artifact_matches_manifest_metadata(
@@ -966,7 +962,7 @@ def _artifact_file_matches_recorded_size(artifact: Artifact) -> bool:
         if not path.is_file():
             return False
         return artifact.size_bytes is None or path.stat().st_size == artifact.size_bytes
-    except (OSError, TypeError, ValueError):
+    except OSError, TypeError, ValueError:
         return False
 
 
@@ -978,12 +974,10 @@ def _cleanup_imported_content_addressed_staging(
     pending_hashes: set[str] = set()
     imported_references: list[dict[str, Any]] = []
     for project_id, manifest in context.project_manifests_by_id.items():
-        imported_project_hashes, pending_project_hashes, imported_project_references = (
-            _manifest_artifact_import_state(
-                session,
-                manifest,
-                project_id=project_id,
-            )
+        imported_project_hashes, pending_project_hashes, imported_project_references = _manifest_artifact_import_state(
+            session,
+            manifest,
+            project_id=project_id,
         )
         imported_hashes.update(imported_project_hashes)
         imported_references.extend(imported_project_references)
@@ -991,9 +985,7 @@ def _cleanup_imported_content_addressed_staging(
 
     cleanup_hashes = imported_hashes - pending_hashes
     cleanup_references = [
-        reference
-        for reference in imported_references
-        if reference["content_sha256"] in cleanup_hashes
+        reference for reference in imported_references if reference["content_sha256"] in cleanup_hashes
     ]
     if cleanup_hashes or cleanup_references:
         cleanup_staged_artifacts(
@@ -1018,15 +1010,20 @@ def _hydrate_imported_project_analysis(
     imported_project_ids = {
         result.action.project_id or result.action.item_id
         for result in results
-        if result.action.action_type == ACTION_IMPORT_PROJECT_MANIFEST
-        and result.status == APPLY_STATUS_APPLIED
+        if result.action.action_type == ACTION_IMPORT_PROJECT_MANIFEST and result.status == APPLY_STATUS_APPLIED
     }
     for project_id, manifest in context.project_manifests_by_id.items():
         if context.scoped_project_ids and project_id not in context.scoped_project_ids:
             continue
         if project_id in imported_project_ids:
             continue
-        if not _project_is_imported(session, project_id) or not _manifest_has_analysis_artifact(manifest):
+        if not _project_is_imported(session, project_id):
+            continue
+        if not _manifest_has_analysis_artifact(manifest) and not session.scalar(
+            select(SyncEntityRevision.id)
+            .where(SyncEntityRevision.project_id == project_id, SyncEntityRevision.entity_type == "analysis")
+            .limit(1)
+        ):
             continue
         action = SyncReconciliationAction(
             action_type=ACTION_NOOP,
@@ -1061,10 +1058,7 @@ def _hydrate_imported_project_analysis(
 
 
 def _manifest_has_analysis_artifact(manifest: object) -> bool:
-    return any(
-        _string_field(artifact, "type") == "analysis_json"
-        for artifact in _list_field(manifest, "artifacts")
-    )
+    return any(_string_field(artifact, "type") == "analysis_json" for artifact in _list_field(manifest, "artifacts"))
 
 
 def _manifest_artifact_import_state(
@@ -1081,20 +1075,19 @@ def _manifest_artifact_import_state(
         artifact_project_id = _string_field(artifact, "project_id")
         content_sha256 = _string_field(artifact, "content_sha256")
         size_bytes = _int_field(artifact, "size_bytes")
-        if (
-            artifact_id is None
-            or artifact_project_id != project_id
-            or content_sha256 is None
-            or size_bytes is None
-        ):
+        if artifact_id is None or artifact_project_id != project_id or content_sha256 is None or size_bytes is None:
             continue
         local_artifact = session.get(Artifact, artifact_id)
-        if local_artifact is None or not _artifact_matches_manifest_metadata(
-            local_artifact,
-            project_id=project_id,
-            content_sha256=content_sha256,
-            size_bytes=size_bytes,
-        ) or not _artifact_file_matches_recorded_size(local_artifact):
+        if (
+            local_artifact is None
+            or not _artifact_matches_manifest_metadata(
+                local_artifact,
+                project_id=project_id,
+                content_sha256=content_sha256,
+                size_bytes=size_bytes,
+            )
+            or not _artifact_file_matches_recorded_size(local_artifact)
+        ):
             pending_hashes.add(content_sha256)
             continue
         imported_hashes.add(content_sha256)
@@ -1128,9 +1121,7 @@ def _tombstone_for_action(
     existing_target = session.scalar(
         select(SyncDeleteTombstone).where(
             SyncDeleteTombstone.sync_group_id == _required_string(raw_tombstone, "sync_group_id"),
-            SyncDeleteTombstone.target_type == _normalize_target_type(
-                _required_string(raw_tombstone, "target_type")
-            ),
+            SyncDeleteTombstone.target_type == _normalize_target_type(_required_string(raw_tombstone, "target_type")),
             SyncDeleteTombstone.target_id == _required_string(raw_tombstone, "target_id"),
         )
     )
@@ -1209,18 +1200,11 @@ def _apply_context(request: object | Mapping[str, Any]) -> _ApplyContext:
     project_manifests = _list_field(request, "project_manifests")
     project_manifests_by_id = {
         project_id: manifest
-        for project_id, manifest in (
-            (_project_id_from_manifest(manifest), manifest)
-            for manifest in project_manifests
-        )
+        for project_id, manifest in ((_project_id_from_manifest(manifest), manifest) for manifest in project_manifests)
         if project_id is not None
     }
     explicit_project_ids = _normalized_string_set(_list_field(request, "project_ids"))
-    scoped_project_ids = (
-        frozenset(explicit_project_ids)
-        if explicit_project_ids
-        else frozenset(project_manifests_by_id)
-    )
+    scoped_project_ids = frozenset(explicit_project_ids) if explicit_project_ids else frozenset(project_manifests_by_id)
 
     remote_library = _field(request, "remote_library", default={})
     tombstones = [
@@ -1442,10 +1426,9 @@ def _project_has_blocking_apply_action(plan: SyncReconciliationPlan, project_id:
             return True
         if action.action_type == ACTION_APPLY_DELETE_TOMBSTONE and action.item_type == ITEM_PROJECT:
             return True
-        if (
-            action.action_type == ACTION_UPSERT_PROJECT_STATUS
-            and _string_from_mapping(action.details, "project_status") in {"conflicted", "deleted"}
-        ):
+        if action.action_type == ACTION_UPSERT_PROJECT_STATUS and _string_from_mapping(
+            action.details, "project_status"
+        ) in {"conflicted", "deleted"}:
             return True
     return False
 
@@ -1642,11 +1625,7 @@ def _string_field(source: object, *names: str) -> str | None:
 
 
 def _normalized_string_set(values: list[Any]) -> set[str]:
-    return {
-        normalized
-        for value in values
-        if isinstance(value, str) and (normalized := value.strip())
-    }
+    return {normalized for value in values if isinstance(value, str) and (normalized := value.strip())}
 
 
 def _required_string(source: object, *names: str) -> str:

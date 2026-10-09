@@ -23,7 +23,7 @@ LOCAL_METADATA_PATH_KEYS = {
 
 
 def is_syncable_artifact_type(artifact_type: object) -> bool:
-    return artifact_type != "export_mix"
+    return artifact_type not in {"export_mix", "analysis_json"}
 
 
 @dataclass(frozen=True)

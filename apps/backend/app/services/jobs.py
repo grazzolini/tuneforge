@@ -996,9 +996,8 @@ class InProcessJobRunner:
             progress=90,
             runtime_device=runtime_device,
         )
-        artifact_ids = [artifact.id for artifact in project.artifacts if artifact.type == "analysis_json"]
         return JobExecutionResult(
-            artifact_ids=artifact_ids,
+            artifact_ids=[],
             runtime_device=runtime_device,
         )
 

@@ -1,0 +1,57 @@
+[
+  {
+    "payload": {
+      "label": "Caf\u00e9 \ud83c\udfb5",
+      "nested": {
+        "z": [
+          null,
+          true,
+          false
+        ],
+        "a": "\u96ea\n\t\"\\"
+      }
+    },
+    "canonical": "{\"label\":\"Caf\\u00e9 \\ud83c\\udfb5\",\"nested\":{\"a\":\"\\u96ea\\n\\t\\\"\\\\\",\"z\":[null,true,false]}}",
+    "sha256": "5639ed88a66771892307d2fa77c27276fb94fd5724529b1bbb9f6dceb9c6178b"
+  },
+  {
+    "payload": {
+      "floats": [
+        -0.0,
+        0.0,
+        1.0,
+        0.0001,
+        1e-05,
+        1e-06,
+        1e-07,
+        1e+16,
+        1e+20,
+        1e+21,
+        1.2345678901234567,
+        1.234e-20
+      ]
+    },
+    "canonical": "{\"floats\":[-0.0,0.0,1.0,0.0001,1e-05,1e-06,1e-07,1e+16,1e+20,1e+21,1.2345678901234567,1.234e-20]}",
+    "sha256": "4b508f3c7aae70678d3d87960fb82b140a0742e2016a1d8fa5ff78ed90a34347"
+  },
+  {
+    "payload": {
+      "integers": [
+        0,
+        -1,
+        9007199254740991
+      ],
+      "empty": {},
+      "null": null
+    },
+    "canonical": "{\"empty\":{},\"integers\":[0,-1,9007199254740991],\"null\":null}",
+    "sha256": "64d370b15b360c07eef66b759f41e714466b525d07ecd0b4cbfe02d19114e669"
+  },
+  {
+    "payload": {
+      "key\u007f": "interior\u007fvalue"
+    },
+    "canonical": "{\"key\\u007f\":\"interior\\u007fvalue\"}",
+    "sha256": "dfe50c0d7c4fc82281c56f8799e5875b1969e598872862544e0750107f863601"
+  }
+]

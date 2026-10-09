@@ -703,444 +703,67 @@ def test_issue119_apply_hydrates_analysis_from_synced_analysis_artifact(
         assert repaired_analysis.estimated_key == "F major"
 
 
-def test_issue221_apply_overwrites_approved_remote_newer_generated_analysis(
-    client: TestClient,
-    tmp_path: Path,
+@pytest.mark.parametrize("legacy_destination", ["registered", "unowned", "copy_trap"])
+def test_analysis_revision_apply_preserves_legacy_files(
+    client: TestClient, tmp_path: Path, monkeypatch: Any, legacy_destination: str,
 ) -> None:
-    peer_id = "peer-issue221-analysis-overwrite"
-    artifact_id = "art_issue119_analysis_json"
-    local_generated_at = datetime(2026, 1, 1, tzinfo=UTC)
-    remote_generated_at = datetime(2026, 1, 2, tzinfo=UTC)
-    remote_relative_path = "analysis/analysis.json"
+    peer_id = "peer-analysis-revision"
     _ensure_identity_and_peers(peer_id)
-
     with SessionLocal() as session:
-        fixture = _create_project_with_artifacts(session, tmp_path, slug="issue221", source_frames=72)
+        fixture = _create_project_with_artifacts(session, tmp_path, slug="analysis-revision", source_frames=72)
         _add_analysis_artifact(session, fixture)
-        local_artifact = session.get(Artifact, artifact_id)
-        assert local_artifact is not None
-        local_artifact.metadata_json = {
-            "analysis_version": "v3",
-            "source_artifact_id": fixture.source_artifact_id,
-            "analysis_generated_at": local_generated_at.isoformat(),
-        }
-        local_artifact.created_at = local_generated_at
-        local_path = Path(local_artifact.path)
-        legacy_path = fixture.root / "analysis" / "legacy-analysis.json"
-        shutil.copy2(local_path, legacy_path)
-        local_artifact.path = str(legacy_path)
+        artifact = session.get(Artifact, "art_issue119_analysis_json")
+        assert artifact is not None
+        artifact.metadata_json = {"analysis_generated_at": "2026-01-01T00:00:00+00:00"}
+        legacy_path = Path(artifact.path)
+        original_bytes = legacy_path.read_bytes()
+        original_hash = artifact.content_sha256
+        unowned_path = tmp_path / "unowned.json"
+        unowned_path.write_bytes(b"unowned local analysis bytes")
         session.commit()
-
         manifest = _jsonable_manifest(export_project_manifest(session, project_id=fixture.project_id))
-        remote_payload = {
-            "project_id": fixture.project_id,
-            "source_artifact_id": fixture.source_artifact_id,
-            "estimated_key": "G major",
-            "key_confidence": 0.91,
-            "estimated_reference_hz": 442.0,
-            "tuning_offset_cents": -3.5,
-            "tempo_bpm": 132.25,
-            "timing": {
-                "beats_per_bar": 4,
-                "source": "remote-detected",
-                "beats": [{"time_seconds": 0.0, "beat_in_bar": 1}],
-                "bars": [{"index": 1, "start_seconds": 0.0, "end_seconds": 1.75}],
-            },
-            "analysis_version": "v4",
-        }
-        remote_bytes = json.dumps(
-            remote_payload,
-            ensure_ascii=True,
-            separators=(",", ":"),
-            sort_keys=True,
-        ).encode("utf-8")
-        remote_hash, remote_size = _write_bytes(tmp_path / "issue221" / "remote-analysis.json", remote_bytes)
-        remote_artifact = _artifact_by_id(manifest, artifact_id)
-        remote_artifact.update(
-            {
-                "relative_path": remote_relative_path,
-                "content_sha256": remote_hash,
-                "size_bytes": remote_size,
-                "generated_by": "remote-analysis",
-                "can_delete": True,
-                "can_regenerate": True,
-                "cache_key": f"analysis:{fixture.project_id}:remote",
-                "metadata": {
-                    "analysis_version": "v4",
-                    "source_artifact_id": fixture.source_artifact_id,
-                    "analysis_generated_at": remote_generated_at.isoformat(),
-                },
-                "created_at": remote_generated_at.isoformat(),
-            }
-        )
-        fixture.artifact_hashes[artifact_id] = remote_hash
-        fixture.artifact_sizes[artifact_id] = remote_size
-        fixture.artifact_bytes[artifact_id] = remote_bytes
-        _stage_manifest_content(
-            session,
-            manifest,
-            tmp_path=tmp_path,
-            artifact_bytes=fixture.artifact_bytes,
-            provider_device_id=peer_id,
-        )
+        assert all(row["type"] != "analysis_json" for row in manifest["artifacts"])
+        local_revision = next(row for row in manifest["entity_revisions"] if row["entity_type"] == "analysis")
+        remote_revision = dict(local_revision)
+        remote_payload = {**local_revision["payload"], "estimated_key": "G major", "tempo_bpm": 132.25,
+                          "updated_at": "2026-01-02T00:00:00+00:00"}
+        remote_revision.update(revision_id="rev_remote_analysis", author_device_id=peer_id,
+                               updated_at=remote_payload["updated_at"], payload=remote_payload,
+                               content_sha256=revision_payload_sha256(remote_payload))
+        manifest["entity_revisions"] = [remote_revision if row is local_revision else row
+                                        for row in manifest["entity_revisions"]]
         session.commit()
-
-    response = client.post(
-        "/api/v1/sync/reconciliation/apply",
-        json={
-            "remote_library": {
-                "projects": [manifest["project"]],
-                "artifacts": manifest["artifacts"],
-                "entity_revisions": [],
-                "delete_tombstones": [],
-            },
-            "project_manifests": [manifest],
-            "peer_inventory": [
-                {
-                    "device_id": peer_id,
-                    "available_content_sha256": _manifest_content_hashes([manifest]),
-                }
-            ],
-            "project_ids": [fixture.project_id],
-            "use_content_addressed_staging": True,
-        },
-    )
-
+    if legacy_destination == "copy_trap":
+        def unexpected_copy(*_args: Any, **_kwargs: Any) -> None:
+            pytest.fail("Analysis revision import must not copy audio or legacy sidecar bytes")
+        monkeypatch.setattr(sync_reconciliation_apply_service.shutil, "copy2", unexpected_copy)
+    response = client.post("/api/v1/sync/reconciliation/apply", json={
+        "remote_library": {"projects": [manifest["project"]], "artifacts": manifest["artifacts"],
+                           "entity_revisions": manifest["entity_revisions"], "delete_tombstones": []},
+        "project_manifests": [manifest], "peer_inventory": [], "project_ids": [fixture.project_id],
+        "use_content_addressed_staging": True,
+    })
     assert response.status_code == 200
     payload = response.json()
     assert payload["summary"]["failed_actions"] == 0
     assert payload["plan"]["summary"]["total_conflicts"] == 0
-    assert all(
-        result["action"]["action_type"] != "record_conflict"
-        for result in payload["results"]
-    )
-    assert any(
-        result["action"]["action_type"] == "import_artifact_manifest"
-        and result["action"]["item_id"] == artifact_id
-        and result["status"] == "applied"
-        for result in payload["results"]
-    )
-
+    assert any(row["action"]["action_type"] in {"import_entity_revision", "import_project_manifest"}
+               for row in payload["results"]), payload
     with SessionLocal() as session:
-        artifact = session.get(Artifact, artifact_id)
-        assert artifact is not None
-        expected_path = legacy_path
-        assert Path(artifact.path) == expected_path
-        assert file_sha256(expected_path) == remote_hash
-        assert artifact.content_sha256 == remote_hash
-        assert artifact.size_bytes == remote_size
-        assert artifact.metadata_json == {
-            "analysis_version": "v4",
-            "source_artifact_id": fixture.source_artifact_id,
-            "analysis_generated_at": remote_generated_at.isoformat(),
-        }
-        assert artifact.cache_key == f"analysis:{fixture.project_id}:remote"
-        assert artifact.generated_by == "remote-analysis"
-        assert artifact.can_delete is True
-        assert artifact.can_regenerate is True
-        assert artifact.created_at.replace(tzinfo=UTC) == remote_generated_at
-
-        analysis = session.get(AnalysisResult, fixture.project_id)
-        assert analysis is not None
-        assert analysis.source_artifact_id == fixture.source_artifact_id
-        assert analysis.estimated_key == "G major"
-        assert analysis.key_confidence == 0.91
-        assert analysis.estimated_reference_hz == 442.0
-        assert analysis.tuning_offset_cents == -3.5
-        assert analysis.tempo_bpm == 132.25
-        assert analysis.timing_json == remote_payload["timing"]
-        assert analysis.analysis_version == "v4"
-
-
-def test_issue221_generated_analysis_overwrite_rejects_unowned_canonical_destination(
-    client: TestClient,
-    tmp_path: Path,
-) -> None:
-    peer_id = "peer-issue221-analysis-unowned"
-    artifact_id = "art_issue119_analysis_json"
-    local_generated_at = datetime(2026, 1, 1, tzinfo=UTC)
-    remote_generated_at = datetime(2026, 1, 2, tzinfo=UTC)
-    _ensure_identity_and_peers(peer_id)
-
-    with SessionLocal() as session:
-        fixture = _create_project_with_artifacts(
-            session,
-            tmp_path,
-            slug="issue221-unowned",
-            source_frames=73,
-        )
-        _add_analysis_artifact(session, fixture)
-        local_artifact = session.get(Artifact, artifact_id)
-        assert local_artifact is not None
-        local_artifact.metadata_json = {
-            "analysis_version": "v3",
-            "source_artifact_id": fixture.source_artifact_id,
-            "analysis_generated_at": local_generated_at.isoformat(),
-        }
-        local_artifact.created_at = local_generated_at
-        original_hash = local_artifact.content_sha256
-        canonical_path = fixture.root / "analysis" / "analysis.json"
-        unsafe_owned_path = fixture.root / "stems" / "local-analysis.json"
-        shutil.copy2(canonical_path, unsafe_owned_path)
-        local_artifact.path = str(unsafe_owned_path)
-        canonical_path.write_bytes(b"unowned local analysis bytes")
-        unowned_hash = file_sha256(canonical_path)
-        assert unowned_hash is not None
-        session.commit()
-
-        manifest = _jsonable_manifest(export_project_manifest(session, project_id=fixture.project_id))
-        remote_payload = {
-            "project_id": fixture.project_id,
-            "source_artifact_id": fixture.source_artifact_id,
-            "estimated_key": "G major",
-            "key_confidence": 0.91,
-            "estimated_reference_hz": 442.0,
-            "tuning_offset_cents": -3.5,
-            "tempo_bpm": 132.25,
-            "timing": {
-                "beats_per_bar": 4,
-                "source": "remote-detected",
-                "beats": [{"time_seconds": 0.0, "beat_in_bar": 1}],
-                "bars": [{"index": 1, "start_seconds": 0.0, "end_seconds": 1.75}],
-            },
-            "analysis_version": "v4",
-        }
-        remote_bytes = json.dumps(
-            remote_payload,
-            ensure_ascii=True,
-            separators=(",", ":"),
-            sort_keys=True,
-        ).encode("utf-8")
-        remote_hash, remote_size = _write_bytes(
-            tmp_path / "issue221" / "unowned-remote-analysis.json",
-            remote_bytes,
-        )
-        remote_artifact = _artifact_by_id(manifest, artifact_id)
-        remote_artifact.update(
-            {
-                "relative_path": "analysis/analysis.json",
-                "content_sha256": remote_hash,
-                "size_bytes": remote_size,
-                "generated_by": "remote-analysis",
-                "can_delete": True,
-                "can_regenerate": True,
-                "cache_key": f"analysis:{fixture.project_id}:remote",
-                "metadata": {
-                    "analysis_version": "v4",
-                    "source_artifact_id": fixture.source_artifact_id,
-                    "analysis_generated_at": remote_generated_at.isoformat(),
-                },
-                "created_at": remote_generated_at.isoformat(),
-            }
-        )
-        fixture.artifact_hashes[artifact_id] = remote_hash
-        fixture.artifact_sizes[artifact_id] = remote_size
-        fixture.artifact_bytes[artifact_id] = remote_bytes
-        _stage_manifest_content(
-            session,
-            manifest,
-            tmp_path=tmp_path,
-            artifact_bytes=fixture.artifact_bytes,
-            provider_device_id=peer_id,
-        )
-        session.commit()
-
-    response = client.post(
-        "/api/v1/sync/reconciliation/apply",
-        json={
-            "remote_library": {
-                "projects": [manifest["project"]],
-                "artifacts": manifest["artifacts"],
-                "entity_revisions": [],
-                "delete_tombstones": [],
-            },
-            "project_manifests": [manifest],
-            "peer_inventory": [
-                {
-                    "device_id": peer_id,
-                    "available_content_sha256": _manifest_content_hashes([manifest]),
-                }
-            ],
-            "project_ids": [fixture.project_id],
-            "use_content_addressed_staging": True,
-        },
-    )
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["summary"]["failed_actions"] == 1
-    assert any(
-        result["action"]["action_type"] == "import_artifact_manifest"
-        and result["action"]["item_id"] == artifact_id
-        and result["status"] == "failed"
-        and result["reason"] == "Artifact destination already exists locally."
-        for result in payload["results"]
-    )
-
-    with SessionLocal() as session:
-        artifact = session.get(Artifact, artifact_id)
-        assert artifact is not None
-        assert Path(artifact.path) == unsafe_owned_path
+        artifact = session.get(Artifact, "art_issue119_analysis_json")
         assert artifact.content_sha256 == original_hash
-        assert file_sha256(unsafe_owned_path) == original_hash
-        assert file_sha256(canonical_path) == unowned_hash
-
-        analysis = session.get(AnalysisResult, fixture.project_id)
-        assert analysis is not None
-        assert analysis.estimated_key == "F major"
-        assert analysis.analysis_version == "v3"
-
-
-def test_issue221_generated_analysis_overwrite_copy_mismatch_keeps_local_bytes(
-    client: TestClient,
-    tmp_path: Path,
-    monkeypatch: Any,
-) -> None:
-    peer_id = "peer-issue221-analysis-copy-mismatch"
-    artifact_id = "art_issue119_analysis_json"
-    local_generated_at = datetime(2026, 1, 1, tzinfo=UTC)
-    remote_generated_at = datetime(2026, 1, 2, tzinfo=UTC)
-    _ensure_identity_and_peers(peer_id)
-
-    with SessionLocal() as session:
-        fixture = _create_project_with_artifacts(
-            session,
-            tmp_path,
-            slug="issue221-copy-mismatch",
-            source_frames=77,
-        )
-        _add_analysis_artifact(session, fixture)
-        local_artifact = session.get(Artifact, artifact_id)
-        assert local_artifact is not None
-        local_metadata = {
-            "analysis_version": "v3",
-            "source_artifact_id": fixture.source_artifact_id,
-            "analysis_generated_at": local_generated_at.isoformat(),
-        }
-        local_artifact.metadata_json = local_metadata
-        local_artifact.created_at = local_generated_at
-        local_path = Path(local_artifact.path)
-        legacy_path = fixture.root / "analysis" / "legacy-analysis.json"
-        shutil.copy2(local_path, legacy_path)
-        local_artifact.path = str(legacy_path)
-        original_hash = local_artifact.content_sha256
-        original_size = local_artifact.size_bytes
-        original_bytes = legacy_path.read_bytes()
-        session.commit()
-
-        manifest = _jsonable_manifest(export_project_manifest(session, project_id=fixture.project_id))
-        remote_payload = {
-            "project_id": fixture.project_id,
-            "source_artifact_id": fixture.source_artifact_id,
-            "estimated_key": "G major",
-            "key_confidence": 0.91,
-            "estimated_reference_hz": 442.0,
-            "tuning_offset_cents": -3.5,
-            "tempo_bpm": 132.25,
-            "timing": {
-                "beats_per_bar": 4,
-                "source": "remote-detected",
-                "beats": [{"time_seconds": 0.0, "beat_in_bar": 1}],
-                "bars": [{"index": 1, "start_seconds": 0.0, "end_seconds": 1.75}],
-            },
-            "analysis_version": "v4",
-        }
-        remote_bytes = json.dumps(
-            remote_payload,
-            ensure_ascii=True,
-            separators=(",", ":"),
-            sort_keys=True,
-        ).encode("utf-8")
-        remote_hash, remote_size = _write_bytes(
-            tmp_path / "issue221" / "copy-mismatch-remote-analysis.json",
-            remote_bytes,
-        )
-        remote_artifact = _artifact_by_id(manifest, artifact_id)
-        remote_artifact.update(
-            {
-                "relative_path": "analysis/analysis.json",
-                "content_sha256": remote_hash,
-                "size_bytes": remote_size,
-                "generated_by": "remote-analysis",
-                "can_delete": True,
-                "can_regenerate": True,
-                "cache_key": f"analysis:{fixture.project_id}:remote",
-                "metadata": {
-                    "analysis_version": "v4",
-                    "source_artifact_id": fixture.source_artifact_id,
-                    "analysis_generated_at": remote_generated_at.isoformat(),
-                },
-                "created_at": remote_generated_at.isoformat(),
-            }
-        )
-        fixture.artifact_hashes[artifact_id] = remote_hash
-        fixture.artifact_sizes[artifact_id] = remote_size
-        fixture.artifact_bytes[artifact_id] = remote_bytes
-        _stage_manifest_content(
-            session,
-            manifest,
-            tmp_path=tmp_path,
-            artifact_bytes=fixture.artifact_bytes,
-            provider_device_id=peer_id,
-        )
-        session.commit()
-
-    def copy_corrupt_bytes(src: str | Path, dst: str | Path, *args: Any, **kwargs: Any) -> Path:
-        _ = src, args, kwargs
-        destination = Path(dst)
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_bytes(b"x" * remote_size)
-        return destination
-
-    monkeypatch.setattr(sync_reconciliation_apply_service.shutil, "copy2", copy_corrupt_bytes)
-
-    response = client.post(
-        "/api/v1/sync/reconciliation/apply",
-        json={
-            "remote_library": {
-                "projects": [manifest["project"]],
-                "artifacts": manifest["artifacts"],
-                "entity_revisions": [],
-                "delete_tombstones": [],
-            },
-            "project_manifests": [manifest],
-            "peer_inventory": [
-                {
-                    "device_id": peer_id,
-                    "available_content_sha256": _manifest_content_hashes([manifest]),
-                }
-            ],
-            "project_ids": [fixture.project_id],
-            "use_content_addressed_staging": True,
-        },
-    )
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["summary"]["failed_actions"] == 1
-    assert any(
-        result["action"]["action_type"] == "import_artifact_manifest"
-        and result["action"]["item_id"] == artifact_id
-        and result["status"] == "failed"
-        and result["reason"] == "Copied artifact bytes do not match the manifest."
-        for result in payload["results"]
-    )
-
-    with SessionLocal() as session:
-        artifact = session.get(Artifact, artifact_id)
-        assert artifact is not None
-        assert Path(artifact.path) == legacy_path
-        assert artifact.content_sha256 == original_hash
-        assert artifact.size_bytes == original_size
-        assert artifact.metadata_json == local_metadata
         assert legacy_path.read_bytes() == original_bytes
-        assert file_sha256(legacy_path) == original_hash
-        assert not list(legacy_path.parent.glob(f".{legacy_path.name}.*.tmp"))
-
-        analysis = session.get(AnalysisResult, fixture.project_id)
-        assert analysis is not None
-        assert analysis.estimated_key == "F major"
-        assert analysis.analysis_version == "v3"
+        assert unowned_path.read_bytes() == b"unowned local analysis bytes"
+        result = session.get(AnalysisResult, fixture.project_id)
+        assert result.estimated_key == "G major"
+        assert result.tempo_bpm == 132.25
+    replay = client.post("/api/v1/sync/reconciliation/apply", json={
+        "remote_library": {"projects": [manifest["project"]], "artifacts": manifest["artifacts"],
+                           "entity_revisions": manifest["entity_revisions"], "delete_tombstones": []},
+        "project_manifests": [manifest], "peer_inventory": [], "use_content_addressed_staging": True,
+    })
+    assert replay.status_code == 200
+    assert replay.json()["plan"]["actions"] == []
 
 
 def test_issue221_apply_adopts_matching_orphan_destination_artifact(
@@ -1281,7 +904,7 @@ def test_issue221_apply_rejects_orphan_destination_symlink_escape(
         assert file_sha256(outside_stem_path) == fixture.artifact_hashes[fixture.stem_artifact_id]
 
 
-def test_issue119_apply_reports_analysis_repair_failure_without_rolling_back_import(
+def test_issue119_canonical_analysis_repairs_despite_corrupt_legacy_file(
     client: TestClient,
     tmp_path: Path,
 ) -> None:
@@ -1340,19 +963,13 @@ def test_issue119_apply_reports_analysis_repair_failure_without_rolling_back_imp
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["summary"]["failed_actions"] == 1
-    failed_results = [
-        result for result in payload["results"] if result["status"] == "failed"
-    ]
-    assert len(failed_results) == 1
-    assert failed_results[0]["action"]["project_id"] == imported_fixture.project_id
-    assert failed_results[0]["reason"] == "Analysis artifact payload must be readable JSON."
+    assert payload["summary"]["failed_actions"] == 0
 
     with SessionLocal() as session:
         fresh_project = session.get(Project, fresh_fixture.project_id)
         assert fresh_project is not None
         assert fresh_project.sync_status == "local"
-        assert session.get(AnalysisResult, imported_fixture.project_id) is None
+        assert session.get(AnalysisResult, imported_fixture.project_id).estimated_key == "F major"
 
 
 def test_issue119_staging_cleanup_keeps_shared_hash_until_all_references_import(

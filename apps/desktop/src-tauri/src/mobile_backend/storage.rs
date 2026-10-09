@@ -69,7 +69,7 @@ pub(super) const SYNC_ENTITY_REVISION_COLUMNS: &str = "id, project_id, entity_ty
 pub(super) const SYNC_DELETE_TOMBSTONE_COLUMNS: &str = "id, sync_group_id, project_id, target_type, target_id, author_device_id, deleted_at, prior_metadata_json, created_at, updated_at";
 
 pub(super) fn is_syncable_artifact_type(artifact_type: &str) -> bool {
-    artifact_type != "export_mix"
+    !matches!(artifact_type, "export_mix" | "analysis_json")
 }
 
 pub(super) fn is_syncable_delete_tombstone(tombstone: &SyncDeleteTombstoneSchema) -> bool {
@@ -149,7 +149,9 @@ pub(super) const MOBILE_CORE_SCHEMA_SQL: &str = r#"
         tempo_bpm REAL,
         timing_json TEXT,
         analysis_version TEXT NOT NULL,
-        created_at TEXT NOT NULL
+        created_at TEXT NOT NULL,
+        updated_at TEXT,
+        metadata_json TEXT NOT NULL DEFAULT '{}'
     );
     CREATE TABLE IF NOT EXISTS chord_timelines (
         project_id TEXT PRIMARY KEY,
@@ -183,6 +185,10 @@ pub(super) const MOBILE_CORE_SCHEMA_SQL: &str = r#"
 "#;
 
 pub(super) const MOBILE_SYNC_SCHEMA_SQL: &str = r#"
+    CREATE TABLE IF NOT EXISTS sync_result_materialization (
+        id INTEGER PRIMARY KEY CHECK(id = 1),
+        completed_at TEXT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS sync_local_identities (
         id TEXT PRIMARY KEY,
         sync_group_id TEXT NOT NULL,
@@ -369,6 +375,7 @@ pub(super) fn db_at_root(root: &Path) -> Result<Connection, String> {
     relocate_ios_paths(&connection, root)?;
     mark_interrupted_jobs_on_first_open(root, &connection)?;
     ensure_local_identity(&connection)?;
+    materialize_pending_result_revisions(&connection)?;
     Ok(connection)
 }
 
@@ -612,6 +619,9 @@ pub(super) fn migrate_mobile_db(connection: &Connection) -> Result<(), String> {
             "Mobile database version {current_version} is newer than supported version {MOBILE_DB_VERSION}."
         ));
     }
+    if current_version == MOBILE_DB_VERSION {
+        return Ok(());
+    }
 
     connection
         .execute_batch(MOBILE_CORE_SCHEMA_SQL)
@@ -699,6 +709,19 @@ pub(super) fn add_mobile_sync_columns(connection: &Connection) -> Result<(), Str
         "TEXT",
     )?;
     add_column_if_missing(connection, "analysis_results", "timing_json", "TEXT")?;
+    add_column_if_missing(connection, "analysis_results", "updated_at", "TEXT")?;
+    add_column_if_missing(
+        connection,
+        "analysis_results",
+        "metadata_json",
+        "TEXT NOT NULL DEFAULT '{}'",
+    )?;
+    connection
+        .execute(
+            "UPDATE analysis_results SET updated_at = created_at WHERE updated_at IS NULL",
+            [],
+        )
+        .map_err(|error| error.to_string())?;
     add_column_if_missing(
         connection,
         "chord_timelines",
@@ -1543,9 +1566,708 @@ pub(super) fn list_project_entity_revisions(
             normalize_sync_timestamp_utc(&revision.created_at, "revision created_at")?;
         revision.updated_at =
             normalize_sync_timestamp_utc(&revision.updated_at, "revision updated_at")?;
+        if matches!(
+            revision.entity_type.as_str(),
+            "analysis" | "chords" | "lyrics"
+        ) {
+            revision.source_artifact_id = super::manifests::result_source_artifact_id(
+                connection,
+                project_id,
+                revision.source_artifact_id,
+                "Result revision",
+            )?;
+        }
         revisions.push(revision);
     }
+    let analysis_winner = revisions
+        .iter()
+        .filter(|revision| {
+            revision.entity_type == "analysis"
+                && matches!(revision.state.as_str(), "active" | "current")
+        })
+        .max_by_key(|revision| revision_lww_key(revision))
+        .map(|revision| revision.revision_id.clone());
+    revisions.retain(|revision| {
+        revision.entity_type != "analysis"
+            || analysis_winner.as_deref() == Some(&revision.revision_id)
+    });
     Ok(revisions)
+}
+
+pub(super) fn revision_lww_key(
+    revision: &SyncProjectManifestEntityRevisionSchema,
+) -> (i64, String, String) {
+    (
+        parse_sync_timestamp_utc(&revision.updated_at, "revision updated_at")
+            .map(|timestamp| timestamp.timestamp_micros())
+            .unwrap_or(i64::MIN),
+        revision.author_device_id.clone(),
+        revision.revision_id.clone(),
+    )
+}
+
+pub(super) fn current_result_revision(
+    connection: &Connection,
+    project_id: &str,
+    entity_type: &str,
+) -> Result<Option<SyncProjectManifestEntityRevisionSchema>, String> {
+    let mut statement = connection.prepare(&format!(
+        "SELECT {SYNC_ENTITY_REVISION_COLUMNS} FROM sync_entity_revisions WHERE project_id = ?1 AND entity_type = ?2 AND entity_id = ?1 AND state IN ('active', 'current')"
+    )).map_err(|error| error.to_string())?;
+    let revisions = statement
+        .query_map(params![project_id, entity_type], row_entity_revision)
+        .map_err(|error| error.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    Ok(revisions.into_iter().max_by_key(revision_lww_key))
+}
+
+// Match Python json.dumps(ensure_ascii=True, sort_keys=True, separators=(",", ":")).
+pub(super) fn canonical_revision_payload(value: &Value) -> String {
+    match value {
+        Value::Object(object) => {
+            let sorted = object.iter().collect::<BTreeMap<_, _>>();
+            format!(
+                "{{{}}}",
+                sorted
+                    .into_iter()
+                    .map(|(key, value)| {
+                        format!(
+                            "{}:{}",
+                            canonical_revision_payload(&Value::String(key.clone())),
+                            canonical_revision_payload(value)
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )
+        }
+        Value::Array(values) => format!(
+            "[{}]",
+            values
+                .iter()
+                .map(canonical_revision_payload)
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+        Value::String(_) => {
+            let mut escaped = String::new();
+            for ch in value.to_string().chars() {
+                if ch.is_ascii() && ch != '\u{7f}' {
+                    escaped.push(ch);
+                } else {
+                    for unit in ch.encode_utf16(&mut [0; 2]).iter() {
+                        escaped.push_str(&format!("\\u{unit:04x}"));
+                    }
+                }
+            }
+            escaped
+        }
+        Value::Number(number) if number.is_f64() => {
+            python_float_json(number.as_f64().expect("finite JSON float"))
+        }
+        _ => value.to_string(),
+    }
+}
+
+fn python_float_json(value: f64) -> String {
+    let raw = format!("{value:?}");
+    let (negative, raw) = raw
+        .strip_prefix('-')
+        .map_or((false, raw.as_str()), |raw| (true, raw));
+    let (coefficient, exponent) =
+        raw.split_once('e')
+            .map_or((raw, 0), |(coefficient, exponent)| {
+                (
+                    coefficient,
+                    exponent.parse::<i32>().expect("float exponent"),
+                )
+            });
+    let point = coefficient.find('.').unwrap_or(coefficient.len()) as i32;
+    let digits = coefficient.replace('.', "");
+    let first = digits.find(|ch| ch != '0').unwrap_or(0);
+    let significant = digits[first..].trim_end_matches('0');
+    let prefix = if negative { "-" } else { "" };
+    if significant.is_empty() {
+        return format!("{prefix}0.0");
+    }
+    let exponent = exponent + point - first as i32 - 1;
+    if !(-4..16).contains(&exponent) {
+        let tail = if significant.len() > 1 {
+            format!(".{}", &significant[1..])
+        } else {
+            String::new()
+        };
+        format!(
+            "{prefix}{}{tail}e{}{abs:02}",
+            &significant[..1],
+            if exponent < 0 { "-" } else { "+" },
+            abs = exponent.abs()
+        )
+    } else {
+        let point = exponent + 1;
+        if point <= 0 {
+            format!("{prefix}0.{}{significant}", "0".repeat((-point) as usize))
+        } else if point as usize >= significant.len() {
+            format!(
+                "{prefix}{significant}{}.0",
+                "0".repeat(point as usize - significant.len())
+            )
+        } else {
+            format!(
+                "{prefix}{}.{}",
+                &significant[..point as usize],
+                &significant[point as usize..]
+            )
+        }
+    }
+}
+
+pub(super) fn revision_payload_sha256(payload: &Value) -> String {
+    hex_digest(&Sha256::digest(
+        canonical_revision_payload(payload).as_bytes(),
+    ))
+}
+
+#[cfg(test)]
+#[test]
+fn native_revision_hash_matches_shared_python_vectors() {
+    let vectors: Vec<Value> = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../packages/shared-types/fixtures/result-revisions.json"
+    )))
+    .unwrap();
+    for vector in vectors {
+        assert_eq!(
+            canonical_revision_payload(&vector["payload"]),
+            vector["canonical"].as_str().unwrap()
+        );
+        assert_eq!(
+            revision_payload_sha256(&vector["payload"]),
+            vector["sha256"].as_str().unwrap()
+        );
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn native_applied_result_tombstones_survive_reopen_export_and_legacy_repair() {
+    for entity_type in ["analysis", "chords", "lyrics"] {
+        for mode in ["sole", "historical", "current-with-history"] {
+            let historical = mode == "historical";
+            let root =
+                std::env::temp_dir().join(format!("tuneforge-result-delete-{}", new_id("test")));
+            fs::create_dir_all(&root).unwrap();
+            let connection = db_at_root(&root).unwrap();
+            let source_sha256 = hex_digest(&Sha256::digest(b"synthetic source"));
+            let project_id = source_hash_to_project_id(&source_sha256).unwrap();
+            let project_root = project_root_path(&root, &project_id).unwrap();
+            let source = project_root.join("source/source.wav");
+            fs::create_dir_all(source.parent().unwrap()).unwrap();
+            fs::write(&source, b"synthetic source").unwrap();
+            connection.execute("INSERT INTO projects (id, display_name, source_path, imported_path, source_sha256, created_at, updated_at) VALUES (?1, 'Synthetic', ?2, ?2, ?3, '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z')", params![project_id, source.to_string_lossy(), source_sha256]).unwrap();
+            connection.execute("INSERT INTO artifacts (id, project_id, type, format, path, size_bytes, content_sha256, generated_by, can_delete, can_regenerate, metadata_json, created_at) VALUES ('source', ?1, 'source_audio', 'wav', ?2, 16, ?3, 'import', 0, 0, '{}', '2025-01-01T00:00:00Z')", params![project_id, source.to_string_lossy(), source_sha256]).unwrap();
+            let (table, insert) = match entity_type {
+                "analysis" => ("analysis_results", "INSERT INTO analysis_results (project_id, estimated_key, analysis_version, created_at, updated_at) VALUES (?1, 'old', 'v3', '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z')"),
+                "chords" => ("chord_timelines", "INSERT INTO chord_timelines (project_id, source_segments_json, timeline_json, backend, has_user_edits, created_at, updated_at) VALUES (?1, '[]', '[]', 'tuneforge-fast', 0, '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z')"),
+                _ => ("lyrics_transcripts", "INSERT INTO lyrics_transcripts (project_id, backend, source_kind, source_segments_json, segments_json, has_user_edits, created_at, updated_at) VALUES (?1, 'none', 'instrumental', '[]', '[]', 0, '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z')"),
+            };
+            connection.execute(insert, params![project_id]).unwrap();
+            record_result_revision(&connection, &project_id, entity_type, "generated").unwrap();
+            let first = current_result_revision(&connection, &project_id, entity_type)
+                .unwrap()
+                .unwrap();
+            let winner = if mode != "sole" {
+                connection.execute(&format!("UPDATE {table} SET updated_at = '2026-01-01T00:00:00Z' WHERE project_id = ?1"), params![project_id]).unwrap();
+                record_result_revision(&connection, &project_id, entity_type, "user_edit").unwrap();
+                Some(
+                    current_result_revision(&connection, &project_id, entity_type)
+                        .unwrap()
+                        .unwrap()
+                        .revision_id,
+                )
+            } else {
+                None
+            };
+            let target_id = if mode == "current-with-history" {
+                winner.as_ref().unwrap().clone()
+            } else {
+                first.revision_id.clone()
+            };
+            let legacy = project_root.join("analysis/analysis.json");
+            let legacy_bytes = serde_json::to_vec(
+                &json!({"project_id": project_id, "estimated_key": "stale legacy"}),
+            )
+            .unwrap();
+            if entity_type == "analysis" {
+                fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+                fs::write(&legacy, &legacy_bytes).unwrap();
+                connection.execute("INSERT INTO artifacts (id, project_id, type, format, path, size_bytes, generated_by, can_delete, can_regenerate, metadata_json, created_at) VALUES ('legacy', ?1, 'analysis_json', 'json', ?2, ?3, 'analysis', 1, 1, '{}', '2025-01-01T00:00:00Z')", params![project_id, legacy.to_string_lossy(), legacy_bytes.len() as i64]).unwrap();
+            }
+            let identity = local_identity(&connection).unwrap();
+            let tombstone = SyncDeleteTombstoneSchema {
+                tombstone_id: new_id("tomb"),
+                sync_group_id: identity.sync_group_id,
+                project_id: project_id.clone(),
+                target_type: "entity_revision".to_string(),
+                target_id: target_id.clone(),
+                author_device_id: identity.device_id,
+                deleted_at: "2030-01-01T00:00:00Z".to_string(),
+                prior_metadata: json!({"entity_type": entity_type, "entity_id": project_id}),
+                created_at: "2030-01-01T00:00:00Z".to_string(),
+                updated_at: "2030-01-01T00:00:00Z".to_string(),
+            };
+            let transaction = connection.unchecked_transaction().unwrap();
+            super::manifests::apply_delete_tombstone(&transaction, &tombstone).unwrap();
+            assert_eq!(
+                transaction
+                    .query_row(
+                        &format!("SELECT COUNT(*) FROM {table} WHERE project_id = ?1"),
+                        params![project_id],
+                        |row| row.get::<_, i64>(0)
+                    )
+                    .unwrap(),
+                i64::from(historical)
+            );
+            transaction.commit().unwrap();
+            drop(connection);
+            let reopened = db_at_root(&root).unwrap();
+            assert_eq!(
+                reopened
+                    .query_row(
+                        &format!("SELECT COUNT(*) FROM {table} WHERE project_id = ?1"),
+                        params![project_id],
+                        |row| row.get::<_, i64>(0)
+                    )
+                    .unwrap(),
+                i64::from(historical)
+            );
+            super::manifests::hydrate_canonical_result_read_models(&reopened, &project_id).unwrap();
+            let manifest = get_project_manifest(&reopened, &root, &project_id).unwrap();
+            let active = manifest
+                .entity_revisions
+                .iter()
+                .filter(|revision| {
+                    revision.entity_type == entity_type && revision.state == "active"
+                })
+                .map(|revision| revision.revision_id.clone())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                active,
+                winner
+                    .filter(|_| historical)
+                    .into_iter()
+                    .collect::<Vec<_>>()
+            );
+            if entity_type == "analysis" {
+                assert_eq!(fs::read(&legacy).unwrap(), legacy_bytes);
+                assert_eq!(
+                    reopened
+                        .query_row(
+                            "SELECT COUNT(*) FROM artifacts WHERE id = 'legacy'",
+                            [],
+                            |row| row.get::<_, i64>(0)
+                        )
+                        .unwrap(),
+                    1
+                );
+            }
+            if !historical {
+                reopened
+                    .execute(
+                        "DELETE FROM sync_entity_revisions WHERE id = ?1",
+                        params![target_id],
+                    )
+                    .unwrap();
+                reopened.execute(insert, params![project_id]).unwrap();
+                materialize_pending_result_revisions(&reopened).unwrap();
+                super::manifests::hydrate_canonical_result_read_models(&reopened, &project_id)
+                    .unwrap();
+                assert_eq!(
+                    reopened
+                        .query_row(
+                            &format!("SELECT COUNT(*) FROM {table} WHERE project_id = ?1"),
+                            params![project_id],
+                            |row| row.get::<_, i64>(0)
+                        )
+                        .unwrap(),
+                    0
+                );
+                assert!(!list_project_entity_revisions(&reopened, &project_id)
+                    .unwrap()
+                    .iter()
+                    .any(|revision| revision.entity_type == entity_type
+                        && revision.state == "active"));
+            }
+            drop(reopened);
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn native_result_upgrade_is_atomic_idempotent_and_preserves_recorded_times() {
+    for count in [25, 194] {
+        let connection = Connection::open_in_memory().unwrap();
+        migrate_mobile_db(&connection).unwrap();
+        ensure_local_identity(&connection).unwrap();
+        for index in 0..count {
+            let project_id = format!("proj_sha256_{index:064x}");
+            connection.execute("INSERT INTO projects (id, display_name, source_path, imported_path, created_at, updated_at) VALUES (?1, 'Synthetic', '', '', '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z')", params![project_id]).unwrap();
+            connection.execute("INSERT INTO analysis_results (project_id, estimated_key, analysis_version, created_at) VALUES (?1, 'C', 'v3', '2025-01-01T00:00:00Z')", params![project_id]).unwrap();
+            connection.execute("INSERT INTO chord_timelines (project_id, source_segments_json, timeline_json, backend, has_user_edits, created_at, updated_at) VALUES (?1, '[]', '[]', 'tuneforge-fast', 0, '2025-01-01T00:00:00Z', '2025-01-02T00:00:00Z')", params![project_id]).unwrap();
+            connection.execute("INSERT INTO lyrics_transcripts (project_id, backend, source_kind, source_segments_json, segments_json, has_user_edits, created_at, updated_at) VALUES (?1, 'none', 'instrumental', '[]', '[]', 0, '2025-01-01T00:00:00Z', '2025-01-03T00:00:00Z')", params![project_id]).unwrap();
+        }
+        connection.execute_batch("CREATE TRIGGER interrupted_backfill BEFORE INSERT ON sync_entity_revisions WHEN NEW.entity_type = 'lyrics' BEGIN SELECT RAISE(ABORT, 'synthetic interruption'); END;").unwrap();
+        assert!(materialize_result_revisions(&connection).is_err());
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM sync_result_materialization",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM sync_entity_revisions", [], |row| row
+                    .get::<_, i64>(
+                    0
+                ))
+                .unwrap(),
+            0
+        );
+        connection
+            .execute_batch("DROP TRIGGER interrupted_backfill")
+            .unwrap();
+        let started = std::time::Instant::now();
+        materialize_result_revisions(&connection).unwrap();
+        let initial = started.elapsed();
+        let started = std::time::Instant::now();
+        materialize_result_revisions(&connection).unwrap();
+        let repeated = started.elapsed();
+        let writes = connection.total_changes();
+        let started = std::time::Instant::now();
+        for _ in 0..10 {
+            materialize_pending_result_revisions(&connection).unwrap();
+        }
+        let reads = started.elapsed();
+        assert_eq!(
+            connection.total_changes(),
+            writes,
+            "canonical reads must not write result rows"
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM sync_entity_revisions", [], |row| row
+                    .get::<_, i64>(
+                    0
+                ))
+                .unwrap(),
+            count * 3
+        );
+        assert_eq!(connection.query_row("SELECT COUNT(*) FROM sync_entity_revisions WHERE entity_type = 'analysis' AND updated_at = '2025-01-01T00:00:00Z' AND base_revision_id IS NULL", [], |row| row.get::<_, i64>(0)).unwrap(), count);
+        println!("native upgrade projects={count} initial_ms={} repeated_ms={} ten_reads_ms={} writes_on_reads=0", initial.as_millis(), repeated.as_millis(), reads.as_millis());
+        connection.execute("UPDATE analysis_results SET estimated_key = 'stale', updated_at = '2099-01-01T00:00:00Z'", []).unwrap();
+        materialize_result_revisions(&connection).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM analysis_results WHERE estimated_key = 'C'",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+            count
+        );
+        connection
+            .execute(
+                "UPDATE sync_entity_revisions SET state = 'deleted' WHERE entity_type = 'analysis'",
+                [],
+            )
+            .unwrap();
+        materialize_result_revisions(&connection).unwrap();
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM analysis_results", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        let late_project_id = format!("proj_sha256_{count:064x}");
+        connection.execute("INSERT INTO projects (id, display_name, source_path, imported_path, created_at, updated_at) VALUES (?1, 'Later legacy import', '', '', '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z')", params![late_project_id]).unwrap();
+        connection.execute("INSERT INTO analysis_results (project_id, analysis_version, created_at) VALUES (?1, 'v3', '2025-01-01T00:00:00Z')", params![late_project_id]).unwrap();
+        materialize_pending_result_revisions(&connection).unwrap();
+        assert!(
+            current_result_revision(&connection, &late_project_id, "analysis")
+                .unwrap()
+                .is_some()
+        );
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn native_analysis_lww_hydration_uses_utc_author_and_id_and_rejects_stale_replay() {
+    for reverse in [false, true] {
+        let connection = Connection::open_in_memory().unwrap();
+        migrate_mobile_db(&connection).unwrap();
+        ensure_local_identity(&connection).unwrap();
+        let project_id = format!("proj_sha256_{}", "a".repeat(64));
+        connection.execute("INSERT INTO projects (id, display_name, source_path, imported_path, created_at, updated_at) VALUES (?1, 'Synthetic', '', '', '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z')", params![project_id]).unwrap();
+        let mut candidates = vec![
+            ("rev_a", "author_a", "2026-01-01T00:00:00Z", "A"),
+            ("rev_z", "author_b", "2026-01-01T01:00:00+01:00", "B"),
+            ("rev_y", "author_b", "2026-01-01T00:00:00Z", "C"),
+            ("rev_old", "author_z", "2025-12-31T23:59:59Z", "old"),
+        ];
+        if reverse {
+            candidates.reverse();
+        }
+        for (id, author, updated, key) in candidates {
+            let payload = json!({"project_id": project_id, "estimated_key": key, "timing": null});
+            connection.execute("INSERT INTO sync_entity_revisions (id, project_id, entity_type, entity_id, revision_type, author_device_id, content_sha256, state, metadata_json, payload_json, created_at, updated_at) VALUES (?1, ?2, 'analysis', ?2, 'generated', ?3, ?4, 'active', '{}', ?5, '2099-01-01T00:00:00Z', ?6)", params![id, project_id, author, revision_payload_sha256(&payload), payload.to_string(), updated]).unwrap();
+        }
+        super::manifests::hydrate_canonical_result_read_models(&connection, &project_id).unwrap();
+        assert_eq!(
+            current_result_revision(&connection, &project_id, "analysis")
+                .unwrap()
+                .unwrap()
+                .revision_id,
+            "rev_z"
+        );
+        connection
+            .execute(
+                "UPDATE sync_entity_revisions SET state = 'active' WHERE id = 'rev_old'",
+                [],
+            )
+            .unwrap();
+        super::manifests::hydrate_canonical_result_read_models(&connection, &project_id).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT estimated_key FROM analysis_results WHERE project_id = ?1",
+                    params![project_id],
+                    |row| row.get::<_, String>(0)
+                )
+                .unwrap(),
+            "B"
+        );
+    }
+}
+
+fn result_revision_payload(
+    connection: &Connection,
+    project_id: &str,
+    entity_type: &str,
+) -> Result<Option<(Value, Value, Option<String>, String, String)>, String> {
+    let parse = |raw: String| serde_json::from_str::<Value>(&raw).unwrap_or(Value::Null);
+    let result = match entity_type {
+        "analysis" => connection.query_row(
+            "SELECT source_artifact_id, estimated_key, key_confidence, estimated_reference_hz, tuning_offset_cents, tempo_bpm, timing_json, analysis_version, created_at, coalesce(updated_at, created_at), metadata_json FROM analysis_results WHERE project_id = ?1",
+            params![project_id], |row| {
+                let source: Option<String> = row.get(0)?;
+                let created: String = row.get(8)?;
+                let updated: String = row.get(9)?;
+                let timing: Option<String> = row.get(6)?;
+                Ok((json!({"project_id": project_id, "source_artifact_id": source,
+                    "estimated_key": row.get::<_, Option<String>>(1)?, "key_confidence": row.get::<_, Option<f64>>(2)?,
+                    "estimated_reference_hz": row.get::<_, Option<f64>>(3)?, "tuning_offset_cents": row.get::<_, Option<f64>>(4)?,
+                    "tempo_bpm": row.get::<_, Option<f64>>(5)?, "timing": timing.map(parse),
+                    "analysis_version": row.get::<_, String>(7)?, "created_at": created, "updated_at": updated}),
+                    parse(row.get(10)?), source, created, updated))
+            }).optional(),
+        "chords" => connection.query_row(
+            "SELECT backend, source_artifact_id, source_kind, has_user_edits, source_segments_json, segments_json, timeline_json, metadata_json, created_at, coalesce(updated_at, created_at) FROM chord_timelines WHERE project_id = ?1",
+            params![project_id], |row| {
+                Ok((json!({"project_id": project_id, "backend": row.get::<_, Option<String>>(0)?,
+                    "source_kind": row.get::<_, String>(2)?, "has_user_edits": row.get::<_, bool>(3)?,
+                    "source_segments": parse(row.get(4)?), "segments": parse(row.get(5)?), "timeline": parse(row.get(6)?)}),
+                    parse(row.get(7)?), row.get(1)?, row.get(8)?, row.get(9)?))
+            }).optional(),
+        "lyrics" => connection.query_row(
+            "SELECT backend, source_artifact_id, source_kind, requested_device, device, model_name, language, language_override, has_user_edits, source_segments_json, segments_json, created_at, updated_at FROM lyrics_transcripts WHERE project_id = ?1",
+            params![project_id], |row| {
+                let created: String = row.get(11)?;
+                let updated: String = row.get(12)?;
+                Ok((json!({"project_id": project_id, "backend": row.get::<_, String>(0)?,
+                    "source_kind": row.get::<_, String>(2)?, "requested_device": row.get::<_, Option<String>>(3)?,
+                    "device": row.get::<_, Option<String>>(4)?, "model_name": row.get::<_, Option<String>>(5)?,
+                    "language": row.get::<_, Option<String>>(6)?, "language_override": row.get::<_, Option<String>>(7)?,
+                    "has_user_edits": row.get::<_, bool>(8)?, "source_segments": parse(row.get(9)?),
+                    "segments": parse(row.get(10)?), "created_at": created, "updated_at": updated}),
+                    json!({}), row.get(1)?, created, updated))
+            }).optional(),
+        _ => return Err("Unsupported result entity type.".to_string()),
+    };
+    result.map_err(|error| error.to_string())
+}
+
+pub(super) fn record_result_revision(
+    connection: &Connection,
+    project_id: &str,
+    entity_type: &str,
+    revision_type: &str,
+) -> Result<(), String> {
+    let Some((payload, metadata, source, created, updated)) =
+        result_revision_payload(connection, project_id, entity_type)?
+    else {
+        return Ok(());
+    };
+    let current = current_result_revision(connection, project_id, entity_type)?;
+    let base = if entity_type == "analysis" {
+        None
+    } else {
+        current.map(|revision| revision.revision_id)
+    };
+    let author: String = connection
+        .query_row(
+            "SELECT device_id FROM sync_local_identities WHERE id = 'local'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    let payload = sanitize_sync_manifest_value(&payload);
+    let metadata = sanitize_sync_manifest_value(&metadata);
+    connection.execute(
+        "UPDATE sync_entity_revisions SET state = 'superseded' WHERE project_id = ?1 AND entity_type = ?2 AND entity_id = ?1 AND state IN ('active', 'current')",
+        params![project_id, entity_type],
+    ).map_err(|error| error.to_string())?;
+    connection.execute(
+        "INSERT INTO sync_entity_revisions (id, project_id, entity_type, entity_id, revision_type, base_revision_id, author_device_id, source_artifact_id, content_sha256, state, metadata_json, payload_json, created_at, updated_at) VALUES (?1, ?2, ?3, ?2, ?4, ?5, ?6, ?7, ?8, 'active', ?9, ?10, ?11, ?12)",
+        params![new_id("rev"), project_id, entity_type, revision_type, base, author, source,
+            revision_payload_sha256(&payload), metadata.to_string(), payload.to_string(), created, updated],
+    ).map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn materialize_pending_result_revisions(connection: &Connection) -> Result<(), String> {
+    let completed: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sync_result_materialization WHERE id = 1)",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    if completed {
+        let pending: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM analysis_results r WHERE NOT EXISTS(SELECT 1 FROM sync_entity_revisions v WHERE v.project_id = r.project_id AND v.entity_type = 'analysis')) OR EXISTS(SELECT 1 FROM chord_timelines r WHERE NOT EXISTS(SELECT 1 FROM sync_entity_revisions v WHERE v.project_id = r.project_id AND v.entity_type = 'chords')) OR EXISTS(SELECT 1 FROM lyrics_transcripts r WHERE NOT EXISTS(SELECT 1 FROM sync_entity_revisions v WHERE v.project_id = r.project_id AND v.entity_type = 'lyrics'))",
+            [], |row| row.get(0),
+        ).map_err(|error| error.to_string())?;
+        if !pending {
+            return Ok(());
+        }
+    }
+    materialize_result_revisions(connection)
+}
+
+pub(super) fn materialize_result_revisions(connection: &Connection) -> Result<(), String> {
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(|error| error.to_string())?;
+    let projects = {
+        let mut statement = transaction.prepare("SELECT id FROM projects WHERE sync_status != 'deleted' AND NOT EXISTS (SELECT 1 FROM sync_delete_tombstones WHERE target_type = 'project' AND target_id = projects.id AND deleted_at >= projects.updated_at)")
+            .map_err(|error| error.to_string())?;
+        let projects = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|error| error.to_string())?;
+        projects
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?
+    };
+    for project_id in projects {
+        for entity_type in ["analysis", "chords", "lyrics"] {
+            let count: i64 = transaction.query_row("SELECT COUNT(*) FROM sync_entity_revisions WHERE project_id = ?1 AND entity_type = ?2 AND entity_id = ?1", params![project_id, entity_type], |row| row.get(0))
+                .map_err(|error| error.to_string())?;
+            if count == 0 {
+                let deleted: bool = transaction.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sync_delete_tombstones WHERE project_id = ?1 AND target_type = 'entity_revision' AND json_extract(prior_metadata_json, '$.entity_type') = ?2 AND json_extract(prior_metadata_json, '$.entity_id') = ?1)",
+                    params![project_id, entity_type], |row| row.get(0),
+                ).map_err(|error| error.to_string())?;
+                if deleted {
+                    let table = match entity_type {
+                        "analysis" => "analysis_results",
+                        "chords" => "chord_timelines",
+                        _ => "lyrics_transcripts",
+                    };
+                    transaction
+                        .execute(
+                            &format!("DELETE FROM {table} WHERE project_id = ?1"),
+                            params![project_id],
+                        )
+                        .map_err(|error| error.to_string())?;
+                    continue;
+                }
+                if entity_type == "analysis" {
+                    recover_legacy_analysis_metadata(&transaction, &project_id)?;
+                }
+                record_result_revision(&transaction, &project_id, entity_type, "backfill")?;
+            }
+        }
+        super::manifests::hydrate_canonical_result_read_models(&transaction, &project_id)?;
+    }
+    transaction
+        .execute(
+            "INSERT OR REPLACE INTO sync_result_materialization (id, completed_at) VALUES (1, ?1)",
+            params![now_iso()],
+        )
+        .map_err(|error| error.to_string())?;
+    transaction.commit().map_err(|error| error.to_string())
+}
+
+fn recover_legacy_analysis_metadata(
+    connection: &Connection,
+    project_id: &str,
+) -> Result<(), String> {
+    let artifact = connection.query_row(&format!("SELECT {ARTIFACT_COLUMNS} FROM artifacts WHERE project_id = ?1 AND type = 'analysis_json' ORDER BY updated_at DESC, id DESC LIMIT 1"), params![project_id], row_artifact)
+        .optional().map_err(|error| error.to_string())?;
+    let Some(artifact) = artifact else {
+        return Ok(());
+    };
+    let payload = fs::read_to_string(&artifact.path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+        .unwrap_or(Value::Null);
+    let mut metadata = artifact.metadata;
+    if !metadata.is_object() {
+        metadata = json!({});
+    }
+    for key in [
+        "analysis_generated_at",
+        "analysis_backend",
+        "analysis_version",
+        "source_artifact_id",
+        "source_artifact_sha256",
+        "source_stem_artifact_ids",
+        "source_stem_content_sha256s",
+        "preprocessing",
+    ] {
+        if metadata.get(key).is_none() {
+            if let Some(value) = payload.get(key) {
+                metadata[key] = value.clone();
+            }
+        }
+    }
+    let updated = metadata
+        .get("analysis_generated_at")
+        .and_then(Value::as_str)
+        .and_then(|timestamp| normalize_sync_timestamp_utc(timestamp, "analysis_generated_at").ok())
+        .unwrap_or(artifact.updated_at);
+    connection
+        .execute(
+            "UPDATE analysis_results SET metadata_json = ?1, updated_at = ?2, source_artifact_id = coalesce(source_artifact_id, (SELECT id FROM artifacts WHERE id = ?4 AND project_id = ?3)) WHERE project_id = ?3",
+            params![
+                sanitize_sync_manifest_value(&metadata).to_string(),
+                updated,
+                project_id,
+                metadata.get("source_artifact_id").and_then(Value::as_str)
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(())
 }
 
 pub(super) fn list_project_delete_tombstones(

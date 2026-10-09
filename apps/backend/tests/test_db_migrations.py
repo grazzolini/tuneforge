@@ -257,7 +257,7 @@ def test_stamped_v1_database_is_noop_and_preserves_data() -> None:
             "SELECT version_num FROM alembic_version"
         ).fetchone()[0]
 
-    assert revision == "0022_artifact_updated_at"
+    assert revision == "0023_analysis_revisions"
     assert after == before
 
 

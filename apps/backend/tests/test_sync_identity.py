@@ -504,7 +504,7 @@ def test_sync_metadata_exposes_sync_safe_project_and_artifact_metadata(
     assert "imported_path" not in project_payload
 
     artifacts = {artifact["artifact_id"]: artifact for artifact in payload["artifacts"]}
-    assert set(artifacts) == {"art_project_safe", "art_analysis_json", "art_external"}
+    assert set(artifacts) == {"art_project_safe", "art_external"}
     safe_artifact = artifacts["art_project_safe"]
     assert safe_artifact["project_id"] == project_id
     assert safe_artifact["type"] == "vocals"
@@ -526,18 +526,9 @@ def test_sync_metadata_exposes_sync_safe_project_and_artifact_metadata(
     assert "path" not in safe_artifact
     assert "result_artifact_ids_json" not in safe_artifact
 
-    analysis_artifact = artifacts["art_analysis_json"]
-    assert analysis_artifact["relative_path"] == "analysis/analysis.json"
-    assert analysis_artifact["content_sha256"] == analysis_artifact_hash
-    assert analysis_artifact["metadata"] == {
-        "analysis_generated_at": "2026-01-02T03:04:05+00:00",
-        "analysis_backend": "built-in",
-        "analysis_version": "v3",
-        "source_artifact_id": "art_source",
-        "source_artifact_sha256": source_hash,
-        "source_stem_artifact_ids": ["art_project_safe"],
-        "source_stem_content_sha256s": [project_artifact_hash],
-    }
+    assert analysis_artifact_path.read_text(encoding="utf-8") == json.dumps({"project_id": project_id})
+    with SessionLocal() as session:
+        assert session.get(Artifact, "art_analysis_json") is not None
 
     external_artifact = artifacts["art_external"]
     assert external_artifact["relative_path"] is None

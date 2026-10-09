@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import re
 from collections.abc import Callable
 from copy import deepcopy
@@ -19,7 +18,6 @@ from app.errors import AppError, JobCancelledError
 from app.models import Artifact, LyricsTranscript, Project
 from app.schemas import LyricsEditSegmentSchema
 from app.services.audio_working import materialize_pcm_wav
-from app.services.paths import project_analysis_dir
 from app.services.stem_signal_metadata import stem_signal_analysis_usable
 from app.services.sync_revisions import record_lyrics_revision
 from app.services.tab_state import clear_project_tab_state
@@ -63,33 +61,6 @@ def _latest_usable_source_vocal_stem(
         ):
             return artifact
     return None
-
-
-def _write_lyrics_snapshot(
-    *,
-    project_id: str,
-    lyrics: LyricsTranscript,
-) -> None:
-    payload: dict[str, Any] = {
-        "project_id": project_id,
-        "backend": lyrics.backend,
-        "source_artifact_id": lyrics.source_artifact_id,
-        "source_kind": lyrics.source_kind,
-        "requested_device": lyrics.requested_device,
-        "device": lyrics.device,
-        "model_name": lyrics.model_name,
-        "language": lyrics.language,
-        "language_override": lyrics.language_override,
-        "source_segments": lyrics.source_segments_json,
-        "segments": lyrics.segments_json,
-        "has_user_edits": lyrics.has_user_edits,
-        "created_at": lyrics.created_at.isoformat(),
-        "updated_at": lyrics.updated_at.isoformat(),
-    }
-
-    lyrics_path = project_analysis_dir(project_id) / "lyrics.json"
-    lyrics_path.parent.mkdir(parents=True, exist_ok=True)
-    lyrics_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
 def generate_project_lyrics(
@@ -136,7 +107,6 @@ def generate_project_lyrics(
         record_lyrics_revision(session, lyrics=existing, revision_type="generated")
 
         _ensure_not_cancelled(should_cancel)
-        _write_lyrics_snapshot(project_id=project.id, lyrics=existing)
         return existing
 
     lyrics_source_artifact = _latest_usable_source_vocal_stem(
@@ -202,7 +172,6 @@ def generate_project_lyrics(
     record_lyrics_revision(session, lyrics=existing, revision_type="generated")
 
     _ensure_not_cancelled(should_cancel)
-    _write_lyrics_snapshot(project_id=project.id, lyrics=existing)
     return existing
 
 
@@ -250,7 +219,6 @@ def update_project_lyrics(
     session.refresh(lyrics)
     if updated_segments != current_segments:
         record_lyrics_revision(session, lyrics=lyrics, revision_type="user_edit")
-    _write_lyrics_snapshot(project_id=project.id, lyrics=lyrics)
     return lyrics
 
 
@@ -271,7 +239,6 @@ def persist_project_lyrics_segments(
     session.refresh(lyrics)
     if lyrics.segments_json != current_segments:
         record_lyrics_revision(session, lyrics=lyrics, revision_type="user_edit")
-    _write_lyrics_snapshot(project_id=project_id, lyrics=lyrics)
     return lyrics
 
 

@@ -589,8 +589,26 @@ pub struct SyncStagedArtifactSchema {
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub struct SyncProjectStagedImportRequest {
     manifest: SyncProjectManifestSchema,
+    #[serde(default, deserialize_with = "deserialize_managed_staging_root")]
     staging_root: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_content_addressed_staging"
+    )]
     use_content_addressed_staging: Option<bool>,
+}
+
+#[cfg(any(test, target_os = "android", target_os = "ios"))]
+impl SyncProjectStagedImportRequest {
+    fn into_public_staging(mut self) -> Result<Self, String> {
+        validate_public_sync_staging(
+            self.staging_root.as_deref(),
+            self.use_content_addressed_staging.unwrap_or(true),
+        )?;
+        self.staging_root = None;
+        self.use_content_addressed_staging = Some(true);
+        Ok(self)
+    }
 }
 
 #[derive(Serialize)]
@@ -686,13 +704,70 @@ pub struct SyncReconciliationApplyRequest {
     project_manifests: Vec<SyncProjectManifestSchema>,
     #[serde(default)]
     peer_inventory: Vec<SyncPeerInventoryEntrySchema>,
+    #[serde(default, deserialize_with = "deserialize_managed_staging_root")]
     staging_root: Option<String>,
-    #[serde(default = "default_true")]
+    #[serde(
+        default = "default_true",
+        deserialize_with = "deserialize_content_addressed_staging"
+    )]
     use_content_addressed_staging: bool,
     #[serde(default)]
     project_ids: Vec<String>,
     #[serde(default)]
     include_timing_evidence: bool,
+}
+
+#[cfg(any(test, target_os = "android", target_os = "ios"))]
+impl SyncReconciliationApplyRequest {
+    fn into_public_staging(mut self) -> Result<Self, String> {
+        validate_public_sync_staging(
+            self.staging_root.as_deref(),
+            self.use_content_addressed_staging,
+        )?;
+        self.staging_root = None;
+        self.use_content_addressed_staging = true;
+        Ok(self)
+    }
+}
+
+#[cfg(any(test, target_os = "android", target_os = "ios"))]
+fn validate_public_sync_staging(
+    staging_root: Option<&str>,
+    content_addressed: bool,
+) -> Result<(), String> {
+    if staging_root.is_some() || !content_addressed {
+        return Err("Sync imports require backend-managed content-addressed staging.".to_string());
+    }
+    Ok(())
+}
+
+fn deserialize_managed_staging_root<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    <()>::deserialize(deserializer)?;
+    Ok(None)
+}
+
+fn deserialize_content_addressed_staging<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    if !bool::deserialize(deserializer)? {
+        return Err(serde::de::Error::custom(
+            "Sync imports require content-addressed staging.",
+        ));
+    }
+    Ok(true)
+}
+
+fn deserialize_optional_content_addressed_staging<'de, D>(
+    deserializer: D,
+) -> Result<Option<bool>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserialize_content_addressed_staging(deserializer).map(Some)
 }
 
 #[derive(Clone, Serialize)]
@@ -741,7 +816,81 @@ fn default_true() -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::ProjectImportRequest;
+    use super::{
+        ProjectImportRequest, SyncProjectStagedImportRequest, SyncReconciliationApplyRequest,
+    };
+    use serde_json::{json, Value};
+
+    fn sync_staging_requests() -> [Value; 2] {
+        [
+            json!({"manifest": {
+                "schema_version": "1",
+                "exported_at": "2026-10-08T00:00:00Z",
+                "project": {
+                    "project_id": "proj_staging_fixture", "display_name": "Staging fixture",
+                    "source_sha256": "a".repeat(64),
+                    "created_at": "2026-10-08T00:00:00Z", "updated_at": "2026-10-08T00:00:00Z"
+                },
+                "artifacts": []
+            }}),
+            json!({"remote_library": {"projects": [], "artifacts": []}, "peer_inventory": []}),
+        ]
+    }
+
+    #[test]
+    fn public_sync_staging_accepts_defaults_and_explicit_managed_mode() {
+        for explicit in [false, true] {
+            let [mut import, mut apply] = sync_staging_requests();
+            if explicit {
+                for request in [&mut import, &mut apply] {
+                    request["staging_root"] = Value::Null;
+                    request["use_content_addressed_staging"] = json!(true);
+                }
+            }
+            let import: SyncProjectStagedImportRequest = serde_json::from_value(import).unwrap();
+            let import = import.into_public_staging().unwrap();
+            assert!(import.staging_root.is_none());
+            assert_eq!(import.use_content_addressed_staging, Some(true));
+            let apply: SyncReconciliationApplyRequest = serde_json::from_value(apply).unwrap();
+            let apply = apply.into_public_staging().unwrap();
+            assert!(apply.staging_root.is_none());
+            assert!(apply.use_content_addressed_staging);
+        }
+    }
+
+    #[test]
+    fn public_sync_staging_deserialization_rejects_untrusted_mode() {
+        for fields in [
+            json!({"staging_root": "/outside/staging"}),
+            json!({"use_content_addressed_staging": false}),
+            json!({"staging_root": "/outside/staging", "use_content_addressed_staging": false}),
+            json!({"use_content_addressed_staging": null}),
+        ] {
+            let [mut import, mut apply] = sync_staging_requests();
+            for (key, value) in fields.as_object().unwrap() {
+                import[key] = value.clone();
+                apply[key] = value.clone();
+            }
+            assert!(serde_json::from_value::<SyncProjectStagedImportRequest>(import).is_err());
+            assert!(serde_json::from_value::<SyncReconciliationApplyRequest>(apply).is_err());
+        }
+    }
+
+    #[test]
+    fn public_sync_staging_rejects_typed_relative_payloads_before_storage_access() {
+        for (root, content_addressed) in [(Some("/outside/staging"), true), (None, false)] {
+            let [import, apply] = sync_staging_requests();
+            let mut import: SyncProjectStagedImportRequest =
+                serde_json::from_value(import).unwrap();
+            import.staging_root = root.map(str::to_string);
+            import.use_content_addressed_staging = Some(content_addressed);
+            assert!(import.into_public_staging().is_err());
+            let mut apply: SyncReconciliationApplyRequest = serde_json::from_value(apply).unwrap();
+            apply.staging_root = root.map(str::to_string);
+            apply.use_content_addressed_staging = content_addressed;
+            assert!(apply.into_public_staging().is_err());
+        }
+    }
 
     #[test]
     fn project_import_request_defaults_copy_into_project_to_true() {

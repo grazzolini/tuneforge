@@ -45,6 +45,7 @@ from app.services.sync_metadata import (
 from app.services.sync_project_status import mark_project_sync_local
 from app.services.sync_revisions import (
     CURRENT_REVISION_STATE,
+    SUPERSEDED_REVISION_STATE,
     revision_payload_sha256,
     sanitize_revision_payload,
 )
@@ -211,6 +212,9 @@ class _VerifiedStagedArtifact:
 
 
 def export_project_manifest(session: Session, project_id: str) -> SyncProjectManifest:
+    from app.services.sync_revisions import materialize_result_revisions
+
+    materialize_result_revisions(session, project_id)
     project = session.get(Project, project_id)
     if project is None:
         raise AppError(
@@ -238,10 +242,7 @@ def export_project_manifest(session: Session, project_id: str) -> SyncProjectMan
         if _is_syncable_delete_tombstone(tombstone)
     ]
     live_targets = _live_target_updated_at(project, artifacts, entity_revisions)
-    exported_tombstones = [
-        _export_delete_tombstone_manifest(tombstone)
-        for tombstone in delete_tombstones
-    ]
+    exported_tombstones = [_export_delete_tombstone_manifest(tombstone) for tombstone in delete_tombstones]
     project_resurrection_window = _project_resurrection_window_for_live_targets(
         project_updated_at=project.updated_at,
         tombstones=exported_tombstones,
@@ -262,10 +263,7 @@ def export_project_manifest(session: Session, project_id: str) -> SyncProjectMan
             created_at=project.created_at,
             updated_at=project.updated_at,
         ),
-        entity_revisions=[
-            _export_entity_revision_manifest(revision)
-            for revision in entity_revisions
-        ],
+        entity_revisions=[_export_entity_revision_manifest(revision) for revision in entity_revisions],
         artifacts=[_export_artifact_manifest(artifact) for artifact in artifacts],
         delete_tombstones=[
             tombstone
@@ -336,10 +334,7 @@ def resolve_artifact_file_sources(
                 _artifact_file_resolve_error(
                     artifact_id=artifact.id,
                     code="SYNC_ARTIFACT_FILE_HASH_MISSING",
-                    message=(
-                        "Artifact file cannot be resolved because it is missing a "
-                        "content SHA-256."
-                    ),
+                    message=("Artifact file cannot be resolved because it is missing a content SHA-256."),
                     details={"project_id": artifact.project_id},
                 )
             )
@@ -363,10 +358,7 @@ def resolve_artifact_file_sources(
                 _artifact_file_resolve_error(
                     artifact_id=artifact.id,
                     code="SYNC_ARTIFACT_FILE_SIZE_MISMATCH",
-                    message=(
-                        "Artifact file cannot be resolved because its file size no "
-                        "longer matches metadata."
-                    ),
+                    message=("Artifact file cannot be resolved because its file size no longer matches metadata."),
                     details={
                         "project_id": artifact.project_id,
                         "expected_size_bytes": artifact.size_bytes,
@@ -394,8 +386,7 @@ def resolve_artifact_file_sources(
                     artifact_id=artifact.id,
                     code="SYNC_ARTIFACT_FILE_HASH_MISMATCH",
                     message=(
-                        "Artifact file cannot be resolved because its content SHA-256 "
-                        "no longer matches metadata."
+                        "Artifact file cannot be resolved because its content SHA-256 no longer matches metadata."
                     ),
                     details={
                         "project_id": artifact.project_id,
@@ -428,8 +419,7 @@ def import_staged_project_manifest(
 ) -> Project:
     if staged_content_addressed is not None:
         flags_conflict = (
-            use_content_addressed_staging is not False
-            and use_content_addressed_staging != staged_content_addressed
+            use_content_addressed_staging is not False and use_content_addressed_staging != staged_content_addressed
         )
         if flags_conflict:
             raise AppError(
@@ -458,9 +448,7 @@ def import_staged_project_manifest(
             upgrading_placeholder = True
         elif existing_project.id == project_manifest.project_id:
             root = project_root(project_manifest.project_id).resolve(strict=False)
-            staged_root = (
-                None if staging_root is None else Path(staging_root).expanduser().resolve(strict=False)
-            )
+            staged_root = None if staging_root is None else Path(staging_root).expanduser().resolve(strict=False)
             return _merge_staged_project_manifest(
                 session,
                 project=existing_project,
@@ -473,9 +461,7 @@ def import_staged_project_manifest(
             raise _duplicate_project_source_error(existing_project.id, existing_project.display_name)
     _reject_manifest_artifact_conflicts(session, project_manifest)
     root = project_root(project_manifest.project_id).resolve(strict=False)
-    staged_root = (
-        None if staging_root is None else Path(staging_root).expanduser().resolve(strict=False)
-    )
+    staged_root = None if staging_root is None else Path(staging_root).expanduser().resolve(strict=False)
     verified_artifacts = _verify_staged_artifacts(
         session,
         project_manifest,
@@ -588,9 +574,7 @@ def _merge_staged_project_manifest(
     _reject_existing_manifest_item_conflicts(session, manifest)
 
     missing_artifacts = [
-        artifact
-        for artifact in manifest.artifacts
-        if session.get(Artifact, artifact.artifact_id) is None
+        artifact for artifact in manifest.artifacts if session.get(Artifact, artifact.artifact_id) is None
     ]
     missing_revisions = [
         revision
@@ -761,7 +745,7 @@ def _list_project_entity_revisions(
     *,
     project_id: str,
 ) -> list[SyncEntityRevision]:
-    return list(
+    revisions = list(
         session.scalars(
             select(SyncEntityRevision)
             .where(SyncEntityRevision.project_id == project_id)
@@ -772,6 +756,12 @@ def _list_project_entity_revisions(
                 SyncEntityRevision.id.asc(),
             )
         )
+    )
+    from app.services.sync_revisions import current_entity_revision
+
+    analysis = current_entity_revision(session, project_id, "analysis", project_id)
+    return [revision for revision in revisions if revision.entity_type != "analysis"] + (
+        [analysis] if analysis is not None and _is_current_revision_state(analysis.state) else []
     )
 
 
@@ -809,9 +799,7 @@ def _live_target_updated_at(
 ) -> dict[tuple[str, str], datetime]:
     targets = {("project", project.id): project.updated_at}
     targets.update({("artifact", artifact.id): artifact.created_at for artifact in artifacts})
-    targets.update({
-        ("entity_revision", revision.id): revision.updated_at for revision in entity_revisions
-    })
+    targets.update({("entity_revision", revision.id): revision.updated_at for revision in entity_revisions})
     return targets
 
 
@@ -943,9 +931,7 @@ def _import_entity_revisions(session: Session, manifest: SyncProjectManifest) ->
         return
 
     seen_revision_ids: set[str] = set()
-    manifest_revisions_by_id = {
-        revision.revision_id: revision for revision in manifest.entity_revisions
-    }
+    manifest_revisions_by_id = {revision.revision_id: revision for revision in manifest.entity_revisions}
     for revision in manifest.entity_revisions:
         if revision.project_id != manifest.project_id:
             raise AppError(
@@ -966,7 +952,6 @@ def _import_entity_revisions(session: Session, manifest: SyncProjectManifest) ->
 
         _validate_entity_revision_base_reference(session, manifest.project_id, revision, manifest_revisions_by_id)
         _validate_entity_revision_source_artifact_reference(session, manifest.project_id, revision)
-
 
         if session.get(SyncEntityRevision, revision.revision_id) is not None:
             raise AppError(
@@ -1082,9 +1067,7 @@ def _validate_entity_revision_base_reference(
             or manifest_base.entity_type != revision.entity_type
             or manifest_base.entity_id != revision.entity_id
         ):
-            raise _invalid_manifest(
-                "Entity revision base_revision_id must reference the same project entity."
-            )
+            raise _invalid_manifest("Entity revision base_revision_id must reference the same project entity.")
         return
 
     existing_base = session.get(SyncEntityRevision, revision.base_revision_id)
@@ -1119,11 +1102,7 @@ def _entity_revisions_in_dependency_order(
     ordered: list[SyncEntityRevisionManifest] = []
     while pending:
         ready = sorted(
-            (
-                revision
-                for revision in pending.values()
-                if revision.base_revision_id not in pending
-            ),
+            (revision for revision in pending.values() if revision.base_revision_id not in pending),
             key=_entity_revision_sort_key,
         )
         if not ready:
@@ -1148,24 +1127,29 @@ def _hydrate_current_entity_revisions(
     project: Project,
     revisions: list[SyncEntityRevisionManifest],
 ) -> None:
-    current_revisions = [
-        revision for revision in revisions if _is_current_revision_state(revision.state)
-    ]
-    singleton_current: set[str] = set()
-    section_ids: set[str] = set()
-    for revision in current_revisions:
-        if revision.entity_type in {"project_metadata", "chords", "lyrics"}:
-            if revision.entity_type in singleton_current:
-                raise _invalid_manifest(
-                    f"Project manifest contains multiple current {revision.entity_type} revisions."
-                )
-            singleton_current.add(revision.entity_type)
-        elif revision.entity_type == "section":
-            if revision.entity_id in section_ids:
-                raise _invalid_manifest(
-                    "Project manifest contains multiple current section revisions for the same entity."
-                )
-            section_ids.add(revision.entity_id)
+    from app.services.sync_revisions import revision_lww_key
+
+    session.flush()
+    affected_entities = {(revision.entity_type, revision.entity_id) for revision in revisions}
+    winners: dict[tuple[str, str], SyncEntityRevision] = {}
+    active = list(
+        session.scalars(
+            select(SyncEntityRevision).where(
+                SyncEntityRevision.project_id == project.id,
+                SyncEntityRevision.state.in_((CURRENT_REVISION_STATE, "current")),
+            )
+        )
+    )
+    active = [row for row in active if (row.entity_type, row.entity_id) in affected_entities]
+    for row in active:
+        key = (row.entity_type, row.entity_id)
+        existing = winners.get(key)
+        if existing is None or revision_lww_key(row) > revision_lww_key(existing):
+            winners[key] = row
+    for row in active:
+        if winners[(row.entity_type, row.entity_id)].id != row.id:
+            row.state = SUPERSEDED_REVISION_STATE
+    current_revisions = [_export_entity_revision_manifest(row) for row in winners.values()]
 
     for revision in current_revisions:
         if revision.entity_type == "project_metadata":
@@ -1174,6 +1158,8 @@ def _hydrate_current_entity_revisions(
             _hydrate_chord_revision(session, project, revision)
         elif revision.entity_type == "lyrics":
             _hydrate_lyrics_revision(session, project, revision)
+        elif revision.entity_type == "analysis":
+            _hydrate_analysis_revision(session, project, revision)
         elif revision.entity_type == "section":
             _hydrate_section_revision(session, project, revision)
 
@@ -1223,7 +1209,9 @@ def _hydrate_chord_revision(
     segments = _payload_list(payload, ("segments", "segments_json", "timeline"))
     timeline = _payload_list(payload, ("timeline", "timeline_json"), default=segments)
     chords.backend = _payload_optional_str(payload, "backend") or "default"
-    chords.source_artifact_id = _payload_optional_str(payload, "source_artifact_id") or revision.source_artifact_id
+    chords.source_artifact_id = _result_source_artifact_id(
+        session, project.id, _payload_optional_str(payload, "source_artifact_id") or revision.source_artifact_id
+    )
     chords.source_segments_json = _payload_list(payload, ("source_segments", "source_segments_json"))
     chords.segments_json = segments
     chords.timeline_json = timeline
@@ -1250,7 +1238,9 @@ def _hydrate_lyrics_revision(
         session.add(lyrics)
 
     lyrics.backend = _payload_optional_str(payload, "backend") or "openai-whisper"
-    lyrics.source_artifact_id = _payload_optional_str(payload, "source_artifact_id") or revision.source_artifact_id
+    lyrics.source_artifact_id = _result_source_artifact_id(
+        session, project.id, _payload_optional_str(payload, "source_artifact_id") or revision.source_artifact_id
+    )
     lyrics.source_kind = _payload_optional_str(payload, "source_kind") or "ai"
     lyrics.requested_device = _payload_optional_str(payload, "requested_device")
     lyrics.device = _payload_optional_str(payload, "device")
@@ -1295,7 +1285,73 @@ def _hydrate_section_revision(
     section.updated_at = _payload_datetime(payload, "updated_at") or revision.updated_at
 
 
+def _result_source_artifact_id(session: Session, project_id: str, source_id: str | None) -> str | None:
+    if source_id is None:
+        return None
+    source = session.get(Artifact, source_id)
+    if source is not None and source.project_id == project_id:
+        return source_id
+    deleted = session.scalar(select(SyncDeleteTombstone.id).where(
+        SyncDeleteTombstone.project_id == project_id,
+        SyncDeleteTombstone.target_type == "artifact",
+        SyncDeleteTombstone.target_id == source_id,
+    ))
+    if source is None and deleted is not None:
+        return None
+    raise _invalid_manifest("Result source_artifact_id must belong to the manifest project.")
+
+
+def _hydrate_analysis_revision(
+    session: Session,
+    project: Project,
+    revision: SyncEntityRevisionManifest,
+) -> None:
+    payload = revision.payload
+    source_artifact_id = _analysis_optional_str(payload, "source_artifact_id") or revision.source_artifact_id
+    source_artifact_id = _result_source_artifact_id(session, project.id, source_artifact_id)
+    analysis = session.get(AnalysisResult, project.id)
+    if analysis is None:
+        analysis = AnalysisResult(project_id=project.id)
+        session.add(analysis)
+    analysis.source_artifact_id = source_artifact_id
+    analysis.estimated_key = _analysis_optional_str(payload, "estimated_key")
+    analysis.key_confidence = _analysis_optional_float(payload, "key_confidence")
+    analysis.estimated_reference_hz = _analysis_optional_float(payload, "estimated_reference_hz")
+    analysis.tuning_offset_cents = _analysis_optional_float(payload, "tuning_offset_cents")
+    analysis.tempo_bpm = _analysis_optional_float(payload, "tempo_bpm")
+    analysis.timing_json = _analysis_optional_mapping(payload, "timing")
+    analysis.analysis_version = _analysis_optional_str(payload, "analysis_version") or "v3"
+    analysis.created_at = _payload_datetime(payload, "created_at") or revision.created_at
+    analysis.updated_at = _payload_datetime(payload, "updated_at") or revision.updated_at
+    analysis.metadata_json = deepcopy(revision.metadata)
+
+
 def _hydrate_analysis_result_from_artifact(session: Session, project: Project) -> None:
+    from app.services.sync_revisions import current_entity_revision
+
+    canonical = current_entity_revision(session, project.id, "analysis", project.id)
+    if canonical is not None:
+        if _is_current_revision_state(canonical.state):
+            _hydrate_analysis_revision(session, project, _export_entity_revision_manifest(canonical))
+        else:
+            analysis = session.get(AnalysisResult, project.id)
+            if analysis is not None:
+                session.delete(analysis)
+        session.flush()
+        return
+    if any(
+        tombstone.prior_metadata_json.get("entity_type") == "analysis"
+        and tombstone.prior_metadata_json.get("entity_id") == project.id
+        for tombstone in session.scalars(select(SyncDeleteTombstone).where(
+            SyncDeleteTombstone.project_id == project.id,
+            SyncDeleteTombstone.target_type == "entity_revision",
+        ))
+    ):
+        analysis = session.get(AnalysisResult, project.id)
+        if analysis is not None:
+            session.delete(analysis)
+        session.flush()
+        return
     analysis_artifact = session.scalar(
         select(Artifact)
         .where(Artifact.project_id == project.id, Artifact.type == "analysis_json")
@@ -1501,9 +1557,7 @@ def _validate_staged_import_source_artifact(manifest: SyncProjectManifest) -> Sy
     if expected_suffix is None:
         raise _invalid_manifest("Project manifest source_audio artifact format is unsupported.")
     if relative_path.suffix.lower() != expected_suffix:
-        raise _invalid_manifest(
-            "Project manifest source_audio artifact format and relative_path suffix do not match."
-        )
+        raise _invalid_manifest("Project manifest source_audio artifact format and relative_path suffix do not match.")
     return source_artifact
 
 
@@ -1744,10 +1798,7 @@ def _retire_manifest_superseded_local_tombstones(
     sync_group_id: str,
 ) -> None:
     tombstones = _list_project_delete_tombstones(session, project_id=manifest.project_id)
-    exported_tombstones = {
-        row.id: _export_delete_tombstone_manifest(row)
-        for row in tombstones
-    }
+    exported_tombstones = {row.id: _export_delete_tombstone_manifest(row) for row in tombstones}
     project_resurrection_window = _project_resurrection_window_for_live_targets(
         project_updated_at=manifest.updated_at,
         tombstones=exported_tombstones.values(),
@@ -1801,20 +1852,12 @@ def _manifest_target_updated_at(
         return manifest.updated_at
     if target_type == "artifact":
         return next(
-            (
-                artifact.created_at
-                for artifact in manifest.artifacts
-                if artifact.artifact_id == target_id
-            ),
+            (artifact.created_at for artifact in manifest.artifacts if artifact.artifact_id == target_id),
             None,
         )
     if target_type == "entity_revision":
         return next(
-            (
-                revision.updated_at
-                for revision in manifest.entity_revisions
-                if revision.revision_id == target_id
-            ),
+            (revision.updated_at for revision in manifest.entity_revisions if revision.revision_id == target_id),
             None,
         )
     return None
@@ -1856,10 +1899,7 @@ def _as_utc(value: datetime) -> datetime:
 def _manifest_live_targets(manifest: SyncProjectManifest) -> set[tuple[str, str]]:
     targets = {("project", manifest.project_id)}
     targets.update(("artifact", artifact.artifact_id) for artifact in manifest.artifacts)
-    targets.update(
-        ("entity_revision", revision.revision_id)
-        for revision in manifest.entity_revisions
-    )
+    targets.update(("entity_revision", revision.revision_id) for revision in manifest.entity_revisions)
     return targets
 
 
@@ -2043,15 +2083,9 @@ def _coerce_project_manifest(manifest: SyncProjectManifest | Mapping[str, Any] |
                 created_at=_required_datetime(project_fields, "created_at"),
                 updated_at=_required_datetime(project_fields, "updated_at"),
             ),
-            entity_revisions=[
-                _coerce_entity_revision_manifest(revision)
-                for revision in raw_entity_revisions
-            ],
+            entity_revisions=[_coerce_entity_revision_manifest(revision) for revision in raw_entity_revisions],
             artifacts=[_coerce_artifact_manifest(artifact) for artifact in raw_artifacts],
-            delete_tombstones=[
-                _coerce_delete_tombstone_manifest(tombstone)
-                for tombstone in raw_delete_tombstones
-            ],
+            delete_tombstones=[_coerce_delete_tombstone_manifest(tombstone) for tombstone in raw_delete_tombstones],
         )
     project_manifest = replace(
         project_manifest,
@@ -2062,9 +2096,7 @@ def _coerce_project_manifest(manifest: SyncProjectManifest | Mapping[str, Any] |
             updated_at=sync_datetime_as_utc(project_manifest.project.updated_at),
         ),
         entity_revisions=[
-            _normalize_entity_revision_manifest(
-                _normalize_entity_revision_manifest_payload(revision)
-            )
+            _normalize_entity_revision_manifest(_normalize_entity_revision_manifest_payload(revision))
             for revision in project_manifest.entity_revisions
         ],
         artifacts=[
@@ -2115,8 +2147,7 @@ def _coerce_artifact_manifest(manifest: Mapping[str, Any] | object) -> SyncArtif
         cache_key=_optional_str(manifest, "cache_key"),
         metadata=metadata,
         created_at=_required_datetime(manifest, "created_at"),
-        updated_at=_optional_datetime(manifest, "updated_at")
-        or _required_datetime(manifest, "created_at"),
+        updated_at=_optional_datetime(manifest, "updated_at") or _required_datetime(manifest, "created_at"),
     )
 
 
@@ -2134,9 +2165,7 @@ def _coerce_entity_revision_manifest(manifest: Mapping[str, Any] | object) -> Sy
     safe_metadata = sanitize_revision_payload(metadata)
     safe_payload = sanitize_revision_payload(payload)
     if safe_metadata != metadata or safe_payload != payload:
-        raise _invalid_manifest(
-            "Entity revision manifest metadata and payload must be sync-safe."
-        )
+        raise _invalid_manifest("Entity revision manifest metadata and payload must be sync-safe.")
     content_sha256 = revision_payload_sha256(safe_payload)
 
     return SyncEntityRevisionManifest(
@@ -2165,9 +2194,7 @@ def _normalize_entity_revision_manifest_payload(
 
     payload = deepcopy(revision.payload)
     if "language_override" in payload:
-        payload["language_override"] = _normalize_lyrics_language_override_value(
-            payload["language_override"]
-        )
+        payload["language_override"] = _normalize_lyrics_language_override_value(payload["language_override"])
     safe_payload = sanitize_revision_payload(payload)
     if safe_payload != payload:
         raise _invalid_manifest("Entity revision manifest payload must be sync-safe.")
@@ -2192,9 +2219,7 @@ def _normalize_lyrics_language_override_value(value: object) -> str | None:
     if value is None:
         return None
     if not isinstance(value, str):
-        raise _invalid_manifest(
-            "Entity revision payload field must be a string or null: language_override."
-        )
+        raise _invalid_manifest("Entity revision payload field must be a string or null: language_override.")
     normalized = value.strip().lower()
     if not normalized:
         return None

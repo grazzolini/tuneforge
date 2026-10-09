@@ -432,7 +432,7 @@ mod sync_core {
     pub(crate) const ENDPOINT_SCHEME: &str = "tuneforge-sync+tcp://";
     pub(crate) const IROH_ENDPOINT_SCHEME: &str = "tuneforge-sync+iroh://";
     pub(crate) const PAIRING_PROTOCOL_VERSION: &str = "tuneforge-sync-v1";
-    pub(crate) const TRANSPORT_PROTOCOL_VERSION: &str = "tuneforge-sync-transport-v5";
+    pub(crate) const TRANSPORT_PROTOCOL_VERSION: &str = "tuneforge-sync-transport-v6";
     pub(crate) const TRANSPORT_HANDSHAKE_CHALLENGE_TYPE: &str = "transport_handshake";
     pub(crate) const MAX_RAW_FRAME: usize = 65_535;
     pub(crate) const NOISE_FRAME_SAFETY_MARGIN: usize = 1024;
@@ -16559,7 +16559,41 @@ mod desktop {
 
         #[test]
         fn transport_protocol_version_gates_watchdog_status_frames() {
-            assert_eq!(TRANSPORT_PROTOCOL_VERSION, "tuneforge-sync-transport-v5");
+            assert_eq!(TRANSPORT_PROTOCOL_VERSION, "tuneforge-sync-transport-v6");
+        }
+
+        #[test]
+        fn transport_auth_rejects_v5_before_manifest_exchange() {
+            let mut connection = ScriptedProtocolConnection::new(vec![
+                ProtocolMessage::AuthChallenge {
+                    protocol_version: "tuneforge-sync-transport-v5".to_string(),
+                    device_id: "dev_peer".to_string(),
+                    session_nonce: "peer_nonce".to_string(),
+                },
+                ProtocolMessage::ManifestOffer(ManifestOffer {
+                    metadata: json!({ "projects": [] }),
+                    project_manifests: Vec::new(),
+                    manifest_errors: Vec::new(),
+                }),
+            ]);
+
+            let error = authenticate_session(
+                &mut connection,
+                &TestAuthBackend,
+                Some("dev_peer".to_string()),
+                &[],
+            )
+            .expect_err("v5 peer must fail before signing or manifest exchange");
+
+            assert_eq!(
+                error,
+                "Sync peer uses unsupported transport protocol version tuneforge-sync-transport-v5."
+            );
+            assert_eq!(connection.sent_count, 1);
+            assert!(matches!(
+                connection.incoming.front(),
+                Some(ProtocolMessage::ManifestOffer(_))
+            ));
         }
 
         #[test]

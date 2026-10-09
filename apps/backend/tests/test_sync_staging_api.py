@@ -7,9 +7,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.api.routes import sync as sync_routes
+from app.db import SessionLocal
 from app.models import Project
 
 
@@ -206,68 +208,87 @@ def test_get_sync_staged_artifact_api_returns_staged_metadata(
     assert captured == {"content_sha256": content_sha256}
 
 
-def test_sync_project_import_api_accepts_legacy_staging_root_payload(
+@pytest.mark.parametrize("endpoint", ["projects/import", "reconciliation/apply"])
+@pytest.mark.parametrize("existing_project", [False, True], ids=["fresh", "merge"])
+@pytest.mark.parametrize("staging_override", ["root", "relative", "root_and_relative", "null_mode"])
+def test_sync_http_import_rejects_untrusted_staging_before_service_execution(
     client: TestClient,
     tmp_path: Path,
-    monkeypatch: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    endpoint: str,
+    existing_project: bool,
+    staging_override: str,
 ) -> None:
     from app.services import sync_manifest as sync_manifest_service
 
-    content_sha256 = hashlib.sha256(b"legacy staging root").hexdigest()
-    staging_root = tmp_path / "staging"
-    captured: dict[str, Any] = {}
+    outside_root = tmp_path / "outside-staging"
+    outside_root.mkdir()
+    sentinel = outside_root / "sentinel.bin"
+    sentinel.write_bytes(b"outside sentinel")
+    content_sha256 = hashlib.sha256(b"outside sentinel").hexdigest()
+    manifest = _manifest_payload(content_sha256)
+    if existing_project:
+        with SessionLocal() as session:
+            session.add(Project(
+                id=manifest["project"]["project_id"],
+                display_name="Existing project",
+                source_sha256=content_sha256,
+                source_path=str(sentinel),
+                imported_path=str(sentinel),
+                duration_seconds=1.0,
+                sample_rate=44100,
+                channels=2,
+            ))
+            session.commit()
 
-    def fake_import_staged_project_manifest(
-        session: Any,
-        *,
-        manifest: dict[str, Any],
-        staging_root: str,
-        use_content_addressed_staging: bool | None = None,
-    ) -> Project:
-        captured.update(
-            {
-                "manifest": manifest,
-                "staging_root": staging_root,
-                "use_content_addressed_staging": use_content_addressed_staging,
-            }
-        )
-        project = Project(
-            id=manifest["project"]["project_id"],
-            display_name=manifest["project"]["display_name"],
-            source_key_override=manifest["project"]["source_key_override"],
-            source_sha256=manifest["project"]["source_sha256"],
-            source_path=str(tmp_path / "imported.wav"),
-            imported_path=str(tmp_path / "imported.wav"),
-            duration_seconds=manifest["project"]["duration_seconds"],
-            sample_rate=manifest["project"]["sample_rate"],
-            channels=manifest["project"]["channels"],
-        )
-        session.add(project)
-        session.flush()
-        return project
+    def unexpected_service_call(*args: Any, **kwargs: Any) -> Any:
+        pytest.fail("Invalid HTTP staging reached service/filesystem execution")
 
     monkeypatch.setattr(
         sync_manifest_service,
         "import_staged_project_manifest",
-        fake_import_staged_project_manifest,
+        unexpected_service_call,
     )
+    monkeypatch.setattr(sync_routes, "apply_sync_reconciliation", unexpected_service_call)
+    if endpoint == "projects/import":
+        request_payload: dict[str, Any] = {"manifest": manifest}
+    else:
+        request_payload = {
+            "remote_library": {"projects": [], "artifacts": []},
+            "project_manifests": [manifest],
+            "peer_inventory": [],
+        }
+    if staging_override in {"root", "root_and_relative"}:
+        request_payload["staging_root"] = str(outside_root)
+    if staging_override in {"relative", "root_and_relative"}:
+        request_payload["use_content_addressed_staging"] = False
+    if staging_override == "null_mode":
+        request_payload["use_content_addressed_staging"] = None
 
-    response = client.post(
-        "/api/v1/sync/projects/import",
-        json={"manifest": _manifest_payload(content_sha256), "staging_root": str(staging_root)},
-    )
+    response = client.post(f"/api/v1/sync/{endpoint}", json=request_payload)
 
-    assert response.status_code == 200
-    assert response.json()["project"]["id"] == "proj_sync_api_import"
-    assert captured["manifest"]["project"]["source_sha256"] == content_sha256
-    assert captured["staging_root"] == str(staging_root)
-    assert captured["use_content_addressed_staging"] is False
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "INVALID_REQUEST"
+    error_fields = {error["loc"][-1] for error in response.json()["error"]["details"]["errors"]}
+    assert error_fields <= {"staging_root", "use_content_addressed_staging"}
+    assert error_fields
+    assert sentinel.read_bytes() == b"outside sentinel"
+    assert list(outside_root.iterdir()) == [sentinel]
+    with SessionLocal() as session:
+        project = session.get(Project, manifest["project"]["project_id"])
+        if existing_project:
+            assert project is not None
+            assert project.display_name == "Existing project"
+        else:
+            assert project is None
 
 
+@pytest.mark.parametrize("staging_fields", [{}, {"staging_root": None, "use_content_addressed_staging": True}])
 def test_sync_project_import_api_allows_content_addressed_payload_without_staging_root(
     client: TestClient,
     tmp_path: Path,
     monkeypatch: Any,
+    staging_fields: dict[str, Any],
 ) -> None:
     from app.services import sync_manifest as sync_manifest_service
 
@@ -314,7 +335,7 @@ def test_sync_project_import_api_allows_content_addressed_payload_without_stagin
         "/api/v1/sync/projects/import",
         json={
             "manifest": _manifest_payload(content_sha256, project_id=project_id),
-            "use_content_addressed_staging": True,
+            **staging_fields,
         },
     )
 

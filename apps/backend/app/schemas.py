@@ -585,8 +585,12 @@ class SyncStagedArtifactSchema(_SyncTimestampSchemaMixin, BaseModel):
 
 class SyncProjectStagedImportRequest(BaseModel):
     manifest: SyncProjectManifestSchema
-    staging_root: str | None = Field(default=None, min_length=1)
-    use_content_addressed_staging: bool | None = None
+    staging_root: None = Field(
+        default=None, description="HTTP imports use backend-managed staging; only null is accepted."
+    )
+    use_content_addressed_staging: Literal[True] = Field(
+        default=True, description="HTTP imports require verified content-addressed staging."
+    )
 
 
 class SyncProjectImportResponse(BaseModel):
@@ -685,8 +689,12 @@ SyncReconciliationTimingPhase = Literal["plan", "apply", "action", "staging_clea
 
 
 class SyncReconciliationApplyRequest(SyncReconciliationPlanRequest):
-    staging_root: str | None = Field(default=None, min_length=1)
-    use_content_addressed_staging: bool = True
+    staging_root: None = Field(
+        default=None, description="HTTP imports use backend-managed staging; only null is accepted."
+    )
+    use_content_addressed_staging: Literal[True] = Field(
+        default=True, description="HTTP imports require verified content-addressed staging."
+    )
     project_ids: list[str] = Field(default_factory=list)
     include_timing_evidence: bool = False
 

@@ -2899,10 +2899,7 @@ mod mobile_backend_tests {
             .iter()
             .map(|artifact| (artifact.artifact_id.as_str(), artifact))
             .collect::<std::collections::HashMap<_, _>>();
-        assert_eq!(
-            artifacts_by_id["art_analysis_json"].metadata["timing_summary"]["source"],
-            "remote-detected"
-        );
+        assert!(!artifacts_by_id.contains_key("art_analysis_json"));
         assert_eq!(
             artifacts_by_id["art_vocals_stem"].metadata["stem_signal"]["sample_rate"],
             48_000
@@ -4374,7 +4371,7 @@ mod mobile_backend_tests {
 
     #[test]
     fn mobile_sync_defaults_match_local_project_contract() {
-        assert_eq!(MOBILE_DB_VERSION, 5);
+        assert_eq!(MOBILE_DB_VERSION, 6);
         assert!(sync_editable(DEFAULT_SYNC_STATUS));
         assert!(!sync_editable("remote_available"));
         assert!(!sync_editable("conflicted"));
@@ -4830,7 +4827,7 @@ mod mobile_backend_tests {
     fn mobile_manifest_lyrics_hydration_failures_roll_back() {
         for (slug, revisions, expected_error) in [
             (
-                "lyrics-duplicate",
+                "lyrics-malformed",
                 vec![
                     mobile_lyrics_revision(
                         "rev_lyrics_a",
@@ -4844,10 +4841,10 @@ mod mobile_backend_tests {
                         "PROJECT_ID",
                         "current",
                         Some("art_source_audio"),
-                        mobile_desktop_lyrics_payload("b", "b"),
+                        json!({"segments": "malformed"}),
                     ),
                 ],
-                "multiple current lyrics revisions",
+                "segments",
             ),
             (
                 "lyrics-foreign-source",

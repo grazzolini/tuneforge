@@ -78,16 +78,26 @@ function artifact(value, changes = {}) {
 
 test("bootstrap chooses candidate; registered matching recipe chooses promoted", (context) => {
   const value = fixture(context);
-  assert.equal(run(value, ["select"]).status, 0);
-  assert.match(fs.readFileSync(value.env.GITHUB_OUTPUT, "utf8"), /selection=candidate/);
   const recordPath = path.join(value.workspace, ".github/ci/promoted-image.json");
   const record = JSON.parse(fs.readFileSync(recordPath));
+  record.producerFingerprint = null;
+  record.sourceRevision = null;
+  fs.writeFileSync(recordPath, JSON.stringify(record));
+  assert.equal(run(value, ["select"]).status, 0);
+  assert.match(fs.readFileSync(value.env.GITHUB_OUTPUT, "utf8"), /selection=candidate/);
   record.producerFingerprint = value.env.CI_IMAGE_FINGERPRINT;
   record.sourceRevision = checkout;
   fs.writeFileSync(recordPath, JSON.stringify(record));
   fs.writeFileSync(value.env.GITHUB_OUTPUT, "");
   assert.equal(run(value, ["select"]).status, 0);
   assert.match(fs.readFileSync(value.env.GITHUB_OUTPUT, "utf8"), /selection=promoted/);
+  assert.equal(run(value, ["load"], { CI_IMAGE_SELECTION: "promoted",
+    CI_IMAGE_CANDIDATE_RESULT: "skipped", CI_IMAGE_ARTIFACT_ID: "" }).status, 0);
+  const log = fs.readFileSync(value.log, "utf8");
+  assert.ok(log.includes(`pull\n--platform\nlinux/amd64\nghcr.io/grazzolini/tuneforge-ci@${record.digest}\n`));
+  assert.doesNotMatch(log, /build|load|login|push/);
+  const identity = crypto.createHash("sha256").update(`${configID}\n${record.producerFingerprint}\n`).digest("hex");
+  assert.equal(fs.readFileSync(path.join(value.workspace, ".github/ci/.selected-image-key"), "utf8"), `${identity}\n`);
   record.producerFingerprint = "0".repeat(64);
   fs.writeFileSync(recordPath, JSON.stringify(record));
   fs.writeFileSync(value.env.GITHUB_OUTPUT, "");

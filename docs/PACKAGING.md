@@ -258,6 +258,9 @@ By default, Demucs, Whisper, and beat-this weights are read from their normal ca
 
 ## Android
 
+See [Android Setup](MOBILE.md#android-setup) for the shared Linux/macOS prerequisites and preparation
+flow.
+
 Choose a preparation-only run, debug build, optimized local release-profile build, or stable-key
 GitHub Release APK build:
 
@@ -292,18 +295,23 @@ are not enabled.
 All four commands run the same preparation under one packaging lock: toolchain validation, verified
 FFmpeg/LAME/libsoxr build or reuse, conditional Tauri Android initialization, icon generation,
 generated-project preparation, and staging the seven audited shared libraries plus notices and
-provenance. `package:android:prepare` stops before APK creation; build commands run preparation
-automatically. Explicit runtime-root overrides remain validate-only. The owned target is arm64-v8a,
+provenance. `package:android:prepare` stops before Gradle, APK creation, and signing; build commands
+run preparation automatically. Explicit runtime-root overrides remain validate-only. The owned target is arm64-v8a,
 API 26+, and every ELF LOAD segment must be aligned to at least 16 KB.
 The same owned FFmpeg bridge prepares Whisper input as signed 16-bit PCM at 16 kHz mono.
 
 The Android Rust build prepares its Whisper native source from a verified, pinned crate archive in
 isolated target storage, applies the maintained TuneForge DTW/Vulkan patch, and compiles shaders with
-the pinned Android NDK `glslc`. The build fails if another NDK revision is selected. It uses
+the selected Android NDK `glslc`. Compiler, archiver, ELF validation, Gradle `ndkVersion`, Whisper
+source identity/provenance, and Cargo target storage use that same revision. The build fails if
+the prepared shader revision and actual NDK disagree. It uses
 checksum-pinned Khronos Vulkan headers and never edits the shared Cargo cache. APK validation checks
 the emitted JNI/native dependency closure, including Android's system `libz` used for the
 desktop-compatible Whisper repetition fallback, and 16 KB alignment. The full Turbo weights remain
 a verified first-use download and are not part of the default APK.
+
+See [Android Setup](MOBILE.md#android-setup) for host discovery, optional overrides, and the
+preparation flow. Its linked scripts define the current toolchain constraints and versions.
 
 Preparation stores no application identity and rejects `--package-name`. Debug and optimized local
 builds default to `com.tuneforge.desktop.test`; either accepts one valid non-production
@@ -334,9 +342,15 @@ Supply an externally managed PKCS12 file at a private absolute path outside the 
 not manage or need to know its storage/export workflow. The operator owns any temporary-file
 lifecycle and cleanup. Enter passwords silently, export the configuration, then clear it afterward:
 
-```sh
-read -rs "TUNEFORGE_ANDROID_RELEASE_STORE_PASSWORD?Keystore password: "; export TUNEFORGE_ANDROID_RELEASE_STORE_PASSWORD; echo
-read -rs "TUNEFORGE_ANDROID_RELEASE_KEY_PASSWORD?Key password: "; export TUNEFORGE_ANDROID_RELEASE_KEY_PASSWORD; echo
+```bash
+printf 'Keystore password: '
+IFS= read -r -s TUNEFORGE_ANDROID_RELEASE_STORE_PASSWORD
+export TUNEFORGE_ANDROID_RELEASE_STORE_PASSWORD
+printf '\n'
+printf 'Key password: '
+IFS= read -r -s TUNEFORGE_ANDROID_RELEASE_KEY_PASSWORD
+export TUNEFORGE_ANDROID_RELEASE_KEY_PASSWORD
+printf '\n'
 export TUNEFORGE_ANDROID_RELEASE_KEYSTORE_PATH="/absolute/private/path/tuneforge-release.p12"
 export TUNEFORGE_ANDROID_RELEASE_KEY_ALIAS="tuneforge-release"
 export TUNEFORGE_ANDROID_RELEASE_EXPECTED_CERT_SHA256="0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"

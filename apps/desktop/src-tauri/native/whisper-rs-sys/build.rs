@@ -14,7 +14,7 @@ fn verify_android_vulkan_toolchain(source: &str) {
         return;
     }
     let expected = std::fs::read_to_string(format!("{source}/.tuneforge-vulkan-ndk-revision"))
-        .expect("prepared whisper-rs-sys source must declare its pinned Vulkan NDK revision");
+        .expect("prepared whisper-rs-sys source must declare its selected Vulkan NDK revision");
     let expected = expected.trim();
     let ndk = std::env::var("ANDROID_NDK_HOME")
         .or_else(|_| std::env::var("ANDROID_NDK_ROOT"))
@@ -29,12 +29,12 @@ fn verify_android_vulkan_toolchain(source: &str) {
     } else if host.contains("linux") {
         "linux-x86_64"
     } else {
-        panic!("unsupported host for pinned Android Vulkan shader compilation: {host}");
+        panic!("unsupported host for Android Vulkan shader compilation: {host}");
     };
     let glslc = format!("{ndk}/shader-tools/{shader_host}/glslc");
     assert!(
         std::path::Path::new(&glslc).is_file(),
-        "pinned Android NDK glslc is missing"
+        "selected Android NDK glslc is missing"
     );
     println!("cargo:rerun-if-changed={ndk}/source.properties");
     println!("cargo:rerun-if-changed={glslc}");
@@ -43,6 +43,8 @@ fn verify_android_vulkan_toolchain(source: &str) {
 
 fn main() {
     println!("cargo:rerun-if-env-changed=TUNEFORGE_WHISPER_RS_SYS_SOURCE");
+    println!("cargo:rerun-if-env-changed=ANDROID_NDK_HOME");
+    println!("cargo:rerun-if-env-changed=ANDROID_NDK_ROOT");
     let source = std::env::var("TUNEFORGE_WHISPER_RS_SYS_SOURCE")
         .expect("scripts/android-arm64-env.sh must prepare the pinned whisper-rs-sys source");
     verify_android_vulkan_toolchain(&source);

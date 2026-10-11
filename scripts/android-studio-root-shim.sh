@@ -11,15 +11,34 @@ if [[ ! -f "$ANDROID_ROOT/settings.gradle" ]]; then
   exit 1
 fi
 
-cp "$TEMPLATE_ROOT/settings.gradle" "$ROOT/settings.gradle"
-cp "$TEMPLATE_ROOT/build.gradle.kts" "$ROOT/build.gradle.kts"
-cp "$TEMPLATE_ROOT/gradle.properties" "$ROOT/gradle.properties"
+LOCAL_PROPERTIES_CONTENTS="$(node --input-type=module - "$ROOT/scripts/android-toolchain.mjs" "$ANDROID_ROOT/app/build.gradle.kts" <<'NODE'
+import { pathToFileURL } from "node:url";
+const { readGeneratedSdk, resolveGeneratedSdk, readGeneratedNdk, escapeLocalProperty } = await import(pathToFileURL(process.argv[2]));
+let required, recorded;
+try { required = readGeneratedSdk(process.argv[3]); recorded = readGeneratedNdk(process.argv[3], { requireVersion: false }); }
+catch (error) { console.error(error.message); process.exit(1); }
+try {
+  const sdk = resolveGeneratedSdk(required);
+  process.stdout.write([`sdk.dir=${escapeLocalProperty(sdk)}`,
+    ...(recorded.localPath ? [`ndk.dir=${escapeLocalProperty(recorded.localPath)}`] : [])].join("\n"));
+} catch (error) {
+  console.error(error.message);
+  if (required.path || process.env.ANDROID_HOME || process.env.ANDROID_SDK_ROOT) process.exitCode = 1;
+}
+NODE
+)"
 
-ANDROID_HOME_RESOLVED="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$HOME/Library/Android/sdk}}"
-if [[ -d "$ANDROID_HOME_RESOLVED" ]]; then
-  printf 'sdk.dir=%s\n' "$ANDROID_HOME_RESOLVED" > "$ROOT/local.properties"
+cp "$TEMPLATE_ROOT/settings.gradle" "$ROOT/settings.gradle"
+cp "$ANDROID_ROOT/build.gradle.kts" "$ROOT/build.gradle.kts"
+sed -E '/^[[:blank:]]*(targetList|archList|abiList|android\.builder\.sdkDownload)[[:blank:]]*[=:]/d' \
+  "$ANDROID_ROOT/gradle.properties" > "$ROOT/gradle.properties"
+printf '\n' >> "$ROOT/gradle.properties"
+cat "$TEMPLATE_ROOT/gradle.properties" >> "$ROOT/gradle.properties"
+
+if [[ -n "$LOCAL_PROPERTIES_CONTENTS" ]]; then
+  printf '%s\n' "$LOCAL_PROPERTIES_CONTENTS" > "$ROOT/local.properties"
 else
-  echo "Android SDK not found at $ANDROID_HOME_RESOLVED; set ANDROID_HOME or create local.properties." >&2
+  echo "Set ANDROID_HOME or configure local.properties manually; existing local.properties is preserved." >&2
 fi
 
 mkdir -p "$ROOT/gradle/wrapper"

@@ -11,7 +11,7 @@ pub fn validate_ndk_revision(expected: &str, properties: &str) -> Result<(), Str
         Ok(())
     } else {
         Err(format!(
-            "Android whisper.cpp Vulkan shaders require pinned NDK {expected}; found {actual}"
+            "Android whisper.cpp Vulkan shaders require selected NDK {expected}; found {actual}"
         ))
     }
 }

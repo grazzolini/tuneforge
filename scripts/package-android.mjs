@@ -1,3 +1,4 @@
+import { configureAndroidToolchain } from "./android-configure-toolchain.mjs";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -7,6 +8,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { selectAndroidTools } from "./validate-android-release-jni.mjs";
 import { validateSoxrOutput } from "./build-soxr.mjs";
 import { PRODUCTION_PACKAGE, TEST_PACKAGE } from "./package-profile.mjs";
+import { resolveSdk as discoverSdk, resolveNdk as discoverNdk, validatedNdkRevision, compareVersions, androidToolchainProfiles, selectSdkPlatform as discoverSdkPlatform } from "./android-toolchain.mjs";
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDir, "..");
 const desktopDir = path.join(repoRoot, "apps/desktop");
@@ -228,62 +230,120 @@ export function validatePublishableCredentials(java, config, {
   return fingerprint;
 }
 export function resolveJava(
-  { env = process.env, hostPlatform = process.platform, runCapture = capture, isExecutable = executable } = {},
+  { env = process.env, hostPlatform = process.platform, runCapture = capture, isExecutable = executable,
+    jvmRoots = ["/usr/lib/jvm"], homeDir = os.homedir(), maximumJava = 27 } = {},
 ) {
-  const candidates = env.JAVA_HOME ? [env.JAVA_HOME] : [];
-  if (hostPlatform === "darwin") {
-    const system = runCapture("/usr/libexec/java_home", ["-v", "17"], { env });
-    if (system.ok) candidates.push(system.output.split(/\r?\n/)[0]);
-    candidates.push("/opt/homebrew/opt/openjdk@17", "/usr/local/opt/openjdk@17");
-  }
-  for (const home of candidates.map((candidate) => path.resolve(candidate))) {
-    const java = path.join(home, "bin/java");
-    if (!isExecutable(java) || !isExecutable(path.join(home, "bin/javac"))) continue;
-    const result = runCapture(java, ["-version"], { env });
-    if (result.ok && /(?:java|openjdk) version "17(?:[."])/i.test(result.output)) {
-      return { home, version: result.output.match(/17(?:\.\d+)+/)?.[0] ?? "17" };
+  env = sanitizedEnv(env);
+  const validate = (candidate) => {
+    const home = path.resolve(candidate);
+    const java = path.join(home, "bin/java"), javac = path.join(home, "bin/javac");
+    if (!isExecutable(java)) throw new Error("Java executable not found. Install a full JDK 17–27.");
+    if (!isExecutable(javac)) throw new Error("JDK compiler missing. Install a full JDK, not only a JRE.");
+    const runtime = runCapture(java, ["-version"], { env });
+    const compiler = runCapture(javac, ["-version"], { env });
+    const version = runtime.output.match(/(?:java|openjdk) version "([\d.]+)/i)?.[1];
+    const major = Number(version?.split(".")[0]);
+    const compilerMajor = Number(compiler.output.match(/^javac (\d+)/m)?.[1]);
+    if (!runtime.ok || major < 17 || major > maximumJava || !Number.isInteger(major)) {
+      throw new Error(`Java must be version 17–${maximumJava} for the selected Gradle profile; found ${version ?? "unknown"}.`);
     }
+    if (!compiler.ok || compilerMajor !== major) throw new Error(`Java compiler must match runtime major ${major}.`);
+    return { home, version };
+  };
+  if (env.JAVA_HOME) return validate(env.JAVA_HOME);
+  const candidates = [];
+  for (const entry of (env.PATH ?? "").split(path.delimiter).filter(Boolean)) {
+    const java = path.resolve(entry, "java");
+    if (!isExecutable(java)) continue;
+    try { candidates.push(path.dirname(path.dirname(fs.realpathSync(java)))); } catch {}
   }
-  throw new Error("JDK 17 not found. Install Homebrew openjdk@17 or set JAVA_HOME to JDK 17.");
+  if (hostPlatform === "darwin") {
+    const system = runCapture("/usr/libexec/java_home", ["-V"], { env });
+    if (system.ok) candidates.push(...system.output.split(/\r?\n/).flatMap((line) => {
+      const match = line.match(/(\/(?:Library|Users|opt|usr)\/.*?\/Contents\/Home)\s*$/);
+      return match ? [match[1]] : line.trim().startsWith("/") ? [line.trim()] : [];
+    }));
+    for (const root of ["/opt/homebrew/opt", "/usr/local/opt"]) {
+      candidates.push(path.join(root, "openjdk"));
+      for (let major = 27; major >= 17; major -= 1) candidates.push(path.join(root, `openjdk@${major}`));
+    }
+    jvmRoots = ["/Library/Java/JavaVirtualMachines", path.join(homeDir, "Library/Java/JavaVirtualMachines")];
+  }
+  for (const root of jvmRoots) {
+    if (!directory(root)) continue;
+    for (const entry of fs.readdirSync(root)) candidates.push(path.join(root, entry,
+      ...(hostPlatform === "darwin" ? ["Contents", "Home"] : [])));
+  }
+  const installed = [];
+  let failure;
+  for (const candidate of new Set(candidates)) {
+    try { installed.push(validate(candidate)); } catch (error) { failure ??= error; }
+  }
+  installed.sort((left, right) => compareVersions(right.version, left.version));
+  if (installed.length) return installed[0];
+  throw failure ?? new Error("Java not found on PATH or standard JDK locations. Install a full JDK 17–27 or set JAVA_HOME.");
 }
-export function resolveSdk(
-  { env = process.env, homeDir = os.homedir(), runCapture = capture, isDirectory = directory } = {},
-) {
-  const configured = [env.ANDROID_HOME, env.ANDROID_SDK_ROOT]
-    .filter(Boolean).map((candidate) => path.resolve(candidate));
-  if (new Set(configured).size > 1) throw new Error("ANDROID_HOME and ANDROID_SDK_ROOT must identify the same SDK.");
-  const info = runCapture("android", ["info", "sdk"], { env });
-  const reported = info.ok ? info.output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).at(-1) : "";
-  const candidates = [configured[0], reported, path.join(homeDir, "Library/Android/sdk")].filter(Boolean);
-  const sdk = candidates.map((candidate) => path.resolve(candidate)).find(isDirectory);
-  if (sdk) return sdk;
-  throw new Error("Android SDK not found. Set matching ANDROID_HOME/ANDROID_SDK_ROOT values.");
+export function resolveSdk(options = {}) {
+  return discoverSdk({ ...options, env: sanitizedEnv(options.env ?? process.env) });
 }
-export function resolveNdk(sdk, { env = process.env, runCapture = capture } = {}) {
-  const result = runCapture("bash", [androidEnv, "/usr/bin/printenv", "ANDROID_NDK_HOME"],
-    { env: { ...env, ANDROID_HOME: sdk, ANDROID_SDK_ROOT: sdk } });
-  if (!result.ok) throw new Error(`Android NDK discovery failed: ${result.output}`);
-  const ndk = path.resolve(result.output.split(/\r?\n/).filter(Boolean).at(-1));
-  const version = fs.readFileSync(path.join(ndk, "source.properties"), "utf8")
-    .match(/^Pkg\.Revision\s*=\s*(.+)$/m)?.[1]?.trim();
-  if (!version) throw new Error(`Selected Android NDK revision is missing: ${ndk}`);
-  return { path: ndk, version };
+export function resolveNdk(sdk, options = {}) {
+  return discoverNdk(sdk, { ...options, env: sanitizedEnv(options.env ?? process.env) });
 }
 export function requireExecutables(candidates, isExecutable = executable) {
   const missing = candidates.find((candidate) => !isExecutable(candidate));
   if (missing) throw new Error(`Required Android tool missing or not executable: ${missing}`);
 }
-function requireTools(sdk, runCapture = capture, env = process.env) {
-  const tools = selectAndroidTools(sdk);
-  requireExecutables([...Object.values(tools).filter((value) => path.isAbsolute(value)), tauriCli]);
-  if (!fs.existsSync(path.join(sdk, "platforms/android-36/android.jar"))) {
-    throw new Error("Android API 36 platform is not installed.");
+export function requireTools(sdk, runCapture = capture, env = process.env, profile, isExecutable = executable) {
+  if (!profile) {
+    const failures = [];
+    for (const candidate of androidToolchainProfiles) {
+      try { return requireTools(sdk, runCapture, env, candidate, isExecutable); } catch (error) { failures.push(error.message); }
+    }
+    throw new Error(`No complete supported Android SDK profile: ${failures.join("; ")}`);
   }
+  const tools = selectAndroidTools(sdk, { minimumVersion: profile.minimumBuildTools });
+  requireExecutables([...Object.values(tools).filter((value) => path.isAbsolute(value)), tauriCli], isExecutable);
+  const platform = discoverSdkPlatform(sdk, profile);
   const rust = runCapture("rustup", ["target", "list", "--installed"], { env });
   if (!rust.ok || !rust.output.split(/\s+/).includes("aarch64-linux-android")) {
     throw new Error("Rust target aarch64-linux-android is not installed.");
   }
-  return tools;
+  return { ...tools, profile: profile.id, compileSdk: platform.major, compileSdkMinor: platform.minor, sdkVersion: platform.version };
+}
+export function resolveAndroidToolchain(options = {}) {
+  const env = sanitizedEnv(options.env ?? process.env), failures = [];
+  const sdks = resolveSdk({ ...options, env, allCandidates: true });
+  for (const profile of androidToolchainProfiles) {
+    let java;
+    try { java = resolveJava({ ...options, env, maximumJava: profile.maximumJava }); }
+    catch (error) { failures.push(`${profile.id}: ${error.message}`); continue; }
+    const complete = [];
+    for (const sdk of sdks) {
+      try {
+        const tools = requireTools(sdk, options.runCapture ?? capture, env, profile, options.isExecutable);
+        const ndk = resolveNdk(sdk, { ...options, env });
+        complete.push({ java, sdk, ndk, tools });
+      } catch (error) { failures.push(`${profile.id} (${sdk}): ${error.message}`); }
+    }
+    complete.sort((left, right) => compareVersions(right.tools.sdkVersion, left.tools.sdkVersion) ||
+      compareVersions(right.tools.version, left.tools.version) || compareVersions(right.ndk.version, left.ndk.version));
+    if (complete.length) return complete[0];
+  }
+  const requirements = androidToolchainProfiles.map((profile) => `${profile.id}: JDK 17–${profile.maximumJava}, ` +
+    `API ${profile.minimumSdk}${profile.id === "baseline" ? " (integer platform)" : " (integer or major.minor platform)"}, build-tools >= ${profile.minimumBuildTools}`).join("; ");
+  throw new Error(`No complete compatible Android toolchain. Requirements: ${requirements}. Inventory: ${failures.join("; ")}`);
+}
+export function selectSdkPlatform(sdk) {
+  return discoverSdkPlatform(sdk);
+}
+export function configureAndroidToolchainFromEnv(baseDir, env) {
+  if (!env.ANDROID_HOME && !env.ANDROID_SDK_ROOT) throw new Error("The selected Android SDK must be provided through ANDROID_HOME or ANDROID_SDK_ROOT.");
+  const sdkRoot = discoverSdk({ env });
+  configureAndroidToolchain(baseDir, { compileSdk: Number(env.TUNEFORGE_ANDROID_COMPILE_SDK),
+    profile: env.TUNEFORGE_ANDROID_TOOLCHAIN_PROFILE,
+    compileSdkMinor: env.TUNEFORGE_ANDROID_COMPILE_SDK_MINOR ? Number(env.TUNEFORGE_ANDROID_COMPILE_SDK_MINOR) : undefined,
+    buildToolsVersion: env.TUNEFORGE_ANDROID_BUILD_TOOLS, ndkRevision: env.TUNEFORGE_ANDROID_NDK_REVISION,
+    ndkRoot: env.ANDROID_NDK_HOME, sdkRoot });
 }
 export function generatedState(baseDir = androidDir) {
   if (!fs.existsSync(baseDir)) return { state: "absent", missing: [] };
@@ -420,6 +480,7 @@ function prepareNativeProject({ env, ffmpegRoot, soxrRoot, sourceEnv = process.e
   if (state.state === "absent") run("bash", [androidEnv, tauriCli, "android", "init", "--ci", "--skip-targets-install"],
     { cwd: desktopDir, env, label: "Tauri Android init" });
   if (generatedState().state !== "complete") throw new Error("Generated Android project initialization failed.");
+  configureAndroidToolchainFromEnv(androidDir, env);
   run(tauriCli, ["icon", "--output", "src-tauri/target/android-icons", "src-tauri/icons/icon.png"],
     { cwd: desktopDir, env, label: "Android icon generation" });
   run("bash", [prepareGenerated], { env, label: "Generated Android preparation" });
@@ -427,8 +488,14 @@ function prepareNativeProject({ env, ffmpegRoot, soxrRoot, sourceEnv = process.e
   verifyPreparedFfmpeg(ffmpegRoot);
   verifyPreparedSoxr(soxrRoot);
 }
-export function soxrValidationOptions(env) {
-  return { readelf: env.LLVM_READELF };
+export function soxrValidationOptions(env, runCapture = sensitiveCapture) {
+  return { readelf: env.LLVM_READELF, runTool(command, args) {
+    try {
+      const result = runCapture(command, args, { env });
+      if (result.ok) return result.output;
+    } catch {}
+    throw new Error("Android libsoxr ELF inspection failed.");
+  } };
 }
 export function removeOwnedSigning(contents) {
   let result = contents;
@@ -444,9 +511,9 @@ export function configureReleaseDebugSigning(buildFile = path.join(androidDir, "
     if (contents !== fs.readFileSync(buildFile, "utf8")) fs.writeFileSync(buildFile, contents);
     return false;
   }
-  const marker = '        getByName("release") {\n            isMinifyEnabled = true';
+  const marker = '        getByName("release") {';
   if (!contents.includes(marker)) throw new Error("Generated release build marker not found.");
-  fs.writeFileSync(buildFile, contents.replace(marker, `        getByName("release") {\n${debugSigningLine}\n            isMinifyEnabled = true`));
+  fs.writeFileSync(buildFile, contents.replace(marker, `${marker}\n${debugSigningLine}`));
   return true;
 }
 export function configurePublishableSigning(contents) {
@@ -631,23 +698,66 @@ export function artifactFromMetadata(raw, debug, metadataPath) {
   }
   return output;
 }
-export function pinnedEnv(java, sdk, ndk, { env = process.env, homeDir } = {}) {
+export function pinnedEnv(java, sdk, ndk, { env = process.env, homeDir, tools } = {}) {
   if (!homeDir) throw new Error("An isolated Android home is required.");
-  return { ...env, CI: "true", JAVA_HOME: java.home, ANDROID_HOME: sdk, ANDROID_SDK_ROOT: sdk,
-    ANDROID_NDK_HOME: ndk.path, ANDROID_NDK_ROOT: ndk.path, ANDROID_USER_HOME: path.join(homeDir, ".android"),
+  return { ...env, ...(tools ? { TUNEFORGE_ANDROID_TOOLCHAIN_PROFILE: tools.profile ?? "current", TUNEFORGE_ANDROID_COMPILE_SDK: String(tools.compileSdk),
+    TUNEFORGE_ANDROID_COMPILE_SDK_MINOR: tools.compileSdkMinor === undefined ? "" : String(tools.compileSdkMinor) } : {}),
+    CI: "true", JAVA_HOME: java.home, ANDROID_HOME: sdk, ANDROID_SDK_ROOT: sdk,
+    ANDROID_NDK_HOME: ndk.path, ANDROID_NDK_ROOT: ndk.path, NDK_HOME: ndk.path,
+    ANDROID_USER_HOME: path.join(homeDir, ".android"),
     ANDROID_SDK_HOME: homeDir, ANDROID_PREFS_ROOT: homeDir, GRADLE_USER_HOME: path.join(homeDir, ".gradle"),
     GRADLE_OPTS: `${env.GRADLE_OPTS ?? ""} -Dorg.gradle.daemon=false`.trim(),
     CARGO_TARGET_DIR: path.join(desktopDir, "src-tauri/target", `android-ndk-${ndk.version.replaceAll(".", "-")}`),
     PATH: `${path.join(java.home, "bin")}${path.delimiter}${env.PATH ?? ""}` };
 }
+function singleApkSignerFingerprint(output) {
+  const invalid = () => { throw new Error("Android APK signer output is unsupported or ambiguous; expected exactly one signer."); };
+  const lines = output.split(/\r?\n/).map((line) => line.trim());
+  const counts = lines.filter((line) => /^Number of signers\b/i.test(line));
+  if (counts.length > 1 || (counts.length === 1 && !/^Number of signers: 1$/i.test(counts[0]))) invalid();
+  const signers = new Map();
+  const ranges = new Map();
+  let legacy = false;
+  let sourceStamp = false;
+  for (const line of lines.filter((line) => /certificate SHA-256 digest/i.test(line))) {
+    const row = line.match(/^(.+?) certificate SHA-256 digest:\s*(\S+)$/i);
+    if (!row) invalid();
+    let fingerprint;
+    try { fingerprint = normalizeFingerprint(row[2]); } catch { invalid(); }
+    if (/^Source Stamp Signer:?$/i.test(row[1])) {
+      if (sourceStamp) invalid();
+      sourceStamp = true;
+      continue;
+    }
+    if (/^Signer #1$/i.test(row[1])) {
+      if (signers.size) invalid();
+      legacy = true;
+      signers.set("legacy", fingerprint);
+      continue;
+    }
+    const signer = row[1].match(/^(V1|V2|V3\.0|V3\.1) Signer:(?: \(minSdkVersion=(\d+)(?: \(dev release=true\))?, maxSdkVersion=(\d+)\))?$/i);
+    if (!signer || legacy || counts.length !== 1) invalid();
+    const scheme = signer[1].toUpperCase();
+    if (signers.has(scheme) || (scheme === "V3.1" && !signer[2]) ||
+        (signer[2] && (!scheme.startsWith("V3.") || !Number.isSafeInteger(Number(signer[2])) ||
+          !Number.isSafeInteger(Number(signer[3])) || Number(signer[2]) < 1 || Number(signer[3]) > 2147483647 ||
+          Number(signer[2]) > Number(signer[3])))) invalid();
+    const version = scheme === "V3.0" ? "3" : scheme.slice(1);
+    const description = scheme === "V1" ? "JAR signing" : `APK Signature Scheme v${version}`;
+    const flags = lines.filter((line) => line.startsWith(`Verified using v${version} scheme (`));
+    if (flags.length !== 1 || flags[0] !== `Verified using v${version} scheme (${description}): true`) invalid();
+    signers.set(scheme, fingerprint);
+    if (signer[2]) ranges.set(scheme, [Number(signer[2]), Number(signer[3])]);
+  }
+  if (!signers.size || new Set(signers.values()).size !== 1) invalid();
+  if (signers.size > 1 && (signers.size !== 2 || !ranges.has("V3.0") || !ranges.has("V3.1") ||
+      ranges.get("V3.0")[1] >= ranges.get("V3.1")[0])) invalid();
+  return signers.values().next().value;
+}
 export function verifyPublishable(apk, tools, expectedFingerprint, expectedVersion, { env = process.env, runCapture = capture } = {}) {
   const signature = runCapture(tools.apksigner, ["verify", "--verbose", "--print-certs", "--Werr", apk], { env });
   if (!signature.ok) throw new Error("Publishable APK signature verification failed.");
-  const signers = [...signature.output.matchAll(/^Signer #(\d+) certificate SHA-256 digest:\s*([0-9a-f:]+)\s*$/gim)];
-  if (signers.length !== 1 || signers[0][1] !== "1") {
-    throw new Error("Publishable APK must contain exactly one signer.");
-  }
-  if (normalizeFingerprint(signers[0][2]) !== expectedFingerprint) {
+  if (singleApkSignerFingerprint(signature.output) !== expectedFingerprint) {
     throw new Error("Publishable APK signer does not match the expected certificate SHA-256 fingerprint.");
   }
   const badging = runCapture(tools.aapt2, ["dump", "badging", apk], { env });
@@ -671,9 +781,8 @@ export function verifyLocalSigner(apk, tools, expectedFingerprint, {
 } = {}) {
   const signature = runCapture(tools.apksigner,
     ["verify", "--verbose", "--print-certs", "--Werr", apk], { env });
-  const signers = [...signature.output.matchAll(/^Signer #(\d+) certificate SHA-256 digest:\s*([0-9a-f:]+)\s*$/gim)];
-  if (!signature.ok || signers.length !== 1 || signers[0][1] !== "1" ||
-      normalizeFingerprint(signers[0][2]) !== expectedFingerprint) {
+  if (!signature.ok) throw new Error("Local Android APK signature verification failed.");
+  if (singleApkSignerFingerprint(signature.output) !== expectedFingerprint) {
     throw new Error("Local Android APK signer does not match the persistent test certificate.");
   }
 }
@@ -760,25 +869,29 @@ export function main(argv = process.argv.slice(2)) {
   let isolatedHome;
   try {
     const config = publishable ? readPublishableConfig(sourceEnv) : undefined;
-    const java = resolveJava({ env: cleanEnv });
-    const sdk = resolveSdk({ env: cleanEnv });
-    const ndk = resolveNdk(sdk, { env: cleanEnv });
+    const { java, sdk, ndk, tools } = resolveAndroidToolchain({ env: cleanEnv });
+    if (compareVersions(ndk.version, validatedNdkRevision) > 0) console.warn(`[android package] NDK ${ndk.version} is newer than validated ${validatedNdkRevision}; packaging is unvalidated.`);
     if (config) validatePublishableCredentials(java, config, { env: sourceEnv });
-    const tools = requireTools(sdk, capture, cleanEnv);
     isolatedHome = fs.mkdtempSync(path.join(os.tmpdir(), "tuneforge-android-home-"));
     const ffmpegRoot = path.resolve(sourceEnv.TUNEFORGE_ANDROID_FFMPEG_ROOT ?? defaultFfmpegRoot);
     const soxrRoot = path.resolve(sourceEnv.TUNEFORGE_ANDROID_SOXR_ROOT ?? defaultSoxrRoot);
     const ndkHost = process.platform === "darwin" ? "darwin-x86_64" : "linux-x86_64";
     const llvmReadelf = path.join(ndk.path, "toolchains/llvm/prebuilt", ndkHost, "bin/llvm-readelf");
+    requireExecutables([llvmReadelf]);
     const env = {
-      ...pinnedEnv(java, sdk, ndk, { env: cleanEnv, homeDir: isolatedHome }),
+      ...pinnedEnv(java, sdk, ndk, { env: cleanEnv, homeDir: isolatedHome, tools }),
       TUNEFORGE_ANDROID_FFMPEG_ROOT: ffmpegRoot,
       TUNEFORGE_ANDROID_SOXR_ROOT: soxrRoot,
       LLVM_READELF: llvmReadelf,
+      TUNEFORGE_ANDROID_BUILD_TOOLS: tools.version,
+      TUNEFORGE_ANDROID_NDK_REVISION: ndk.version,
     };
     if (!publishable) {
       env.CARGO_TARGET_DIR = path.join(desktopDir, "src-tauri/target", `android-test-ndk-${ndk.version.replaceAll(".", "-")}`);
     }
+    if (Number(java.version.split(".")[0]) > 17) console.warn(`[android package] JDK ${java.version} is newer than validated JDK 17; packaging is unvalidated.`);
+    const selectedProfile = androidToolchainProfiles.find((profile) => profile.id === tools.profile);
+    if (compareVersions(tools.sdkVersion, String(selectedProfile.minimumSdk)) > 0) console.warn(`[android package] API ${tools.sdkVersion} is newer than configured API ${selectedProfile.minimumSdk}; packaging is unvalidated.`);
     prepareNativeProject({ env, ffmpegRoot, soxrRoot, sourceEnv });
     const localSigning = mode !== "prepare" && !publishable
       ? ensureLocalTestKeystore(java, { env: cleanEnv }) : undefined;
@@ -787,7 +900,7 @@ export function main(argv = process.argv.slice(2)) {
       TUNEFORGE_ANDROID_TEST_KEYSTORE_PATH: localSigning.path,
       TUNEFORGE_ANDROID_TEST_KEY_PASSWORD: localSigning.password,
     } : env;
-    console.log(`[android package] JDK ${java.version}; SDK ${sdk}; NDK ${ndk.version} (${ndk.path})`);
+    console.log(`[android package] ${tools.profile} profile; JDK ${java.version}; SDK ${sdk} (API ${tools.sdkVersion}, build-tools ${tools.version}); NDK ${ndk.version} (${ndk.path})`);
     if (mode === "prepare") {
       if (modelBundle) run(process.execPath, [prepareModelAssets], { env, label: "Android model bundle preparation" });
       else fs.rmSync(path.join(androidDir, "app/src/main/assets/models"), { recursive: true, force: true });

@@ -273,6 +273,18 @@ jobs:
       - name: Test deterministic Node scripts
         run: node --test scripts/build-info.test.mjs scripts/package-options.test.mjs scripts/flatpak-options.test.mjs scripts/flatpak-pnpm.test.mjs scripts/desktop-e2e.test.mjs scripts/sync-validation.test.mjs scripts/release-license-inventory.test.mjs scripts/capture-release-media.test.mjs scripts/ci-image-policy.test.mjs scripts/verify-ci-image.test.mjs scripts/ci-scope-policy.test.mjs scripts/ci-image-impact.test.mjs scripts/ci-image-run.test.mjs
 
+      - name: Test Android diagnostic, root alias, and supported API boundaries
+        run: >-
+          node --test --test-reporter=spec
+          --test-name-pattern='^(Java discovery failures preserve guidance|resolved Android environment selects llvm-readelf|libsoxr ELF invocation failures exclude|SDK aliases accept symlinks|NDK aliases accept symlinks|AGP API cap|compilation SDK|owned generator migrates|stable integer and dotted SDK|toolchain profiles follow|complete profile selection preserves)'
+          scripts/package-android.test.mjs
+
+      - name: Test Android Studio shim and FFmpeg provenance
+        run: >-
+          node --test --test-reporter=spec
+          --test-name-pattern='^(Studio root shim|FFmpeg Android provenance|FFmpeg corresponding sources import independently)'
+          scripts/android-studio-root-shim.test.mjs scripts/build-ffmpeg.test.mjs
+
       - name: Check release script syntax
         run: |
           node --check scripts/capture-release-media.mjs

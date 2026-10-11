@@ -85,7 +85,7 @@ test("validates an explicit APK, falls through empty SDK values, and rejects inv
   const sdkRoot = path.join(root, "sdk");
   for (const tool of ["aapt2", "apksigner", "dexdump", "zipalign"]) {
     const candidate = path.join(sdkRoot, "build-tools/36.0.0", tool);
-    mkdirSync(path.dirname(candidate), { recursive: true }); writeFileSync(candidate, "");
+    mkdirSync(path.dirname(candidate), { recursive: true }); writeFileSync(candidate, "", { mode: 0o755 });
   }
   const readelf = path.join(root, "llvm-readelf"); writeFileSync(readelf, "");
   const archiveEntries = [
@@ -153,10 +153,10 @@ test("validates an explicit APK, falls through empty SDK values, and rejects inv
 
 test("selects highest complete Android build-tools version", () => {
   const root = mkdtempSync(path.join(os.tmpdir(), "tuneforge-jni-sdk-"));
-  for (const version of ["35.0.0", "36.0.0"]) {
+  for (const version of ["35.0.0", "36.0.0", "37.0.0-rc1"]) {
     const dir = path.join(root, "build-tools", version);
     mkdirSync(dir, { recursive: true });
-    for (const tool of ["aapt2", "apksigner", "dexdump", "zipalign"]) writeFileSync(path.join(dir, tool), "");
+    for (const tool of ["aapt2", "apksigner", "dexdump", "zipalign"]) writeFileSync(path.join(dir, tool), "", { mode: 0o755 });
   }
   assert.equal(selectAndroidTools(root).version, "36.0.0");
 });

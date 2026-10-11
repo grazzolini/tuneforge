@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { readNdkRevision, validatedNdkRevision } from "./android-toolchain.mjs";
 
 export const whisperRsSysSource = {
   name: "whisper-rs-sys",
@@ -18,7 +19,7 @@ export const vulkanHeadersSource = {
   url: "https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/tags/vulkan-sdk-1.4.357.0.tar.gz",
 };
 export const whisperVulkanShaderTool = {
-  ndkRevision: "29.0.14206865",
+  ndkRevision: validatedNdkRevision,
   tool: "shader-tools/<host>/glslc",
 };
 
@@ -72,6 +73,18 @@ function run(command, args, options = {}) {
   }
 }
 
+export function selectedShaderNdkRevision(env = process.env) {
+  const roots = [env.ANDROID_NDK_HOME, env.ANDROID_NDK_ROOT, env.NDK_HOME].filter(Boolean).map((root) => path.resolve(root));
+  const identities = roots.map((root) => {
+    try { return fs.realpathSync(root); } catch { return root; }
+  });
+  if (new Set(identities).size > 1) throw new Error("ANDROID_NDK_HOME, ANDROID_NDK_ROOT and NDK_HOME must identify the same NDK.");
+  if (!roots.length) return whisperVulkanShaderTool.ndkRevision;
+  const revision = readNdkRevision(roots[0]);
+  if (!revision || Number(revision.split(".")[0]) < 29) throw new Error("Selected Whisper NDK must declare stable Pkg.Revision >= 29.");
+  return revision;
+}
+
 export async function prepareWhisperNativeSource({
   destinationRoot = defaultDestination,
   spec = whisperRsSysSource,
@@ -79,12 +92,13 @@ export async function prepareWhisperNativeSource({
   archive = cachedArchive(spec),
   vulkanSpec = vulkanHeadersSource,
   vulkanArchive,
+  ndkRevision = selectedShaderNdkRevision(),
 } = {}) {
   const patchSha256 = digest(patchFile);
   const dtwHelperSha256 = digest(dtwHelperFile);
   const textHelperSha256 = digest(textHelperFile);
   const identityHash = crypto.createHash("sha256")
-    .update(`${patchSha256}:${dtwHelperSha256}:${textHelperSha256}:${vulkanSpec.sha256}:${whisperVulkanShaderTool.ndkRevision}`)
+    .update(`${patchSha256}:${dtwHelperSha256}:${textHelperSha256}:${vulkanSpec.sha256}:${ndkRevision}`)
     .digest("hex").slice(0, 12);
   const identity = `${spec.name}-${spec.version}-${identityHash}`;
   const destination = path.join(destinationRoot, identity);
@@ -95,7 +109,7 @@ export async function prepareWhisperNativeSource({
         state.dtwHelperSha256 === dtwHelperSha256 &&
         state.textHelperSha256 === textHelperSha256 &&
         state.vulkanHeadersSha256 === vulkanSpec.sha256 &&
-        state.vulkanShaderNdkRevision === whisperVulkanShaderTool.ndkRevision) return destination;
+        state.vulkanShaderNdkRevision === ndkRevision) return destination;
   } catch {}
 
   fs.mkdirSync(destinationRoot, { recursive: true });
@@ -130,14 +144,14 @@ export async function prepareWhisperNativeSource({
     fs.renameSync(vulkanSource, path.join(source, "vulkan-headers"));
     run("patch", ["--batch", "--forward", "-p1", "-i", patchFile], { cwd: source });
     fs.writeFileSync(path.join(source, ".tuneforge-vulkan-ndk-revision"),
-      `${whisperVulkanShaderTool.ndkRevision}\n`, { flag: "wx" });
+      `${ndkRevision}\n`, { flag: "wx" });
     fs.writeFileSync(path.join(source, ".tuneforge-source.json"), `${JSON.stringify({
       archiveSha256: spec.sha256,
       patchSha256,
       dtwHelperSha256,
       textHelperSha256,
       vulkanHeadersSha256: vulkanSpec.sha256,
-      vulkanShaderNdkRevision: whisperVulkanShaderTool.ndkRevision,
+      vulkanShaderNdkRevision: ndkRevision,
       vulkanShaderTool: whisperVulkanShaderTool.tool,
     }, null, 2)}\n`, { flag: "wx" });
     try {
@@ -152,7 +166,11 @@ export async function prepareWhisperNativeSource({
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
-  prepareWhisperNativeSource()
-    .then((destination) => process.stdout.write(`${destination}\n`))
-    .catch((error) => { console.error(`[whisper native source] ${error.message}`); process.exitCode = 1; });
+  if (process.argv[2] === "--ndk-revision") {
+    process.stdout.write(`${whisperVulkanShaderTool.ndkRevision}\n`);
+  } else {
+    prepareWhisperNativeSource()
+      .then((destination) => process.stdout.write(`${destination}\n`))
+      .catch((error) => { console.error(`[whisper native source] ${error.message}`); process.exitCode = 1; });
+  }
 }

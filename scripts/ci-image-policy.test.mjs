@@ -223,9 +223,19 @@ test("FFmpeg package checksum verification precedes installation", (context) => 
   assert.throws(() => validateCiImagePolicy(root), /checksum-verified, then installed/);
 });
 
-test("central promoted record rejects mutable or malformed identity", () =>
-  assertMutationsFail(".github/ci/promoted-image.json", [[ciImageReference.split("@")[1], "main"],
-    ['"producerFingerprint": null', '"producerFingerprint": "bad"']], /Promoted image must have/));
+test("central promoted record rejects mutable or malformed identity", () => {
+  for (const changes of [{ digest: "main" }, { producerFingerprint: "bad" },
+    { producerFingerprint: "0".repeat(64), sourceRevision: null },
+    { producerFingerprint: null, sourceRevision: "1".repeat(40) }]) {
+    const root = fixture();
+    try {
+      const recordPath = path.join(root, ".github/ci/promoted-image.json");
+      const record = JSON.parse(fs.readFileSync(recordPath));
+      fs.writeFileSync(recordPath, JSON.stringify({ ...record, ...changes }));
+      assert.throws(() => validateCiImagePolicy(root), /Promoted image must have/);
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  }
+});
 
 test("CI image consumers reject container credentials", () =>
   assertMutationsFail(".github/workflows/ci.yml", [["  backend:\n", "  backend:\n    container: { image: arbitrary, credentials: { password: token } }\n"]], /must run on the host/));

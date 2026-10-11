@@ -12,7 +12,7 @@
     "android:build": "node ../../scripts/package-android.mjs",
     "android:build:debug": "node ../../scripts/package-android.mjs --debug",
     "android:build:release": "node ../../scripts/package-android.mjs --publishable",
-    "android:studio": "bash ../../scripts/android-arm64-env.sh tauri android dev --open",
+    "android:studio": "bash ../../scripts/android-arm64-env.sh --studio tauri android dev --open",
     "dev": "vite",
     "lint": "eslint .",
     "tauri": "bash ../../scripts/run-tauri-command.sh",
@@ -36,7 +36,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "@tauri-apps/cli": "^2.11.4",
+    "@tauri-apps/cli": "^2.12.1",
     "@testing-library/jest-dom": "^7.0.1",
     "@testing-library/react": "^16.3.2",
     "@testing-library/user-event": "^14.6.5",

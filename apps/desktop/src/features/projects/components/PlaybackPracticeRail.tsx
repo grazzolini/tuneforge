@@ -37,6 +37,7 @@ export const PlaybackPracticeRail = forwardRef<
   PlaybackPracticeRailHandle,
   { variant?: "desktop" | "drawer" }
 >(function PlaybackPracticeRail({ variant = "desktop" }, ref) {
+  const discoveryNoticeId = `playback-output-discovery-${variant}`;
   const appOutput = useAudioOutput();
   const { errorMessage: metronomeError, followPlayback, isRunning: metronomeRunning,
     setFollowPlaybackEnabled, startMetronome, stopMetronome } = useMetronome();
@@ -526,7 +527,7 @@ export const PlaybackPracticeRail = forwardRef<
               <span className="artifact-pill__meta">{artifactSummary(sourceArtifact)}</span>
             </button>
           ) : null}
-          <ProjectOutputRoute />
+          <ProjectOutputRoute noticeId={discoveryNoticeId} />
           {previewArtifacts.map((artifact) => (
             <button
               key={artifact.id}
@@ -666,7 +667,7 @@ export const PlaybackPracticeRail = forwardRef<
         ) : (
           <p className="artifact-meta">{stemEmptyCopy}</p>
         )}
-      </section> : <OutputRoutingPanel stemArtifacts={displayStemArtifacts} />}
+      </section> : <OutputRoutingPanel stemArtifacts={displayStemArtifacts} noticeId={discoveryNoticeId} />}
       <section className="playback-picker-group playback-global-level">
         <div className="button-row">
           <label className="playback-metronome-follow">

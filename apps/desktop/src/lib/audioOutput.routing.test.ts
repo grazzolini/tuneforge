@@ -3,12 +3,14 @@ import {
   browserOutputRoutingSnapshot,
   getAppAudioOutputNode,
   getCountInAudioOutputNode,
+  getMetronomeAudioOutputNode,
   getProjectAudioOutputNode,
   markBrowserOutputDisconnected,
   registerProjectMediaElement,
   releaseBrowserOutputContext,
   retryBrowserOutputRouting,
   setBrowserOutputRouting,
+  setBrowserMetronomeFollow,
   setBrowserProjectOutput,
   subscribeBrowserOutputFailure,
   unregisterProjectMediaElement,
@@ -147,6 +149,39 @@ describe("browser per-route sinks", () => {
     await settleSink();
     expect(context.createMediaStreamDestination).toHaveBeenCalledTimes(2);
     expect(browserOutputRoutingSnapshot().project.fallbackLatched).toBe(true);
+  });
+
+  it("reuses a healthy explicit sink when retrying only Settings inheritance", async () => {
+    const config = { projectId: "scoped-retry", globalDeviceId: "usb",
+      routing: { ...DEFAULT_PROJECT_OUTPUT_ROUTING,
+        stems: { same: { kind: "explicit-device" as const, deviceId: "usb" } } },
+      lanes: [{ laneId: "same", stableKey: "same" }] };
+    setBrowserOutputRouting(config);
+    setBrowserMetronomeFollow(false);
+    const context = makeContext();
+    getProjectAudioOutputNode(context);
+    const explicit = getProjectAudioOutputNode(context, "same");
+    const metronome = getMetronomeAudioOutputNode(context);
+    await settleSink();
+    markBrowserOutputDisconnected("usb");
+    setBrowserOutputRouting({ ...config, routing: { ...config.routing,
+      stems: { same: { kind: "system-default" } } } });
+    setBrowserOutputRouting(config);
+    await settleSink();
+    const before = browserOutputRoutingSnapshot();
+    expect(before.project.fallbackLatched).toBe(true);
+    expect(before.lanes[0].status).toBe("selected");
+    const bridges = vi.mocked(context.createMediaStreamDestination).mock.calls.length;
+    retryBrowserOutputRouting("old-global");
+    expect(browserOutputRoutingSnapshot().project).toEqual(before.project);
+    retryBrowserOutputRouting("usb");
+    await settleSink();
+    expect(browserOutputRoutingSnapshot().project.status).toBe("selected");
+    expect(browserOutputRoutingSnapshot().lanes[0]).toEqual(before.lanes[0]);
+    expect(context.createMediaStreamDestination).toHaveBeenCalledTimes(bridges);
+    expect(vi.mocked(metronome.connect).mock.lastCall?.[0])
+      .toBe(vi.mocked(explicit.connect).mock.lastCall?.[0]);
+    setBrowserMetronomeFollow(true);
   });
 
   it("ignores a sink result from the previous project", async () => {

@@ -55,6 +55,20 @@ for browsers and non-Tauri runtimes, and for a Tauri build compiled with the for
   where supported. Direct HTML media selects its own sink. Browsers without output selection use
   System Default and keep saved choices for a capable runtime. Browser sink permission and autoplay
   may require a user gesture; failures are shown without silently changing the saved route.
+- Browser Settings exposes a global Audio output default for projects using Follow Settings and their
+  inherited stem/cue routes. Explicit overrides stay unchanged. Project, stem, cue, and Settings
+  selectors share remembered browser output names across navigation and reload; remembered entries
+  are unverified, not permission or connection evidence. Current exposed labels take precedence.
+  Browser IDs and names stay local; Android retains them only for the process lifetime.
+- Opening an output selector explicitly may request access once per app session when the current
+  inventory has no named selectable outputs. Focus, mount, and navigation never request permission.
+  One microphone notice appears before the opening gesture. Denial/cancellation suppresses further
+  automatic attempts and exposes one **Discover outputs** retry. Successful refresh clears the
+  notice and retry, including when the valid inventory contains only System Default. Discovery uses the output chooser
+  when available, otherwise a disclosed temporary microphone request, stopping every track immediately
+  without recording. Discovery never selects the chooser result or changes saved routes. Ordinary
+  device-change reconciliation retains its existing fallback behavior. Default remains usable on errors.
+  Native output inventory does not request browser permission.
 - Android's AAudio request cannot confirm the physical route through CPAL. Settings reports
   `requested-unverified` for an explicit Android device and never claims that Android followed
   the request. A selected Android output loss uses the same one-time System Default fallback,

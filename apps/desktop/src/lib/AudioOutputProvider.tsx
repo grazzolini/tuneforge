@@ -22,12 +22,16 @@ import {
 } from "./nativeAudio";
 import { canRouteBrowserAudio, markBrowserOutputDisconnected, retryBrowserOutputRouting, setBrowserAppOutput, setBrowserCueOutputs } from "./audioOutput";
 import { AudioOutputContext, type AudioOutputContextValue } from "./audioOutputContext";
-import { readBrowserOutputDeviceId, writeBrowserOutputDeviceId } from "./outputRouting";
+import { readBrowserOutputDeviceId, writeBrowserOutputDeviceId, readBrowserOutputInventory, writeBrowserOutputInventory, type RememberedBrowserOutput } from "./outputRouting";
 import { usePreferences } from "./preferences";
 
 function isTauriRuntime() {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
+
+type OutputMediaDevices = MediaDevices & {
+  selectAudioOutput?: (options?: { deviceId?: string }) => Promise<MediaDeviceInfo>;
+};
 
 export function AudioOutputProvider({ children }: { children: ReactNode }) {
   const preferences = usePreferences();
@@ -39,8 +43,29 @@ export function AudioOutputProvider({ children }: { children: ReactNode }) {
   const [outputRoute, setOutputRoute] = useState<NativeOutputRoute | null>(null);
   const [outputDeviceError, setOutputDeviceError] = useState<string | null>(null);
   const [browserOutputDeviceId, setBrowserOutputDeviceId] = useState(readBrowserOutputDeviceId);
+  const browserOutputDeviceIdRef = useRef(browserOutputDeviceId);
   const [browserOutputDevices, setBrowserOutputDevices] = useState<MediaDeviceInfo[]>([]);
+  const [rememberedOutputs, setRememberedOutputs] = useState(readBrowserOutputInventory);
+  const rememberedOutputsRef = useRef(rememberedOutputs);
+  const inventorySavePendingRef = useRef(false);
+  const [browserOutputSaveError, setBrowserOutputSaveError] = useState<string | null>(null);
+  const [inventorySaveError, setInventorySaveError] = useState<string | null>(null);
+  const [discoveryAttempted, setDiscoveryAttempted] = useState(false);
+  const discoveryAttemptedRef = useRef(false);
+  const browserSelectionRequestRef = useRef(0);
   const [browserOutputError, setBrowserOutputError] = useState<string | null>(null);
+  const [browserOutputDiscoveryPending, setBrowserOutputDiscoveryPending] = useState(false);
+  const [browserOutputDiscoveryError, setBrowserOutputDiscoveryError] = useState<string | null>(null);
+  const discoveryPendingRef = useRef(false);
+  const deferredDeviceChangeRef = useRef(false);
+  const mountedRef = useRef(true);
+  const browserDevices = navigator.mediaDevices as OutputMediaDevices | undefined;
+  const browserRuntime = !isTauriRuntime() || isWebAudioBackendForced();
+  const browserOutputDiscoveryMethod = browserRuntime && browserDevices?.enumerateDevices
+    ? browserDevices.selectAudioOutput ? "output-chooser"
+      : typeof browserDevices.getUserMedia === "function" ? "microphone" : null
+    : null;
+  const browserInventoryRefreshRef = useRef<Promise<boolean | null>>(Promise.resolve(false));
   const browserDeviceIdsRef = useRef<Set<string>>(new Set());
   const [outputControlsAttempt, setOutputControlsAttempt] = useState(0);
   const routeQueueRef = useRef(Promise.resolve());
@@ -63,26 +88,64 @@ export function AudioOutputProvider({ children }: { children: ReactNode }) {
   });
   const lastAppliedCuesRef = useRef<NativeCueOutputRequest | null>(null);
 
-  const refreshOutputDevices = useCallback(async () => {
+  const rememberOutputs = useCallback((devices: RememberedBrowserOutput[]) => {
+    const inventory = new Map(rememberedOutputsRef.current.map((device) => [device.deviceId, device]));
+    for (const device of devices) {
+      if (!device.deviceId || device.deviceId === "default") continue;
+      inventory.set(device.deviceId, { deviceId: device.deviceId,
+        label: device.label?.trim() || inventory.get(device.deviceId)?.label || "" });
+    }
+    const next = [...inventory.values()];
+    const changed = JSON.stringify(next) !== JSON.stringify(rememberedOutputsRef.current);
+    if (!changed && !inventorySavePendingRef.current) return;
+    if (changed) {
+      rememberedOutputsRef.current = next;
+      setRememberedOutputs(next);
+    }
+    try {
+      writeBrowserOutputInventory(next);
+      inventorySavePendingRef.current = false;
+      setInventorySaveError(null);
+    } catch {
+      inventorySavePendingRef.current = true;
+      setInventorySaveError("Output names could not be saved. They remain available for this session.");
+    }
+  }, []);
+
+  const refreshOutputDevices = useCallback(async (preserveRoutes = false) => {
+    const keepRoutes = preserveRoutes || discoveryPendingRef.current;
     const request = ++outputDeviceRequestRef.current;
     if (!isTauriRuntime() || isWebAudioBackendForced()) {
-      if (!navigator.mediaDevices?.enumerateDevices) return;
-      try {
-        const inventory = (await navigator.mediaDevices.enumerateDevices())
-          .filter((device) => device.kind === "audiooutput");
-        if (request !== outputDeviceRequestRef.current) return;
-        const currentIds = new Set(inventory.map((device) => device.deviceId));
-        browserDeviceIdsRef.current.forEach((id) => {
-          if (!currentIds.has(id)) markBrowserOutputDisconnected(id);
-        });
-        browserDeviceIdsRef.current = currentIds;
-        setBrowserOutputDevices(inventory);
-      } catch {
-        if (request === outputDeviceRequestRef.current) {
-          setBrowserOutputError("Browser output inventory is unavailable.");
+      if (!navigator.mediaDevices?.enumerateDevices) return false;
+      const refresh = (async () => {
+        try {
+          const inventory = (await navigator.mediaDevices.enumerateDevices())
+            .filter((device) => device.kind === "audiooutput");
+          if (request !== outputDeviceRequestRef.current) return null;
+          const currentIds = new Set(inventory.map((device) => device.deviceId));
+          if (!keepRoutes && !discoveryPendingRef.current) {
+            deferredDeviceChangeRef.current = false;
+            browserDeviceIdsRef.current.forEach((id) => {
+              if (!currentIds.has(id)) markBrowserOutputDisconnected(id);
+            });
+          }
+          // Keep missing IDs until an ordinary refresh can reconcile deferred disconnects.
+          browserDeviceIdsRef.current = keepRoutes || discoveryPendingRef.current
+            ? new Set([...browserDeviceIdsRef.current, ...currentIds]) : currentIds;
+          rememberOutputs(inventory);
+          setBrowserOutputDevices(inventory);
+          setBrowserOutputError(null);
+          return true;
+        } catch {
+          if (request === outputDeviceRequestRef.current) {
+            setBrowserOutputError("Browser output inventory is unavailable.");
+            return false;
+          }
         }
-      }
-      return;
+        return null;
+      })();
+      browserInventoryRefreshRef.current = refresh;
+      return refresh;
     }
     try {
       const inventory = await listNativeAudioOutputDevices();
@@ -92,37 +155,134 @@ export function AudioOutputProvider({ children }: { children: ReactNode }) {
         setOutputDevices({ supported: false, devices: [], error: "Output inventory is unavailable." });
       }
     }
-  }, []);
+  }, [rememberOutputs]);
 
-  useEffect(() => () => { outputDeviceRequestRef.current += 1; }, []);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      outputDeviceRequestRef.current += 1;
+    };
+  }, []);
 
   useEffect(() => {
     if (isTauriRuntime() && !isWebAudioBackendForced()) return;
     void refreshOutputDevices();
-    navigator.mediaDevices?.addEventListener?.("devicechange", refreshOutputDevices);
-    return () => navigator.mediaDevices?.removeEventListener?.("devicechange", refreshOutputDevices);
+    const refresh = () => {
+      if (discoveryPendingRef.current) deferredDeviceChangeRef.current = true;
+      void refreshOutputDevices();
+    };
+    navigator.mediaDevices?.addEventListener?.("devicechange", refresh);
+    return () => navigator.mediaDevices?.removeEventListener?.("devicechange", refresh);
   }, [refreshOutputDevices]);
 
   const authorizeBrowserOutputDevice = useCallback(async (deviceId: string) => {
-    if (!canRouteBrowserAudio()) return null;
-    const devices = navigator.mediaDevices as MediaDevices & {
-      selectAudioOutput?: (options?: { deviceId?: string }) => Promise<MediaDeviceInfo>;
-    };
+    if ((isTauriRuntime() && !isWebAudioBackendForced()) || !canRouteBrowserAudio()) return null;
+    const devices = navigator.mediaDevices as OutputMediaDevices | undefined;
     const selected = devices?.selectAudioOutput
       ? await devices.selectAudioOutput({ deviceId }) : null;
+    if (selected && mountedRef.current) {
+      discoveryAttemptedRef.current = true;
+      setDiscoveryAttempted(true);
+      setBrowserOutputDiscoveryError(null);
+      rememberOutputs([selected]);
+      void refreshOutputDevices(true);
+    }
     return selected?.deviceId ?? deviceId;
-  }, []);
+  }, [refreshOutputDevices, rememberOutputs]);
+
+  const discoverBrowserOutputs = useCallback(async () => {
+    if ((isTauriRuntime() && !isWebAudioBackendForced()) || discoveryPendingRef.current) return;
+    const devices = navigator.mediaDevices as OutputMediaDevices | undefined;
+    if (!devices?.enumerateDevices || (!devices.selectAudioOutput && !devices.getUserMedia)) return;
+    const usesMicrophone = !devices.selectAudioOutput;
+    discoveryAttemptedRef.current = true;
+    setDiscoveryAttempted(true);
+    discoveryPendingRef.current = true;
+    setBrowserOutputDiscoveryPending(true);
+    try {
+      if (devices.selectAudioOutput) {
+        const selected = await devices.selectAudioOutput();
+        if (mountedRef.current) rememberOutputs([selected]);
+      } else {
+        const stream = await devices.getUserMedia({ audio: true, video: false });
+        // Release every temporary track before refresh or lifecycle checks, including late grants.
+        stream.getTracks().forEach((track) => track.stop());
+      }
+      if (!mountedRef.current) return;
+      let refreshed = await refreshOutputDevices(true);
+      while (refreshed === null && mountedRef.current) {
+        const latest = browserInventoryRefreshRef.current;
+        refreshed = await latest;
+        if (latest !== browserInventoryRefreshRef.current) refreshed = null;
+      }
+      if (!mountedRef.current) return;
+      if (refreshed === false) {
+        setBrowserOutputDiscoveryError("Could not refresh outputs. Try again; System Default is still available.");
+      } else {
+        setBrowserOutputDiscoveryError(null);
+      }
+    } catch (error: unknown) {
+      if (!mountedRef.current) return;
+      const name = error instanceof DOMException || error instanceof Error ? error.name : "";
+      setBrowserOutputDiscoveryError(name === "NotFoundError"
+        ? usesMicrophone
+          ? "No microphone is available to discover outputs. System Default still works."
+          : "No audio output is available to discover. System Default still works."
+        : "Output access wasn’t granted. Use Discover outputs to try again; System Default remains available.");
+    } finally {
+      discoveryPendingRef.current = false;
+      if (mountedRef.current) {
+        setBrowserOutputDiscoveryPending(false);
+        if (deferredDeviceChangeRef.current) {
+          void refreshOutputDevices();
+        }
+      }
+    }
+  }, [refreshOutputDevices, rememberOutputs]);
+
+  const needsDiscovery = !browserOutputDevices.some((device) =>
+    device.deviceId && device.deviceId !== "default" && device.label.trim());
+  const automaticDiscovery = browserRuntime && canRouteBrowserAudio()
+    && !!browserOutputDiscoveryMethod && needsDiscovery && !discoveryAttempted;
+  const activateBrowserOutputSelector = useCallback(() => {
+    if (automaticDiscovery && !discoveryAttemptedRef.current) void discoverBrowserOutputs();
+    else void refreshOutputDevices();
+  }, [automaticDiscovery, discoverBrowserOutputs, refreshOutputDevices]);
+  const browserOutputDiscoveryHelp = !canRouteBrowserAudio()
+    ? "This runtime uses System Default. Saved choices stay available for supported devices."
+    : !browserOutputDiscoveryMethod
+      ? "Output discovery is unavailable in this browser. System Default remains available."
+      : browserOutputDiscoveryMethod === "microphone"
+        && (automaticDiscovery || browserOutputDiscoveryPending || browserOutputDiscoveryError)
+        ? "Opening outputs briefly uses microphone access. Microphone use stops immediately; no audio is recorded."
+        : "";
+  const browserOutputChoices = useMemo(() => {
+    const choices = new Map(rememberedOutputs.map((device) => [device.deviceId,
+      { ...device, label: device.label || "Saved output", remembered: true }]));
+    browserOutputDevices.filter((device) => device.deviceId && device.deviceId !== "default").forEach((device, index) => {
+      choices.set(device.deviceId, { deviceId: device.deviceId,
+        label: device.label.trim() || rememberedOutputs.find((entry) => entry.deviceId === device.deviceId)?.label || `Audio output ${index + 1}`,
+        remembered: false });
+    });
+    return [...choices.values()];
+  }, [browserOutputDevices, rememberedOutputs]);
 
   const selectBrowserOutputDevice = useCallback(async (deviceId: string | null) => {
+    const request = ++browserSelectionRequestRef.current;
     try {
       const nextId = deviceId ? await authorizeBrowserOutputDevice(deviceId) : null;
-      if (deviceId && !nextId) return;
-      writeBrowserOutputDeviceId(nextId);
+      if (!mountedRef.current || request !== browserSelectionRequestRef.current || (deviceId && !nextId)) return;
+      const sameOutput = nextId === browserOutputDeviceIdRef.current;
+      browserOutputDeviceIdRef.current = nextId;
       setBrowserOutputDeviceId(nextId);
-      retryBrowserOutputRouting();
+      if (sameOutput) retryBrowserOutputRouting(nextId);
+      try { writeBrowserOutputDeviceId(nextId); setBrowserOutputSaveError(null); }
+      catch { setBrowserOutputSaveError("Output choice could not be saved. It remains active for this session."); }
       setBrowserOutputError(null);
       void refreshOutputDevices();
     } catch {
+      if (!mountedRef.current || request !== browserSelectionRequestRef.current) return;
       setBrowserOutputError("Output permission was denied. Choose an output to try again.");
     }
   }, [authorizeBrowserOutputDevice, refreshOutputDevices]);
@@ -293,12 +453,20 @@ export function AudioOutputProvider({ children }: { children: ReactNode }) {
     browserOutputDeviceId,
     browserOutputSelectionSupported: canRouteBrowserAudio(),
     browserOutputDevices,
+    browserOutputChoices,
+    browserOutputDiscoveryHelp,
+    activateBrowserOutputSelector,
+    browserOutputDiscoveryMethod,
+    browserOutputDiscoveryPending,
+    browserOutputDiscoveryResult: null,
+    browserOutputDiscoveryError,
+    discoverBrowserOutputs,
     selectBrowserOutputDevice,
     authorizeBrowserOutputDevice,
-    refreshOutputDevices,
+    refreshOutputDevices: async () => { await refreshOutputDevices(); },
     retryOutputControls,
     selectOutputDevice,
-    outputSaveError: preferences.preferencesSaveError ?? nativeAppError ?? nativeCueError ?? browserOutputError,
+    outputSaveError: preferences.preferencesSaveError ?? nativeAppError ?? nativeCueError ?? browserOutputSaveError ?? browserOutputError ?? inventorySaveError,
     ensureAppOutputReady: () => Promise.all([
       latestOperationRef.current,
       latestCueOperationRef.current,
@@ -346,11 +514,26 @@ export function AudioOutputProvider({ children }: { children: ReactNode }) {
       applyCueOutputs(configuredCuesRef.current);
       preferences.setMetronomeOutputMuted(muted);
     },
-  }), [applyCueOutputs, applyOutput, nativeAppError, nativeCueError, browserOutputError,
-    browserOutputDeviceId, browserOutputDevices, selectBrowserOutputDevice,
+  }), [applyCueOutputs, applyOutput, nativeAppError, nativeCueError, browserOutputError, browserOutputSaveError, inventorySaveError,
+    browserOutputDeviceId, browserOutputDevices, browserOutputChoices, browserOutputDiscoveryHelp,
+    activateBrowserOutputSelector, browserOutputDiscoveryMethod,
+    browserOutputDiscoveryPending, browserOutputDiscoveryError,
+    discoverBrowserOutputs, selectBrowserOutputDevice,
     authorizeBrowserOutputDevice, outputCapabilities,
     outputDevices, outputRoute, outputDeviceError, refreshOutputDevices, retryOutputControls, selectOutputDevice,
     preferences]);
 
-  return <AudioOutputContext.Provider value={value}>{children}</AudioOutputContext.Provider>;
+  return (
+    <AudioOutputContext.Provider value={value}>
+      {browserRuntime ? (
+        <span aria-atomic="true" aria-live="polite" className="sr-only"
+          role={browserOutputDiscoveryPending || browserOutputDiscoveryError
+            ? "status" : undefined}>
+          {browserOutputDiscoveryPending ? "Discovering outputs…"
+            : browserOutputDiscoveryError}
+        </span>
+      ) : null}
+      {children}
+    </AudioOutputContext.Provider>
+  );
 }

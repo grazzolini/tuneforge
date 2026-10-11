@@ -7,6 +7,10 @@ download, installation, verification, signature, and publication instructions.
 
 ### Added
 
+- Remember browser output names and expose the Settings default. First selector opening and
+  manual discovery refresh shared choices with permission guidance and immediate microphone
+  cleanup when needed, while preserving saved routes.
+
 - Added separately installable TuneForge Test packages for macOS, Android, and Linux Flatpak,
   with distinct identity, icon, data, and model caches from production packages.
 - Development now defaults to separate test file storage, with TEST visuals in both modes;

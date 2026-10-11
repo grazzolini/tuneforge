@@ -1,5 +1,6 @@
 import { createContext, useContext } from "react";
 import { setBrowserAppOutput, setBrowserCueOutputs } from "./audioOutput";
+import type { RememberedBrowserOutput } from "./outputRouting";
 import type { NativeAudioCapabilities, NativeAudioDevices, NativeOutputRoute } from "./nativeAudio";
 
 export type AudioOutputContextValue = {
@@ -17,6 +18,14 @@ export type AudioOutputContextValue = {
   browserOutputDeviceId: string | null;
   browserOutputSelectionSupported: boolean;
   browserOutputDevices: MediaDeviceInfo[];
+  browserOutputChoices: (RememberedBrowserOutput & { remembered: boolean })[];
+  browserOutputDiscoveryHelp: string;
+  activateBrowserOutputSelector: () => void;
+  browserOutputDiscoveryMethod: "output-chooser" | "microphone" | null;
+  browserOutputDiscoveryPending: boolean;
+  browserOutputDiscoveryResult: string | null;
+  browserOutputDiscoveryError: string | null;
+  discoverBrowserOutputs: () => Promise<void>;
   selectBrowserOutputDevice: (deviceId: string | null) => Promise<void>;
   authorizeBrowserOutputDevice: (deviceId: string) => Promise<string | null>;
   refreshOutputDevices?: () => Promise<void>;
@@ -44,6 +53,14 @@ const fallbackAudioOutput: AudioOutputContextValue = {
   browserOutputDeviceId: null,
   browserOutputSelectionSupported: false,
   browserOutputDevices: [],
+  browserOutputChoices: [],
+  browserOutputDiscoveryHelp: "Output discovery is unavailable in this browser. System Default remains available.",
+  activateBrowserOutputSelector: () => undefined,
+  browserOutputDiscoveryMethod: null,
+  browserOutputDiscoveryPending: false,
+  browserOutputDiscoveryResult: null,
+  browserOutputDiscoveryError: null,
+  discoverBrowserOutputs: () => Promise.resolve(),
   selectBrowserOutputDevice: () => Promise.resolve(),
   authorizeBrowserOutputDevice: async () => null,
   ensureAppOutputReady: () => Promise.resolve(),

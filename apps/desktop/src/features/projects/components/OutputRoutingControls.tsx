@@ -5,7 +5,7 @@ import {
   browserOutputRoutingSnapshot,
   subscribeBrowserOutputRouting,
 } from "../../../lib/audioOutput";
-import { useAudioOutput } from "../../../lib/audioOutputContext";
+import { useAudioOutput, type AudioOutputContextValue } from "../../../lib/audioOutputContext";
 import { isWebAudioBackendForced, type NativeDestinationRoute } from "../../../lib/nativeAudio";
 import {
   INHERIT_OUTPUT_ROUTE,
@@ -16,7 +16,9 @@ import { usePlayback } from "../playback-context";
 import { isDrumSubstem, stemControlKey } from "../drumStemGroup";
 import { artifactLabel } from "../projectViewUtils";
 
-type DeviceChoice = { id: string; label: string };
+const DISCOVERY_NOTICE_ID = "project-output-discovery-notice";
+
+type DeviceChoice = { id: string; label: string; remembered?: boolean };
 type RouteRowProps = {
   label: string;
   inheritLabel: string;
@@ -28,6 +30,8 @@ type RouteRowProps = {
   native: boolean;
   authorizeBrowserOutputDevice: (id: string) => Promise<string | null>;
   refreshDevices?: () => Promise<void>;
+  discovery: AudioOutputContextValue;
+  noticeId: string;
   onSelect: (selection: OutputRouteSelection) => void;
 };
 
@@ -51,6 +55,8 @@ function OutputRouteRow({
   native,
   authorizeBrowserOutputDevice,
   refreshDevices,
+  discovery,
+  noticeId,
   onSelect,
 }: RouteRowProps) {
   const [open, setOpen] = useState(false);
@@ -61,14 +67,14 @@ function OutputRouteRow({
   useEffect(() => () => { requestRef.current += 1; }, []);
 
   const savedDeviceAvailable = selection.kind !== "explicit-device"
-    || devices.some((device) => device.id === selection.deviceId);
+    || devices.some((device) => device.id === selection.deviceId && !device.remembered);
   const selectedLabel = selection.kind === "inherit"
     ? inheritLabel
     : selection.kind === "system-default"
       ? "System Default"
-      : savedDeviceAvailable
+      : devices.some((device) => device.id === selection.deviceId)
         ? deviceName(selection.deviceId, devices)
-        : `Unavailable · ${selection.deviceId}`;
+        : native ? `Unavailable · ${selection.deviceId}` : "Saved output (availability unknown)";
   const currentDestination = destination && sameSelection(destination.selection, selection)
     ? destination : null;
   const effectiveLabel = currentDestination?.effectiveDeviceId
@@ -84,7 +90,7 @@ function OutputRouteRow({
           : currentDestination?.effectiveDeviceId
             ? `Effective output: ${effectiveLabel}`
             : !savedDeviceAvailable
-              ? "Saved output is unavailable on this device."
+              ? native ? "Saved output is unavailable on this device." : "Saved output availability is unknown. Saved choice kept."
               : null;
 
   const choose = async (next: OutputRouteSelection, restoreFocus: boolean) => {
@@ -124,17 +130,22 @@ function OutputRouteRow({
       <div className="output-route-row__heading">
         <span>{label}</span>
         {selection.kind === "explicit-device" && !savedDeviceAvailable ? (
-          <span className="output-route-row__warning">Unavailable</span>
+          <span className="output-route-row__warning">{native ? "Unavailable" : "Unverified"}</span>
         ) : null}
       </div>
       <button
+        aria-describedby={!native && (discovery.browserOutputDiscoveryHelp || discovery.browserOutputDiscoveryError)
+          ? noticeId : undefined}
         aria-controls={choicesId}
         aria-expanded={open}
         aria-label={`${label} output: ${selectedLabel}`}
         className="output-route-row__trigger"
         disabled={disabled}
         onClick={() => {
-          if (!open) void refreshDevices?.();
+          if (!open) {
+            if (native) void refreshDevices?.();
+            else discovery.activateBrowserOutputSelector();
+          }
           setOpen(!open);
         }}
         ref={triggerRef}
@@ -172,7 +183,8 @@ function OutputRouteRow({
           ))}
           {selection.kind === "explicit-device" && !savedDeviceAvailable ? (
             <p className="output-route-row__unavailable" role="status">
-              Saved device: {selection.deviceId}. Select it again after it returns to retry.
+              {native ? `Saved device: ${selection.deviceId}. Select it again after it returns to retry.`
+                : "Remembered outputs may need permission or reconnection before use."}
             </p>
           ) : null}
         </div>
@@ -197,12 +209,11 @@ function useOutputRoutingView() {
       id: device.id,
       label: device.label || device.id,
     })) ?? []
-    : appOutput.browserOutputDevices
-      .filter((device) => device.deviceId && device.deviceId !== "default")
-      .map((device, index) => ({
-        id: device.deviceId,
-        label: device.label.trim() || `Audio output ${index + 1}`,
-      }));
+    : appOutput.browserOutputChoices.map((device) => ({
+      id: device.deviceId,
+      label: `${device.label}${device.remembered ? " (remembered)" : ""}`,
+      remembered: device.remembered,
+    }));
   return {
     playback,
     appOutput,
@@ -216,12 +227,34 @@ function useOutputRoutingView() {
   };
 }
 
-export function ProjectOutputRoute() {
+export function ProjectOutputRoute({ noticeId = DISCOVERY_NOTICE_ID }: { noticeId?: string }) {
   const { playback, appOutput, native, devices, selectionSupported, snapshot } = useOutputRoutingView();
+  const sectionRef = useRef<HTMLElement>(null);
+  const retryFocusedRef = useRef(false);
+  useEffect(() => {
+    if (!appOutput.browserOutputDiscoveryError && !appOutput.browserOutputDiscoveryPending && retryFocusedRef.current) {
+      retryFocusedRef.current = false;
+      sectionRef.current?.querySelector<HTMLButtonElement>(".output-route-row__trigger")?.focus();
+    }
+  }, [appOutput.browserOutputDiscoveryError, appOutput.browserOutputDiscoveryPending]);
   return (
-    <section className="output-routing output-routing--project" aria-label="Project output">
+    <section className="output-routing output-routing--project" aria-label="Project output" ref={sectionRef}>
       <h3>Project output</h3>
+      {!native && (appOutput.browserOutputDiscoveryHelp || appOutput.browserOutputDiscoveryError) ? (
+        <div id={noticeId}>
+          {appOutput.browserOutputDiscoveryHelp ? <p className="artifact-meta">{appOutput.browserOutputDiscoveryHelp}</p> : null}
+          {appOutput.browserOutputDiscoveryError ? <>
+            <p className="field-error">{appOutput.browserOutputDiscoveryError}</p>
+            <button className="button button--ghost button--small" type="button"
+              aria-describedby={noticeId} disabled={appOutput.browserOutputDiscoveryPending}
+              onFocus={() => { retryFocusedRef.current = true; }} onBlur={() => { retryFocusedRef.current = false; }}
+              onClick={() => void appOutput.discoverBrowserOutputs()}>Discover outputs</button>
+          </> : null}
+        </div>
+      ) : null}
       <OutputRouteRow
+        discovery={appOutput}
+        noticeId={noticeId}
         authorizeBrowserOutputDevice={appOutput.authorizeBrowserOutputDevice}
         refreshDevices={appOutput.refreshOutputDevices}
         destination={snapshot?.project ?? null}
@@ -234,7 +267,7 @@ export function ProjectOutputRoute() {
         selection={playback.outputRouting.project}
         selectionSupported={selectionSupported}
       />
-      {!selectionSupported ? (
+      {native && !selectionSupported ? (
         <p className="artifact-meta">This runtime uses System Default. Saved choices stay available for supported devices.</p>
       ) : null}
       {playback.outputRoutingSaveError ? (
@@ -244,7 +277,7 @@ export function ProjectOutputRoute() {
   );
 }
 
-export function OutputRoutingPanel({ stemArtifacts }: { stemArtifacts: ArtifactSchema[] }) {
+export function OutputRoutingPanel({ stemArtifacts, noticeId = DISCOVERY_NOTICE_ID }: { stemArtifacts: ArtifactSchema[]; noticeId?: string }) {
   const { playback, appOutput, native, devices, selectionSupported, snapshot } = useOutputRoutingView();
   const lanes = playback.session?.routeLanes ?? [];
   const hasOverrides = playback.outputRouting.project.kind !== "inherit"
@@ -268,6 +301,8 @@ export function OutputRoutingPanel({ stemArtifacts }: { stemArtifacts: ArtifactS
         const destination = snapshot?.lanes.find((entry) => entry.laneId === artifact.id) ?? null;
         return (
           <OutputRouteRow
+            discovery={appOutput}
+            noticeId={noticeId}
             authorizeBrowserOutputDevice={appOutput.authorizeBrowserOutputDevice}
             refreshDevices={appOutput.refreshOutputDevices}
             destination={destination}
@@ -284,6 +319,8 @@ export function OutputRoutingPanel({ stemArtifacts }: { stemArtifacts: ArtifactS
         );
       }) : <p className="artifact-meta">Generate or sync stems to route individual parts.</p>}
       <OutputRouteRow
+        discovery={appOutput}
+        noticeId={noticeId}
         authorizeBrowserOutputDevice={appOutput.authorizeBrowserOutputDevice}
         refreshDevices={appOutput.refreshOutputDevices}
         destination={snapshot?.cue ?? null}

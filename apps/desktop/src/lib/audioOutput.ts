@@ -292,14 +292,39 @@ export function setBrowserOutputRouting(config: BrowserRoutingConfig) {
   publishBrowserRouteChange();
 }
 
-export function retryBrowserOutputRouting() {
-  if (![...browserRouteStates.values()].some((state) => state.fallbackLatched || state.defaultFailed)) return;
-  browserAttempt += 1;
-  for (const bus of contextBuses) {
-    bus.sinkOutputs.forEach(disposeSinkOutput);
-    bus.sinkOutputs.clear();
+export function retryBrowserOutputRouting(settingsDeviceId?: string | null) {
+  const settingsOnly = settingsDeviceId !== undefined;
+  if (settingsOnly && browserRouting.globalDeviceId !== settingsDeviceId) return;
+  const { project, cue, stems } = browserRouting.routing;
+  const inheritsSettings = (key: string) => {
+    if (key === "standalone") return true;
+    if (project.kind !== "inherit") return false;
+    if (key === "project") return true;
+    if (key === "cue") return cue.kind === "inherit";
+    const lane = browserRouting.lanes.find((entry) => `lane:${entry.laneId}` === key);
+    return !lane || ((stems[lane.stableKey]?.kind ?? "inherit") === "inherit"
+      && (!lane.parentStableKey || (stems[lane.parentStableKey]?.kind ?? "inherit") === "inherit"));
+  };
+  const keys = [...browserRouteStates].filter(([key, state]) =>
+    (state.fallbackLatched || state.defaultFailed) && (!settingsOnly || inheritsSettings(key)))
+    .map(([key]) => key);
+  if (!keys.length) return;
+  if (settingsOnly) {
+    const ids = new Set(keys.map((key) => browserRouteStates.get(key)?.preferredDeviceId));
+    keys.forEach((key) => browserRouteStates.delete(key));
+    contextBuses.forEach((bus) => bus.sinkOutputs.forEach((output, id) => {
+      if (!ids.has(id) || output.result !== "failed") return;
+      bus.sinkOutputs.delete(id);
+      disposeSinkOutput(output);
+    }));
+  } else {
+    browserAttempt += 1;
+    for (const bus of contextBuses) {
+      bus.sinkOutputs.forEach(disposeSinkOutput);
+      bus.sinkOutputs.clear();
+    }
+    browserRouteStates.clear();
   }
-  browserRouteStates.clear();
   refreshBrowserRoutes();
   publishBrowserRouteChange();
 }

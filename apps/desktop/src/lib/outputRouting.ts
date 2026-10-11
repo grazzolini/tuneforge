@@ -163,3 +163,33 @@ export function writeBrowserOutputDeviceId(deviceId: string | null) {
   if (normalized) window.localStorage.setItem(BROWSER_OUTPUT_KEY, normalized);
   else window.localStorage.removeItem(BROWSER_OUTPUT_KEY);
 }
+
+export type RememberedBrowserOutput = { deviceId: string; label: string };
+const BROWSER_INVENTORY_KEY = "tuneforge.browser-output-inventory";
+let processOnlyBrowserInventory: RememberedBrowserOutput[] = [];
+
+function normalizeBrowserInventory(value: unknown): RememberedBrowserOutput[] {
+  if (!Array.isArray(value)) return [];
+  const entries = new Map<string, RememberedBrowserOutput>();
+  for (const item of value) {
+    if (!item || typeof item.deviceId !== "string" || !item.deviceId.trim()
+      || item.deviceId === "default" || typeof item.label !== "string") continue;
+    entries.set(item.deviceId, { deviceId: item.deviceId, label: item.label });
+  }
+  return [...entries.values()];
+}
+
+export function readBrowserOutputInventory(): RememberedBrowserOutput[] {
+  if (typeof window === "undefined") return [];
+  if (isAndroidOutputRuntime()) return processOnlyBrowserInventory;
+  try {
+    return normalizeBrowserInventory(JSON.parse(window.localStorage.getItem(BROWSER_INVENTORY_KEY) ?? "[]"));
+  } catch { return []; }
+}
+
+export function writeBrowserOutputInventory(devices: RememberedBrowserOutput[]) {
+  const inventory = normalizeBrowserInventory(devices);
+  if (typeof window === "undefined") return;
+  if (isAndroidOutputRuntime()) processOnlyBrowserInventory = inventory;
+  else window.localStorage.setItem(BROWSER_INVENTORY_KEY, JSON.stringify(inventory));
+}

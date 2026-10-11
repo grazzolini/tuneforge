@@ -716,6 +716,14 @@ export function SettingsView() {
     replacePreferences,
   } = usePreferences();
   const appOutput = useAudioOutput();
+  const browserOutputRef = useRef<HTMLSelectElement>(null);
+  const outputRetryFocusedRef = useRef(false);
+  useEffect(() => {
+    if (!appOutput.browserOutputDiscoveryError && !appOutput.browserOutputDiscoveryPending && outputRetryFocusedRef.current) {
+      outputRetryFocusedRef.current = false;
+      browserOutputRef.current?.focus();
+    }
+  }, [appOutput.browserOutputDiscoveryError, appOutput.browserOutputDiscoveryPending]);
   const {
     appOutputGain,
     appOutputMuted,
@@ -890,6 +898,7 @@ export function SettingsView() {
   }
 
   function handleResetAllSettings() {
+    if (!normalTauriAudio) void appOutput.selectBrowserOutputDevice(null);
     setThemePreference(DEFAULT_THEME_PREFERENCE);
     resetThemeOverrides();
     resetPreferences();
@@ -1148,6 +1157,52 @@ export function SettingsView() {
             <p className="subpanel__copy">Control playback and click volumes across TuneForge.</p>
           </div>
         </div>
+        {!normalTauriAudio ? (
+          <div className="settings-output-device">
+            <label htmlFor="settings-browser-output">Audio output</label>
+            {appOutput.browserOutputDiscoveryHelp ? <p className="subpanel__copy" id="settings-browser-output-help">
+              {appOutput.browserOutputDiscoveryHelp}</p> : null}
+            <select id="settings-browser-output" ref={browserOutputRef}
+              aria-describedby={`${appOutput.browserOutputDiscoveryHelp ? "settings-browser-output-help " : ""}settings-browser-output-scope`}
+              value={appOutput.browserOutputDeviceId ?? "default"}
+              onFocus={() => void appOutput.refreshOutputDevices?.()}
+              onPointerDown={(event) => {
+                if (event.button === 0) appOutput.activateBrowserOutputSelector();
+              }}
+              onKeyDown={(event) => {
+                if (!event.repeat && (event.key === " " || event.key === "Enter"
+                  || (event.altKey && event.key === "ArrowDown"))) appOutput.activateBrowserOutputSelector();
+              }}
+              onChange={(event) => void appOutput.selectBrowserOutputDevice(
+                event.target.value === "default" ? null : event.target.value,
+              )}>
+              <option value="default">System Default</option>
+              {appOutput.browserOutputDeviceId && !appOutput.browserOutputChoices.some(
+                (device) => device.deviceId === appOutput.browserOutputDeviceId,
+              ) ? <option value={appOutput.browserOutputDeviceId} disabled={!appOutput.browserOutputSelectionSupported}>
+                Saved output (availability unknown)
+              </option> : null}
+              {appOutput.browserOutputChoices.map((device) => (
+                <option key={device.deviceId} value={device.deviceId} disabled={!appOutput.browserOutputSelectionSupported}>
+                  {device.label}{device.remembered ? " (remembered)" : ""}
+                </option>
+              ))}
+            </select>
+            <p className="subpanel__copy" id="settings-browser-output-scope">
+              Default for projects using Follow Settings and routes that inherit from them. Explicit output choices stay unchanged.
+              {appOutput.browserOutputChoices.some((device) => device.remembered)
+                ? " Remembered outputs may need permission or reconnection before use." : ""}
+            </p>
+            {appOutput.browserOutputDiscoveryError ? <>
+              <p className="field-error">{appOutput.browserOutputDiscoveryError}</p>
+              <button className="button button--ghost button--small" type="button"
+                aria-describedby={appOutput.browserOutputDiscoveryHelp ? "settings-browser-output-help" : undefined}
+                disabled={appOutput.browserOutputDiscoveryPending}
+                onFocus={() => { outputRetryFocusedRef.current = true; }} onBlur={() => { outputRetryFocusedRef.current = false; }}
+                onClick={() => void appOutput.discoverBrowserOutputs()}>Discover outputs</button>
+            </> : null}
+          </div>
+        ) : null}
         {normalTauriAudio && appOutput.outputCapabilities
           && appOutput.outputCapabilities.outputSelectionPersistence !== "default-only" ? (
           <div className="settings-output-device">

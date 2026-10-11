@@ -1,10 +1,12 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { readProjectPlaybackState, writeProjectPlaybackState } from "../features/projects/projectPlaybackState";
 import {
   DEFAULT_PROJECT_OUTPUT_ROUTING_PREFERENCES,
   nativeRoutingRequest,
   normalizeProjectOutputRouting,
   readBrowserOutputDeviceId,
+  readBrowserOutputInventory,
+  writeBrowserOutputInventory,
   resolvedCueRoute,
   resolvedProjectRoute,
   resolvedStemRoute,
@@ -75,10 +77,29 @@ describe("output routing preferences", () => {
       writeBrowserOutputDeviceId("browser-global-private");
       expect(readBrowserOutputDeviceId()).toBe("browser-global-private");
       expect(window.localStorage.getItem("tuneforge.browser-output-device")).toBeNull();
+      writeBrowserOutputInventory([{ deviceId: "private-output", label: "Synthetic" }]);
+      expect(readBrowserOutputInventory()).toEqual([{ deviceId: "private-output", label: "Synthetic" }]);
+      expect(window.localStorage.getItem("tuneforge.browser-output-inventory")).toBeNull();
     } finally {
       if (userAgent) Object.defineProperty(Navigator.prototype, "userAgent", userAgent);
       else Reflect.deleteProperty(Navigator.prototype, "userAgent");
     }
+  });
+
+  it("persists only valid output IDs and labels and tolerates corrupt or inaccessible storage", () => {
+    window.localStorage.setItem("tuneforge.browser-output-inventory", "invalid");
+    expect(readBrowserOutputInventory()).toEqual([]);
+    window.localStorage.setItem("tuneforge.browser-output-inventory", JSON.stringify([
+      { deviceId: "usb", label: "Studio", groupId: "must-not-persist" },
+      { deviceId: "default", label: "Default" }, { deviceId: "bad", label: 42 },
+    ]));
+    const inventory = readBrowserOutputInventory();
+    expect(inventory).toEqual([{ deviceId: "usb", label: "Studio" }]);
+    writeBrowserOutputInventory(inventory);
+    expect(window.localStorage.getItem("tuneforge.browser-output-inventory")).not.toContain("groupId");
+    const read = vi.spyOn(window.localStorage, "getItem").mockImplementation(() => { throw new Error("blocked"); });
+    expect(readBrowserOutputInventory()).toEqual([]);
+    read.mockRestore();
   });
 
   it("stores the browser device separately from native global preferences", () => {

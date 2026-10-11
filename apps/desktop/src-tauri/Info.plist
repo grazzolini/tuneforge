@@ -3,6 +3,6 @@
 <plist version="1.0">
 <dict>
   <key>NSMicrophoneUsageDescription</key>
-  <string>TuneForge uses the microphone for the chromatic tuner.</string>
+  <string>TuneForge uses the microphone for the chromatic tuner and, when requested, to discover browser audio outputs. Output discovery stops microphone use immediately and does not record audio.</string>
 </dict>
 </plist>

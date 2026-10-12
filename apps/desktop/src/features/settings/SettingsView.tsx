@@ -76,6 +76,8 @@ import {
 } from "../../lib/theme";
 import {
   readRememberedTunerInputCaptureBackend,
+  supportsBrowserTunerInputSelection,
+  useBrowserTunerInputDevice,
   readRememberedTunerNativeCaptureError,
   type TunerInputCaptureBackend,
 } from "../tools/tunerMicrophoneAccess";
@@ -742,6 +744,8 @@ export function SettingsView() {
   const tauriRuntime = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
   const webAudioForced = tauriRuntime && isWebAudioBackendForced();
   const normalTauriAudio = tauriRuntime && !webAudioForced;
+  const [browserTunerInputDeviceId, setBrowserTunerInputDeviceId] = useBrowserTunerInputDevice(defaultTunerInputDeviceId);
+  const tunerInputDeviceId = normalTauriAudio ? defaultTunerInputDeviceId : browserTunerInputDeviceId;
   const androidRuntime = isAndroidRuntime();
   useSyncExternalStore(
     subscribePlaybackDiagnostics,
@@ -894,14 +898,18 @@ export function SettingsView() {
   }
 
   function handleResetTunerDefaults() {
+    if (!normalTauriAudio) setBrowserTunerInputDeviceId(null);
     resetTunerPreferences();
+    if (!normalTauriAudio) setDefaultTunerInputDeviceId(defaultTunerInputDeviceId);
   }
 
   function handleResetAllSettings() {
+    if (!normalTauriAudio) setBrowserTunerInputDeviceId(null);
     if (!normalTauriAudio) void appOutput.selectBrowserOutputDevice(null);
     setThemePreference(DEFAULT_THEME_PREFERENCE);
     resetThemeOverrides();
     resetPreferences();
+    if (!normalTauriAudio) setDefaultTunerInputDeviceId(defaultTunerInputDeviceId);
   }
 
   async function handleExportSettings() {
@@ -1125,7 +1133,7 @@ export function SettingsView() {
           ) : null}
           <div className="settings-overview__stat">
             <dt>Tuner mic</dt>
-            <dd>{tunerInputDeviceLabel(defaultTunerInputDeviceId)}</dd>
+            <dd>{tunerInputDeviceLabel(tunerInputDeviceId)}</dd>
           </div>
           <div className="settings-overview__stat">
             <dt>A4 reference</dt>
@@ -1432,13 +1440,13 @@ export function SettingsView() {
           </div>
 
           <TunerPreferenceControls
-            inputDeviceId={defaultTunerInputDeviceId}
+            inputDeviceId={tunerInputDeviceId}
             nativeCaptureDisabled={!normalTauriAudio}
-            onInputDeviceChange={setDefaultTunerInputDeviceId}
+            onInputDeviceChange={normalTauriAudio ? setDefaultTunerInputDeviceId : setBrowserTunerInputDeviceId}
             onReferenceHzChange={setDefaultTunerReferenceHz}
             onVisualModeChange={setDefaultTunerVisualMode}
             referenceHz={defaultTunerReferenceHz}
-            systemDefaultOnly={webAudioForced || isAndroidRuntime() || nativeAudioQuery.data?.platform === "android"}
+            systemDefaultOnly={(normalTauriAudio && (isAndroidRuntime() || nativeAudioQuery.data?.platform === "android")) || (!normalTauriAudio && !supportsBrowserTunerInputSelection())}
             visualMode={defaultTunerVisualMode}
           />
 

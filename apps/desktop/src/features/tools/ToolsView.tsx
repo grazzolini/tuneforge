@@ -51,7 +51,9 @@ import {
   clearRememberedTunerNativeCaptureError,
   forgetTunerMicrophoneAccessGranted,
   rememberTunerInputCaptureBackend,
-  rememberTunerMicrophoneDevices,
+  rememberBrowserTunerMicrophoneDevices,
+  supportsBrowserTunerInputSelection,
+  useBrowserTunerInputDevice,
   rememberTunerMicrophoneAccessGranted,
   rememberTunerNativeCaptureError,
   toVisibleTunerMicrophoneDevices,
@@ -146,13 +148,16 @@ function ChromaticTunerPage() {
     useState<NativeAudioCapabilities | null>(null);
   const webAudioForced = isTauriRuntime() && isWebAudioBackendForced();
   const androidRuntime = isAndroidRuntime() || nativeAudioCapabilities?.platform === "android";
+  const browserCapture = webAudioForced || !isTauriRuntime();
+  const [browserInputDeviceId, setBrowserInputDeviceId] = useBrowserTunerInputDevice(defaultTunerInputDeviceId);
+  const selectedInputDeviceId = browserCapture ? browserInputDeviceId : defaultTunerInputDeviceId;
   const [reading, setReading] = useState<TunerPitchReading | null>(null);
   const [deviceRefreshToken, setDeviceRefreshToken] = useState(0);
   const [systemInputVolumeRefreshToken, setSystemInputVolumeRefreshToken] = useState(0);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const frameIdRef = useRef<number | null>(null);
-  const inputDeviceIdRef = useRef(defaultTunerInputDeviceId);
+  const inputDeviceIdRef = useRef(selectedInputDeviceId);
   const mediaSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const nativeCaptureActiveRef = useRef(false);
   const nativeCaptureGenerationRef = useRef<number | null>(null);
@@ -169,8 +174,8 @@ function ChromaticTunerPage() {
   const timeDomainDataRef = useRef<Float32Array<ArrayBuffer> | null>(null);
 
   useEffect(() => {
-    inputDeviceIdRef.current = defaultTunerInputDeviceId;
-  }, [defaultTunerInputDeviceId]);
+    inputDeviceIdRef.current = selectedInputDeviceId;
+  }, [selectedInputDeviceId]);
 
   useEffect(() => {
     referenceHzRef.current = defaultTunerReferenceHz;
@@ -436,7 +441,7 @@ function ChromaticTunerPage() {
   });
 
   const startWebTuner = useStableCallback(async function startWebTuner(
-    _nextDeviceId: string | null,
+    nextDeviceId: string | null,
     requestId: number,
   ) {
     const AudioContextCtor = getWebAudioContextConstructor();
@@ -445,24 +450,29 @@ function ChromaticTunerPage() {
       throw new Error("Microphone capture is unavailable.");
     }
 
-    const stream = await mediaDevices.getUserMedia(createAudioConstraints());
+    if (nextDeviceId && (!supportsBrowserTunerInputSelection() || isNativeAudioInputDeviceId(nextDeviceId))) {
+      throw new Error("Selected microphone cannot be used in this browser. Choose System Default or another microphone.");
+    }
+    const stream = await mediaDevices.getUserMedia(createAudioConstraints(nextDeviceId));
     if (requestIdRef.current !== requestId) {
       stream.getTracks().forEach((track) => track.stop());
       return;
     }
 
+    streamRef.current = stream;
+    if (nextDeviceId && stream.getAudioTracks()[0]?.getSettings?.().deviceId !== nextDeviceId) {
+      throw new Error("Selected microphone could not be confirmed. Choose another microphone or System Default.");
+    }
     const audioContext = new AudioContextCtor();
+    audioContextRef.current = audioContext;
     const analyser = audioContext.createAnalyser();
     analyser.fftSize = 2048;
     analyser.smoothingTimeConstant = 0.12;
 
-    const mediaSource = audioContext.createMediaStreamSource(stream);
-    mediaSource.connect(analyser);
-
-    streamRef.current = stream;
-    audioContextRef.current = audioContext;
     analyserRef.current = analyser;
+    const mediaSource = audioContext.createMediaStreamSource(stream);
     mediaSourceRef.current = mediaSource;
+    mediaSource.connect(analyser);
 
     const handleTrackEnded = () => {
       if (requestIdRef.current !== requestId || streamRef.current !== stream) {
@@ -482,14 +492,12 @@ function ChromaticTunerPage() {
 
     await activateWebAudioContext(audioContext);
 
-    if (requestIdRef.current !== requestId) {
-      releaseCapture();
-      return;
-    }
+    if (requestIdRef.current !== requestId) return;
 
+    await rememberVisibleAudioInputDevices(mediaDevices, () => requestIdRef.current === requestId);
+    if (requestIdRef.current !== requestId) return;
     rememberTunerMicrophoneAccessGranted();
     rememberTunerInputCaptureBackend({ backend: "web", detail: null });
-    await rememberVisibleAudioInputDevices(mediaDevices);
     setActiveCaptureBackend("web");
     setDeviceRefreshToken(Date.now());
     setStatus("listening");
@@ -505,9 +513,10 @@ function ChromaticTunerPage() {
 
     const requestId = requestIdRef.current + 1;
     requestIdRef.current = requestId;
-    const selectedDeviceId = nextDeviceId ?? inputDeviceIdRef.current;
+    const selectedDeviceId = nextDeviceId === undefined ? inputDeviceIdRef.current : nextDeviceId;
     const selectedNativeDevice = isNativeAudioInputDeviceId(selectedDeviceId);
     const nativeCapabilities = await resolveNativeAudioCapabilities();
+    if (requestIdRef.current !== requestId) return;
     const tauriNativeRequired = isTauriRuntime() && !webAudioForced;
     const nativeRequired = tauriNativeRequired;
 
@@ -586,8 +595,11 @@ function ChromaticTunerPage() {
     value: string | null,
   ) {
     inputDeviceIdRef.current = value;
-    setDefaultTunerInputDeviceId(value);
-    if (statusRef.current === "listening" || statusRef.current === "error") {
+    if (browserCapture) setBrowserInputDeviceId(value);
+    else setDefaultTunerInputDeviceId(value);
+    if (statusRef.current === "listening" ||
+      (browserCapture && statusRef.current === "starting") ||
+      (!browserCapture && statusRef.current === "error")) {
       void startTuner(value);
     }
   });
@@ -629,9 +641,8 @@ function ChromaticTunerPage() {
     !isListening;
   const statusText = headerStatusLabel(status);
   const systemDefaultInputOnly =
-    webAudioForced ||
-    androidRuntime ||
-    activeCaptureBackend === "web";
+    (!webAudioForced && androidRuntime) ||
+    (browserCapture && !supportsBrowserTunerInputSelection());
   const inputVolumeDeviceId =
     webAudioForced ||
     activeCaptureBackend === "web" ||
@@ -655,7 +666,7 @@ function ChromaticTunerPage() {
         <TunerPreferenceControls
           className="tuner-preferences--with-mode"
           clearDevicesWhenSystemDefaultOnly={isTauriRuntime() || androidRuntime}
-          inputDeviceId={defaultTunerInputDeviceId}
+          inputDeviceId={selectedInputDeviceId}
           nativeCaptureDisabled={webAudioForced || !isTauriRuntime()}
           onInputDeviceChange={handleInputDeviceChange}
           onReferenceHzChange={handleReferenceHzChange}
@@ -935,24 +946,25 @@ function canUseTunerCapture(nativeAudioCapabilities: NativeAudioCapabilities | n
   return Boolean(nativeAudioCapabilities?.micCaptureSupported || (getWebAudioContextConstructor() && getMediaDevices()));
 }
 
-async function rememberVisibleAudioInputDevices(mediaDevices: MediaDevices) {
+async function rememberVisibleAudioInputDevices(mediaDevices: MediaDevices, isCurrent: () => boolean) {
   if (typeof mediaDevices.enumerateDevices !== "function") {
     return;
   }
   try {
     const devices = await mediaDevices.enumerateDevices();
-    rememberTunerMicrophoneDevices(toVisibleTunerMicrophoneDevices(devices));
+    if (isCurrent()) rememberBrowserTunerMicrophoneDevices(toVisibleTunerMicrophoneDevices(devices));
   } catch {
     // Device labels are a convenience cache; tuner capture should continue without them.
   }
 }
 
-function createAudioConstraints(): MediaStreamConstraints {
+function createAudioConstraints(deviceId: string | null): MediaStreamConstraints {
   const audio: MediaTrackConstraints = {
     autoGainControl: false,
     echoCancellation: false,
     noiseSuppression: false,
   };
+  if (deviceId) audio.deviceId = { exact: deviceId };
   return { audio, video: false };
 }
 

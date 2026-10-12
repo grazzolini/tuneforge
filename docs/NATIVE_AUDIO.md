@@ -252,9 +252,18 @@ no progress while the element is not paused, seeking, or ended is also treated a
 ## Device And Volume Behavior
 
 Native tuner capture can use a selected input device without changing the system default microphone.
-Native selected-device volume uses host controls where available. Web Audio capture remains limited
-to the browser/system default input path, so non-default microphone choices are disabled while Web
-Audio is active.
+Native selected-device volume uses host controls where available. Browsers and forced-Web builds
+support a selected microphone when `deviceId` constraints are available. Explicit selections use an
+exact device ID and must be confirmed by the granted capture; an unavailable or ignored selection
+fails without falling back. System Default leaves input routing to the browser. Browser microphone
+choices and remembered names stay local to the origin, separate from native preferences and settings
+snapshots. Remembered names do not prove microphone access or availability.
+
+Changing the browser source while capture starts or listens releases the previous microphone capture and
+starts the selected source immediately. Idle or failed capture saves the preference until Start or
+Retry. A disconnected microphone ends capture, clears the reading, and requires an explicit retry;
+it never triggers automatic fallback or reacquisition. Opening the input list only enumerates
+currently exposed devices and does not request microphone permission.
 
 Android exposes only `System Default` because CPAL/AAudio does not provide a confirmed stable native
 device identity for this flow. Cached browser labels and browser device choices are not shown as

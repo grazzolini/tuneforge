@@ -12,9 +12,14 @@ import {
   getMockWakeLock,
   resetAppTestHarness,
   renderApp,
+  setMockAudioContextInitialState,
   setMockNativeAudioState,
   setMockSystemInputVolumeState,
 } from "./test/appTestHarness";
+
+const OriginalAudioContext = window.AudioContext;
+const originalGetUserMedia = getMockMediaDevices().getUserMedia.getMockImplementation();
+const originalEnumerateDevices = getMockMediaDevices().enumerateDevices.getMockImplementation();
 
 function mockTauriRuntime() {
   Object.defineProperty(window, "__TAURI_INTERNALS__", {
@@ -23,9 +28,10 @@ function mockTauriRuntime() {
   });
 }
 
-function makeEndingMediaStream() {
+function makeEndingMediaStream(deviceId = "built-in") {
   const endedListeners = new Set<() => void>();
   const track = {
+    getSettings: vi.fn(() => ({ deviceId })),
     addEventListener: vi.fn((type: string, listener: () => void) => {
       if (type === "ended") endedListeners.add(listener);
     }),
@@ -48,10 +54,19 @@ function makeEndingMediaStream() {
 }
 
 describe("Desktop app tools tuner", () => {
-  beforeEach(resetAppTestHarness);
+  beforeEach(() => {
+    resetAppTestHarness();
+    getMockMediaDevices().getUserMedia.mockReset().mockImplementation(originalGetUserMedia!);
+    getMockMediaDevices().enumerateDevices.mockReset().mockImplementation(originalEnumerateDevices!);
+    Object.defineProperty(navigator.mediaDevices, "getSupportedConstraints", {
+      configurable: true,
+      value: vi.fn(() => ({ deviceId: true })),
+    });
+  });
   afterEach(() => {
     vi.useRealTimers();
     vi.unstubAllEnvs();
+    window.AudioContext = OriginalAudioContext;
   });
 
   it("renders the tools route with chromatic tuner defaults", async () => {
@@ -428,6 +443,8 @@ describe("Desktop app tools tuner", () => {
   it("ends Web tuner capture generation when its microphone track terminates", async () => {
     const user = userEvent.setup();
     const endingStream = makeEndingMediaStream();
+    const extraCapture = makeEndingMediaStream();
+    vi.mocked(endingStream.stream.getTracks).mockReturnValue([endingStream.track, extraCapture.track]);
     getMockMediaDevices().getUserMedia.mockResolvedValueOnce(endingStream.stream);
     renderApp(["/tools"]);
 
@@ -445,6 +462,10 @@ describe("Desktop app tools tuner", () => {
       expect.any(Function),
     );
     expect(endingStream.track.stop).toHaveBeenCalledTimes(1);
+    expect(extraCapture.track.stop).toHaveBeenCalledTimes(1);
+    expect(getMockAudioContexts()[0]?.close).toHaveBeenCalledTimes(1);
+    expect(getMockMediaDevices().getUserMedia).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("meter", { name: "Input signal level" })).toHaveAttribute("aria-valuenow", "0");
   });
 
   it("uses native microphone capture when available", async () => {
@@ -1073,6 +1094,7 @@ describe("Desktop app tools tuner", () => {
   it("uses Web microphone selection without native calls outside Tauri", async () => {
     const user = userEvent.setup();
     getMockMediaDevices().revealLabels();
+    getMockMediaDevices().getUserMedia.mockResolvedValueOnce(makeEndingMediaStream().stream);
     renderApp(["/tools"]);
 
     expect(await screen.findByRole("heading", { name: "Tools" })).toBeInTheDocument();
@@ -1084,14 +1106,15 @@ describe("Desktop app tools tuner", () => {
     expect(screen.queryByText("Native microphone failed.")).not.toBeInTheDocument();
     expect(getMockMediaDevices().getUserMedia).toHaveBeenCalledWith({
       audio: {
+        deviceId: { exact: "built-in" },
         autoGainControl: false,
         echoCancellation: false,
         noiseSuppression: false,
       },
       video: false,
     });
-    expect(screen.getByLabelText("Microphone source")).toHaveValue("");
-    expect(screen.getByRole("option", { name: "Built-in Microphone" })).toBeDisabled();
+    expect(screen.getByLabelText("Microphone source")).toHaveValue("built-in");
+    expect(screen.getByRole("option", { name: "Built-in Microphone" })).toBeEnabled();
     expect(getMockInvoke()).not.toHaveBeenCalledWith("audio_get_capabilities");
     expect(getMockInvoke()).not.toHaveBeenCalledWith("audio_list_input_devices");
     expect(getMockInvoke()).not.toHaveBeenCalledWith("audio_start_input", expect.anything());
@@ -1100,6 +1123,278 @@ describe("Desktop app tools tuner", () => {
     expect(window.localStorage.getItem("tuneforge.tuner-input-capture-backend")).toContain(
       '"web"',
     );
+  });
+
+  it("keeps browser selection separate from native preferences across Settings and Tools", async () => {
+    const user = userEvent.setup();
+    window.localStorage.setItem("tuneforge.ui-preferences", JSON.stringify({ defaultTunerInputDeviceId: "cpal:1:native" }));
+    getMockMediaDevices().revealLabels();
+    renderApp(["/settings"]);
+    await screen.findByRole("heading", { name: "Control Room" });
+    await refreshMicrophoneOptions("USB Interface");
+    await user.selectOptions(screen.getByLabelText("Microphone source"), "usb");
+    expect(getMockMediaDevices().getUserMedia).not.toHaveBeenCalled();
+    expect(JSON.parse(window.localStorage.getItem("tuneforge.ui-preferences") ?? "{}").defaultTunerInputDeviceId).toBe("cpal:1:native");
+    await user.click(screen.getByRole("link", { name: "Tools" }));
+    await screen.findByRole("heading", { name: "Tools" });
+    expect(screen.getByLabelText("Microphone source")).toHaveValue("usb");
+    getMockMediaDevices().getUserMedia.mockResolvedValueOnce(makeEndingMediaStream("usb").stream);
+    await user.click(screen.getByRole("button", { name: "Start" }));
+    await screen.findByText("Listening");
+    expect(getMockMediaDevices().getUserMedia).toHaveBeenLastCalledWith(expect.objectContaining({ audio: expect.objectContaining({ deviceId: { exact: "usb" } }) }));
+    await user.click(screen.getByRole("link", { name: "Settings" }));
+    await screen.findByRole("heading", { name: "Control Room" });
+    await user.click(screen.getByRole("button", { name: "Reset Tuner Defaults" }));
+    expect(screen.getByLabelText("Microphone source")).toHaveValue("");
+    expect(window.localStorage.getItem("tuneforge.browser-tuner-input-device")).toBe("null");
+    expect(JSON.parse(window.localStorage.getItem("tuneforge.ui-preferences") ?? "{}").defaultTunerInputDeviceId).toBe("cpal:1:native");
+    await user.selectOptions(screen.getByLabelText("Microphone source"), "usb");
+    await user.click(screen.getByRole("button", { name: "Reset All Settings" }));
+    expect(screen.getByLabelText("Microphone source")).toHaveValue("");
+    expect(JSON.parse(window.localStorage.getItem("tuneforge.ui-preferences") ?? "{}").defaultTunerInputDeviceId).toBe("cpal:1:native");
+  });
+
+  it("selects browser microphones in a forced-Web macOS runtime", async () => {
+    const user = userEvent.setup();
+    mockTauriRuntime();
+    vi.stubEnv("VITE_TUNEFORGE_FORCE_WEB_AUDIO", "true");
+    getMockMediaDevices().revealLabels();
+    getMockMediaDevices().getUserMedia.mockResolvedValueOnce(makeEndingMediaStream("usb").stream);
+    renderApp(["/tools"]);
+    await screen.findByRole("heading", { name: "Tools" });
+    await refreshMicrophoneOptions("USB Interface");
+    await user.selectOptions(screen.getByLabelText("Microphone source"), "usb");
+    await user.click(screen.getByRole("button", { name: "Start" }));
+    await screen.findByText("Listening");
+    expect(screen.getByLabelText("Microphone source")).toHaveValue("usb");
+    expect(getMockInvoke()).not.toHaveBeenCalledWith("audio_start_input", expect.anything());
+  });
+
+  it("switches a listening browser source immediately and preserves explicit System Default", async () => {
+    const user = userEvent.setup();
+    const first = makeEndingMediaStream("usb");
+    const next = makeEndingMediaStream();
+    getMockMediaDevices().revealLabels();
+    getMockMediaDevices().getUserMedia.mockResolvedValueOnce(first.stream).mockResolvedValueOnce(next.stream);
+    renderApp(["/tools"]);
+    await screen.findByRole("heading", { name: "Tools" });
+    await refreshMicrophoneOptions("USB Interface");
+    await user.selectOptions(screen.getByLabelText("Microphone source"), "usb");
+    await user.click(screen.getByRole("button", { name: "Start" }));
+    await screen.findByText("Listening");
+    await user.selectOptions(screen.getByLabelText("Microphone source"), "");
+    await screen.findByText("Listening");
+    expect(first.track.stop).toHaveBeenCalledTimes(1);
+    expect(getMockAudioContexts()[0]?.close).toHaveBeenCalledTimes(1);
+    expect(getMockMediaDevices().getUserMedia).toHaveBeenLastCalledWith({ audio: { autoGainControl: false, echoCancellation: false, noiseSuppression: false }, video: false });
+    act(() => first.end());
+    expect(next.track.stop).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Stop" }));
+    expect(next.track.stop).toHaveBeenCalledTimes(1);
+  });
+
+  it("changes a pending source and releases a late grant without touching the newer capture", async () => {
+    const user = userEvent.setup();
+    const stale = makeEndingMediaStream();
+    const current = makeEndingMediaStream("usb");
+    let grant!: (stream: MediaStream) => void;
+    const pending = new Promise<MediaStream>((resolve) => { grant = resolve; });
+    getMockMediaDevices().revealLabels();
+    getMockMediaDevices().getUserMedia.mockReturnValueOnce(pending).mockResolvedValueOnce(current.stream);
+    renderApp(["/tools"]);
+    await screen.findByRole("heading", { name: "Tools" });
+    await refreshMicrophoneOptions("USB Interface");
+    await user.click(screen.getByRole("button", { name: "Start" }));
+    await screen.findByText("Starting microphone");
+    await user.selectOptions(screen.getByLabelText("Microphone source"), "usb");
+    await screen.findByText("Listening");
+    await act(async () => { grant(stale.stream); await pending; });
+    expect(stale.track.stop).toHaveBeenCalledTimes(1);
+    expect(current.track.stop).not.toHaveBeenCalled();
+    expect(screen.getByText("Listening")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Stop" }));
+    expect(current.track.stop).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["stop", "unmount"])("releases a late microphone grant after %s", async (action) => {
+    const user = userEvent.setup();
+    const capture = makeEndingMediaStream();
+    let grant!: (stream: MediaStream) => void;
+    const pending = new Promise<MediaStream>((resolve) => { grant = resolve; });
+    getMockMediaDevices().getUserMedia.mockReturnValueOnce(pending);
+    const view = renderApp(["/tools"]);
+    await user.click(await screen.findByRole("button", { name: "Start" }));
+    await waitFor(() => expect(getMockMediaDevices().getUserMedia).toHaveBeenCalledTimes(1));
+    if (action === "stop") await user.click(screen.getByRole("button", { name: "Stop" }));
+    else view.unmount();
+    await act(async () => { grant(capture.stream); await pending; });
+    expect(capture.track.stop).toHaveBeenCalledTimes(1);
+    expect(getMockAudioContexts()).toHaveLength(0);
+    expect(screen.queryByText("Listening")).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ["activation", "stop"], ["enumeration", "stop"],
+    ["activation", "unmount"], ["enumeration", "unmount"],
+  ])("cannot enter Listening after %s is invalidated by %s", async (phase, action) => {
+    const user = userEvent.setup();
+    const capture = makeEndingMediaStream();
+    getMockMediaDevices().getUserMedia.mockResolvedValueOnce(capture.stream);
+    let complete!: () => void;
+    const pending = new Promise<void>((resolve) => { complete = resolve; });
+    if (phase === "activation") {
+      setMockAudioContextInitialState("suspended");
+      const OriginalContext = window.AudioContext;
+      window.AudioContext = class extends OriginalContext {
+        resume = vi.fn(() => pending);
+      };
+    } else getMockMediaDevices().enumerateDevices.mockImplementation(async () => { await pending; return []; });
+    const view = renderApp(["/tools"]);
+    await user.click(await screen.findByRole("button", { name: "Start" }));
+    await waitFor(() => expect(getMockAudioContexts()).toHaveLength(1));
+    if (phase === "enumeration") await waitFor(() => expect(getMockMediaDevices().enumerateDevices).toHaveBeenCalled());
+    if (action === "stop") await user.click(screen.getByRole("button", { name: "Stop" }));
+    else view.unmount();
+    await act(async () => { complete(); await pending; });
+    expect(capture.track.stop).toHaveBeenCalledTimes(1);
+    expect(getMockAudioContexts()[0]?.close).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText("Listening")).not.toBeInTheDocument();
+    expect(window.localStorage.getItem("tuneforge.tuner-input-capture-backend")).toBeNull();
+    expect(window.localStorage.getItem("tuneforge.browser-tuner-microphone-devices")).toBeNull();
+  });
+
+  it.each(["constructor", "source"])("releases all granted microphone capture after AudioContext %s failure", async (phase) => {
+    const user = userEvent.setup();
+    const first = makeEndingMediaStream();
+    const second = makeEndingMediaStream();
+    vi.mocked(first.stream.getTracks).mockReturnValue([first.track, second.track]);
+    getMockMediaDevices().getUserMedia.mockResolvedValueOnce(first.stream);
+    const OriginalContext = window.AudioContext;
+    if (phase === "constructor") window.AudioContext = class { constructor() { throw new Error("Audio context failed."); } } as unknown as typeof AudioContext;
+    else window.AudioContext = class extends OriginalContext {
+      createMediaStreamSource = vi.fn(() => { throw new Error("Audio source failed."); });
+    };
+    renderApp(["/tools"]);
+    await user.click(await screen.findByRole("button", { name: "Start" }));
+    await screen.findByRole("alert");
+    expect(first.track.stop).toHaveBeenCalledTimes(1);
+    expect(second.track.stop).toHaveBeenCalledTimes(1);
+    if (phase === "source") expect(getMockAudioContexts()[0]?.close).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["missing", "ignored", "unsupported"])("fails an explicit %s browser microphone without fallback", async (failure) => {
+    const user = userEvent.setup();
+    window.localStorage.setItem("tuneforge.browser-tuner-input-device", JSON.stringify("usb"));
+    if (failure === "unsupported") Object.defineProperty(navigator.mediaDevices, "getSupportedConstraints", { configurable: true, value: () => ({}) });
+    const capture = makeEndingMediaStream("built-in");
+    if (failure === "missing") getMockMediaDevices().getUserMedia.mockRejectedValueOnce(new DOMException("Missing", "OverconstrainedError"));
+    else if (failure === "ignored") getMockMediaDevices().getUserMedia.mockResolvedValueOnce(capture.stream);
+    renderApp(["/tools"]);
+    await user.click(await screen.findByRole("button", { name: "Start" }));
+    await screen.findByRole("alert");
+    expect(screen.getByRole("button", { name: "Retry" })).toBeEnabled();
+    expect(getMockMediaDevices().getUserMedia).toHaveBeenCalledTimes(failure === "unsupported" ? 0 : 1);
+    if (failure === "ignored") expect(capture.track.stop).toHaveBeenCalledTimes(1);
+    expect(window.localStorage.getItem("tuneforge.browser-tuner-input-device")).toBe(JSON.stringify("usb"));
+    expect(window.localStorage.getItem("tuneforge.tuner-input-capture-backend")).toBeNull();
+  });
+
+  it("saves browser selection after a permission failure until explicit Retry", async () => {
+    const user = userEvent.setup();
+    getMockMediaDevices().revealLabels();
+    getMockMediaDevices().getUserMedia.mockRejectedValueOnce(new DOMException("Denied", "NotAllowedError"));
+    renderApp(["/tools"]);
+    await screen.findByRole("heading", { name: "Tools" });
+    await refreshMicrophoneOptions("USB Interface");
+    await user.click(screen.getByRole("button", { name: "Start" }));
+    await screen.findByRole("alert");
+    await user.selectOptions(screen.getByLabelText("Microphone source"), "usb");
+    expect(getMockMediaDevices().getUserMedia).toHaveBeenCalledTimes(1);
+    getMockMediaDevices().getUserMedia.mockResolvedValueOnce(makeEndingMediaStream("usb").stream);
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await screen.findByText("Listening");
+    expect(getMockMediaDevices().getUserMedia).toHaveBeenLastCalledWith(expect.objectContaining({ audio: expect.objectContaining({ deviceId: { exact: "usb" } }) }));
+  });
+
+  it("marks saved browser names remembered before access, unavailable only after confirmed inventory", async () => {
+    window.localStorage.setItem("tuneforge.browser-tuner-input-device", JSON.stringify("missing"));
+    window.localStorage.setItem("tuneforge.browser-tuner-microphone-devices", JSON.stringify([{ deviceId: "missing", label: "USB Interface" }]));
+    renderApp(["/tools"]);
+    await screen.findByRole("heading", { name: "Tools" });
+    expect(screen.getByRole("option", { name: "USB Interface (remembered)" })).toBeInTheDocument();
+    fireEvent.pointerDown(screen.getByLabelText("Microphone source"));
+    await waitFor(() => expect(getMockMediaDevices().enumerateDevices).toHaveBeenCalled());
+    expect(screen.queryByRole("option", { name: /unavailable/ })).not.toBeInTheDocument();
+    getMockMediaDevices().revealLabels();
+    getMockMediaDevices().setDevices([{ deviceId: "built-in", label: "Built-in Microphone", kind: "audioinput" } as MediaDeviceInfo]);
+    await refreshMicrophoneOptions("Built-in Microphone");
+    expect(screen.getByRole("option", { name: "USB Interface (unavailable)" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Microphone source")).toHaveValue("missing");
+    expect(getMockMediaDevices().getUserMedia).not.toHaveBeenCalled();
+  });
+
+  it.each(["/tools", "/settings"])("offers explicit default recovery for an unsupported saved browser source in %s", async (route) => {
+    const user = userEvent.setup();
+    window.localStorage.setItem("tuneforge.browser-tuner-input-device", JSON.stringify("usb"));
+    window.localStorage.setItem("tuneforge.browser-tuner-microphone-devices", JSON.stringify([{ deviceId: "usb", label: "USB Interface" }]));
+    Object.defineProperty(navigator.mediaDevices, "getSupportedConstraints", { configurable: true, value: () => ({}) });
+    renderApp([route]);
+    const source = await screen.findByLabelText("Microphone source");
+    expect(source).toHaveValue("usb");
+    expect(screen.getByRole("option", { name: "USB Interface (unsupported)" })).toBeInTheDocument();
+    expect(screen.getByText("Selecting a microphone is unsupported in this browser. Choose System Default to use browser routing.")).toBeInTheDocument();
+    expect(getMockMediaDevices().getUserMedia).not.toHaveBeenCalled();
+    await user.selectOptions(source, "");
+    expect(window.localStorage.getItem("tuneforge.browser-tuner-input-device")).toBe("null");
+    if (route === "/settings") await user.click(screen.getByRole("link", { name: "Tools" }));
+    await user.click(await screen.findByRole("button", { name: "Start" }));
+    await screen.findByText("Listening");
+    expect(getMockMediaDevices().getUserMedia).toHaveBeenLastCalledWith({ audio: { autoGainControl: false, echoCancellation: false, noiseSuppression: false }, video: false });
+  });
+
+  it.each(["listening", "starting"])("preserves the current browser source during external preference changes while %s", async (phase) => {
+    const user = userEvent.setup();
+    const capture = makeEndingMediaStream("usb");
+    window.localStorage.setItem("tuneforge.browser-tuner-input-device", JSON.stringify("usb"));
+    window.localStorage.setItem("tuneforge.browser-tuner-microphone-devices", JSON.stringify([{ deviceId: "usb", label: "USB Interface" }]));
+    let grant!: (stream: MediaStream) => void;
+    const pending = new Promise<MediaStream>((resolve) => { grant = resolve; });
+    if (phase === "starting") getMockMediaDevices().getUserMedia.mockReturnValueOnce(pending);
+    else getMockMediaDevices().getUserMedia.mockResolvedValueOnce(capture.stream);
+    renderApp(["/tools"]);
+    await user.click(await screen.findByRole("button", { name: "Start" }));
+    await screen.findByText(phase === "starting" ? "Starting microphone" : "Listening");
+    act(() => {
+      window.localStorage.setItem("tuneforge.browser-tuner-input-device", JSON.stringify("built-in"));
+      window.dispatchEvent(new StorageEvent("storage", { key: "tuneforge.browser-tuner-input-device", newValue: JSON.stringify("built-in") }));
+    });
+    await user.selectOptions(screen.getByLabelText("Tuner visual mode"), "simple");
+    expect(screen.getByLabelText("Microphone source")).toHaveValue("usb");
+    expect(getMockMediaDevices().getUserMedia).toHaveBeenCalledTimes(1);
+    expect(capture.track.stop).not.toHaveBeenCalled();
+    if (phase === "starting") await act(async () => { grant(capture.stream); await pending; });
+    await screen.findByText("Listening");
+    expect(screen.getByLabelText("Microphone source")).toHaveValue("usb");
+    await user.click(screen.getByRole("button", { name: "Stop" }));
+    expect(capture.track.stop).toHaveBeenCalledTimes(1);
+    await user.click(screen.getByRole("link", { name: "Settings" }));
+    expect(await screen.findByLabelText("Microphone source")).toHaveValue("built-in");
+  });
+
+  it("keeps remembered source names after a previously confirmed browser inventory fails", async () => {
+    window.localStorage.setItem("tuneforge.browser-tuner-input-device", JSON.stringify("usb"));
+    getMockMediaDevices().revealLabels();
+    renderApp(["/tools"]);
+    await screen.findByRole("heading", { name: "Tools" });
+    await refreshMicrophoneOptions("USB Interface");
+    expect(screen.getByLabelText("Microphone source")).toHaveValue("usb");
+    getMockMediaDevices().enumerateDevices.mockRejectedValue(new Error("Device enumeration failed."));
+    fireEvent.pointerDown(screen.getByLabelText("Microphone source"));
+    await screen.findByText("Microphone list unavailable. Reopen the microphone list to retry.");
+    expect(screen.getByRole("option", { name: "USB Interface (remembered)" })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: /unavailable/ })).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Microphone source")).toHaveValue("usb");
+    expect(getMockMediaDevices().getUserMedia).not.toHaveBeenCalled();
   });
 
   it("uses cached device labels before start without opening capture", async () => {
@@ -1111,7 +1406,7 @@ describe("Desktop app tools tuner", () => {
     renderApp(["/tools"]);
 
     expect(await screen.findByRole("heading", { name: "Tools" })).toBeInTheDocument();
-    expect(await screen.findByRole("option", { name: "USB Interface" })).toBeEnabled();
+    expect(await screen.findByRole("option", { name: "USB Interface (remembered)" })).toBeEnabled();
     expect(getMockMediaDevices().getUserMedia).not.toHaveBeenCalled();
   });
 
@@ -1133,7 +1428,7 @@ describe("Desktop app tools tuner", () => {
     await user.click(screen.getByRole("button", { name: "Start" }));
 
     await waitFor(() => expect(screen.getByRole("button", { name: "Stop" })).toBeInTheDocument());
-    expect(window.localStorage.getItem("tuneforge.tuner-microphone-devices")).toContain("USB Interface");
+    expect(window.localStorage.getItem("tuneforge.browser-tuner-microphone-devices")).toContain("USB Interface");
   });
 
   it("shows microphone permission failures as recoverable state", async () => {

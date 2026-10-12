@@ -12,6 +12,8 @@ import {
 import {
   forgetTunerMicrophoneAccessGranted,
   readRememberedTunerMicrophoneDevices,
+  readRememberedBrowserTunerMicrophoneDevices,
+  rememberBrowserTunerMicrophoneDevices,
   rememberTunerMicrophoneDevices,
   toVisibleTunerMicrophoneDevices,
   type TunerMicrophoneDevice,
@@ -52,9 +54,10 @@ export function TunerPreferenceControls({
   visualModeAriaLabel = "Default tuner",
   visualModeLabel = "Default tuner",
 }: TunerPreferenceControlsProps) {
-  const [devices, setDevices] = useState<TunerMicrophoneDevice[]>(() =>
+  const [devices, setDevices] = useState<Array<TunerMicrophoneDevice & { remembered?: boolean }>>(() =>
     systemDefaultOnly ? [] : readRememberedDevicesForMode(nativeCaptureDisabled),
   );
+  const [browserInventoryConfirmed, setBrowserInventoryConfirmed] = useState(false);
   const [deviceError, setDeviceError] = useState<string | null>(null);
   const [nativeInventoryEmpty, setNativeInventoryEmpty] = useState(false);
   const [isReferenceFocused, setIsReferenceFocused] = useState(false);
@@ -86,6 +89,7 @@ export function TunerPreferenceControls({
     refreshPromiseRef.current = null;
     refreshRequestIdRef.current += 1;
     setDevices(readRememberedDevicesForMode(nativeCaptureDisabled));
+    setBrowserInventoryConfirmed(false);
     setDeviceError(null);
     setNativeInventoryEmpty(false);
   }, [nativeCaptureDisabled]);
@@ -129,13 +133,18 @@ export function TunerPreferenceControls({
           if (!isMountedRef.current || refreshRequestIdRef.current !== requestId) {
             return;
           }
+          const permission = nativeCaptureDisabled ? await getMicrophonePermissionState() : null;
+          if (!isMountedRef.current || refreshRequestIdRef.current !== requestId) return;
           setDevices(availableDevices);
+          setBrowserInventoryConfirmed(nativeCaptureDisabled &&
+            (availableDevices.some((device) => !device.remembered) || permission === "granted"));
           setDeviceError(null);
           setNativeInventoryEmpty(!nativeCaptureDisabled && availableDevices.length === 0);
         } catch (error) {
           if (isMountedRef.current && refreshRequestIdRef.current === requestId) {
             if (nativeCaptureDisabled) {
-              setDevices([]);
+              setDevices(readRememberedDevicesForMode(true));
+              setBrowserInventoryConfirmed(false);
             }
             setNativeInventoryEmpty(false);
             setDeviceError(
@@ -190,16 +199,17 @@ export function TunerPreferenceControls({
     };
   }, [canEnumerateDevices, refreshDevices]);
 
+  const unsupportedBrowserSelection = systemDefaultOnly && nativeCaptureDisabled && Boolean(inputDeviceId);
   const selectedDeviceMissing = useMemo(
     () =>
       Boolean(
-        !systemDefaultOnly &&
-          inputDeviceId &&
-          !devices.some((device) => device.deviceId === inputDeviceId),
+        inputDeviceId &&
+          (unsupportedBrowserSelection || (!systemDefaultOnly &&
+            !devices.some((device) => device.deviceId === inputDeviceId))),
       ),
-    [devices, inputDeviceId, systemDefaultOnly],
+    [devices, inputDeviceId, systemDefaultOnly, unsupportedBrowserSelection],
   );
-  const selectedInputDeviceId = systemDefaultOnly ? "" : inputDeviceId ?? "";
+  const selectedInputDeviceId = systemDefaultOnly && !unsupportedBrowserSelection ? "" : inputDeviceId ?? "";
 
   function commitReferenceDraft() {
     const normalizedReferenceHz = normalizeTunerReferenceHz(referenceDraft);
@@ -244,14 +254,18 @@ export function TunerPreferenceControls({
           value={selectedInputDeviceId}
         >
           <option value="">System Default</option>
-          {selectedDeviceMissing ? <option value={inputDeviceId ?? ""}>Saved microphone</option> : null}
-          {devices.map((device) => (
+          {selectedDeviceMissing ? <option value={inputDeviceId ?? ""}>
+            {nativeCaptureDisabled
+              ? `${readRememberedBrowserTunerMicrophoneDevices().find((device) => device.deviceId === inputDeviceId)?.label ?? "Saved microphone"} (${unsupportedBrowserSelection ? "unsupported" : browserInventoryConfirmed ? "unavailable" : "remembered"})`
+              : "Saved microphone"}
+          </option> : null}
+          {devices.filter((device) => !unsupportedBrowserSelection || device.deviceId !== inputDeviceId).map((device) => (
             <option
               disabled={systemDefaultOnly}
               key={device.deviceId || device.label}
               value={device.deviceId}
             >
-              {device.label}
+              {device.label}{nativeCaptureDisabled && device.remembered ? " (remembered)" : ""}
             </option>
           ))}
         </select>
@@ -298,7 +312,10 @@ export function TunerPreferenceControls({
 
       {children}
 
-      {deviceError ? <p className="tuner-preferences__status">{deviceError}</p> : null}
+      {unsupportedBrowserSelection ? (
+        <p className="tuner-preferences__status">Selecting a microphone is unsupported in this browser. Choose System Default to use browser routing.</p>
+      ) : null}
+      {deviceError ? <p className="tuner-preferences__status">{deviceError}{nativeCaptureDisabled ? " Reopen the microphone list to retry." : ""}</p> : null}
       {nativeInventoryEmpty && !deviceError ? (
         <p className="tuner-preferences__status">No usable microphone was found. Connect a microphone, then reopen this list to retry.</p>
       ) : null}
@@ -313,7 +330,7 @@ function canUseMediaDeviceEnumeration() {
 function readRememberedDevicesForMode(nativeCaptureDisabled: boolean) {
   const remembered = readRememberedTunerMicrophoneDevices();
   return nativeCaptureDisabled
-    ? remembered
+    ? readRememberedBrowserTunerMicrophoneDevices().map((device) => ({ ...device, remembered: true }))
     : remembered.filter((device) =>
         device.deviceId.startsWith("cpal:") || device.deviceId.startsWith("pipewire:"),
       );
@@ -329,7 +346,7 @@ async function enumerateTunerInputDevices({
     if (nativeDevices.length > 0) {
       rememberTunerMicrophoneDevices(nativeDevices);
     }
-    return nativeDevices;
+    return nativeDevices.map((device) => ({ ...device, remembered: false }));
   }
   return enumerateAudioInputDevices();
 }
@@ -352,23 +369,22 @@ async function enumerateNativeAudioInputDevices() {
 }
 
 async function enumerateAudioInputDevices() {
-  if (!canUseMediaDeviceEnumeration()) {
-    return readRememberedTunerMicrophoneDevices();
-  }
-
+  const remembered = () => readRememberedBrowserTunerMicrophoneDevices()
+    .map((device) => ({ ...device, remembered: true }));
+  if (!canUseMediaDeviceEnumeration()) return remembered();
   const devices = await navigator.mediaDevices.enumerateDevices();
-  const visibleDevices = toVisibleTunerMicrophoneDevices(devices);
+  const visibleDevices = toVisibleTunerMicrophoneDevices(devices)
+    .filter((device) => !device.deviceId.startsWith("cpal:") && !device.deviceId.startsWith("pipewire:"));
   if (visibleDevices.length > 0) {
-    rememberTunerMicrophoneDevices(visibleDevices);
-    return visibleDevices;
+    rememberBrowserTunerMicrophoneDevices(visibleDevices);
+    return visibleDevices.map((device) => ({ ...device, remembered: false }));
   }
-
-  if ((await getMicrophonePermissionState()) === "denied") {
+  const permission = await getMicrophonePermissionState();
+  if (permission === "denied") {
     forgetTunerMicrophoneAccessGranted();
     return [];
   }
-
-  return readRememberedTunerMicrophoneDevices();
+  return permission === "granted" ? [] : remembered();
 }
 
 async function getMicrophonePermissionState() {

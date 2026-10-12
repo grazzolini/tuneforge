@@ -18,6 +18,9 @@ download, installation, verification, signature, and publication instructions.
 
 ### Fixed
 
+- Restore selected browser microphones in Tools and Settings, including forced-Web builds.
+  Source changes release previous capture; unavailable or disconnected inputs fail without fallback.
+
 - Sync analysis, chords and lyrics as canonical result revisions on desktop and Android.
   Reanalysis no longer conflicts over a legacy JSON artifact or prevents new stems from importing.
   Existing result files remain local; upgrades preserve recorded result times and provenance.

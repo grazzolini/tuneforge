@@ -11,7 +11,8 @@ import {
   setMockAudioContextInitialState,
   setMockNativeAudioState,
 } from "../../test/appTestHarness";
-import { act, cleanup, render, waitFor } from "@testing-library/react";
+import { api } from "../../lib/api";
+import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PlaybackProvider } from "./playback";
 import {
@@ -25,7 +26,7 @@ import {
   useMetronome,
   type MetronomeContextValue,
 } from "../tools/metronome-context";
-import { AudioOutputContext } from "../../lib/audioOutputContext";
+import { AudioOutputContext, useAudioOutput } from "../../lib/audioOutputContext";
 import { markBrowserOutputDisconnected, setBrowserOutputRouting } from "../../lib/audioOutput";
 import { readPlaybackLiveDiagnostics } from "../../lib/playbackDiagnostics";
 import { DEFAULT_PROJECT_OUTPUT_ROUTING } from "../../lib/outputRouting";
@@ -146,10 +147,12 @@ function activePlaybackContextValue(
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((nextResolve) => {
+  let reject!: (error: Error) => void;
+  const promise = new Promise<T>((nextResolve, nextReject) => {
     resolve = nextResolve;
+    reject = nextReject;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
 async function flush() {
@@ -1465,6 +1468,410 @@ describe("native playback race regressions", () => {
 });
 
 describe("buffered Web playback race regressions", () => {
+  it("retries a re-enabled count-in after a disabled preparation start fails", async () => {
+    vi.useFakeTimers();
+    const target = session({ precountEnabled: true, tempoTargetBpm: 90 });
+    await setup(target);
+    const mediaPlay = vi.spyOn(HTMLMediaElement.prototype, "play")
+      .mockRejectedValueOnce(new Error("Synthetic disabled count-in start failure"));
+    let play!: Promise<void>;
+    act(() => { play = playback.playPlayback(); });
+    await flush();
+    act(() => playback.registerProjectSession({ ...target, precountEnabled: false }));
+    await act(async () => { readyMedia(document.querySelector("audio[src]") as HTMLAudioElement); await play; });
+    expect(mediaPlay).toHaveBeenCalledTimes(1);
+    expect(playback.isPlaying).toBe(false);
+    act(() => playback.registerProjectSession(target));
+    act(() => { play = playback.playPlayback(); });
+    await flush();
+    await act(async () => play);
+    expect(playback.isPrecounting).toBe(true);
+    expect(getMockAudioContexts().flatMap((context) => context.createdOscillators)).toHaveLength(4);
+    await act(async () => vi.advanceTimersByTimeAsync(2_035));
+    expect(playback.isPlaying).toBe(true);
+  });
+
+  it("releases a pending media count-in without leaving a phantom Play owner", async () => {
+    vi.useFakeTimers();
+    await setup(bufferedSession({ precountEnabled: true, tempoTargetBpm: 90 }));
+    let play!: Promise<void>;
+    let settled = false;
+    act(() => { play = playback.playPlayback().then(() => { settled = true; }); });
+    await flush();
+    const element = document.querySelector("audio[src]") as HTMLAudioElement;
+    expect(element.preload).toBe("auto");
+    await act(async () => playback.releasePlaybackHandles());
+    await flush();
+    expect(element.preload).toBe("metadata");
+    expect(settled).toBe(true);
+    await act(async () => { readyMedia(element); await play; });
+    await act(async () => playback.playPlayback());
+    expect(playback.isPlaying).toBe(true);
+    expect(getMockAudioContexts().flatMap((context) => context.createdOscillators)).toHaveLength(0);
+  });
+
+  for (const latestCount of [0, 8]) {
+    it("uses latest song count-in controls during buffer preparation: " + latestCount, async () => {
+      vi.useFakeTimers();
+      const target = session({ precountEnabled: true });
+      const response = deferred<Response>();
+      getMockFetch().mockImplementationOnce(() => response.promise);
+      await setup(target);
+      let play!: Promise<void>;
+      act(() => { play = playback.playPlayback(); });
+      await flush();
+      act(() => playback.registerProjectSession({ ...target,
+        precountEnabled: latestCount !== 0, precountClickCount: latestCount || 4 }));
+      await act(async () => {
+        response.resolve(new Response(new ArrayBuffer(8), { status: 200 }));
+        await play;
+      });
+      expect(getMockAudioContexts().flatMap((context) => context.createdOscillators)).toHaveLength(latestCount);
+      expect(playback.isPrecounting).toBe(latestCount !== 0);
+      if (latestCount === 0) expect(playback.isPlaying).toBe(true);
+      else {
+        await act(async () => vi.advanceTimersByTimeAsync(2_035));
+        expect(playback.isPlaying).toBe(false);
+        await act(async () => vi.advanceTimersByTimeAsync(2_000));
+        expect(playback.isPlaying).toBe(true);
+      }
+    });
+  }
+
+  async function pendingAdjustedLoopWrap() {
+    const target = session({ precountLoopEnabled: true, tempoTargetBpm: 90,
+      loopRange: { startSeconds: 3, endSeconds: 9 } });
+    await setup(target);
+    let play!: Promise<void>;
+    act(() => { play = playback.playPlayback(); });
+    await flush();
+    const element = document.querySelector("audio[src]") as HTMLAudioElement;
+    await act(async () => { readyMedia(element); await play; });
+    await act(async () => vi.advanceTimersByTimeAsync(2_035));
+    expect(playback.isPlaying).toBe(true);
+    Object.defineProperty(element, "readyState", { configurable: true, value: HTMLMediaElement.HAVE_METADATA });
+    act(() => { element.currentTime = 9; fireEvent.timeUpdate(element); });
+    await flush();
+    expect(playback.isPlaying).toBe(false);
+    expect(playback.isPrecounting).toBe(false);
+    expect(element.preload).toBe("auto");
+    return { target, element };
+  }
+
+  it("continues playback when the loop is cleared during adjusted-tempo wrap preparation", async () => {
+    vi.useFakeTimers();
+    const { element } = await pendingAdjustedLoopWrap();
+    act(() => playback.updateActiveLoopRange?.(null));
+    await act(async () => { readyMedia(element); });
+    await flush();
+    expect(playback.session?.loopRange).toBeNull();
+    expect(playback.isPlaying).toBe(true);
+    expect(playback.isPrecounting).toBe(false);
+    expect(getMockAudioContexts().flatMap((context) => context.createdOscillators)).toHaveLength(4);
+  });
+
+  it("uses a disabled loop count-in when controls change during wrap preparation", async () => {
+    vi.useFakeTimers();
+    const { target, element } = await pendingAdjustedLoopWrap();
+    act(() => playback.registerProjectSession({ ...target, precountLoopEnabled: false }));
+    await act(async () => { readyMedia(element); });
+    await flush();
+    expect(getMockAudioContexts().flatMap((context) => context.createdOscillators)).toHaveLength(4);
+    expect(playback.isPlaying).toBe(true);
+    expect(playback.isPrecounting).toBe(false);
+  });
+
+  it("retries a rejected adjusted-tempo song start with a fresh count-in", async () => {
+    vi.useFakeTimers();
+    await setup(session({ precountEnabled: true, tempoTargetBpm: 90 }));
+    const mediaPlay = vi.spyOn(HTMLMediaElement.prototype, "play")
+      .mockRejectedValueOnce(new Error("Synthetic media start failure"));
+    let play!: Promise<void>;
+    act(() => { play = playback.playPlayback(); });
+    await flush();
+    await act(async () => { readyMedia(document.querySelector("audio[src]") as HTMLAudioElement); await play; });
+    await act(async () => vi.advanceTimersByTimeAsync(2_035));
+    await flush();
+    expect(mediaPlay).toHaveBeenCalledTimes(1);
+    expect(readPlaybackLiveDiagnostics().currentState).toBe("error");
+    expect(playback.isPlaying).toBe(false);
+    act(() => { play = playback.playPlayback(); });
+    await flush();
+    await act(async () => play);
+    expect(playback.isPrecounting).toBe(true);
+    expect(readPlaybackLiveDiagnostics().statusMessage).toBe("Starting playback…");
+    expect(getMockAudioContexts().flatMap((context) => context.createdOscillators)).toHaveLength(8);
+    await act(async () => vi.advanceTimersByTimeAsync(2_035));
+    expect(playback.isPlaying).toBe(true);
+  });
+
+  it("closes an owned cue context when count-in resume fails before scheduling", async () => {
+    const originalContext = Object.getOwnPropertyDescriptor(window, "AudioContext")!;
+    const Context = window.AudioContext;
+    class FailingCueContext extends Context {
+      constructor() {
+        super();
+        this.resume = vi.fn(async () => { throw new Error("Synthetic cue resume failure"); });
+      }
+    }
+    Object.defineProperty(window, "AudioContext", { value: FailingCueContext });
+    const originalFetch = globalThis.fetch;
+    Reflect.set(globalThis, "fetch", undefined);
+    setMockAudioContextInitialState("suspended");
+    try {
+      await setup(session({ precountEnabled: true, tempoTargetBpm: 90 }));
+      let play!: Promise<void>;
+      act(() => { play = playback.playPlayback(); });
+      await flush();
+      await act(async () => { readyMedia(document.querySelector("audio[src]") as HTMLAudioElement); await play; });
+      expect((getMockAudioContexts()[0] as unknown as AudioContext).close).toHaveBeenCalledTimes(1);
+      expect(readPlaybackLiveDiagnostics().currentState).toBe("error");
+      expect(playback.isPrecounting).toBe(false);
+      act(() => { play = playback.playPlayback(); });
+      await flush();
+      await act(async () => play);
+      expect(getMockAudioContexts()).toHaveLength(2);
+      expect((getMockAudioContexts()[1] as unknown as AudioContext).close).toHaveBeenCalledTimes(1);
+      expect(getMockAudioContexts().flatMap((context) => context.createdOscillators)).toHaveLength(0);
+    } finally {
+      Object.defineProperty(window, "AudioContext", originalContext);
+      Reflect.set(globalThis, "fetch", originalFetch);
+    }
+  });
+
+  it("discards an old decode rejection while a new project's count-in remains active", async () => {
+    vi.stubEnv("VITE_TUNEFORGE_FORCE_WEB_AUDIO", "1");
+    enableNativePlayback();
+    const decoded = deferred<AudioBuffer>();
+    await setup(bufferedSession({ precountEnabled: true }));
+    await act(async () => playback.primeWebAudioForGesture());
+    vi.spyOn(getMockAudioContexts()[0] as unknown as AudioContext, "decodeAudioData")
+      .mockImplementationOnce(() => decoded.promise);
+    let oldPlay!: Promise<void>;
+    act(() => { oldPlay = playback.playPlayback(); });
+    await flush();
+    act(() => playback.registerProjectSession(session({ projectId: "other", precountEnabled: true })));
+    await act(async () => playback.playPlayback());
+    expect(playback.isPrecounting).toBe(true);
+    await act(async () => { decoded.reject(new Error("Late synthetic decode failure")); await oldPlay; });
+    expect(playback.isPrecounting).toBe(true);
+    expect(playback.isPlaying).toBe(false);
+    expect(getMockAudioContexts().flatMap((context) => context.createdOscillators)).toHaveLength(4);
+  });
+
+  for (const action of ["play", "stop", "pause", "seek", "replace", "unmount"] as const) {
+    it("settles adjusted-tempo preparation promptly on " + action + " and ignores late readiness", async () => {
+      vi.useFakeTimers();
+      await setup(session({ precountEnabled: true, tempoTargetBpm: 90 }));
+      let play!: Promise<void>;
+      act(() => { play = playback.playPlayback(); });
+      await flush();
+      const element = document.querySelector("audio[src]") as HTMLAudioElement;
+      expect(readPlaybackLiveDiagnostics().statusMessage).toBe("Starting playback…");
+      await act(async () => {
+        if (action === "play") await playback.playPlayback();
+        else if (action === "stop") playback.stopPlayback();
+        else if (action === "pause") playback.pausePlayback();
+        else if (action === "seek") playback.seekTo(12);
+        else if (action === "replace") playback.registerProjectSession(session({ projectId: "other" }));
+        else cleanup();
+        await play;
+      });
+      await act(async () => { readyMedia(element); await vi.advanceTimersByTimeAsync(5_000); });
+      expect(getMockAudioContexts().flatMap((context) => context.createdOscillators)).toHaveLength(0);
+      if (action !== "unmount") {
+        expect(readPlaybackLiveDiagnostics().statusMessage).toBeNull();
+        expect(playback.isPrecounting).toBe(false);
+        expect(playback.isPlaying).toBe(false);
+      }
+    });
+  }
+
+  it("waits for output before cold count-in and keeps its owner through final readiness", async () => {
+    vi.useFakeTimers();
+    vi.stubEnv("VITE_TUNEFORGE_FORCE_WEB_AUDIO", "1");
+    enableNativePlayback();
+    const preflight = deferred<void>();
+    const finalOutput = deferred<void>();
+    const readiness = vi.fn().mockImplementationOnce(() => preflight.promise)
+      .mockImplementation(() => finalOutput.promise);
+    function OutputBarrierHarness() {
+      const output = useAudioOutput();
+      return <AudioOutputContext.Provider value={{ ...output, ensureAppOutputReady: readiness }}>
+        <PlaybackProvider><Harness /></PlaybackProvider>
+      </AudioOutputContext.Provider>;
+    }
+    render(<OutputBarrierHarness />);
+    act(() => playback.registerProjectSession(bufferedSession({ precountEnabled: true })));
+    let play!: Promise<void>;
+    act(() => { play = playback.playPlayback(); });
+    await flush();
+    expect(readiness).toHaveBeenCalledTimes(1);
+    expect(readPlaybackLiveDiagnostics().statusMessage).toBe("Starting playback…");
+    expect(getMockFetch()).not.toHaveBeenCalled();
+    expect(getMockAudioContexts().flatMap((context) => context.createdOscillators)).toHaveLength(0);
+    await act(async () => { preflight.resolve(); await play; });
+    expect(playback.isPrecounting).toBe(true);
+    await act(async () => vi.advanceTimersByTimeAsync(2_035));
+    expect(readiness).toHaveBeenCalledTimes(2);
+    expect(getMockAudioContexts().flatMap((context) => context.createdSources)).toHaveLength(0);
+    act(() => playback.stopPlayback());
+    await act(async () => { finalOutput.resolve(); await Promise.resolve(); });
+    await flush();
+    expect(playback.isPlaying).toBe(false);
+    expect(getMockAudioContexts().flatMap((context) => context.createdSources)).toHaveLength(0);
+  });
+
+  for (const action of ["play", "stop", "pause", "seek", "replace", "unmount"] as const) {
+    it("cancels cold forced-Web count-in on " + action + " before late fetch settles", async () => {
+      vi.stubEnv("VITE_TUNEFORGE_FORCE_WEB_AUDIO", "1");
+      enableNativePlayback();
+      const response = deferred<Response>();
+      getMockFetch().mockImplementationOnce(() => response.promise);
+      await setup(bufferedSession({ precountEnabled: true }));
+      let play!: Promise<void>;
+      act(() => { play = playback.playPlayback(); });
+      await flush();
+      await act(async () => {
+        if (action === "play") await playback.playPlayback();
+        else if (action === "stop") playback.stopPlayback();
+        else if (action === "pause") playback.pausePlayback();
+        else if (action === "seek") playback.seekTo(12);
+        else if (action === "replace") playback.registerProjectSession(session({ projectId: "other" }));
+        else cleanup();
+      });
+      await act(async () => {
+        response.resolve(new Response(new ArrayBuffer(8), { status: 200 }));
+        await play;
+      });
+      expect(getMockAudioContexts().flatMap((context) => context.createdOscillators)).toHaveLength(0);
+      expect(getMockAudioContexts().flatMap((context) => context.createdSources)).toHaveLength(0);
+      if (action !== "unmount") {
+        expect(playback.isPlaying).toBe(false);
+        expect(playback.isPrecounting).toBe(false);
+        expect(playback.playbackTimeSeconds).toBe(action === "seek" ? 12 : 0);
+      }
+    });
+  }
+
+  it("holds cold forced-Web clicks through transport, response body, and decode", async () => {
+    vi.stubEnv("VITE_TUNEFORGE_FORCE_WEB_AUDIO", "1");
+    enableNativePlayback();
+    const transport = deferred<void>();
+    vi.spyOn(api, "ensureWebMediaTransport").mockImplementationOnce(() => transport.promise);
+    const body = deferred<ArrayBuffer>();
+    getMockFetch().mockResolvedValueOnce({ ok: true, arrayBuffer: () => body.promise } as Response);
+    const decoded = deferred<AudioBuffer>();
+    await setup(bufferedSession({ precountEnabled: true }));
+    await act(async () => playback.primeWebAudioForGesture());
+    const decode = vi.spyOn(getMockAudioContexts()[0] as unknown as AudioContext, "decodeAudioData")
+      .mockImplementationOnce(() => decoded.promise);
+    let play!: Promise<void>;
+    act(() => { play = playback.playPlayback(); });
+    await flush();
+    expect(getMockFetch()).not.toHaveBeenCalled();
+    expect(getMockAudioContexts().flatMap((context) => context.createdOscillators)).toHaveLength(0);
+    transport.resolve();
+    await flush();
+    expect(getMockFetch()).toHaveBeenCalledTimes(1);
+    expect(decode).not.toHaveBeenCalled();
+    body.resolve(new ArrayBuffer(8));
+    await flush();
+    expect(decode).toHaveBeenCalledTimes(1);
+    expect(getMockAudioContexts().flatMap((context) => context.createdOscillators)).toHaveLength(0);
+    await act(async () => { decoded.resolve({ duration: 30 } as AudioBuffer); await play; });
+    expect(playback.isPrecounting).toBe(true);
+  });
+
+  it("fails buffer preparation safely and retries a fresh count-in", async () => {
+    vi.stubEnv("VITE_TUNEFORGE_FORCE_WEB_AUDIO", "1");
+    enableNativePlayback();
+    getMockFetch().mockRejectedValueOnce(new Error("Synthetic transport failure"));
+    await setup(bufferedSession({ precountEnabled: true }));
+    await act(async () => playback.playPlayback());
+    expect(readPlaybackLiveDiagnostics().currentState).toBe("error");
+    expect(playback.isPlaying).toBe(false);
+    expect(playback.isPrecounting).toBe(false);
+    expect(getMockAudioContexts().flatMap((context) => context.createdOscillators)).toHaveLength(0);
+    await act(async () => playback.playPlayback());
+    expect(playback.isPrecounting).toBe(true);
+    expect(getMockFetch()).toHaveBeenCalledTimes(2);
+  });
+
+  function readyMedia(element: HTMLAudioElement, readyState: number = HTMLMediaElement.HAVE_FUTURE_DATA) {
+    Object.defineProperty(element, "currentSrc", { configurable: true, value: element.src });
+    Object.defineProperty(element, "readyState", { configurable: true, value: readyState });
+    Object.defineProperty(element, "duration", { configurable: true, value: 30 });
+    fireEvent.loadedMetadata(element);
+    fireEvent.canPlay(element);
+    fireEvent.seeked(element);
+  }
+
+  it("waits for every adjusted-tempo lane, seek, and future data before clicks", async () => {
+    vi.useFakeTimers();
+    await setup({ ...drumSession("split"), precountEnabled: true,
+      precountLoopEnabled: true, loopRange: { startSeconds: 3, endSeconds: 9 },
+      tempoTargetBpm: 90, precountTempoBpm: 90 });
+    let play!: Promise<void>;
+    act(() => { play = playback.playPlayback(); });
+    await flush();
+    const elements = Array.from(document.querySelectorAll("audio[src]")) as HTMLAudioElement[];
+    expect(elements).toHaveLength(3);
+    expect(elements.every((element) => element.preload === "auto")).toBe(true);
+    act(() => elements.forEach((element) => readyMedia(element, HTMLMediaElement.HAVE_METADATA)));
+    await flush();
+    expect(playback.isPrecounting).toBe(false);
+    expect(elements.every((element) => element.playbackRate === 0.75 && element.currentTime === 3)).toBe(true);
+    act(() => elements.slice(0, 2).forEach((element) => readyMedia(element)));
+    await flush();
+    expect(playback.isPrecounting).toBe(false);
+    await act(async () => { readyMedia(elements[2]!); await play; });
+    expect(playback.isPrecounting).toBe(true);
+    expect(elements.every((element) => element.paused)).toBe(true);
+    await act(async () => vi.advanceTimersByTimeAsync(2_800));
+    expect(playback.isPlaying).toBe(true);
+    expect(elements.every((element) => element.preload === "metadata")).toBe(true);
+  });
+
+  it("times out adjusted-tempo preparation without clicks and allows retry", async () => {
+    vi.useFakeTimers();
+    await setup(session({ precountEnabled: true, tempoTargetBpm: 90 }));
+    let play!: Promise<void>;
+    act(() => { play = playback.playPlayback(); });
+    await flush();
+    await act(async () => { await vi.advanceTimersByTimeAsync(5_000); await play; });
+    expect(playback.isPrecounting).toBe(false);
+    expect(playback.isPlaying).toBe(false);
+    expect(getMockAudioContexts().flatMap((context) => context.createdOscillators)).toHaveLength(0);
+    act(() => { play = playback.playPlayback(); });
+    await flush();
+    const element = document.querySelector("audio[src]") as HTMLAudioElement;
+    await act(async () => { readyMedia(element); await play; });
+    expect(playback.isPrecounting).toBe(true);
+    await act(async () => vi.advanceTimersByTimeAsync(5_000));
+    expect(playback.isPlaying).toBe(true);
+  });
+
+  it("prepares cold forced-Web buffers before scheduling count-in", async () => {
+    vi.stubEnv("VITE_TUNEFORGE_FORCE_WEB_AUDIO", "1");
+    enableNativePlayback();
+    const response = deferred<Response>();
+    getMockFetch().mockImplementationOnce(() => response.promise);
+    await setup(bufferedSession({ precountEnabled: true }));
+    let play!: Promise<void>;
+    act(() => { play = playback.playPlayback(); });
+    await flush();
+    expect(getMockFetch()).toHaveBeenCalledTimes(1);
+    expect(getMockAudioContexts().flatMap((context) => context.createdOscillators)).toHaveLength(0);
+    expect(playback.isPrecounting).toBe(false);
+    await act(async () => {
+      response.resolve(new Response(new ArrayBuffer(8), { status: 200 }));
+      await play;
+    });
+    expect(playback.isPrecounting).toBe(true);
+    expect(getMockAudioContexts().flatMap((context) => context.createdOscillators)).toHaveLength(4);
+  });
+
   it("discards deferred buffers when selected and Default outputs fail during startup", async () => {
     const mediaSink = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, "setSinkId");
     const mediaSinkId = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, "sinkId");
@@ -1628,6 +2035,14 @@ describe("buffered Web playback race regressions", () => {
       expect(playback.isPlaying).toBe(false);
       await new Promise((resolve) => window.setTimeout(resolve, 2_100));
       expect(playback.isPlaying).toBe(false);
+      expect(readPlaybackLiveDiagnostics().currentState).toBe("error");
+      setSinkId.mockImplementation(function(this: HTMLMediaElement, deviceId: string) {
+        selected.set(this, deviceId);
+        return Promise.resolve();
+      });
+      await act(async () => playback.playPlayback());
+      expect(playback.isPrecounting).toBe(true);
+      expect(readPlaybackLiveDiagnostics().statusMessage).toBe("Starting playback…");
     } finally {
       setBrowserOutputRouting({ projectId: null, globalDeviceId: null,
         routing: DEFAULT_PROJECT_OUTPUT_ROUTING, lanes: [] });

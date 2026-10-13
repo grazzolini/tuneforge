@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import process from "node:process";
 import net from "node:net";
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, extname, join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
@@ -206,6 +206,14 @@ async function runIsolatedSmoke(options) {
     await mkdir(workDir, { recursive: true });
     logStep(`Using temp root ${tempRoot}.`);
     fixture = await createDesktopE2EFixture({ dataDir, workDir, projectName: options.projectName });
+    if (smokeGroup === "playback") {
+      const olderModification = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+      for (const entry of await readdir(dataDir, { recursive: true, withFileTypes: true })) {
+        if (entry.isFile() && extname(entry.name) === ".wav") {
+          await utimes(join(entry.parentPath, entry.name), olderModification, olderModification);
+        }
+      }
+    }
     logStep(
       `Seeded fixture project ${fixture.project_id} (${fixture.project_name ?? "unnamed"}) in ${dataDir}.`,
     );
@@ -342,6 +350,35 @@ async function runSmoke({
   }
   await resetSmokePlaybackState(page);
   recordPhase("playback:reset");
+
+  if (requireTelemetry && !captureTiming) {
+    stage = "count-in tempo round trip";
+    const originalBpm = Number(await page.getByRole("spinbutton", { name: "Playback BPM" }).inputValue());
+    assert.ok(originalBpm > 0, "Fixture original tempo must be available.");
+    for (const [index, bpm] of [originalBpm, 128, originalBpm, originalBpm].entries()) {
+      if (index === 3) {
+        await page.reload();
+        await openPlayback(page);
+        await assertPlaybackE2EBridge(page);
+        await resetSmokePlaybackState(page);
+      }
+      const bpmInput = page.getByRole("spinbutton", { name: "Playback BPM" });
+      await bpmInput.fill(String(bpm));
+      await bpmInput.press("Enter");
+      await page.getByLabel("Enable pre-count").check();
+      await seekTo(page, 0);
+      const label = index === 3 ? "original-tempo count-in after reload" : "tempo round-trip count-in " + (index + 1);
+      await page.getByRole("button", { name: "Play playback" }).click();
+      await assertCountInTelemetry(page, { expectedKind: "song-start", expectedStartSeconds: 0,
+        label, requireTelemetry: true });
+      await page.getByRole("button", { name: "Pause playback" }).waitFor({ timeout: 5000 });
+      await page.getByRole("button", { name: "Stop playback" }).click();
+      await expectPosition(page, 0, "after " + label);
+      logStep(label + " passed.");
+    }
+    await resetSmokePlaybackState(page);
+    stage = "playback controls after tempo round trip";
+  }
 
   const durationSeconds = await readPlaybackDuration(page);
   recordPhase("playback:ready", { durationSeconds });

@@ -18,6 +18,9 @@ download, installation, verification, signature, and publication instructions.
 
 ### Fixed
 
+- Prepare Web playback before audible count-ins at original and adjusted tempos. Cancelled or
+  failed preparation cannot start the song later; explicit Play retries with a fresh count-in.
+
 - Restore selected browser microphones in Tools and Settings, including forced-Web builds.
   Source changes release previous capture; unavailable or disconnected inputs fail without fallback.
 

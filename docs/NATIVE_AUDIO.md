@@ -103,6 +103,16 @@ Browser and non-Tauri runtimes use Web Audio only. A Tauri build with
 `VITE_TUNEFORGE_FORCE_WEB_AUDIO=1` also uses Web Audio only and makes no native audio calls. The flag
 is a compile-time override, not a setting or a runtime switch; rebuild and relaunch to change mode.
 
+Web count-ins keep `Starting playback…` visible while preparing output and the media transport.
+At original tempo, active playback buffers finish loading and decoding before clicks start.
+At adjusted tempo, every active HTML media lane must have the expected source, rate, seek position,
+and future playback data. HTML media uses anonymous CORS, matching decoded playback fetches so
+cached media responses remain usable when switching tempo paths. Metadata alone is insufficient; preparation fails after five seconds
+without readiness. Active media preloads through the count-in, then returns to normal metadata
+preloading. Play cancels a pending count-in; Stop, Pause, seek, session changes, and output failure
+cancel its delayed start. Preparation failures allow an explicit Play retry with a fresh count-in.
+The scheduled song-start time is a target; physical output latency remains device-dependent.
+
 Playback owns media-key controls, while playback and tuner capture participate in TuneForge's
 shared power-protection model. See [POWER_PROTECTION.md](./POWER_PROTECTION.md) for the
 cross-platform owner, backend, diagnostic, and validation rules.
@@ -289,6 +299,7 @@ BlackHole capture are release checks, not default `pnpm test` coverage.
 | Pause/Resume | no drift on resume at least for short cycle | no drift on resume at least for short cycle | no drift on resume at least for short cycle |
 | Loop | loop boundaries and loop duration stable; clearing at a boundary cancels the pending wrap | same | same |
 | Song count-in | runs from absolute song start on initial play and each fresh replay after natural end or Stop; never on pause/resume | same | same |
+| Web count-in preparation | not applicable | not applicable | cold and warm original/adjusted tempo prepare before clicks; cancellation and failure never start the song later |
 | Loop count-in | runs once at loop start and once per loop wrap, including natural lane end; never on pause/resume | same | same |
 | Tempo control | tempo change applies and stays stable | tempo change applies and stays stable | tempo change applies and stays stable |
 | Metronome follow | follows active track tempo while BPM changes | follows active track tempo while BPM changes | follows active track tempo while BPM changes |

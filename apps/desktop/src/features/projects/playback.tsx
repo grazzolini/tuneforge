@@ -145,6 +145,16 @@ type ActivePrecount = {
   timeoutId: number;
 };
 
+const WEB_MEDIA_STALL_TIMEOUT_MS = 5_000;
+
+type PendingWebPrecount = {
+  trigger: PlaybackE2ECountInEvent["trigger"];
+  isCurrent: () => boolean;
+  check?: () => void;
+  cancel?: () => void;
+  fail?: (message: string) => void;
+};
+
 type PitchPreservingAudioElement = HTMLAudioElement & {
   mozPreservesPitch?: boolean;
   preservesPitch?: boolean;
@@ -418,6 +428,9 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
   const initialWebMediaSourcesEnabled = !isTauriRuntime();
   const primaryAudioRef = useRef<HTMLAudioElement | null>(null);
   const activePrecountRef = useRef<ActivePrecount | null>(null);
+  const pendingWebPrecountRef = useRef<PendingWebPrecount | null>(null);
+  const playbackMountedRef = useRef(true);
+  const [htmlPrecountSignature, setHtmlPrecountSignature] = useState<string | null>(null);
   const precountAudioContextRef = useRef<AudioContext | null>(null);
   const precountSequenceRef = useRef(0);
   const stemAudioRefs = useRef<Record<string, HTMLAudioElement | null>>({});
@@ -1019,6 +1032,19 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     [canUseStemClock],
   );
 
+  const prepareWebMediaSources = useStableCallback(async function prepareWebMediaSources(
+    ownerIsCurrent: () => boolean,
+  ) {
+    if (!ownerIsCurrent()) return false;
+    if (!webMediaSourcesEnabledRef.current) {
+      await api.ensureWebMediaTransport();
+      if (!ownerIsCurrent()) return false;
+      webMediaSourcesEnabledRef.current = true;
+      setWebMediaSourcesEnabled(true);
+    }
+    return ownerIsCurrent();
+  });
+
   const enableWebMediaSources = useStableCallback(async function enableWebMediaSources(
     owner: WebMediaSourceEnablementOwner,
   ) {
@@ -1035,11 +1061,8 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
           !nativePlaybackRef.current.active,
       );
     };
-    if (webMediaSourcesEnabledRef.current) {
-      return ownerIsCurrent();
-    }
     try {
-      await api.ensureWebMediaTransport();
+      return await prepareWebMediaSources(ownerIsCurrent);
     } catch (error) {
       if (!ownerIsCurrent()) {
         return false;
@@ -1049,12 +1072,6 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       markWebPlaybackStartResult(false);
       return false;
     }
-    if (!ownerIsCurrent()) {
-      return false;
-    }
-    webMediaSourcesEnabledRef.current = true;
-    setWebMediaSourcesEnabled(true);
-    return true;
   });
 
   const getNativeAudioCapabilityState = useStableCallback(async function getNativeAudioCapabilityState() {
@@ -1784,6 +1801,16 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
   ) {
     const activePrecount = activePrecountRef.current;
     const nativePrecount = nativePrecountRef.current;
+    const pendingWebPrecount = pendingWebPrecountRef.current;
+    pendingWebPrecountRef.current = null;
+    pendingWebPrecount?.cancel?.();
+    if (pendingWebPrecount && playbackMountedRef.current) {
+      setHtmlPrecountSignature(null);
+      pendingWebPlaybackRef.current = null;
+      getActiveMediaElements().forEach((element) => element.pause());
+      setIsPlaying(false);
+      markPlaybackPaused();
+    }
     activePrecountRef.current = null;
     nativePrecountRef.current = null;
     precountSequenceRef.current += 1;
@@ -1802,7 +1829,8 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       countInTelemetryRef.current = { ...countInTelemetryRef.current, active: false, lastCancelled:
         playbackCountInCancelledEvent(nativePrecount.telemetry, nativePrecount.clockOriginSeconds + performance.now() / 1000, reason) };
     }
-    setIsPrecounting(false);
+    if (playbackMountedRef.current) setIsPrecounting(false);
+    else writePlaybackE2ETelemetry();
 
     if (nativePrecount) {
       markNativePlaybackInactive();
@@ -1838,7 +1866,8 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     const shouldResumeLoopPlayback =
       loopRange === null &&
       (activePrecountRef.current?.telemetry.trigger === "loop-start" ||
-        nativePrecountRef.current?.telemetry.trigger === "loop-start");
+        nativePrecountRef.current?.telemetry.trigger === "loop-start" ||
+        pendingWebPrecountRef.current?.trigger === "loop-start");
     cancelPrecount("superseded");
     const activeSession = sessionRef.current;
     if (!activeSession) {
@@ -2710,8 +2739,9 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
 
   const playWebMediaElements = useStableCallback(async function playWebMediaElements(
     elements: HTMLAudioElement[],
+    shouldContinue?: () => boolean,
   ) {
-    if (!elements.length) {
+    if (!elements.length || (shouldContinue && !shouldContinue())) {
       return false;
     }
     if (elements.some((element) => !projectMediaElementSupportsVolume(element))) {
@@ -2720,9 +2750,17 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     }
 
     beginWebPlaybackAttempt(elements);
+    const attempt = pendingWebPlaybackRef.current;
     const results = await Promise.allSettled(
       elements.map((element) => Promise.resolve(element.play())),
     );
+    if (shouldContinue && !shouldContinue()) {
+      if (pendingWebPlaybackRef.current === attempt) {
+        elements.forEach((element) => element.pause());
+        pendingWebPlaybackRef.current = null;
+      }
+      return false;
+    }
     const requested = results.some((result) => result.status === "fulfilled");
     if (!requested) {
       const rejection = results.find((result) => result.status === "rejected");
@@ -2781,6 +2819,11 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     if (!targetSession || !getActiveMediaElements(targetSession).includes(element)) {
       return;
     }
+    const preparing = pendingWebPrecountRef.current;
+    if (preparing?.isCurrent()) {
+      preparing.fail?.(message);
+      return;
+    }
     const hasWebOwnership =
       pendingWebPlaybackRef.current?.signature === playbackSignature(targetSession) ||
       playbackControlBackendRef.current === "web";
@@ -2808,7 +2851,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
         return;
       }
       failWebPlayback(element, "Web Audio stopped making playback progress.");
-    }, 5_000);
+    }, WEB_MEDIA_STALL_TIMEOUT_MS);
     webStallTimersRef.current.set(element, timerId);
   });
 
@@ -2826,7 +2869,9 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     if (!targetSession || (playbackControlBackendRef.current !== "web" &&
       pendingWebPlaybackRef.current?.signature !== playbackSignature(targetSession) &&
       activePrecountRef.current?.signature !== playbackSignature(targetSession) &&
+      !pendingWebPrecountRef.current?.isCurrent() &&
       !pendingTransitionRef.current?.shouldPlay && !ownsPendingStart)) return;
+    if (pendingWebPrecountRef.current?.isCurrent()) allowFreshPlaybackRef.current = true;
     playbackIntentEpochRef.current += 1;
     pendingWebStartRef.current = null;
     cancelPrecount("unavailable");
@@ -3358,7 +3403,12 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       ? playbackResetTimeForSession(targetSession)
       : readMasterTime(targetSession);
     const masterTime = playbackStartTimeForSession(targetSession, requestedMasterTime);
-    if (await tryStartNativePlayback(targetSession, masterTime, undefined, null, playbackIsCurrent)) {
+    const preparedWebPrecount = pendingWebPrecountRef.current?.isCurrent() === true;
+    if (preparedWebPrecount) {
+      await ensureAppOutputReady();
+      if (!playbackIsCurrent()) return;
+    }
+    if (!preparedWebPrecount && await tryStartNativePlayback(targetSession, masterTime, undefined, null, playbackIsCurrent)) {
       return;
     }
     if (!playbackIsCurrent()) {
@@ -3385,6 +3435,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
         markNativePlaybackInactive();
         return;
       }
+      if (preparedWebPrecount) throw new Error("Prepared playback could not start.");
       if (stemClockBlockedRef.current) {
         markNativePlaybackInactive();
         markWebPlaybackStartResult(false);
@@ -3436,8 +3487,10 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     if (!playbackIsCurrent()) {
       return;
     }
-    const started = await playWebMediaElements(activeElements);
+    const started = await playWebMediaElements(activeElements, playbackIsCurrent);
+    if (!playbackIsCurrent()) return;
     markWebPlaybackStartResult(started);
+    if (!started && preparedWebPrecount) throw new Error("Prepared Web media could not start.");
   });
 
   const startPrecountThenPlayback = useStableCallback(async function startPrecountThenPlayback(
@@ -3459,9 +3512,9 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       loopRange &&
         Math.abs(startTimeSeconds - loopRange.startSeconds) <= SEEK_TOLERANCE_SECONDS,
     );
-    const shouldUseLoopPrecount =
+    let shouldUseLoopPrecount =
       targetSession.precountLoopEnabled && Boolean(isLoopStart);
-    const shouldUseSongPrecount =
+    let shouldUseSongPrecount =
       options.loopWrap !== true && targetSession.precountEnabled && isSongStart;
     if (!shouldUseLoopPrecount && !shouldUseSongPrecount) {
       return false;
@@ -3473,22 +3526,26 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
 
     cancelPrecount("superseded");
     const sequence = ++precountSequenceRef.current;
-    const clickCount = normalizePrecountClickCount(targetSession.precountClickCount);
+    let clickCount = normalizePrecountClickCount(targetSession.precountClickCount);
     const signature = playbackSignature(targetSession);
     const loopEpoch = options.loopWrap === true ? loopEpochRef.current : null;
+    const intentEpoch = playbackIntentEpochRef.current;
     const precountIsCurrent = () =>
+      playbackMountedRef.current &&
+      playbackIntentEpochRef.current === intentEpoch &&
       precountSequenceRef.current === sequence &&
       playbackSignature(sessionRef.current) === signature &&
       (loopEpoch === null || loopEpochRef.current === loopEpoch);
     const beatSeconds = 60 / tempoBpm;
-    const countInIntervals = countInIntervalsForTiming({
+    const countInTiming = {
       clickCount,
       fallbackBeatSeconds: beatSeconds,
       sourceTempoBpm: targetSession.tempoOriginalBpm,
       startTimeSeconds,
       targetTempoBpm: targetSession.precountTempoBpm,
       timingGrid: targetSession.timingGrid,
-    });
+    };
+    let countInIntervals = countInIntervalsForTiming(countInTiming);
 
     if (isTauriRuntime() && !isWebAudioBackendForced()) {
       setPlaybackTimeSeconds(startTimeSeconds);
@@ -3509,145 +3566,248 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       return true;
     }
 
-    let preparedStemPlaybackState: StemPlaybackState | null = null;
-    const willUsePlaybackAudioContext = canUseBufferedClock(targetSession);
-    if (willUsePlaybackAudioContext) {
-      preparedStemPlaybackState = await prepareStemPlaybackState(
-        targetSession,
-        precountIsCurrent,
-      );
-      if (!preparedStemPlaybackState) {
-        return false;
+    const owner: PendingWebPrecount = {
+      trigger: shouldUseLoopPrecount ? "loop-start" : "song-start", isCurrent: () =>
+      pendingWebPrecountRef.current === owner && precountIsCurrent() };
+    pendingWebPrecountRef.current = owner;
+    clearPendingTransition();
+    markPlaybackStarting(isTauriRuntime() && isWebAudioBackendForced() ? "web-forced" : "web");
+    const releaseOwner = () => {
+      if (pendingWebPrecountRef.current !== owner) return;
+      pendingWebPrecountRef.current = null;
+      owner.cancel?.();
+      if (playbackMountedRef.current) setHtmlPrecountSignature(null);
+    };
+    const failPreparation = (error: unknown) => {
+      if (!owner.isCurrent()) return;
+      cancelPrecount("unavailable");
+      allowFreshPlaybackRef.current = true;
+      getActiveMediaElements(targetSession).forEach((element) => element.pause());
+      setIsPlaying(false);
+      rememberWebPlaybackError(playbackErrorMessage(error));
+      markPlaybackError("Playback could not start. Check your audio output, then press Play to retry.");
+    };
+    owner.fail = failPreparation;
+    try {
+      // Resume while still handling the gesture, before waiting on output or transport.
+      const gestureActivation = primeWebAudioForGesture();
+      await gestureActivation;
+      if (!owner.isCurrent()) return true;
+      await ensureAppOutputReady();
+      if (!owner.isCurrent()) return true;
+      if (!(await prepareWebMediaSources(owner.isCurrent))) return true;
+      let preparedStemPlaybackState: StemPlaybackState | null = null;
+      const willUsePlaybackAudioContext = canUseBufferedClock(targetSession);
+      setPlaybackTimeSeconds(startTimeSeconds);
+      if (willUsePlaybackAudioContext) {
+        preparedStemPlaybackState = await prepareStemPlaybackState(targetSession, owner.isCurrent);
+        if (!owner.isCurrent()) return true;
+        if (!preparedStemPlaybackState) throw new Error("Playback buffers are unavailable.");
+      } else {
+        const artifactIds = getSessionPlaybackArtifactIds(targetSession);
+        const expectedSources = artifactIds.map((id) => new URL(api.streamArtifactUrl(id), document.baseURI).href);
+        const expectedElements = getActiveMediaElements(targetSession);
+        if (!artifactIds.length || expectedElements.length !== artifactIds.length) {
+          throw new Error("Playback media is unavailable.");
+        }
+        const ready = await new Promise<boolean>((resolve, reject) => {
+          let timerId: number | undefined;
+          let settled = false;
+          const positioned = new Set<HTMLAudioElement>();
+          const finish = (error?: Error) => {
+            if (settled) return;
+            settled = true;
+            window.clearTimeout(timerId);
+            owner.check = undefined;
+            owner.cancel = undefined;
+            if (error) reject(error);
+            else resolve(owner.isCurrent());
+          };
+          owner.cancel = () => finish();
+          owner.fail = (message) => finish(new Error(message));
+          owner.check = () => {
+            if (!owner.isCurrent()) { finish(); return; }
+            const elements = getActiveMediaElements(targetSession);
+            const committed = elements.length === expectedElements.length && elements.every((element, index) =>
+              element === expectedElements[index] && element.src === expectedSources[index] && element.preload === "auto");
+            if (!committed) return;
+            if (timerId === undefined) timerId = window.setTimeout(() =>
+              finish(new Error("Playback media did not become ready.")), WEB_MEDIA_STALL_TIMEOUT_MS);
+            try {
+              const allReady = elements.map((element, index) => {
+                if (!element.currentSrc || element.currentSrc !== expectedSources[index] ||
+                  element.readyState < HTMLMediaElement.HAVE_METADATA) return false;
+                if (!positioned.has(element)) {
+                  applyMediaElementPlaybackRate(element, playbackRateForSession(targetSession));
+                  if (Math.abs(element.currentTime - startTimeSeconds) > SEEK_TOLERANCE_SECONDS) {
+                    element.currentTime = startTimeSeconds;
+                  }
+                  positioned.add(element);
+                }
+                return !element.seeking && Math.abs(element.currentTime - startTimeSeconds) <= SEEK_TOLERANCE_SECONDS &&
+                  element.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA;
+              });
+              if (allReady.every(Boolean)) finish();
+            } catch (error) { finish(new Error(playbackErrorMessage(error))); }
+          };
+          setHtmlPrecountSignature(signature);
+          owner.check();
+        });
+        owner.fail = failPreparation;
+        if (!ready || !owner.isCurrent()) return true;
       }
+
+      const precountAudio = getPrecountAudioContext();
+      if (!precountAudio) throw new Error("Count-in audio is unavailable.");
+
+      try {
+        await activatePlaybackAudioContext(precountAudio.context);
+      } catch (error) {
+        if (precountAudio.ownsContext) {
+          if (precountAudioContextRef.current === precountAudio.context) {
+            precountAudioContextRef.current = null;
+          }
+          releaseBrowserOutputContext(precountAudio.context);
+          void precountAudio.context.close().catch(() => undefined);
+        }
+        throw error;
+      }
+
       if (!precountIsCurrent()) {
+        if (precountAudio.ownsContext && precountAudioContextRef.current === precountAudio.context) {
+          precountAudioContextRef.current = null;
+        }
+        if (precountAudio.ownsContext) {
+          releaseBrowserOutputContext(precountAudio.context);
+          void precountAudio.context.close().catch(() => undefined);
+        }
         return true;
       }
-    }
 
-    const precountAudio = getPrecountAudioContext();
-    if (!precountAudio) {
-      return false;
-    }
-
-    try {
-      await activatePlaybackAudioContext(precountAudio.context);
-    } catch {
-      if (precountAudio.ownsContext && precountAudioContextRef.current === precountAudio.context) {
-        precountAudioContextRef.current = null;
+      const latestSession = sessionRef.current;
+      shouldUseLoopPrecount = latestSession?.precountLoopEnabled === true && isLoopStart;
+      shouldUseSongPrecount = options.loopWrap !== true && latestSession?.precountEnabled === true && isSongStart;
+      if (!shouldUseLoopPrecount && !shouldUseSongPrecount) {
+        if (precountAudio.ownsContext) {
+          if (precountAudioContextRef.current === precountAudio.context) precountAudioContextRef.current = null;
+          releaseBrowserOutputContext(precountAudio.context);
+          void precountAudio.context.close().catch(() => undefined);
+        }
+        await playPlaybackImmediately({ forceStartAtZero: true, shouldContinue: owner.isCurrent });
+        releaseOwner();
+        return true;
       }
-      if (precountAudio.ownsContext) {
-        releaseBrowserOutputContext(precountAudio.context);
-        void precountAudio.context.close().catch(() => undefined);
-      }
-      return false;
-    }
-
-    if (!precountIsCurrent()) {
-      if (precountAudio.ownsContext && precountAudioContextRef.current === precountAudio.context) {
-        precountAudioContextRef.current = null;
-      }
-      if (precountAudio.ownsContext) {
-        releaseBrowserOutputContext(precountAudio.context);
-        void precountAudio.context.close().catch(() => undefined);
-      }
-      return true;
-    }
-
-    getActiveMediaElements(targetSession).forEach((element) => {
-      if (Math.abs(element.currentTime - startTimeSeconds) > SEEK_TOLERANCE_SECONDS) {
-        element.currentTime = startTimeSeconds;
-      }
-    });
-    if (preparedStemPlaybackState) {
-      preparedStemPlaybackState.offsetSeconds = startTimeSeconds;
-      syncStemElementTimes(preparedStemPlaybackState.artifactIds, startTimeSeconds);
-      setPlaybackDurationSeconds(preparedStemPlaybackState.durationSeconds);
-    }
-    setPlaybackTimeSeconds(startTimeSeconds);
-
-    const firstClickTimeSeconds = precountAudio.context.currentTime + PRECOUNT_START_DELAY_SECONDS;
-    const playbackStartTimeSeconds =
-      firstClickTimeSeconds + countInIntervals.reduce((total, interval) => total + interval, 0);
-    const countInTelemetry: PlaybackE2ECountInEvent = {
-      clickCount,
-      trigger: shouldUseLoopPrecount ? "loop-start" : "song-start",
-      activePath: playbackTelemetryPathForBackend(playbackControlBackendRef.current),
-      scheduledAtContextTimeSeconds: precountAudio.context.currentTime,
-      firstClickTimeSeconds,
-      playbackStartTimeSeconds,
-      sequence,
-      startTimeSeconds,
-      tempoBpm,
-    };
-    let nextClickTimeSeconds = firstClickTimeSeconds;
-    const clickHandles: PrecountClaveClickHandle[] = [];
-    for (let index = 0; index < clickCount; index += 1) {
-      clickHandles.push(
-        schedulePrecountClaveClick({
-          audioContext: precountAudio.context,
-          startTimeSeconds: nextClickTimeSeconds,
-        }),
-      );
-      nextClickTimeSeconds += countInIntervals[index] ?? beatSeconds;
-    }
-
-    const timeoutId = window.setTimeout(() => {
-      const activePrecount = activePrecountRef.current;
-      if (
-        !activePrecount ||
-        activePrecount.sequence !== sequence ||
-        activePrecount.signature !== signature ||
-        (activePrecount.loopEpoch !== null &&
-          activePrecount.loopEpoch !== loopEpochRef.current)
-      ) {
-        return;
+      owner.trigger = shouldUseLoopPrecount ? "loop-start" : "song-start";
+      const latestClickCount = normalizePrecountClickCount(latestSession?.precountClickCount ?? clickCount);
+      if (latestClickCount !== clickCount) {
+        clickCount = latestClickCount;
+        countInIntervals = countInIntervalsForTiming({ ...countInTiming, clickCount });
       }
 
-      activePrecountRef.current = null;
+      getActiveMediaElements(targetSession).forEach((element) => {
+        if (Math.abs(element.currentTime - startTimeSeconds) > SEEK_TOLERANCE_SECONDS) {
+          element.currentTime = startTimeSeconds;
+        }
+      });
+      if (preparedStemPlaybackState) {
+        preparedStemPlaybackState.offsetSeconds = startTimeSeconds;
+        syncStemElementTimes(preparedStemPlaybackState.artifactIds, startTimeSeconds);
+        setPlaybackDurationSeconds(preparedStemPlaybackState.durationSeconds);
+      }
+      setPlaybackTimeSeconds(startTimeSeconds);
+
+      const firstClickTimeSeconds = precountAudio.context.currentTime + PRECOUNT_START_DELAY_SECONDS;
+      const playbackStartTimeSeconds =
+        firstClickTimeSeconds + countInIntervals.reduce((total, interval) => total + interval, 0);
+      const countInTelemetry: PlaybackE2ECountInEvent = {
+        clickCount,
+        trigger: shouldUseLoopPrecount ? "loop-start" : "song-start",
+        activePath: playbackTelemetryPathForBackend(playbackControlBackendRef.current),
+        scheduledAtContextTimeSeconds: precountAudio.context.currentTime,
+        firstClickTimeSeconds,
+        playbackStartTimeSeconds,
+        sequence,
+        startTimeSeconds,
+        tempoBpm,
+      };
+      let nextClickTimeSeconds = firstClickTimeSeconds;
+      const clickHandles: PrecountClaveClickHandle[] = [];
+      for (let index = 0; index < clickCount; index += 1) {
+        clickHandles.push(
+          schedulePrecountClaveClick({
+            audioContext: precountAudio.context,
+            startTimeSeconds: nextClickTimeSeconds,
+          }),
+        );
+        nextClickTimeSeconds += countInIntervals[index] ?? beatSeconds;
+      }
+
+      const timeoutId = window.setTimeout(() => {
+        const activePrecount = activePrecountRef.current;
+        if (
+          !activePrecount ||
+          activePrecount.sequence !== sequence ||
+          activePrecount.signature !== signature ||
+          (activePrecount.loopEpoch !== null &&
+            activePrecount.loopEpoch !== loopEpochRef.current)
+        ) {
+          return;
+        }
+
+        activePrecountRef.current = null;
+        countInTelemetryRef.current = {
+          ...countInTelemetryRef.current,
+          active: false,
+          lastFired: playbackCountInFiredEvent(activePrecount.telemetry,
+            activePrecount.context.state === "closed" ? null : activePrecount.context.currentTime),
+        };
+        setIsPrecounting(false);
+        closeOwnedPrecountContext(activePrecount);
+
+        if (playbackSignature(sessionRef.current) !== signature) {
+          return;
+        }
+
+        void playPlaybackImmediately({
+          forceStartAtZero: true,
+          scheduledStemStartTimeSeconds: willUsePlaybackAudioContext
+            ? playbackStartTimeSeconds
+            : undefined,
+          shouldContinue: owner.isCurrent,
+        }).then(() => {
+          if (owner.isCurrent()) releaseOwner();
+        }).catch(failPreparation);
+      }, Math.max(0, (playbackStartTimeSeconds - precountAudio.context.currentTime) * 1000));
+
+      activePrecountRef.current = {
+        clickHandles,
+        context: precountAudio.context,
+        ownsContext: precountAudio.ownsContext,
+        loopEpoch,
+        sequence,
+        signature,
+        telemetry: countInTelemetry,
+        timeoutId,
+      };
       countInTelemetryRef.current = {
         ...countInTelemetryRef.current,
-        active: false,
-        lastFired: playbackCountInFiredEvent(activePrecount.telemetry,
-          activePrecount.context.state === "closed" ? null : activePrecount.context.currentTime),
+        active: true,
+        lastScheduled: countInTelemetry,
       };
-      setIsPrecounting(false);
-      closeOwnedPrecountContext(activePrecount);
-
-      if (playbackSignature(sessionRef.current) !== signature) {
-        return;
-      }
-
-      void playPlaybackImmediately({
-        forceStartAtZero: true,
-        scheduledStemStartTimeSeconds: willUsePlaybackAudioContext
-          ? playbackStartTimeSeconds
-          : undefined,
-      });
-    }, Math.max(0, (playbackStartTimeSeconds - precountAudio.context.currentTime) * 1000));
-
-    activePrecountRef.current = {
-      clickHandles,
-      context: precountAudio.context,
-      ownsContext: precountAudio.ownsContext,
-      loopEpoch,
-      sequence,
-      signature,
-      telemetry: countInTelemetry,
-      timeoutId,
-    };
-    countInTelemetryRef.current = {
-      ...countInTelemetryRef.current,
-      active: true,
-      lastScheduled: countInTelemetry,
-    };
-    setIsPrecounting(true);
-    writePlaybackE2ETelemetry({ positionSeconds: startTimeSeconds });
-    return true;
+      setIsPrecounting(true);
+      writePlaybackE2ETelemetry({ positionSeconds: startTimeSeconds });
+      return true;
+    } catch (error) {
+      failPreparation(error);
+      return true;
+    }
   });
 
   const playPlayback = useCallback(async () => {
-    if (activePrecountRef.current || nativePrecountRef.current) {
+    if (activePrecountRef.current || nativePrecountRef.current || pendingWebPrecountRef.current) {
+      const rearmWebPrecount = Boolean(pendingWebPrecountRef.current);
       cancelPrecount("cancelled");
+      if (rearmWebPrecount) allowFreshPlaybackRef.current = true;
       return;
     }
 
@@ -3710,8 +3870,9 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
   ]);
 
   const togglePlayback = useCallback(async () => {
-    if (activePrecountRef.current) {
+    if (activePrecountRef.current || pendingWebPrecountRef.current) {
       cancelPrecount("playback-stopped");
+      allowFreshPlaybackRef.current = true;
       return;
     }
     if (isPlayingRef.current) {
@@ -3849,6 +4010,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     nativeControlGenerationRef.current += 1;
     clearPendingTransition();
     const currentTime = sessionRef.current ? readMasterTime(sessionRef.current) : 0;
+    cancelPrecount("superseded");
     if (nativePlaybackRef.current.sessionSignature !== null || pendingNativePlayRef.current) {
       await requestNativeStop(true);
       markNativePlaybackInactive();
@@ -4155,6 +4317,10 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
   ]);
 
   useEffect(() => {
+    pendingWebPrecountRef.current?.check?.();
+  }, [session, webMediaSourcesEnabled, htmlPrecountSignature]);
+
+  useEffect(() => {
     applyMediaPlaybackRate(session);
     applyStemVolumes(session, { rampGains: Boolean(stemPlaybackRef.current?.isPlaying) });
     tryCompletePendingTransition();
@@ -4182,10 +4348,14 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
   }, [canUseStemClock, loadStemBuffer, session, webMediaSourcesEnabled]);
 
   useEffect(
-    () => () => {
-      nativeControlGenerationRef.current += 1;
-      cancelPrecount("unavailable");
-      closePlaybackAudioContext();
+    () => {
+      playbackMountedRef.current = true;
+      return () => {
+        playbackMountedRef.current = false;
+        nativeControlGenerationRef.current += 1;
+        cancelPrecount("unavailable");
+        closePlaybackAudioContext();
+      };
     },
     [cancelPrecount, closePlaybackAudioContext],
   );
@@ -4712,6 +4882,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
             : "__none__"
         }
         ref={setPrimaryAudioRef}
+        crossOrigin="anonymous"
         src={
           webMediaSourcesEnabled &&
           session &&
@@ -4720,7 +4891,8 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
             ? api.streamArtifactUrl(session.selectedPlaybackArtifactId)
             : undefined
         }
-        preload={webMediaSourcesEnabled ? "metadata" : "none"}
+        preload={htmlPrecountSignature === playbackSignature(session) && session && !session.isStemPlayback
+          ? "auto" : webMediaSourcesEnabled ? "metadata" : "none"}
         className="player player--hidden"
         onTimeUpdate={(event) => {
           const activeSession = sessionRef.current;
@@ -4744,6 +4916,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
           )
         }
         onLoadedMetadata={() => {
+          pendingWebPrecountRef.current?.check?.();
           if (primaryAudioRef.current) {
             applyMediaElementPlaybackRate(
               primaryAudioRef.current,
@@ -4755,11 +4928,16 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
           tryCompletePendingTransition();
         }}
         onDurationChange={() => {
+          pendingWebPrecountRef.current?.check?.();
           updateDurationFromActiveMedia();
           tryCompletePendingTransition();
         }}
-        onCanPlay={tryCompletePendingTransition}
+        onCanPlay={() => {
+          pendingWebPrecountRef.current?.check?.();
+          tryCompletePendingTransition();
+        }}
         onSeeked={(event) => {
+          pendingWebPrecountRef.current?.check?.();
           markPendingSeekComplete(PRIMARY_MEDIA_KEY, event.currentTarget);
           tryCompletePendingTransition();
         }}
@@ -4777,8 +4955,11 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
         <audio
           key={artifactId}
           ref={stemAudioRef(artifactId)}
+          crossOrigin="anonymous"
           src={webMediaSourcesEnabled ? api.streamArtifactUrl(artifactId) : undefined}
-          preload={webMediaSourcesEnabled ? "metadata" : "none"}
+          preload={htmlPrecountSignature === playbackSignature(session) && session?.isStemPlayback &&
+            getSessionPlaybackArtifactIds(session).includes(artifactId)
+            ? "auto" : webMediaSourcesEnabled ? "metadata" : "none"}
           className="player player--hidden"
           onTimeUpdate={(event) => {
             const activeSession = sessionRef.current;
@@ -4805,6 +4986,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
             )
           }
           onLoadedMetadata={() => {
+          pendingWebPrecountRef.current?.check?.();
             const element = stemAudioRefs.current[artifactId];
             if (element) {
               applyMediaElementPlaybackRate(
@@ -4819,14 +5001,19 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
             tryCompletePendingTransition();
           }}
           onDurationChange={() => {
+          pendingWebPrecountRef.current?.check?.();
             if (sessionRef.current?.visibleStemArtifactIds[0] === artifactId) {
               updateDurationFromActiveMedia();
             }
             syncStemElementTimes([artifactId], readMasterTime());
             tryCompletePendingTransition();
           }}
-          onCanPlay={tryCompletePendingTransition}
+          onCanPlay={() => {
+          pendingWebPrecountRef.current?.check?.();
+          tryCompletePendingTransition();
+        }}
           onSeeked={(event) => {
+          pendingWebPrecountRef.current?.check?.();
             markPendingSeekComplete(artifactId, event.currentTarget);
             tryCompletePendingTransition();
           }}

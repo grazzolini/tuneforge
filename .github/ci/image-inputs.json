@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 1,
+  "platform": "linux/amd64",
+  "components": [
+    {
+      "name": "recipe and context",
+      "inputs": [".github/ci/Dockerfile", ".github/ci/Dockerfile.dockerignore", ".github/ci/image-inputs.json", "scripts/ci-image-impact.mjs", ".github/ci/README.md"],
+      "source": "repository recipe and documentation; Ubuntu 24.04 digest in Dockerfile",
+      "license": "MIT recipe; installed Ubuntu copyright files and packages.txt for transitive packages",
+      "probes": ["whole producer manifest", "base-image.txt", "packages.txt"],
+      "consumers": ["backend", "desktop_tauri", "e2e"]
+    },
+    {
+      "name": "SoXR and PFFFT",
+      "inputs": ["scripts/build-soxr-runtime.mjs", "scripts/deterministic-source-snapshot.mjs", "packaging/soxr/sources.lock.json", "packaging/soxr/patches/android-unversioned-soname.patch"],
+      "source": "source URL, revision, archive checksum, embedded PFFFT revision and patch in sources.lock.json",
+      "license": "LGPL-2.1-or-later SoXR; BSD-3-Clause PFFFT; corresponding sources in image",
+      "probes": ["build-inputs.sha256", "payload.sha256", "provenance.json", "synthetic C resampling"],
+      "consumers": ["desktop_tauri"],
+      "locks": ["packaging/soxr/sources.lock.json"]
+    },
+    {
+      "name": "FFmpeg codecs",
+      "inputs": [".github/ci/Dockerfile"],
+      "source": "official Ubuntu FFmpeg package URL, package checksum and binary checksums in Dockerfile",
+      "license": "GPL-2.0-or-later CI-only Ubuntu build; /usr/share/doc/ffmpeg/copyright",
+      "probes": ["ffmpeg.sha256", "codec-validation.jsonl", "exact /usr/bin/ffmpeg and /usr/bin/ffprobe paths"],
+      "consumers": ["backend", "e2e"]
+    },
+    {
+      "name": "Playwright system libraries",
+      "inputs": [".github/ci/Dockerfile"],
+      "source": "reviewed Noble packages and PLAYWRIGHT_VERSION in Dockerfile; Chromium downloaded at job time",
+      "license": "installed Ubuntu copyright files",
+      "probes": ["playwright-version.txt", "Chromium install and actual E2E suite"],
+      "consumers": ["e2e"]
+    },
+    {
+      "name": "Tauri native libraries and CI utilities",
+      "inputs": [".github/ci/Dockerfile"],
+      "source": "APT package list in Dockerfile; transitive installed packages recorded in packages.txt",
+      "license": "installed Ubuntu copyright files",
+      "probes": ["cargo check", "cargo test", "setup-tool executable compatibility"],
+      "consumers": ["backend", "desktop_tauri", "e2e"]
+    }
+  ],
+  "registeredReads": {
+    "scripts/build-soxr-runtime.mjs": ["packaging/soxr/sources.lock.json", "packaging/soxr/patches/android-unversioned-soname.patch", "scripts/build-soxr-runtime.mjs", "scripts/deterministic-source-snapshot.mjs"],
+    "scripts/deterministic-source-snapshot.mjs": "caller-supplied snapshot inputs restricted by build-soxr-runtime host-test registration",
+    "scripts/ci-image-impact.mjs": "inventory-declared inputs only; git diff for reports"
+  },
+  "readAuditSha256": {
+    "scripts/build-soxr-runtime.mjs": "73fab469d93332840ed2f95cc0e6bcad662a357e9c90df6fdeb41efa21b32d6a",
+    "scripts/deterministic-source-snapshot.mjs": "e60747fbc6a3559dcb6a64cf9815942a26b7386c632aae1903b1602e6763ece2",
+    "scripts/ci-image-impact.mjs": "3fc4a2bfb682060c084e08b3ce6d157a60592635382d79ff8621087a1f3874a5"
+  },
+  "processInputs": [".github/workflows/ci-image.yml", "scripts/ci-image-policy.mjs"],
+  "compatibilityInputs": [".github/workflows/ci.yml", "scripts/verify-ci-image.sh", "scripts/ci-image-run.sh", ".github/ci/promoted-image.json", ".python-version", "apps/desktop/package.json", "pnpm-lock.yaml", "package.json", "apps/backend/pyproject.toml", "apps/backend/uv.lock"]
+}

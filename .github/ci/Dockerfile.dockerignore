@@ -1,6 +1,9 @@
 **
 !.github/
 !.github/ci/
+!.github/ci/Dockerfile
+!.github/ci/Dockerfile.dockerignore
+!.github/ci/image-inputs.json
 !.github/ci/README.md
 !packaging/
 !packaging/soxr/
@@ -8,5 +11,6 @@
 !packaging/soxr/patches/android-unversioned-soname.patch
 !packaging/soxr/sources.lock.json
 !scripts/
+!scripts/ci-image-impact.mjs
 !scripts/build-soxr-runtime.mjs
 !scripts/deterministic-source-snapshot.mjs

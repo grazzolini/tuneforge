@@ -5,6 +5,15 @@ set -euo pipefail
 : "${GITHUB_JOB:?GITHUB_JOB is required}"
 : "${GITHUB_STEP_SUMMARY:?GITHUB_STEP_SUMMARY is required}"
 : "${GITHUB_WORKSPACE:?GITHUB_WORKSPACE is required}"
+: "${CI_IMAGE_FINGERPRINT:?CI_IMAGE_FINGERPRINT is required}"
+
+image_manifest="${TUNEFORGE_CI_IMAGE_MANIFEST:-/usr/share/tuneforge-ci/producer-inputs.sha256}"
+if [[ ! -f "$image_manifest" ]] ||
+  [[ "$(sha256sum "$image_manifest" | cut -d' ' -f1)" != "$CI_IMAGE_FINGERPRINT" ]] ||
+  ! (cd "$GITHUB_WORKSPACE" && sha256sum --check --strict --status "$image_manifest"); then
+  echo "Whole CI image build inputs do not match this checkout; build a current full final candidate or promote a verified image." >&2
+  exit 1
+fi
 
 soxr_root="${TUNEFORGE_CI_SOXR_ROOT:-/opt/tuneforge-ci/soxr}"
 soxr_runtime_root="${soxr_root}/host-test"

@@ -68,6 +68,13 @@ When asked to implement a change:
 
 1. **Read before writing.** Inspect the surrounding files in the relevant layer. Match existing patterns.
 2. **Plan briefly.** For multi-step work, write a short plan or todo list before editing.
+   Before implementation assignments, run `pnpm ci:image:impact --paths <planned paths...>`.
+   Review the canonical [CI image inventory](.github/ci/image-inputs.json) and
+   [delivery guidance](.github/ci/README.md#mandatory-image-impact-preflight).
+   Report affected components, causal chain, and producer/publication/consumer order.
+   Recheck expanded scope before edits and actual diff before publication using
+   `pnpm ci:image:impact --working-tree <fresh-main>` (includes staged/untracked paths).
+   This assessment is mandatory for every change; ordinary app paths can have no known image impact.
 3. **Edit narrowly.** Don't reformat unrelated code, don't add docstrings/comments to code you didn't touch, don't introduce new abstractions for one-time operations.
 4. **Run the gates locally.** From the workspace root:
    ```sh

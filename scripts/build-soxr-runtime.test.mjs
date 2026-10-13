@@ -126,6 +126,37 @@ test("corresponding-source TAR is complete, reproducible, and imports its copied
   }
 });
 
+test("corresponding sources stage on the destination filesystem and create a missing output parent", (context) => {
+  const directory = temporary(context);
+  const upstream = path.join(directory, "upstream.tar.gz");
+  fs.writeFileSync(upstream, "synthetic upstream archive fixture\n");
+  const outputParent = path.join(directory, "destination/generated");
+  const originalRename = fs.renameSync;
+  const device = (candidate) => candidate.startsWith(`${outputParent}${path.sep}`) ? "destination" : "temporary";
+  let promotions = 0;
+  context.mock.method(fs, "renameSync", (source, destination) => {
+    if (device(source) !== device(destination)) throw Object.assign(new Error("cross-device rename"), { code: "EXDEV" });
+    promotions += 1;
+    return originalRename(source, destination);
+  });
+  const bundle = createSoxrCorrespondingSources(upstream, outputParent, "host-test");
+  assert.equal(promotions, 1);
+  assert.ok(fs.statSync(path.join(outputParent, bundle.fileName)).isFile());
+  assert.deepEqual(fs.readdirSync(outputParent), [bundle.fileName]);
+});
+
+test("corresponding-source promotion failure preserves the existing archive and removes staging", (context) => {
+  const directory = temporary(context);
+  const upstream = path.join(directory, "upstream.tar.gz");
+  fs.writeFileSync(upstream, "synthetic upstream archive fixture\n");
+  const bundle = createSoxrCorrespondingSources(upstream, directory, "host-test");
+  const output = path.join(directory, bundle.fileName), original = fs.readFileSync(output);
+  context.mock.method(fs, "renameSync", () => { throw Object.assign(new Error("promotion denied"), { code: "EACCES" }); });
+  assert.throws(() => createSoxrCorrespondingSources(upstream, directory, "host-test"), /promotion denied/);
+  assert.deepEqual(fs.readFileSync(output), original);
+  assert.deepEqual(fs.readdirSync(directory).sort(), [bundle.fileName, "upstream.tar.gz"].sort());
+});
+
 test("producer identity and publication include genuine inputs and exclude Flatpak policy", async (context) => {
   const directory = temporary(context);
   copyInputs(directory);
@@ -143,7 +174,8 @@ test("producer identity and publication include genuine inputs and exclude Flatp
   const allowlist = fs.readFileSync(path.join(root, ".github/ci/Dockerfile.dockerignore"), "utf8")
     .split("\n").filter((line) => line.startsWith("!") && !line.endsWith("/"))
     .map((line) => line.slice(1));
-  assert.deepEqual(allowlist.sort(), [...producerInputs, ".github/ci/README.md"].sort());
+  assert.deepEqual(allowlist.sort(), [...producerInputs, ".github/ci/README.md", ".github/ci/Dockerfile",
+    ".github/ci/Dockerfile.dockerignore", ".github/ci/image-inputs.json", "scripts/ci-image-impact.mjs"].sort());
   for (const relative of producerInputs) {
     const destination = path.join(directory, relative);
     const originalBytes = fs.readFileSync(destination);

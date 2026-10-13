@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { checkImageInputs, imageInventory } from "./ci-image-impact.mjs";
 
 const paths = {
   desktopPackage: "apps/desktop/package.json",
@@ -15,6 +16,8 @@ const paths = {
   buildSoxr: "scripts/build-soxr-runtime.mjs",
   sourceSnapshot: "scripts/deterministic-source-snapshot.mjs",
   imageVerifier: "scripts/verify-ci-image.sh",
+  candidateHelper: "scripts/ci-image-run.sh",
+  promoted: ".github/ci/promoted-image.json",
 };
 
 const playwrightNoblePackages = [
@@ -53,8 +56,6 @@ const playwrightNoblePackages = [
   "libxrandr2",
 ];
 
-const ciImageReference =
-  "ghcr.io/grazzolini/tuneforge-ci@sha256:01e4207497cab9110b1857a32fcb38596c001e346296181c47405439f77c995c";
 const ciImageConsumers = ["backend", "e2e", "desktop_tauri"];
 function read(root, relativePath) {
   return fs.readFileSync(path.join(root, relativePath), "utf8");
@@ -219,7 +220,6 @@ export function validateCiImagePolicy(root) {
   const desktopPackage = read(root, paths.desktopPackage);
   const lockfile = read(root, paths.lockfile);
   const dockerfile = read(root, paths.dockerfile);
-  const dockerignore = read(root, paths.dockerignore);
   const imageReadme = read(root, paths.imageReadme);
   const imageWorkflow = read(root, paths.imageWorkflow);
   const mainWorkflow = read(root, paths.mainWorkflow);
@@ -317,7 +317,10 @@ export function validateCiImagePolicy(root) {
     "Publish job must scope contents: read and packages: write",
   );
   check(
-    /push:\n    branches:\n      - main\n    paths:\n      - \.github\/ci\/\*\*\n      - \.github\/workflows\/ci-image\.yml\n      - packaging\/soxr\/sources\.lock\.json\n      - packaging\/soxr\/patches\/android-unversioned-soname\.patch\n      - scripts\/build-soxr-runtime\.mjs\n      - scripts\/deterministic-source-snapshot\.mjs\n  workflow_dispatch:/.test(imageWorkflow),
+    imageWorkflow.includes("push:\n    branches:\n      - main\n    paths:\n") &&
+      JSON.stringify([...imageWorkflow.slice(0, imageWorkflow.indexOf("  workflow_dispatch:")).matchAll(/^      - (.+)$/gm)].map((m) => m[1]).filter((v) => v !== "main").sort()) ===
+        JSON.stringify([...imageInventory(root).inputs, paths.imageWorkflow].sort()) &&
+      workflowJobBlock(imageWorkflow, "publish").includes("    if: github.ref == 'refs/heads/main'"),
     "CI image workflow must publish only for trusted main image inputs or manual dispatch",
   );
   check(
@@ -344,7 +347,6 @@ export function validateCiImagePolicy(root) {
     check(/^[0-9a-f]{40}$/.test(line[1]), `Action must use a full commit SHA: ${line[0].trim()}`);
   }
 
-  const copyInstructions = [...dockerfile.matchAll(/^COPY\s+(.+)$/gm)].map((match) => match[1]);
   const ffmpegDownload = dockerfile.indexOf(
     '--output "${ffmpeg_deb}" "${FFMPEG_DEB_URL}"',
   );
@@ -357,25 +359,6 @@ export function validateCiImagePolicy(root) {
   check(
     ffmpegDownload >= 0 && ffmpegDownload < ffmpegChecksum && ffmpegChecksum < ffmpegInstall,
     "FFmpeg AMD64 package must be downloaded, checksum-verified, then installed",
-  );
-  const expectedCopies = [
-    "scripts/build-soxr-runtime.mjs scripts/deterministic-source-snapshot.mjs scripts/",
-    "packaging/soxr/sources.lock.json packaging/soxr/sources.lock.json",
-    "packaging/soxr/patches/android-unversioned-soname.patch packaging/soxr/patches/android-unversioned-soname.patch",
-    "--from=soxr-builder /opt/tuneforge-ci/soxr /opt/tuneforge-ci/soxr",
-    ".github/ci/README.md /usr/share/doc/tuneforge-ci/README.md",
-  ];
-  const expectedDockerignore = [
-    "**", "!.github/", "!.github/ci/", "!.github/ci/README.md", "!packaging/",
-    "!packaging/soxr/", "!packaging/soxr/patches/",
-    "!packaging/soxr/patches/android-unversioned-soname.patch",
-    "!packaging/soxr/sources.lock.json", "!scripts/", "!scripts/build-soxr-runtime.mjs",
-    "!scripts/deterministic-source-snapshot.mjs", "",
-  ].join("\n");
-  check(
-    JSON.stringify(copyInstructions) === JSON.stringify(expectedCopies) &&
-      dockerignore === expectedDockerignore,
-    "CI image repository context must allow and copy only reviewed SoXR inputs and its image README",
   );
   check(
     buildSoxr.includes('from "./deterministic-source-snapshot.mjs"') &&
@@ -422,87 +405,79 @@ export function validateCiImagePolicy(root) {
   );
 
   const jobs = workflowJobs(mainWorkflow);
-  const workflowImageReference = mainWorkflow.match(
-    /^env:\n  CI_IMAGE_REFERENCE:\s+(\S+)$/m,
-  )?.[1];
-  const consumerBlocks = ciImageConsumers.map((name) => [
-    name,
-    workflowJobBlock(mainWorkflow, name),
-  ]);
-  const imageConsumers = jobs
-    .map(({ name, block }) => ({ name, block, image: jobContainerImage(block) }))
-    .filter(({ image }) =>
-      image?.match(/^ghcr\.io\/grazzolini\/tuneforge-ci(?::|@|$)/),
-    );
-  check(
-    jobs.every(({ block }) => jobContainerImage(block) !== "!unparsed") &&
-      workflowImageReference === ciImageReference &&
-      JSON.stringify(imageConsumers.map(({ name }) => name).sort()) ===
-      JSON.stringify([...ciImageConsumers].sort()) &&
-      imageConsumers.every(({ image }) => image === ciImageReference) &&
-      consumerBlocks.every(([, block]) => block.includes(`    container: ${ciImageReference}`)),
-    "Exactly backend, e2e, and desktop_tauri must consume the same pinned CI image digest",
-  );
-  for (const [name, block] of consumerBlocks) {
-    check(block.includes("    runs-on: ubuntu-24.04"), `${name} must use ubuntu-24.04`);
-    check(
-      block.includes("    defaults:\n      run:\n        shell: bash"),
-      `${name} must default run steps to Bash`,
-    );
-    const checkoutIndex = block.indexOf("uses: actions/checkout@");
-    const verifierCalls = verifierCallIndexes(block);
-    check(
-      verifierCalls.length === 1 &&
-        checkoutIndex >= 0 &&
-        verifierCalls[0] > checkoutIndex,
-      `${name} must call the shared CI image verifier once after checkout`,
-    );
-    check(!/\bapt(?:-get)?\b/.test(block), `${name} must not execute apt in PR CI`);
-    check(!block.includes("--with-deps"), `${name} must not use Playwright --with-deps`);
-    check(!/^\s+credentials:/m.test(block), `${name} must not configure container credentials`);
-    check(!jobGrantsPackagesWrite(block), `${name} must not receive packages: write`);
+  const record = JSON.parse(read(root, paths.promoted));
+  check(/^sha256:[a-f0-9]{64}$/.test(record.digest) && record.platform === "linux/amd64" &&
+    ((record.producerFingerprint === null && record.sourceRevision === null) ||
+      (/^[a-f0-9]{64}$/.test(record.producerFingerprint) && /^[a-f0-9]{40}$/.test(record.sourceRevision))),
+    "Promoted image must have an immutable digest and a valid recipe identity or explicit bootstrap identity");
+  check(jobs.every(({ block }) => jobContainerImage(block) === undefined), "CI image jobs must run on the host through the shared Docker helper");
+  const candidateBlock = workflowJobBlock(mainWorkflow, "ci-image-candidate");
+  check(candidateBlock.includes("    runs-on: ubuntu-24.04") && candidateBlock.includes("    permissions:\n      contents: read") &&
+    candidateBlock.includes("    needs: ci-scope") &&
+    candidateBlock.includes("if: ${{ always() && (needs.ci-scope.result != 'success' || needs.ci-scope.outputs.image_selection != 'promoted') }}") &&
+    candidateBlock.includes("if: needs.ci-scope.result != 'success' || needs.ci-scope.outputs.image_selection != 'candidate'\n        run: exit 1") &&
+    candidateBlock.includes('run: bash scripts/ci-image-run.sh build "$RUNNER_TEMP/ci-image"') &&
+    candidateBlock.includes("artifact_id: ${{ steps.upload.outputs.artifact-id }}") &&
+    candidateBlock.includes("ref: ${{ github.sha }}\n          persist-credentials: false") &&
+    candidateBlock.includes("if-no-files-found: error") &&
+    !/--push|docker login|docker push|login-action|secrets\.|continue-on-error|privileged/.test(candidateBlock) && !jobGrantsPackagesWrite(candidateBlock),
+    "Candidate image must fail closed on scope failure and export the full checkout image with a read-only token and exact artifact ID");
+  const helper = read(root, paths.candidateHelper);
+  check(helper.includes("docker build --platform linux/amd64 --no-cache --pull --file .github/ci/Dockerfile --tag tuneforge-ci-candidate .") &&
+    !/--target|docker login|docker push|--privileged|docker\.sock|secrets\./.test(helper) &&
+    helper.includes("Candidate archive config image ID does not match metadata") &&
+    helper.includes("Candidate archive checksum mismatch") && helper.includes("Candidate checkout/recipe/platform/config identity mismatch"),
+    "Shared image helper must build the full final recipe/platform and bind archive, checkout, fingerprint and config identity without publication or fallback");
+  const scopeBlock = workflowJobBlock(mainWorkflow, "ci-scope");
+  check(scopeBlock.includes("image_selection: ${{ steps.image.outputs.selection }}") &&
+    scopeBlock.includes("run: bash scripts/ci-image-run.sh select") && scopeBlock.includes("run: node scripts/ci-image-impact.mjs --check") &&
+    ["backend_static", "backend_ffmpeg", "desktop_tauri"].every((name) => scopeBlock.split("\n").some((line) => line.includes(name + ": ") && line.includes("steps.image.outputs.selection != 'promoted'"))),
+    "Image selection must compare the full checkout recipe and force consumer gates during bootstrap or a promotion gap");
+  for (const name of ciImageConsumers) {
+    const block = workflowJobBlock(mainWorkflow, name);
+    check(block.includes("    runs-on: ubuntu-24.04"), name + " must use ubuntu-24.04");
+    check(block.includes("shell: bash ${{ github.workspace }}/scripts/ci-image-run.sh script {0}"), name + " must route native run steps through the absolute shared Docker shell");
+    const scheduling = name === "e2e" ? "${{ always() }}" : "${{ always() && (needs.ci-image-candidate.result == 'failure' || needs.ci-image-candidate.result == 'cancelled' || needs.ci-scope.result != 'success' || " +
+      (name === "backend" ? "needs.ci-scope.outputs.backend_static == 'true' || needs.ci-scope.outputs.backend_ffmpeg == 'true'" : "needs.ci-scope.outputs.desktop_tauri == 'true'") + ") }}";
+    check(block.match(/^    if: (.*)$/m)?.[1] === scheduling, name + " must retain fail-closed required-job scheduling");
+    const checkout = block.indexOf("uses: actions/checkout@"), require = block.indexOf("run: bash scripts/ci-image-run.sh require"),
+      download = block.indexOf("uses: actions/download-artifact@"), load = block.indexOf('run: bash scripts/ci-image-run.sh load "$RUNNER_TEMP/ci-image"'), verify = verifierCallIndexes(block);
+    check(block.includes("    needs: [ci-scope, ci-image-candidate]") &&
+      block.includes("CI_SCOPE_RESULT: ${{ needs.ci-scope.result }}") && block.includes("CI_IMAGE_SELECTION: ${{ needs.ci-scope.outputs.image_selection }}") &&
+      block.includes("CI_IMAGE_CANDIDATE_RESULT: ${{ needs.ci-image-candidate.result }}") && block.includes("CI_IMAGE_ARTIFACT_ID: ${{ needs.ci-image-candidate.outputs.artifact_id }}") &&
+      block.includes("ref: ${{ github.sha }}\n          persist-credentials: false") &&
+      verify.length === 1 && checkout >= 0 && checkout < require && require < download && download < load && load < verify[0],
+      name + " must require selection success and load the exact checkout image before strict verification");
+    const downloadStep = block.slice(download, block.indexOf("\n      - ", download));
+    check(downloadStep.includes("actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c") &&
+      downloadStep.includes("artifact-ids: ${{ needs.ci-image-candidate.outputs.artifact_id }}") && downloadStep.includes("digest-mismatch: error") &&
+      downloadStep.includes("path: ${{ runner.temp }}/ci-image") && !/^\s+(?:name|github-token|repository|run-id):/m.test(downloadStep),
+      name + " must download only the exact same-run candidate artifact ID with digest verification");
+    for (const index of [require, load, verify[0]]) {
+      const step = block.slice(block.lastIndexOf("\n      - ", index), block.indexOf("\n      - ", index));
+      check(!/^\s+(?:if|continue-on-error):/m.test(step), name + " must not skip or tolerate selected-image verification failures");
+      if (index !== verify[0]) check(step.includes("shell: bash"), name + " must load images on the host");
+      else check(!step.includes("shell:"), name + " must verify inside the selected image");
+    }
+    check(block.includes("if: always() && steps.image.outputs.identity != ''") && block.includes("run: bash scripts/ci-image-run.sh cleanup"), name + " must clean the selected image after failures");
+    check(!/\bapt(?:-get)?\b|--with-deps/.test(block) && !/^\s+credentials:/m.test(block) && !jobGrantsPackagesWrite(block), name + " must not install system packages or receive publication credentials");
   }
-  check(
-    JSON.stringify(
-      jobs
-        .filter(({ block }) => verifierCallIndexes(block).length > 0)
-        .map(({ name }) => name)
-        .sort(),
-    ) === JSON.stringify([...ciImageConsumers].sort()),
-    "Only CI image consumers may call the shared verifier",
-  );
-  const e2eBlock = workflowJobBlock(mainWorkflow, "e2e");
-  check(
-    e2eBlock.includes(
-      "pnpm --filter @tuneforge/desktop exec playwright install chromium",
-    ),
-    "e2e must install only the lockfile-matched Chromium browser at runtime",
-  );
-  const tauriBlock = workflowJobBlock(mainWorkflow, "desktop_tauri");
-  check(
-    tauriBlock.includes(
-      "uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1",
-    ) &&
-      tauriBlock.includes("toolchain: ${{ env.RUST_VERSION }}") &&
-      tauriBlock.includes("cache: false") &&
-      tauriBlock.includes('rustflags: ""'),
-    "desktop_tauri must bootstrap pinned Rust without action-managed caching or rustflags",
-  );
-  check(
-    (tauriBlock.match(/uses: actions\/cache@/g) ?? []).length === 1 &&
-      tauriBlock.includes("key: cargo-v1-${{ env.CI_IMAGE_REFERENCE }}-") &&
-      tauriBlock.includes('soxr_root="/opt/tuneforge-ci/soxr/host-test"') &&
-      tauriBlock.includes('echo "TUNEFORGE_SOXR_ROOT=${soxr_root}"') &&
-      !tauriBlock.includes("node scripts/build-soxr.mjs") &&
-      !tauriBlock.includes("python -m pip install") &&
-      !tauriBlock.includes("actions/setup-node@") &&
-      !tauriBlock.includes("actions/setup-python@"),
-    "desktop_tauri must use one image-keyed Cargo cache and the prebuilt SoXR payload",
-  );
+  check(JSON.stringify(jobs.filter(({ block }) => verifierCallIndexes(block).length).map(({ name }) => name).sort()) === JSON.stringify([...ciImageConsumers].sort()), "Only CI image consumers may call the shared verifier");
+  const e2eBlock = workflowJobBlock(mainWorkflow, "e2e"), tauriBlock = workflowJobBlock(mainWorkflow, "desktop_tauri");
+  check(e2eBlock.includes("pnpm --filter @tuneforge/desktop exec playwright install chromium"), "e2e must install only the lockfile-matched Chromium browser at runtime");
+  check(e2eBlock.includes(".github/ci/.selected-image-key") && ["backend", "e2e"].every((name) => workflowJobBlock(mainWorkflow, name).includes("cache-suffix: ${{ steps.image.outputs.identity }}")), "pnpm and uv caches must include selected image and producer identity");
+  check(tauriBlock.includes("uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659") &&
+    tauriBlock.includes("toolchain: ${{ env.RUST_VERSION }}") && tauriBlock.includes("          cache: false\n") && tauriBlock.includes('rustflags: ""'), "desktop_tauri must bootstrap pinned Rust without action-managed caching or rustflags");
+  check((tauriBlock.match(/uses: actions\/cache@/g) ?? []).length === 1 && tauriBlock.includes("key: cargo-v2-${{ steps.image.outputs.identity }}-") &&
+    tauriBlock.includes('soxr_root="${TUNEFORGE_SOXR_ROOT:?}"') && !tauriBlock.includes("node scripts/build-soxr.mjs") && !tauriBlock.includes("python -m pip install"), "desktop_tauri must use one image-keyed Cargo cache and the prebuilt SoXR payload");
+  check(imageVerifier.includes('sha256sum --check --strict --status "$image_manifest"') && imageVerifier.includes('!= "$CI_IMAGE_FINGERPRINT"'), "CI image verifier must reject missing, corrupt or stale whole-recipe manifests");
+  const publishInputs = imageWorkflow.match(/uses: docker\/build-push-action@[^\n]+\n        with:\n([\s\S]*?)(?=\n      -)/)?.[1];
+  check(publishInputs && [...publishInputs.matchAll(/^          ([\w-]+):/gm)].every((m) => ["context", "file", "platforms", "pull", "no-cache", "push", "tags", "labels", "provenance", "sbom"].includes(m[1])), "Publisher recipe options require explicit compatibility review; build arguments, targets and additional contexts are unsupported");
 
   if (errors.length > 0) {
     throw new Error(`CI image policy violations:\n- ${errors.join("\n- ")}`);
   }
+  checkImageInputs(root);
 
   return {
     playwrightVersion: packageVersion,

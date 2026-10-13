@@ -3,6 +3,7 @@
   "private": true,
   "packageManager": "pnpm@11.22.0",
   "scripts": {
+    "ci:image:impact": "node scripts/ci-image-impact.mjs",
     "build:packaged-frontend": "node scripts/build-packaged-frontend.mjs",
     "bundle:prepare": "node scripts/prepare-bundle.mjs",
     "ffmpeg:build": "node scripts/build-ffmpeg.mjs",

@@ -6,14 +6,13 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import "./build-soxr-runtime.test.mjs";
+import "./ci-image-impact.test.mjs";
+import "./ci-image-run.test.mjs";
 
 import { validateCiImagePolicy } from "./ci-image-policy.mjs";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const ciImageReference = fs
-  .readFileSync(path.join(repositoryRoot, ".github/workflows/ci.yml"), "utf8")
-  .match(/^  CI_IMAGE_REFERENCE:\s+(\S+)$/m)?.[1];
-assert.ok(ciImageReference, "CI workflow must declare CI_IMAGE_REFERENCE");
+const ciImageReference = 'ghcr.io/grazzolini/tuneforge-ci@' + JSON.parse(fs.readFileSync(path.join(repositoryRoot, '.github/ci/promoted-image.json'))).digest;
 const fixtureFiles = [
   "apps/desktop/package.json",
   "pnpm-lock.yaml",
@@ -27,6 +26,12 @@ const fixtureFiles = [
   "scripts/build-soxr-runtime.mjs",
   "scripts/deterministic-source-snapshot.mjs",
   "scripts/verify-ci-image.sh",
+  "scripts/ci-image-run.sh",
+  ".github/ci/promoted-image.json",
+  ".github/ci/image-inputs.json",
+  "scripts/ci-image-impact.mjs",
+  "packaging/soxr/sources.lock.json",
+  "packaging/soxr/patches/android-unversioned-soname.patch",
 ];
 
 function fixture() {
@@ -94,14 +99,14 @@ test("SoXR builder stages, payload checks, and restricted context fail closed", 
     [" AS soxr-builder", " AS unreviewed-builder"],
     ['grep -F \'"-DWITH_PFFFT=ON"\'', "grep -F 'disabled'"],
     ["COPY --from=soxr-builder /opt/tuneforge-ci/soxr /opt/tuneforge-ci/soxr", "COPY . /workspace"],
-  ], /same pinned Ubuntu base without constant FROM platform flags|must verify SoXR|repository context/));
+  ], /same pinned Ubuntu base without constant FROM platform flags|must verify SoXR|must build pinned host SoXR|Unregistered Docker COPY/));
 
 test("SoXR image context rejects additional checkout files", (context) => {
   const root = fixture();
   context.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const target = path.join(root, ".github/ci/Dockerfile.dockerignore");
   fs.appendFileSync(target, "!package.json\n");
-  assert.throws(() => validateCiImagePolicy(root), /context must allow and copy only reviewed SoXR inputs/);
+  assert.throws(() => validateCiImagePolicy(root), /Unregistered Docker context/);
 });
 
 test("SoXR build-input manifest requires every reviewed input", () =>
@@ -218,24 +223,12 @@ test("FFmpeg package checksum verification precedes installation", (context) => 
   assert.throws(() => validateCiImagePolicy(root), /checksum-verified, then installed/);
 });
 
-test("CI image consumers require independent exact env and container digests", () =>
-  assertMutationsFail(".github/workflows/ci.yml", [
-    [`env:\n  CI_IMAGE_REFERENCE: ${ciImageReference}`, "env:\n  CI_IMAGE_REFERENCE: ghcr.io/grazzolini/tuneforge-ci:main"],
-    [`    container: ${ciImageReference}`, "    container: ghcr.io/grazzolini/tuneforge-ci:main"],
-  ], /Exactly backend, e2e, and desktop_tauri/));
+test("central promoted record rejects mutable or malformed identity", () =>
+  assertMutationsFail(".github/ci/promoted-image.json", [[ciImageReference.split("@")[1], "main"],
+    ['"producerFingerprint": null', '"producerFingerprint": "bad"']], /Promoted image must have/));
 
-test("CI image consumers reject valid container credentials", (context) => {
-  const root = fixture();
-  context.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  replace(
-    root,
-    ".github/workflows/ci.yml",
-    `    container: ${ciImageReference}`,
-    `    container:\n      image: ${ciImageReference}\n      credentials:\n        username: actor\n        password: token`,
-  );
-
-  assert.throws(() => validateCiImagePolicy(root), /backend must not configure container credentials/);
-});
+test("CI image consumers reject container credentials", () =>
+  assertMutationsFail(".github/workflows/ci.yml", [["  backend:\n", "  backend:\n    container: { image: arbitrary, credentials: { password: token } }\n"]], /must run on the host/));
 
 test("CI image consumers reject every valid packages write permission form", () => {
   const permissions = [
@@ -245,8 +238,8 @@ test("CI image consumers reject every valid packages write permission form", () 
   ];
   assertMutationsFail(
     ".github/workflows/ci.yml",
-    permissions.map((value) => ["  backend:\n    needs: ci-scope", `  backend:\n${value}\n    needs: ci-scope`]),
-    /backend must not receive packages: write/,
+    permissions.map((value) => ["  backend:\n    needs: [ci-scope, ci-image-candidate]", `  backend:\n${value}\n    needs: [ci-scope, ci-image-candidate]`]),
+    /backend must not install system packages or receive publication credentials/,
   );
 });
 
@@ -260,7 +253,7 @@ test("CI image consumer discovery rejects fourth-job container key variants", ()
   assertMutationsFail(
     ".github/workflows/ci.yml",
     containers.map((value) => ["jobs:\n", `jobs:\n  unexpected_ci_image:\n    runs-on: ubuntu-24.04\n${value}\n    steps:\n      - run: echo unexpected\n\n`]),
-    /Exactly backend, e2e, and desktop_tauri/,
+    /must run on the host/,
   );
 });
 
@@ -276,36 +269,25 @@ test("targeted jobs reject apt and Playwright system dependency installation", (
 
   assert.throws(
     () => validateCiImagePolicy(root),
-    /e2e must not execute apt[\s\S]*e2e must not use Playwright --with-deps/,
+    /must not install system packages/,
   );
 });
 
 test("shared verifier calls reject comments, wrong order, duplicates, and nonconsumers", () => {
   const run = "        run: bash scripts/verify-ci-image.sh";
   const step = `      - name: Verify CI image\n${run}`;
-  const checkout = "      - name: Check out code\n        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1";
+  const checkout = "      - name: Check out code\n        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1\n        with:\n          ref: ${{ github.sha }}\n          persist-credentials: false";
   assertMutationsFail(".github/workflows/ci.yml", [
     [run, `        # ${run.trim()}`],
-    [`${checkout}\n\n${step}`, `${step}\n\n${checkout}`],
+    [checkout, `${step}\n\n${checkout}`],
     [step, `${step}\n\n${step}`],
     ["          fetch-depth: 0", "          fetch-depth: 0\n\n      - run: bash scripts/verify-ci-image.sh"],
-  ], /must call the shared CI image verifier|Only CI image consumers/);
+  ], /must require selection success|Only CI image consumers/);
 });
 
-test("consumer runner and shell checks fail closed", (context) => {
-  const root = fixture();
-  context.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  replace(
-    root,
-    ".github/workflows/ci.yml",
-    `  e2e:\n    runs-on: ubuntu-24.04\n    container: ${ciImageReference}\n    defaults:\n      run:\n        shell: bash`,
-    `  e2e:\n    runs-on: ubuntu-latest\n    container: ${ciImageReference}\n    defaults:\n      run:\n        shell: sh`,
-  );
-  assert.throws(
-    () => validateCiImagePolicy(root),
-    /e2e must use ubuntu-24\.04[\s\S]*e2e must default run steps to Bash/,
-  );
-});
+test("consumer runner and absolute shared shell checks fail closed", () =>
+  assertMutationsFail(".github/workflows/ci.yml", [["    runs-on: ubuntu-24.04", "    runs-on: ubuntu-latest"],
+    ["shell: bash ${{ github.workspace }}/scripts/ci-image-run.sh script {0}", "shell: bash scripts/ci-image-run.sh script {0}"]], /must use ubuntu-24.04|absolute shared Docker shell/));
 
 test("pinned Rust bootstrap stays required", (context) => {
   const root = fixture();
@@ -317,9 +299,9 @@ test("pinned Rust bootstrap stays required", (context) => {
 
 test("Tauri uses one image-keyed Cargo cache and prebuilt SoXR", () =>
   assertMutationsFail(".github/workflows/ci.yml", [
-    ["key: cargo-v1-${{ env.CI_IMAGE_REFERENCE }}-", "key: cargo-v1-"],
+    ["key: cargo-v2-${{ steps.image.outputs.identity }}-", "key: cargo-v2-"],
     ["      - name: Check Tauri shell", "      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9\n\n      - name: Check Tauri shell"],
-    ['soxr_root="/opt/tuneforge-ci/soxr/host-test"', 'node scripts/build-soxr.mjs --target host-test\n          soxr_root="packaging/soxr/generated/host-test"'],
+    ['soxr_root="${TUNEFORGE_SOXR_ROOT:?}"', 'node scripts/build-soxr.mjs --target host-test\n          soxr_root="packaging/soxr/generated/host-test"'],
   ], /one image-keyed Cargo cache and the prebuilt SoXR payload/));
 
 test("release-facing workflow stays separate from CI image", (context) => {
@@ -337,3 +319,42 @@ test("neutral serializer rejects Flatpak policy coupling", () => {
     ['const blockSize = 512;', 'const blockSize = 512;\nimport "./flatpak-source-snapshots.mjs";'],
   ], /serializer must remain independent/);
 });
+
+
+test("candidate builder rejects publication, missing artifacts and scope bypass", () => {
+  assertMutationsFail(".github/workflows/ci.yml", [
+    ["  ci-image-candidate:\n    needs: ci-scope", "  ci-image-candidate:\n    needs: ci-scope\n    container: arbitrary-image"],
+    ["      contents: read\n    outputs:\n      artifact_id:", "      contents: read\n      packages: write\n    outputs:\n      artifact_id:"],
+    ["          if-no-files-found: error", "          if-no-files-found: ignore"],
+    ["artifact_id: ${{ steps.upload.outputs.artifact-id }}", "artifact_id: fixed-name"],
+    ["if: ${{ always() && (needs.ci-scope.result != 'success' || needs.ci-scope.outputs.image_selection != 'promoted') }}", "if: ${{ false }}"],
+  ], /Candidate image|must run on the host/);
+  assertMutationsFail("scripts/ci-image-run.sh", [
+    ["docker build --platform linux/amd64 --no-cache --pull", "docker build --platform linux/amd64 --push --target soxr-builder"],
+    ["--tag tuneforge-ci-candidate .", "--tag tuneforge-ci-candidate .\n    docker login ghcr.io"],
+  ], /Shared image helper/);
+});
+
+test("candidate consumers reject artifact substitution and verification skip-green", () =>
+  assertMutationsFail(".github/workflows/ci.yml", [
+    ["artifact-ids: ${{ needs.ci-image-candidate.outputs.artifact_id }}", "name: candidate-image"],
+    ["          digest-mismatch: error", "          digest-mismatch: warn"],
+    ["          path: ${{ runner.temp }}/ci-image", "          path: ${{ runner.temp }}/ci-image\n          run-id: 123"],
+    ["      - name: Verify CI image\n        run:", "      - name: Verify CI image\n        if: false\n        run:"],
+    ["      - name: Require selected CI image\n        shell: bash", "      - name: Require selected CI image\n        continue-on-error: true\n        shell: bash"],
+    ["    if: ${{ always() }}", "    if: ${{ false && always() }}"],
+    ["CI_IMAGE_CANDIDATE_RESULT: ${{ needs.ci-image-candidate.result }}", "CI_IMAGE_CANDIDATE_RESULT: success"],
+    ["cache-suffix: ${{ steps.image.outputs.identity }}", "cache-suffix: default"],
+  ], /must download only|must not skip|must require selection|must retain fail-closed|caches must include/));
+
+test("whole recipe selection cannot lose promotion-gap gates", () =>
+  assertMutationsFail(".github/workflows/ci.yml", [["steps.image.outputs.selection != 'promoted'", "false"],
+    ["run: bash scripts/ci-image-run.sh select", "run: echo promoted"]], /force consumer gates/));
+
+test("promotion cannot trigger publisher and branch dispatch cannot publish", () =>
+  assertMutationsFail(".github/workflows/ci-image.yml", [["      - .github/ci/Dockerfile", "      - .github/ci/**"],
+    ["    if: github.ref == 'refs/heads/main'", "    if: true"]], /trusted main image inputs/));
+
+test("publisher rejects unreviewed build arguments, targets, platforms and contexts", () =>
+  assertMutationsFail(".github/workflows/ci-image.yml", [["          platforms: linux/amd64", "          platforms: linux/arm64"],
+    ...["build-args: EXTRA=1", "target: soxr-builder", "build-contexts: extra=./apps"].map((option) => ["          no-cache: true", "          no-cache: true\n          " + option])], /only linux|explicit compatibility review/));

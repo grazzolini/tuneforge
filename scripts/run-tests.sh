@@ -74,6 +74,9 @@ android_package_start=${SECONDS}
   cd "${repo_root}"
   node --test scripts/package-android.test.mjs
   node --test scripts/build-ffmpeg.test.mjs
+  if [[ "$(uname -s)" == "Linux" ]]; then
+    node --test scripts/ci-image-impact.test.mjs scripts/ci-image-run.test.mjs scripts/verify-ci-image.test.mjs
+  fi
   node --test scripts/package-dmg.test.mjs
   node --test scripts/package-profile.test.mjs
   node --test scripts/dev.test.mjs

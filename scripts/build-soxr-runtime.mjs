@@ -88,10 +88,11 @@ export function soxrCorrespondingSourcesFileName(target, recipeDigest = recipeId
 export function createSoxrCorrespondingSources(archive, outputParent, target, recipeDigest = recipeIdentity(target)) {
   const fileName = soxrCorrespondingSourcesFileName(target, recipeDigest);
   const output = path.join(outputParent, fileName);
-  const staging = fs.mkdtempSync(path.join(os.tmpdir(), "tuneforge-soxr-sources-"));
+  fs.mkdirSync(outputParent, { recursive: true });
+  const staging = fs.mkdtempSync(path.join(outputParent, ".tuneforge-soxr-sources-"));
   const payload = path.join(staging, "payload");
   const rebuild = target === "android-arm64-v8a"
-    ? "ANDROID_NDK_HOME=/path/to/ndk/29.0.14206865 node scripts/build-soxr-runtime.mjs --target android-arm64-v8a"
+    ? "ANDROID_NDK_HOME=/path/to/ndk node scripts/build-soxr-runtime.mjs --target android-arm64-v8a"
     : "node scripts/build-soxr-runtime.mjs --target host-test";
   try {
     for (const relative of ["packaging/soxr/cache", "packaging/soxr/patches", "packaging/soxr", "scripts"]) {

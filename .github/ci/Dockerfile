@@ -22,6 +22,10 @@ WORKDIR /workspace
 COPY scripts/build-soxr-runtime.mjs scripts/deterministic-source-snapshot.mjs scripts/
 COPY packaging/soxr/sources.lock.json packaging/soxr/sources.lock.json
 COPY packaging/soxr/patches/android-unversioned-soname.patch packaging/soxr/patches/android-unversioned-soname.patch
+COPY .github/ci/Dockerfile .github/ci/Dockerfile.dockerignore .github/ci/image-inputs.json .github/ci/README.md .github/ci/
+COPY scripts/ci-image-impact.mjs scripts/
+
+RUN node scripts/ci-image-impact.mjs --manifest > /tmp/producer-inputs.sha256
 
 RUN set -eux; \
     node scripts/build-soxr-runtime.mjs \
@@ -87,8 +91,10 @@ LABEL org.opencontainers.image.source="https://github.com/grazzolini/tuneforge" 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 COPY --from=soxr-builder /opt/tuneforge-ci/soxr /opt/tuneforge-ci/soxr
+COPY --from=soxr-builder /tmp/producer-inputs.sha256 /usr/share/tuneforge-ci/producer-inputs.sha256
 
 RUN set -eux; \
+    chmod 0755 /opt/tuneforge-ci/soxr/host-test; \
     export DEBIAN_FRONTEND=noninteractive; \
     apt-get update; \
     apt-get install -y --no-install-recommends \

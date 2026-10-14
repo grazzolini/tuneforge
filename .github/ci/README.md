@@ -5,6 +5,50 @@ TuneForge's AMD64 GitHub Actions jobs. It is CI infrastructure only. TuneForge
 release artifacts continue to require host-installed FFmpeg and do not copy
 anything from this image.
 
+## Mandatory image-impact preflight
+
+Before assigning implementation, assess all planned paths:
+
+```sh
+pnpm ci:image:impact --paths scripts/build-soxr-runtime.mjs apps/backend/app/config.py
+pnpm ci:image:impact --diff origin/main HEAD
+pnpm ci:image:impact --working-tree origin/main
+node scripts/ci-image-impact.mjs --check
+```
+
+Recheck scope additions before editing and actual changes before publication,
+including uncommitted paths. The canonical machine-readable inventory is
+[`image-inputs.json`](image-inputs.json): components declare inputs, upstream
+source/pins, license, probes, and consumer jobs. Docker COPY/context, static local
+imports, lock references and patch checksums are checked against it. Dynamic
+filesystem reads and snapshot lists require a reviewed source checksum in
+`readAuditSha256`; changed producer code fails with an actionable registration
+request. This is an explicit code review boundary, not static proof of arbitrary
+JavaScript behavior. New components must register transitive dependencies and
+consider host-installed tools shadowing image binaries/libraries.
+
+Reports distinguish producer, publishing-process, consumer-compatibility, and
+no known image impact. Flatpak source/cache policy and the application-owned
+LGPL FFmpeg builder have no current producer edge. CI FFmpeg is the separate
+Ubuntu GPL package in Dockerfile. Package locks and job-time Node, Python, Rust,
+pnpm, uv, and Chromium are compatibility inputs unless copied into the recipe.
+If they expose missing image libraries, add the concrete Dockerfile producer edge.
+
+Producer delivery order: producer PR and full final candidate validation,
+merge, trusted main image publication, inventory/license/provenance review and
+anonymous pull by digest, then separate consumer promotion. Publication-process
+or compatibility changes need their corresponding review; they do not inherently
+rebuild the image. A promoted record is consumer configuration, never a producer
+input or publication trigger.
+
+Image impact is one dependency view. Inspect every shared-helper caller separately
+for non-image behavior and compatibility before assigning implementation.
+
+The complete sorted producer manifest defines a recipe fingerprint. It is not
+byte identity: unversioned APT dependencies can resolve differently between
+builds. Every build records the actual transitive package inventory; registry
+manifest digest and Docker config image ID retain their distinct meanings.
+
 ## Contents and provenance
 
 - Base: Ubuntu 24.04, pinned in `Dockerfile` to a Linux AMD64 manifest digest.
@@ -66,6 +110,41 @@ This GPL-bearing CI tool is not linked into, copied into, or distributed with
 TuneForge application artifacts. `THIRD_PARTY_NOTICES.md` continues to describe
 the application's host-installed FFmpeg boundary.
 
+## Candidate producer validation
+
+The central [promoted record](./promoted-image.json) holds the immutable registry
+manifest digest, producer fingerprint, source revision and platform. CI compares
+the whole checkout fingerprint to that record on both PRs and main. Matching
+recipes use the promoted image. A mismatch, including an unrelated PR during a
+promotion gap, builds the full final candidate and forces all three image consumer
+gates. The initial null fingerprint/revision explicitly requires candidates until
+the first verified promotion; it does not invent evidence for the existing digest.
+
+The hosted Ubuntu 24.04 candidate job builds the same final recipe and platform
+without cache, registry login, package writes or publication. It exports a Docker
+archive and metadata containing checkout SHA, producer fingerprint, archive SHA,
+Docker config image ID and platform. Consumers download the exact artifact ID from
+the same run, verify metadata and bytes, and bind Docker's loaded config ID to that
+metadata. A config image ID is distinct from the registry manifest digest. Missing
+or expired rerun artifacts, selector failures and identity failures fail closed.
+
+All three consumers run on the host with the same
+[Docker helper](../../scripts/ci-image-run.sh) as their absolute custom shell.
+Actions, caches and artifact uploads remain on the host; installs, strict image
+verification and native tests run in the selected container. The helper preserves
+working directories, UID/GID, workspace, temporary outputs and GitHub command
+files at identical absolute paths. It mounts only the selected action tool prefixes
+and cache subtrees, with an isolated home and explicit environment. It never mounts
+the runner's entire home, Docker socket or host system libraries. Node, Python,
+Rust, pnpm and uv intentionally come from pinned setup actions; image probes must
+detect accidental shadowing of native image tools such as FFmpeg. pnpm, uv and
+Cargo cache keys include selected image and recipe identity. Cleanup and host
+post-actions remain available after native failures.
+
+The whole-recipe manifest verifier supplements the existing strict SoXR payload,
+PFFFT and build-input checks and exact FFmpeg paths. Candidate validation does not
+authorize registry publication, digest promotion or anonymous-pull approval.
+
 ## Refresh and promotion
 
 1. Let Docker Dependabot update the Ubuntu digest, or update it from the
@@ -100,6 +179,7 @@ the application's host-installed FFmpeg boundary.
    remain a separate authorized GitHub operation.
 7. Verify repository linkage and an anonymous Linux AMD64 pull by digest.
 8. After those checks pass, promote the exact verified digest in a separate
-   consumer PR. Preserve the strict input verifier and Tauri SoXR configuration.
-   Never consume a moving tag, delete a referenced image version, or migrate CI
-   before publication and anonymous-pull proof succeed.
+   consumer PR by updating `promoted-image.json` with its digest, publication
+   fingerprint, source revision and platform. Preserve the strict input verifier
+   and Tauri SoXR configuration. Never consume a moving tag, delete a referenced
+   image version, or promote before publication and anonymous-pull proof succeed.

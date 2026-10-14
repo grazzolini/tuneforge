@@ -15,7 +15,7 @@ test("CI reads the exact Python pin once and leaves uv project selection unoverr
 
   assert.equal(pythonSetups.length, 3);
   assert.doesNotMatch(workflow, /python-version: "3\.14"/);
-  assert.doesNotMatch(workflow, /uses: astral-sh\/setup-uv@[^\n]*\n\s*with:/);
+  assert.doesNotMatch(workflow, /python-version:.*3\.14/);
   assert.doesNotMatch(workflow, /uv run --python/);
 });
 
@@ -68,4 +68,17 @@ test("third-party notice changes remain documentation-only CI scope", () => {
     documentation,
     /full_gate=true|backend_static=true|desktop=true|site=true|release_media=true/,
   );
+});
+
+
+test("producer inputs retain real gates and promotion gaps force all image consumer gates", () => {
+  assert.match(caseArm(String.raw`scripts/\*\)`), /full_gate=true/);
+  assert.match(caseArm(String.raw`\.github/ci/\*\|\.github/workflows/ci-image\.yml\|\.github/workflows/ci\.yml\|packaging/soxr/\*\)`), /full_gate=true/);
+  assert.match(workflow, /run: bash scripts\/ci-image-run\.sh select/);
+  for (const flag of ["backend_static", "backend_ffmpeg", "desktop_tauri"]) {
+    assert.match(workflow.split("\n").find((line) => line.includes(`${flag}: `)), /steps\.image\.outputs\.selection != 'promoted'/);
+  }
+  const candidate = workflow.slice(workflow.indexOf("  ci-image-candidate:\n"), workflow.indexOf("\n  commitlint:"));
+  assert.match(candidate, /needs: ci-scope/);
+  assert.match(candidate, /always\(\).*needs\.ci-scope\.result != 'success'/);
 });

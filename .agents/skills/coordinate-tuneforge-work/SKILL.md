@@ -92,6 +92,16 @@ Produce a decision-complete plan containing:
 Read [validation-lanes.md](references/validation-lanes.md) before selecting
 lanes or reporting evidence.
 
+Before implementation assignments, run `pnpm ci:image:impact --paths <planned paths...>`
+and include affected components, causal chain, and delivery order in the plan.
+Use the canonical [CI image inventory](../../../.github/ci/image-inputs.json) and
+[delivery guidance](../../../.github/ci/README.md#mandatory-image-impact-preflight);
+do not maintain a second dependency graph in this skill. Recheck expanded scope
+before edits. Before publication, rerun the assessment against fresh main with
+`pnpm ci:image:impact --working-tree <fresh-main>` (includes staged/untracked paths).
+Producer changes require merged-main publication and verified digest promotion
+before dependent consumers; assessment never grants publication authority.
+
 ## Local Execution After Approval
 
 Only after the user approves the plan and explicitly requests local execution,

@@ -6,6 +6,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { imageInventory, producerIdentity } from "./ci-image-impact.mjs";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const verifier = path.join(repositoryRoot, "scripts/verify-ci-image.sh");
@@ -39,7 +40,7 @@ function fixture(inputs = buildInputs) {
   fs.mkdirSync(path.join(runtime, "include"), { recursive: true });
   fs.mkdirSync(path.join(runtime, "lib"), { recursive: true });
   fs.mkdirSync(bin, { recursive: true });
-  for (const relative of inputs) {
+  for (const relative of new Set([...inputs, ...imageInventory(repositoryRoot).inputs])) {
     const destination = path.join(workspace, relative);
     fs.mkdirSync(path.dirname(destination), { recursive: true });
     fs.copyFileSync(path.join(repositoryRoot, relative), destination);
@@ -62,7 +63,10 @@ function fixture(inputs = buildInputs) {
     fs.chmodSync(executable, 0o755);
   }
   const summary = path.join(root, "summary.md");
-  return { root, workspace, soxr, runtime, bin, summary };
+  const imageManifest = path.join(root, "producer-inputs.sha256");
+  const identity = producerIdentity(workspace);
+  fs.writeFileSync(imageManifest, identity.manifest);
+  return { root, workspace, soxr, runtime, bin, summary, imageManifest, fingerprint: identity.fingerprint };
 }
 
 function run(value) {
@@ -74,6 +78,8 @@ function run(value) {
       ...process.env,
       PATH: `${value.bin}:${process.env.PATH}`,
       CI_IMAGE_REFERENCE: "ghcr.io/grazzolini/tuneforge-ci@sha256:test",
+      CI_IMAGE_FINGERPRINT: value.fingerprint,
+      TUNEFORGE_CI_IMAGE_MANIFEST: value.imageManifest,
       GITHUB_JOB: "desktop_tauri",
       GITHUB_STEP_SUMMARY: value.summary,
       GITHUB_WORKSPACE: value.workspace,
@@ -134,6 +140,23 @@ test("unchanged strict verifier accepts new producer inputs and rejects every ol
         fs.rmSync(value.root, { recursive: true, force: true });
       }
     }
+  }
+});
+
+test("whole recipe verifier rejects missing manifest, changed bytes and substituted fingerprint", () => {
+  for (const mutate of [
+    (value) => fs.unlinkSync(value.imageManifest),
+    (value) => fs.appendFileSync(value.imageManifest, "corrupt\n"),
+    (value) => { value.fingerprint = "0".repeat(64); },
+    (value) => fs.appendFileSync(path.join(value.workspace, ".github/ci/README.md"), "stale\n"),
+  ]) {
+    const value = fixture(producerInputs);
+    try {
+      mutate(value);
+      const result = run(value);
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /Whole CI image build inputs do not match/);
+    } finally { fs.rmSync(value.root, { recursive: true, force: true }); }
   }
 });
 

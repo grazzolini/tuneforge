@@ -9,23 +9,27 @@ on:
 permissions:
   contents: read
 
-env:
-  CI_IMAGE_REFERENCE: ghcr.io/grazzolini/tuneforge-ci@sha256:01e4207497cab9110b1857a32fcb38596c001e346296181c47405439f77c995c
-
 jobs:
   ci-scope:
     runs-on: ubuntu-latest
     outputs:
-      backend_static: ${{ steps.scope.outputs.backend_static }}
-      backend_ffmpeg: ${{ steps.scope.outputs.backend_ffmpeg }}
+      backend_static: ${{ steps.scope.outputs.backend_static == 'true' || steps.image.outputs.selection != 'promoted' }}
+      backend_ffmpeg: ${{ steps.scope.outputs.backend_ffmpeg == 'true' || steps.image.outputs.selection != 'promoted' }}
       desktop: ${{ steps.scope.outputs.desktop }}
+      desktop_tauri: ${{ steps.scope.outputs.desktop == 'true' || steps.image.outputs.selection != 'promoted' }}
       release_media: ${{ steps.scope.outputs.release_media }}
       site: ${{ steps.scope.outputs.site }}
+      image_selection: ${{ steps.image.outputs.selection }}
+      image_fingerprint: ${{ steps.image.outputs.fingerprint }}
     steps:
       - name: Check out code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check CI image dependency inventory
+        run: node scripts/ci-image-impact.mjs --check
 
       - name: Determine CI scope
         id: scope
@@ -160,6 +164,41 @@ jobs:
             fi
           } >> "${GITHUB_STEP_SUMMARY}"
 
+      - name: Select whole CI image recipe
+        id: image
+        run: bash scripts/ci-image-run.sh select
+
+  ci-image-candidate:
+    needs: ci-scope
+    if: ${{ always() && (needs.ci-scope.result != 'success' || needs.ci-scope.outputs.image_selection != 'promoted') }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - name: Require valid candidate scope
+        if: needs.ci-scope.result != 'success' || needs.ci-scope.outputs.image_selection != 'candidate'
+        run: exit 1
+
+      - name: Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Build and export full final candidate
+        run: bash scripts/ci-image-run.sh build "$RUNNER_TEMP/ci-image"
+
+      - name: Upload candidate image and metadata
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ci-image-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ci-image
+          if-no-files-found: error
+          retention-days: 3
+
   commitlint:
     runs-on: ubuntu-latest
     permissions:
@@ -232,7 +271,7 @@ jobs:
           node-version: "26"
 
       - name: Test deterministic Node scripts
-        run: node --test scripts/build-info.test.mjs scripts/package-options.test.mjs scripts/flatpak-options.test.mjs scripts/flatpak-pnpm.test.mjs scripts/desktop-e2e.test.mjs scripts/sync-validation.test.mjs scripts/release-license-inventory.test.mjs scripts/capture-release-media.test.mjs scripts/ci-image-policy.test.mjs scripts/verify-ci-image.test.mjs scripts/ci-scope-policy.test.mjs
+        run: node --test scripts/build-info.test.mjs scripts/package-options.test.mjs scripts/flatpak-options.test.mjs scripts/flatpak-pnpm.test.mjs scripts/desktop-e2e.test.mjs scripts/sync-validation.test.mjs scripts/release-license-inventory.test.mjs scripts/capture-release-media.test.mjs scripts/ci-image-policy.test.mjs scripts/verify-ci-image.test.mjs scripts/ci-scope-policy.test.mjs scripts/ci-image-impact.test.mjs scripts/ci-image-run.test.mjs
 
       - name: Check release script syntax
         run: |
@@ -250,11 +289,18 @@ jobs:
         run: bash scripts/android-arm64-env.test.sh
 
   e2e:
+    needs: [ci-scope, ci-image-candidate]
+    if: ${{ always() }}
     runs-on: ubuntu-24.04
-    container: ghcr.io/grazzolini/tuneforge-ci@sha256:01e4207497cab9110b1857a32fcb38596c001e346296181c47405439f77c995c
     defaults:
       run:
-        shell: bash
+        shell: bash ${{ github.workspace }}/scripts/ci-image-run.sh script {0}
+    env:
+      CI_SCOPE_RESULT: ${{ needs.ci-scope.result }}
+      CI_IMAGE_SELECTION: ${{ needs.ci-scope.outputs.image_selection }}
+      CI_IMAGE_CANDIDATE_RESULT: ${{ needs.ci-image-candidate.result }}
+      CI_IMAGE_ARTIFACT_ID: ${{ needs.ci-image-candidate.outputs.artifact_id }}
+      CI_USE_UV: "true"
     steps:
       - name: Initialize E2E job
         shell: bash
@@ -272,11 +318,29 @@ jobs:
 
       - name: Check out code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
 
-      - name: Verify CI image
-        run: bash scripts/verify-ci-image.sh
+      - name: Require selected CI image
+        shell: bash
+        run: bash scripts/ci-image-run.sh require
+
+      - name: Download exact candidate image
+        if: needs.ci-scope.outputs.image_selection == 'candidate'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.ci-image-candidate.outputs.artifact_id }}
+          path: ${{ runner.temp }}/ci-image
+          digest-mismatch: error
+
+      - name: Load and validate selected CI image
+        id: image
+        shell: bash
+        run: bash scripts/ci-image-run.sh load "$RUNNER_TEMP/ci-image"
 
       - name: Set up pnpm
+        id: pnpm
         uses: pnpm/setup@84cb39b217b10273981911c288cd62326dc7c6d2 # v2.0.2
         with:
           install: false
@@ -286,7 +350,9 @@ jobs:
         with:
           node-version: "26"
           cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
+          cache-dependency-path: |
+            pnpm-lock.yaml
+            .github/ci/.selected-image-key
 
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -295,6 +361,18 @@ jobs:
 
       - name: Set up uv
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          cache-suffix: ${{ steps.image.outputs.identity }}
+
+      - name: Configure pnpm container paths
+        shell: bash
+        env:
+          CI_PNPM_ROOT: ${{ steps.pnpm.outputs.dest }}
+          CI_PNPM_BIN: ${{ steps.pnpm.outputs.bin-dest }}
+        run: printf 'CI_PNPM_ROOT=%s\nCI_PNPM_BIN=%s\n' "$CI_PNPM_ROOT" "$CI_PNPM_BIN" >> "$GITHUB_ENV"
+
+      - name: Verify CI image
+        run: bash scripts/verify-ci-image.sh
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -307,7 +385,6 @@ jobs:
         run: pnpm --filter @tuneforge/desktop exec playwright install chromium
 
       - name: Run desktop E2E suite
-        shell: bash
         run: |
           set -uo pipefail
           started_at="$(date +%s)"
@@ -391,6 +468,11 @@ jobs:
             echo "- Excludes GitHub Actions post-job cleanup."
           } >> "${GITHUB_STEP_SUMMARY}"
 
+      - name: Clean selected image
+        if: always() && steps.image.outputs.identity != ''
+        shell: bash
+        run: bash scripts/ci-image-run.sh cleanup
+
   site:
     needs: ci-scope
     if: ${{ always() && (needs.ci-scope.result != 'success' || needs.ci-scope.outputs.site == 'true') }}
@@ -460,15 +542,21 @@ jobs:
         run: pnpm --filter @tuneforge/site build
 
   backend:
-    needs: ci-scope
-    if: ${{ always() && (needs.ci-scope.result != 'success' || needs.ci-scope.outputs.backend_static == 'true' || needs.ci-scope.outputs.backend_ffmpeg == 'true') }}
+    needs: [ci-scope, ci-image-candidate]
+    if: ${{ always() && (needs.ci-image-candidate.result == 'failure' || needs.ci-image-candidate.result == 'cancelled' || needs.ci-scope.result != 'success' || needs.ci-scope.outputs.backend_static == 'true' || needs.ci-scope.outputs.backend_ffmpeg == 'true') }}
     runs-on: ubuntu-24.04
-    container: ghcr.io/grazzolini/tuneforge-ci@sha256:01e4207497cab9110b1857a32fcb38596c001e346296181c47405439f77c995c
     defaults:
       run:
-        shell: bash
+        shell: bash ${{ github.workspace }}/scripts/ci-image-run.sh script {0}
+    env:
+      CI_SCOPE_RESULT: ${{ needs.ci-scope.result }}
+      CI_IMAGE_SELECTION: ${{ needs.ci-scope.outputs.image_selection }}
+      CI_IMAGE_CANDIDATE_RESULT: ${{ needs.ci-image-candidate.result }}
+      CI_IMAGE_ARTIFACT_ID: ${{ needs.ci-image-candidate.outputs.artifact_id }}
+      CI_USE_UV: ${{ needs.ci-scope.outputs.backend_static == 'true' || needs.ci-scope.outputs.backend_ffmpeg == 'true' }}
     steps:
       - name: Require CI scope
+        shell: bash
         if: needs.ci-scope.result != 'success'
         run: |
           echo "ci-scope did not complete successfully; failing backend required check."
@@ -476,11 +564,34 @@ jobs:
 
       - name: Check out code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
 
-      - name: Verify CI image
-        run: bash scripts/verify-ci-image.sh
+      - name: Require selected CI image
+        shell: bash
+        run: bash scripts/ci-image-run.sh require
+
+      - name: Download exact candidate image
+        if: needs.ci-scope.outputs.image_selection == 'candidate'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.ci-image-candidate.outputs.artifact_id }}
+          path: ${{ runner.temp }}/ci-image
+          digest-mismatch: error
+
+      - name: Load and validate selected CI image
+        id: image
+        shell: bash
+        run: bash scripts/ci-image-run.sh load "$RUNNER_TEMP/ci-image"
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "26"
+          package-manager-cache: false
 
       - name: Skip backend checks
+        shell: bash
         if: needs.ci-scope.outputs.backend_static != 'true' && needs.ci-scope.outputs.backend_ffmpeg != 'true'
         run: echo "No backend paths changed; skipping backend setup."
 
@@ -493,6 +604,11 @@ jobs:
       - name: Set up uv
         if: needs.ci-scope.outputs.backend_static == 'true' || needs.ci-scope.outputs.backend_ffmpeg == 'true'
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          cache-suffix: ${{ steps.image.outputs.identity }}
+
+      - name: Verify CI image
+        run: bash scripts/verify-ci-image.sh
 
       - name: Sync backend dependencies
         if: needs.ci-scope.outputs.backend_static == 'true' || needs.ci-scope.outputs.backend_ffmpeg == 'true'
@@ -513,6 +629,11 @@ jobs:
         if: needs.ci-scope.outputs.backend_ffmpeg == 'true'
         working-directory: apps/backend
         run: uv run pytest
+
+      - name: Clean selected image
+        if: always() && steps.image.outputs.identity != ''
+        shell: bash
+        run: bash scripts/ci-image-run.sh cleanup
 
   desktop_frontend:
     needs: ci-scope
@@ -594,17 +715,21 @@ jobs:
         run: pnpm --filter @tuneforge/desktop test --run
 
   desktop_tauri:
-    needs: ci-scope
-    if: ${{ always() && (needs.ci-scope.result != 'success' || needs.ci-scope.outputs.desktop == 'true') }}
+    needs: [ci-scope, ci-image-candidate]
+    if: ${{ always() && (needs.ci-image-candidate.result == 'failure' || needs.ci-image-candidate.result == 'cancelled' || needs.ci-scope.result != 'success' || needs.ci-scope.outputs.desktop_tauri == 'true') }}
     runs-on: ubuntu-24.04
-    container: ghcr.io/grazzolini/tuneforge-ci@sha256:01e4207497cab9110b1857a32fcb38596c001e346296181c47405439f77c995c
     defaults:
       run:
-        shell: bash
+        shell: bash ${{ github.workspace }}/scripts/ci-image-run.sh script {0}
     env:
+      CI_SCOPE_RESULT: ${{ needs.ci-scope.result }}
+      CI_IMAGE_SELECTION: ${{ needs.ci-scope.outputs.image_selection }}
+      CI_IMAGE_CANDIDATE_RESULT: ${{ needs.ci-image-candidate.result }}
+      CI_IMAGE_ARTIFACT_ID: ${{ needs.ci-image-candidate.outputs.artifact_id }}
       RUST_VERSION: "1.98.0"
     steps:
       - name: Require CI scope
+        shell: bash
         if: needs.ci-scope.result != 'success'
         run: |
           echo "ci-scope did not complete successfully; failing Tauri shell checks."
@@ -612,22 +737,34 @@ jobs:
 
       - name: Check out code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
 
-      - name: Verify CI image
-        run: bash scripts/verify-ci-image.sh
+      - name: Require selected CI image
+        shell: bash
+        run: bash scripts/ci-image-run.sh require
 
-      - name: Configure prebuilt SoXR runtime
-        if: needs.ci-scope.outputs.desktop == 'true'
-        run: |
-          set -euo pipefail
-          soxr_root="/opt/tuneforge-ci/soxr/host-test"
-          {
-            echo "TUNEFORGE_SOXR_ROOT=${soxr_root}"
-            echo "LD_LIBRARY_PATH=${soxr_root}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
-          } >> "${GITHUB_ENV}"
+      - name: Download exact candidate image
+        if: needs.ci-scope.outputs.image_selection == 'candidate'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.ci-image-candidate.outputs.artifact_id }}
+          path: ${{ runner.temp }}/ci-image
+          digest-mismatch: error
+
+      - name: Load and validate selected CI image
+        id: image
+        shell: bash
+        run: bash scripts/ci-image-run.sh load "$RUNNER_TEMP/ci-image"
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "26"
+          package-manager-cache: false
 
       - name: Set up Rust
-        if: needs.ci-scope.outputs.desktop == 'true'
+        if: needs.ci-scope.outputs.desktop_tauri == 'true'
         uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
@@ -635,7 +772,7 @@ jobs:
           rustflags: ""
 
       - name: Cache Cargo dependencies and build output
-        if: needs.ci-scope.outputs.desktop == 'true'
+        if: needs.ci-scope.outputs.desktop_tauri == 'true'
         continue-on-error: true
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -644,14 +781,31 @@ jobs:
             ~/.cargo/git
             apps/desktop/src-tauri/target
             !apps/desktop/src-tauri/target/debug/incremental
-          key: cargo-v1-${{ env.CI_IMAGE_REFERENCE }}-${{ runner.os }}-${{ runner.arch }}-rust-${{ env.RUST_VERSION }}-${{ hashFiles('apps/desktop/src-tauri/Cargo.lock', 'apps/desktop/src-tauri/Cargo.toml') }}
+          key: cargo-v2-${{ steps.image.outputs.identity }}-${{ runner.os }}-${{ runner.arch }}-rust-${{ env.RUST_VERSION }}-${{ hashFiles('apps/desktop/src-tauri/Cargo.lock', 'apps/desktop/src-tauri/Cargo.toml') }}
+
+      - name: Verify CI image
+        run: bash scripts/verify-ci-image.sh
+
+      - name: Configure prebuilt SoXR runtime
+        if: needs.ci-scope.outputs.desktop_tauri == 'true'
+        run: |
+          set -euo pipefail
+          soxr_root="${TUNEFORGE_SOXR_ROOT:?}"
+          {
+            echo "TUNEFORGE_SOXR_ROOT=${soxr_root}"
+          } >> "${GITHUB_ENV}"
 
       - name: Check Tauri shell
-        if: needs.ci-scope.outputs.desktop == 'true'
+        if: needs.ci-scope.outputs.desktop_tauri == 'true'
         working-directory: apps/desktop/src-tauri
         run: cargo check
 
       - name: Test Tauri shell
-        if: needs.ci-scope.outputs.desktop == 'true'
+        if: needs.ci-scope.outputs.desktop_tauri == 'true'
         working-directory: apps/desktop/src-tauri
         run: cargo test
+
+      - name: Clean selected image
+        if: always() && steps.image.outputs.identity != ''
+        shell: bash
+        run: bash scripts/ci-image-run.sh cleanup

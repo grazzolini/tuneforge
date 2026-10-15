@@ -3,7 +3,7 @@ mod build_support;
 use std::path::PathBuf;
 
 #[test]
-fn accepts_only_the_pinned_shader_ndk_revision() {
+fn accepts_only_the_selected_shader_ndk_revision() {
     const PINNED: &str = "29.0.14206865";
     assert!(build_support::validate_ndk_revision(
         PINNED,
@@ -12,12 +12,15 @@ fn accepts_only_the_pinned_shader_ndk_revision() {
     .is_ok());
     assert_eq!(
         build_support::validate_ndk_revision(PINNED, "Pkg.Revision = 30.0.10000000\n").unwrap_err(),
-        "Android whisper.cpp Vulkan shaders require pinned NDK 29.0.14206865; found 30.0.10000000"
+        "Android whisper.cpp Vulkan shaders require selected NDK 29.0.14206865; found 30.0.10000000"
     );
     assert_eq!(
         build_support::validate_ndk_revision(PINNED, "Pkg.Desc = Android NDK\n").unwrap_err(),
         "Android NDK Pkg.Revision must be present"
     );
+    assert!(build_support::validate_ndk_revision(
+        "30.0.10000000", "Pkg.Revision = 30.0.10000000\n",
+    ).is_ok());
 }
 
 #[test]

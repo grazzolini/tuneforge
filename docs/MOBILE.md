@@ -253,6 +253,22 @@ The unsigned simulator app is written below
 
 ## Android Setup
 
+Linux x86_64 and macOS x86_64/arm64 use the same packaging flow. Packaging discovers the newest
+complete compatible profile of installed JDK, SDK platform/build-tools, and stable NDK through PATH
+and standard user/system SDK and JVM locations. The validated baseline remains available when the
+newer profile is incomplete; profile selection follows installed capabilities on either host.
+Java and Android root overrides are optional and authoritative;
+invalid overrides or conflicting aliases fail. Versions beyond the validated baseline warn. The
+commands do not install host toolchain components; real APK builds still need testing on each host.
+
+Current requirements and versions live in the [packaging preflight](../scripts/package-android.mjs),
+[shared selector](../scripts/android-toolchain.mjs), and
+[scaffold configurator](../scripts/android-configure-toolchain.mjs). Preparation safely migrates
+recognized scaffold toolchain blocks in either profile direction, preserving signing, app source,
+and custom files. Unknown
+required structures fail before toolchain files change. The compilation SDK can advance while
+runtime `targetSdk` and `minSdk` remain unchanged.
+
 Use the root commands to build Android APKs without opening Android Studio:
 
 ```sh
@@ -262,10 +278,11 @@ pnpm package:android
 pnpm package:android:release
 ```
 
-Each build command validates the JDK 17, Android SDK, compatible NDK, Rust target, and Tauri tools;
+Each build command validates the JDK, Android SDK, selected NDK, Rust target, and Tauri tools;
 builds or reuses verified FFmpeg/LAME/libsoxr runtimes; initializes an absent target; generates
 icons; and applies TuneForge's generated Android preparation under one packaging lock. Running
-`pnpm package:android:prepare` separately remains useful for preparation-only checks but is optional.
+`pnpm package:android:prepare` separately remains useful for preparation-only checks but is optional;
+it stops before Gradle, APK creation, and signing.
 Preparation rejects package identity options and stores no identity choice. Explicit native-runtime
 overrides are validated but never rebuilt.
 
@@ -469,7 +486,13 @@ basic mobile project, analysis, chords, lyrics, playback, and packaging path is 
 For Android Studio repo-root import, run `pnpm android:studio:shim` after Android init. The script
 writes ignored root Gradle files that point Studio at `apps/desktop/src-tauri/gen/android`, set the
 experiment to arm64-only, and keep machine-local SDK paths out of git. Use `pnpm dev:android:studio`
-when you want Studio-driven dev runs; a plain Studio Run can hit Tauri's `android-studio-script`
+when you want Studio-driven dev runs. Both flows follow the generated SDK platform and recorded NDK
+path/revision; conflicting overrides require `pnpm package:android:prepare` with matching settings.
+SDK selection requires stable platform metadata, `build.prop`, and `android.jar`; dotted APIs use
+the pinned AGP's recognized `package.xml` platform identity.
+Package revisions with a positive preview number are excluded. A generated `sdk.dir` is authoritative;
+align or remove conflicting entries before selecting another SDK, including for Studio runs.
+A plain Studio Run can hit Tauri's `android-studio-script`
 websocket guard if the Tauri CLI dev command is not running. For smoke testing an APK, build with
 `pnpm package:android:debug` and install the generated APK onto an emulator or device.
 

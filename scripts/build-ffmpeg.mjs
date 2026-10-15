@@ -240,7 +240,12 @@ function materializeCorrespondingSources(cacheDir, outputParent, recipeDigest) {
       "Rebuild either owned target with:",
       "",
       "    node scripts/build-ffmpeg.mjs --target macos-arm64",
-      "    ANDROID_NDK_HOME=/path/to/ndk/29.0.14206865 node scripts/build-ffmpeg.mjs --target android-arm64-v8a",
+      "    ANDROID_NDK_HOME=/path/to/ndk node scripts/build-ffmpeg.mjs --target android-arm64-v8a",
+      "",
+      "For Android, read `toolchain.androidNdkRevision` in the distributed runtime's",
+      "`provenance.json`. Install that exact NDK revision with `sdkmanager \"ndk;<revision>\"`",
+      "and set ANDROID_NDK_HOME to its directory before rebuilding or replacing the runtime.",
+      "This shared source bundle is independent of the selected target and NDK revision.",
       "",
       "The recipe verifies all pins before extraction and rebuilds dynamically linked LGPL payloads.",
       "Replace `packaging/ffmpeg/generated/<target>`, validate it, then run normal packaging.",
@@ -273,15 +278,17 @@ function toolchainIdentity(tc) {
   const identity = { cc: version(tc.cc), ar: path.basename(tc.ar), ranlib: path.basename(tc.ranlib) };
   if (tc.provenanceRoot) {
     identity.androidNdkRevision = readFileSync(path.join(tc.provenanceRoot, "source.properties"), "utf8")
-      .match(/^Pkg\.Revision\s*=\s*(.+)$/m)?.[1]?.trim();
+      .match(/^\s*Pkg\.Revision\s*=\s*(.+)$/m)?.[1]?.trim();
+    if (!/^\d+(?:\.\d+)+$/.test(identity.androidNdkRevision ?? "")) fail("Android NDK source.properties must record a numeric Pkg.Revision");
   } else {
     identity.sdk = run("xcrun", ["--sdk", "macosx", "--show-sdk-version"], { capture: true }).trim();
   }
-  return identity;
+  return Object.fromEntries(Object.entries(identity).map(([key, value]) =>
+    [key, tc.provenanceRoot ? value.replaceAll(tc.provenanceRoot, "${ANDROID_NDK_HOME}") : value]));
 }
 
-function buildIdentity(target, recipeDigest, tc) {
-  return createHash("sha256").update(JSON.stringify({ target, recipeDigest, toolchain: toolchainIdentity(tc) })).digest("hex");
+function buildIdentity(target, recipeDigest, selectedToolchain) {
+  return createHash("sha256").update(JSON.stringify({ target, recipeDigest, toolchain: selectedToolchain })).digest("hex");
 }
 
 export function reusableOutput(outputDir, target, identity, { validate = validateOwnedFfmpeg } = {}) {
@@ -508,7 +515,8 @@ export async function main(argv) {
   }
 
   const tc = toolchain(options.target);
-  const identity = buildIdentity(options.target, recipeDigest, tc);
+  const selectedToolchain = toolchainIdentity(tc);
+  const identity = buildIdentity(options.target, recipeDigest, selectedToolchain);
   if (options.ensure && reusableOutput(options.outputDir, options.target, identity, {
     validate: (validation) => validateWithToolchain(validation, tc),
   })) {
@@ -569,6 +577,7 @@ export async function main(argv) {
       recipeDigest,
       runtimeVersion: lock.runtimeVersion,
       target: options.target,
+      toolchain: selectedToolchain,
       sources: lock.sources,
       correspondingSources,
       configure: {

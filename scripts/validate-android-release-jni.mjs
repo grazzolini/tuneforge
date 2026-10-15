@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
+import { accessSync, constants, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -83,14 +83,17 @@ export function resolveReleaseArtifact(metadataPath) {
   return output;
 }
 
-export function selectAndroidTools(sdkRoot) {
+export function selectAndroidTools(sdkRoot, { minimumVersion = "0" } = {}) {
   const buildTools = path.join(sdkRoot, "build-tools");
   if (!existsSync(buildTools)) throw new Error(`Android build-tools directory is missing: ${buildTools}`);
-  const versions = readdirSync(buildTools).sort(compareVersions).reverse();
+  const versions = readdirSync(buildTools).filter((version) => /^\d+(?:\.\d+)*$/.test(version) &&
+    compareVersions(version, minimumVersion) >= 0).sort(compareVersions).reverse();
   for (const version of versions) {
     const root = path.join(buildTools, version);
     const tools = Object.fromEntries(["aapt2", "apksigner", "dexdump", "zipalign"].map((name) => [name, path.join(root, name)]));
-    if (Object.values(tools).every(existsSync)) return { ...tools, version };
+    if (Object.values(tools).every((file) => {
+      try { accessSync(file, constants.X_OK); return true; } catch { return false; }
+    })) return { ...tools, version };
   }
   throw new Error("No Android build-tools version contains aapt2, apksigner, dexdump, and zipalign.");
 }

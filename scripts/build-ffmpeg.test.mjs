@@ -98,15 +98,26 @@ test("FFmpeg corresponding sources import independently and hash the packaged se
   // This fixture tests source packaging, not upstream signature authenticity or compilation.
   fs.writeFileSync(path.join(bins, "gpg"), `#!/bin/sh\ncase "$*" in *--fingerprint*) echo 'fpr:::::::::${lock.sources.ffmpeg.signingFingerprint}:';; esac\n`, { mode: 0o755 });
   const packaged = spawnSync(process.execPath, [path.join(checkout, "scripts/build-ffmpeg.mjs"), "--source-only", "--cache-dir", cache], {
-    cwd: checkout, encoding: "utf8", env: { ...process.env, PATH: `${bins}:${process.env.PATH}` },
+    cwd: checkout, encoding: "utf8", env: { ...process.env, PATH: `${bins}:${process.env.PATH}`, ANDROID_NDK_HOME: path.join(root, "absent-ndk29") },
   });
   assert.equal(packaged.status, 0, packaged.error?.message ?? packaged.stderr);
   const source = JSON.parse(packaged.stdout);
+  const repackaged = spawnSync(process.execPath, [path.join(checkout, "scripts/build-ffmpeg.mjs"), "--source-only", "--cache-dir", cache], {
+    cwd: checkout, encoding: "utf8", env: { ...process.env, PATH: `${bins}:${process.env.PATH}`, ANDROID_NDK_HOME: path.join(root, "absent-ndk30") },
+  });
+  assert.equal(repackaged.status, 0, repackaged.error?.message ?? repackaged.stderr);
+  assert.deepEqual(JSON.parse(repackaged.stdout), source, "Selected NDK must not alter shared source companion identity or bytes");
   const extracted = path.join(root, "extracted");
   fs.mkdirSync(extracted);
   const extraction = spawnSync("tar", ["-xf", path.join(checkout, "packaging/ffmpeg/generated", source.fileName), "-C", extracted], { encoding: "utf8" });
   assert.equal(extraction.status, 0, extraction.error?.message ?? extraction.stderr);
   const payload = path.join(extracted, `TuneForge-${lock.runtimeVersion}-sources`);
+  const instructions = fs.readFileSync(path.join(payload, "README-CORRESPONDING-SOURCES.md"), "utf8");
+  assert.match(instructions, /toolchain\.androidNdkRevision/);
+  assert.match(instructions, /provenance\.json/);
+  assert.match(instructions, /sdkmanager "ndk;<revision>"/);
+  assert.match(instructions, /ANDROID_NDK_HOME/);
+  assert.ok(!instructions.includes(root), "Source instructions must not disclose private build roots");
   assert.deepEqual(fs.readdirSync(path.join(payload, "scripts")).sort(), [
     "build-ffmpeg.mjs", "deterministic-source-snapshot.mjs", "validate-packaged-ffmpeg.mjs",
   ]);
@@ -123,6 +134,80 @@ test("FFmpeg corresponding sources import independently and hash the packaged se
   const manifest = JSON.parse(fs.readFileSync(path.join(payload, "MANIFEST.json"), "utf8"));
   assert.ok(manifest.files.some(({ path: relative }) => relative === "scripts/deterministic-source-snapshot.mjs"));
   assert.ok(!manifest.files.some(({ path: relative }) => relative === "scripts/flatpak-source-snapshots.mjs"));
+});
+
+test("FFmpeg Android provenance records the selected revision and preserves shared source identity", async (t) => {
+  const { root } = fixture(t), checkout = path.join(root, "checkout");
+  const repository = fileURLToPath(new URL("../", import.meta.url));
+  const lock = JSON.parse(fs.readFileSync(path.join(repository, "packaging/ffmpeg/sources.lock.json"), "utf8"));
+  for (const relative of ["packaging/ffmpeg/sources.lock.json", "scripts/build-ffmpeg.mjs", "scripts/validate-packaged-ffmpeg.mjs",
+    "scripts/deterministic-source-snapshot.mjs", "THIRD_PARTY_NOTICES.md", "package.json",
+    ...(lock.patches ?? []).map(({ path: relative }) => relative)]) {
+    fs.mkdirSync(path.dirname(path.join(checkout, relative)), { recursive: true });
+    fs.copyFileSync(path.join(repository, relative), path.join(checkout, relative));
+  }
+  const script = path.join(checkout, "scripts/build-ffmpeg.mjs");
+  // Replace only native/download boundaries in this isolated recipe. main writes real provenance.
+  fs.appendFileSync(script, `
+export function useBuildFixture(ndk) {
+  let queries = 0;
+  acquireSourceInputs = async () => {};
+  verifyFfmpegSignature = () => {};
+  verifyFile = () => {};
+  run = (command, args) => {
+    if (command !== path.join(ndk, "clang") || args.join(" ") !== "--version") throw new Error("Unexpected fixture command");
+    queries += 1;
+    return ndk + " fixture clang 21\\nignored second line\\n";
+  };
+  toolchain = (target) => ({ target, provenanceRoot: ndk, cc: path.join(ndk, "clang"),
+    ar: path.join(ndk, "llvm-ar"), ranlib: path.join(ndk, "llvm-ranlib"), cflags: "-I" + ndk, ldflags: "-L" + ndk });
+  materializeCorrespondingSources = () => ({ fileName: ffmpegCorrespondingSourcesFileName(), sha256: "fixture-source-sha256", size: 1 });
+  extract = (_archive, destination) => {
+    for (const [directory, name] of [[lock.sources.ffmpeg.sourceDirectory, "COPYING.LGPLv2.1"],
+      [lock.sources.lame.sourceDirectory, "COPYING"], [lock.sources.lame.sourceDirectory, "LICENSE"]]) {
+      mkdirSync(path.join(destination, directory), { recursive: true });
+      writeFileSync(path.join(destination, directory, name), "fixture license");
+    }
+  };
+  applyPatches = () => {};
+  buildLame = (_source, installRoot) => {
+    mkdirSync(path.join(installRoot, "lib"), { recursive: true });
+    writeFileSync(path.join(installRoot, "lib/libfixture.so"), "synthetic bytes; no native build");
+    return ["--prefix=" + installRoot, "--cc=" + path.join(ndk, "clang")];
+  };
+  buildFfmpeg = buildLame;
+  validateWithToolchain = () => {};
+  return () => queries;
+}
+`);
+  const recipe = await import(pathToFileURL(script));
+  const outputs = [];
+  for (const revision of ["29.0.14206865", "30.0.10000000"]) {
+    const ndk = path.join(root, `private-ndk-${revision}`), output = path.join(root, `runtime-${revision}`);
+    fs.mkdirSync(ndk);
+    fs.writeFileSync(path.join(ndk, "source.properties"), `  Pkg.Revision = ${revision}\n`);
+    const queries = recipe.useBuildFixture(ndk);
+    await recipe.main(["--target", "android-arm64-v8a", "--cache-dir", path.join(root, "cache"), "--output-dir", output]);
+    assert.equal(queries(), 1, "Capture selected toolchain identity once per build");
+    const serialized = fs.readFileSync(path.join(output, "provenance.json"), "utf8");
+    const provenance = JSON.parse(serialized);
+    assert.equal(provenance.toolchain.androidNdkRevision, revision);
+    assert.equal(provenance.toolchain.cc, "${ANDROID_NDK_HOME} fixture clang 21");
+    assert.ok(!serialized.includes(root), "Runtime provenance must not disclose private build roots");
+    assert.equal(provenance.buildIdentity, crypto.createHash("sha256").update(JSON.stringify({
+      target: "android-arm64-v8a", recipeDigest: provenance.recipeDigest, toolchain: provenance.toolchain,
+    })).digest("hex"));
+    outputs.push(provenance);
+  }
+  assert.notEqual(outputs[0].buildIdentity, outputs[1].buildIdentity);
+  assert.deepEqual(outputs[0].correspondingSources, outputs[1].correspondingSources);
+  const invalid = path.join(root, "invalid-ndk"); fs.mkdirSync(invalid);
+  for (const contents of ["Pkg.Revision = malformed\n", "Pkg.Desc = no revision\n"]) {
+    fs.writeFileSync(path.join(invalid, "source.properties"), contents);
+    recipe.useBuildFixture(invalid);
+    await assert.rejects(recipe.main(["--target", "android-arm64-v8a", "--output-dir", path.join(root, "invalid-runtime")]), /numeric Pkg.Revision/);
+    assert.equal(fs.existsSync(path.join(root, "invalid-runtime")), false);
+  }
 });
 
 test("package commands ensure default runtimes without changing setup", () => {

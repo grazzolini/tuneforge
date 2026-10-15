@@ -236,7 +236,9 @@ def plan_sync_reconciliation(
     """Build a deterministic, read-only sync reconciliation plan."""
 
     local = _load_local_state(session)
-    remote = _coerce_remote_request(request, trusted_device_ids=local.trusted_device_ids)
+    remote = _coerce_remote_request(
+        request, trusted_device_ids=local.trusted_device_ids, existing_artifact_ids=frozenset(local.artifacts),
+    )
 
     items_by_key: dict[tuple[str, str], SyncReconciliationItem] = {}
     actions: list[SyncReconciliationAction] = []
@@ -772,6 +774,7 @@ def _coerce_remote_request(
     request: object | Mapping[str, Any],
     *,
     trusted_device_ids: frozenset[str],
+    existing_artifact_ids: frozenset[str] = frozenset(),
 ) -> _RemoteRequest:
     library = _first_field(
         request,
@@ -783,6 +786,19 @@ def _coerce_remote_request(
     )
 
     project_manifests = _collect_project_manifests(request, library)
+    from app.services.paths import validate_new_artifact_id
+
+    for source in (library, *project_manifests):
+        project = _first_field(source, "project", default=None)
+        for raw in ([project] if project is not None else _list_field(source, "projects")):
+            _validate_remote_sha256(_first_field(raw, "source_sha256"))
+        for raw in _list_field(source, "artifacts"):
+            _validate_remote_sha256(_first_field(raw, "content_sha256"))
+            artifact_id = _str_field(raw, "artifact_id", "id")
+            if artifact_id is not None and artifact_id not in existing_artifact_ids:
+                validate_new_artifact_id(artifact_id)
+        for raw in _list_field(source, "entity_revisions", "revisions"):
+            _validate_remote_sha256(_first_field(raw, "content_sha256"))
     projects = _remote_projects(library, project_manifests)
     artifacts = _remote_artifacts(library, project_manifests)
     revisions = _remote_entity_revisions(library, project_manifests)
@@ -950,6 +966,7 @@ def _provider_inventory(
 ) -> dict[str, tuple[str, ...]]:
     providers_by_hash: dict[str, set[str]] = {}
     for device_id, content_hash in _iter_inventory_availability(inventory):
+        _validate_remote_sha256(content_hash)
         if device_id not in trusted_device_ids:
             continue
         normalized_hash = _normalize_sha256(content_hash)
@@ -3969,17 +3986,16 @@ def _normalize_sha256(value: object) -> str | None:
     if not isinstance(value, str):
         return None
     normalized = value.strip().lower()
-    return normalized or None
+    return normalized if _is_sha256(normalized) else None
+
+
+def _validate_remote_sha256(value: object) -> None:
+    if value is not None and _normalize_sha256(value) is None:
+        raise AppError("SYNC_MANIFEST_INVALID", "Sync content hashes must be full SHA-256 hex digests.")
 
 
 def _is_sha256(value: str) -> bool:
-    if len(value) != 64:
-        return False
-    try:
-        int(value, 16)
-    except ValueError:
-        return False
-    return True
+    return len(value) == 64 and all(char in "0123456789abcdefABCDEF" for char in value)
 
 
 def _first_field(source: object, *names: str, default: object = _MISSING) -> Any:

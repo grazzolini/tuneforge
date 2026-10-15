@@ -50,9 +50,8 @@ use super::{
 #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
 use super::{
     decode::{
-        convert_interleaved_channels, decode_wav_sample, read_u16_le, read_u32_le,
-        resample_interleaved,
-    },
+     decode_wav_sample, read_u16_le, read_u32_le,
+        },
     source_scope::PlaybackSourceScope,
     AUDIO_EVENT_CUE, AUDIO_EVENT_ENDED, AUDIO_EVENT_ERROR, AUDIO_EVENT_POSITION, AUDIO_EVENT_STATE,
     AUDIO_EVENT_TERMINAL, AUDIO_EVENT_OUTPUT_ROUTE,
@@ -4348,6 +4347,7 @@ impl StreamingDecoder {
                     start_seconds,
                 ) {
                     Ok(decoder) => return Ok(Self::Wav(decoder)),
+                    Err(wav_error) if wav_error.starts_with("Invalid WAV structure:") => return Err(wav_error),
                     Err(wav_error) => {
                         return SymphoniaStreamDecoder::open(
                         path,
@@ -4466,6 +4466,13 @@ impl WavStreamDecoder {
             return Err("Not a PCM WAV file.".to_string());
         }
 
+        let physical_end = file.metadata().map_err(|error| error.to_string())?.len();
+        let riff_end = u64::from(read_u32_le(&riff, 4).ok_or("Invalid RIFF size.")?)
+            .checked_add(8).ok_or("Invalid RIFF size.")?;
+        if riff_end < 12 || riff_end > physical_end {
+            return Err("Invalid WAV structure: RIFF size exceeds the physical file.".to_string());
+        }
+        let mut seen_fmt = false;
         let mut audio_format = 0u16;
         let mut channels = 0u16;
         let mut sample_rate = 0u32;
@@ -4474,6 +4481,11 @@ impl WavStreamDecoder {
         let mut data_range: Option<(u64, u64)> = None;
 
         loop {
+            let offset = file.stream_position().map_err(|error| error.to_string())?;
+            if offset == riff_end { break; }
+            if offset.checked_add(8).is_none_or(|end| end > riff_end) {
+                return Err("Invalid WAV structure: chunk header exceeds RIFF bounds.".to_string());
+            }
             let mut header = [0u8; 8];
             match file.read_exact(&mut header) {
                 Ok(()) => {}
@@ -4485,13 +4497,18 @@ impl WavStreamDecoder {
                 .ok_or_else(|| "Invalid WAV chunk header.".to_string())?
                 as u64;
             let chunk_start = file.stream_position().map_err(|error| error.to_string())?;
-            let chunk_end = chunk_start.saturating_add(chunk_size);
+            let chunk_end = chunk_start.checked_add(chunk_size).ok_or("Invalid WAV structure: chunk size overflow.")?;
+            let padded_end = chunk_end.checked_add(chunk_size % 2).ok_or("Invalid WAV structure: chunk padding overflow.")?;
+            if chunk_end > riff_end || padded_end > riff_end || padded_end > physical_end {
+                return Err("Invalid WAV structure: chunk exceeds RIFF or physical file bounds.".to_string());
+            }
 
             if &header[0..4] == b"fmt " {
-                if chunk_size < 16 {
-                    return Err("Invalid WAV fmt chunk.".to_string());
+                if seen_fmt || chunk_size < 16 {
+                    return Err("Invalid WAV structure: duplicate or truncated fmt chunk.".to_string());
                 }
-                let mut fmt = vec![0u8; chunk_size as usize];
+                seen_fmt = true;
+                let mut fmt = [0u8; 16];
                 file.read_exact(&mut fmt)
                     .map_err(|error| error.to_string())?;
                 audio_format =
@@ -4506,12 +4523,8 @@ impl WavStreamDecoder {
                     read_u16_le(&fmt, 14).ok_or_else(|| "Invalid WAV bit depth.".to_string())?;
             } else if &header[0..4] == b"data" {
                 data_range = Some((chunk_start, chunk_end));
-                file.seek(SeekFrom::Start(chunk_end + (chunk_size % 2)))
-                    .map_err(|error| error.to_string())?;
-            } else {
-                file.seek(SeekFrom::Start(chunk_end + (chunk_size % 2)))
-                    .map_err(|error| error.to_string())?;
             }
+            file.seek(SeekFrom::Start(padded_end)).map_err(|error| error.to_string())?;
         }
 
         if audio_format != 1 && audio_format != 3 {
@@ -4564,6 +4577,8 @@ impl WavStreamDecoder {
             return Ok(None);
         }
 
+        project_stream_chunk(source_frames, self.sample_rate, self.target_sample_rate,
+            self.target_channels, self.playback_rate)?;
         let byte_count = source_frames
             .checked_mul(self.block_align as usize)
             .ok_or_else(|| "WAV chunk is too large.".to_string())?;
@@ -4579,7 +4594,9 @@ impl WavStreamDecoder {
         }
 
         let source_channels = self.channels as usize;
-        let mut samples = Vec::with_capacity(frames_read.saturating_mul(source_channels));
+        let source_len = checked_stream_samples(frames_read, source_channels)?;
+        let mut samples = Vec::new();
+        samples.try_reserve_exact(source_len).map_err(|_| "WAV chunk allocation failed.".to_string())?;
         for frame_index in 0..frames_read {
             let frame_start = frame_index * self.block_align as usize;
             for channel_index in 0..source_channels {
@@ -4761,8 +4778,14 @@ impl SymphoniaStreamDecoder {
                 }
             };
             let spec = decoded.spec().clone();
-            self.sample_buffer
-                .resize(decoded.samples_interleaved(), 0.0);
+            let source_channels = spec.channels().count();
+            if source_channels == 0 { return Err("Invalid source channel count.".to_string()); }
+            project_stream_chunk(decoded.samples_interleaved() / source_channels, spec.rate(),
+                self.target_sample_rate, self.target_channels, self.playback_rate)?;
+            checked_stream_samples(decoded.samples_interleaved() / source_channels, source_channels)?;
+            self.sample_buffer.try_reserve(decoded.samples_interleaved().saturating_sub(self.sample_buffer.len()))
+                .map_err(|_| "Decoded audio chunk allocation failed.".to_string())?;
+            self.sample_buffer.resize(decoded.samples_interleaved(), 0.0);
             decoded.copy_to_slice_interleaved::<f32, _>(&mut self.sample_buffer);
 
             return prepare_stream_chunk(
@@ -4808,6 +4831,41 @@ impl SymphoniaStreamDecoder {
 }
 
 #[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
+fn checked_stream_samples(frames: usize, channels: usize) -> Result<usize, String> {
+    frames.checked_mul(channels)
+        .filter(|length| *length <= isize::MAX as usize / std::mem::size_of::<f32>())
+        .ok_or_else(|| "Native playback chunk is too large.".to_string())
+}
+
+#[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
+fn project_stream_chunk(input_frames: usize, source_rate: u32, target_rate: u32,
+    target_channels: usize, playback_rate: f64) -> Result<(usize, usize), String> {
+    if source_rate == 0 || target_rate == 0 || target_channels == 0 || !playback_rate.is_finite() {
+        return Err("Invalid native playback stream metadata.".to_string());
+    }
+    let frames = ((input_frames as f64) * target_rate as f64 / source_rate as f64).ceil().max(1.0);
+    if frames >= usize::MAX as f64 { return Err("Native playback chunk is too large.".to_string()); }
+    let resampled_frames = frames as usize;
+    checked_stream_samples(resampled_frames, target_channels)?;
+    let output_frames = if (playback_rate - DEFAULT_PLAYBACK_RATE).abs() <= RATE_TOLERANCE || playback_rate <= 0.0 {
+        resampled_frames
+    } else {
+        let frames = (resampled_frames as f64 / playback_rate).ceil().max(1.0);
+        if frames >= usize::MAX as f64 { return Err("Native playback chunk is too large.".to_string()); }
+        frames as usize
+    };
+    let output_samples = checked_stream_samples(output_frames, target_channels)?;
+    let ring_limit = (target_rate as usize).checked_mul(target_channels)
+        .and_then(|value| value.checked_mul(RING_BUFFER_SECONDS))
+        .ok_or_else(|| "Native playback ring is too large.".to_string())?
+        .max(checked_stream_samples(STREAM_CHUNK_FRAMES * 2, target_channels)?);
+    if output_samples > ring_limit {
+        return Err("Native playback decoded chunk exceeds the playback ring capacity.".to_string());
+    }
+    Ok((resampled_frames, output_frames))
+}
+
+#[cfg(any(mobile, target_os = "linux", target_os = "macos"))]
 fn prepare_stream_chunk(
     samples: &[f32],
     source_channels: u32,
@@ -4820,24 +4878,42 @@ fn prepare_stream_chunk(
     if samples.is_empty() || source_channels == 0 || target_channels == 0 {
         return Ok(Vec::new());
     }
-    let resampled = resample_interleaved(
-        samples,
-        source_channels,
-        source_sample_rate,
-        target_sample_rate,
-    );
-    let converted =
-        convert_interleaved_channels(&resampled, source_channels, target_channels as u32);
-    if (playback_rate - DEFAULT_PLAYBACK_RATE).abs() <= RATE_TOLERANCE {
+    let source_count = source_channels as usize;
+    let input_frames = samples.len() / source_count;
+    if input_frames == 0 { return Ok(Vec::new()); }
+    let (resampled_frames, output_frames) = project_stream_chunk(input_frames,
+        source_sample_rate, target_sample_rate, target_channels, playback_rate)?;
+    let converted_len = checked_stream_samples(resampled_frames, target_channels)?;
+    let mut converted = Vec::new();
+    converted.try_reserve_exact(converted_len).map_err(|_| "Native playback chunk allocation failed.".to_string())?;
+    let ratio = source_sample_rate as f64 / target_sample_rate as f64;
+    for frame in 0..resampled_frames {
+        let source_position = frame as f64 * ratio;
+        let left_frame = (source_position.floor() as usize).min(input_frames.saturating_sub(1));
+        let right_frame = (left_frame + 1).min(input_frames.saturating_sub(1));
+        let fraction = (source_position - left_frame as f64) as f32;
+        let sample = |channel: usize| {
+            let left = samples[left_frame * source_count + channel];
+            if source_sample_rate == target_sample_rate { return left; }
+            let right = samples[right_frame * source_count + channel];
+            left + (right - left) * fraction
+        };
+        if target_channels == 1 && source_count != 1 {
+            let sum = (0..source_count).map(|channel| f64::from(sample(channel))).sum::<f64>();
+            converted.push((sum / source_count as f64).clamp(-1.0, 1.0) as f32);
+        } else {
+            for channel in 0..target_channels {
+                converted.push(sample(if source_count == 1 { 0 } else { channel.min(source_count - 1) }));
+            }
+        }
+    }
+    if (playback_rate - DEFAULT_PLAYBACK_RATE).abs() <= RATE_TOLERANCE || playback_rate <= 0.0 {
         return Ok(converted);
     }
-    if playback_rate <= 0.0 {
-        return Ok(converted);
-    }
-
-    let input_frames = converted.len() / target_channels;
-    let output_frames = ((input_frames as f64) / playback_rate).ceil().max(1.0) as usize;
-    let mut output = vec![0.0; output_frames * target_channels];
+    let output_len = checked_stream_samples(output_frames, target_channels)?;
+    let mut output = Vec::new();
+    output.try_reserve_exact(output_len).map_err(|_| "Native playback stretch allocation failed.".to_string())?;
+    output.resize(output_len, 0.0);
     stretch.process(&converted, &mut output);
     Ok(output)
 }
@@ -7693,4 +7769,92 @@ mod tests {
         assert_eq!(decoded[2], 0.0);
         assert!(decoded[3] > 0.49);
     }
+    #[test]
+    fn fused_stream_chunks_match_legacy_samples_and_stretch() {
+        use crate::native_audio::decode::{convert_interleaved_channels, resample_interleaved};
+        for source_rate in [8_000, 44_100, 48_000] {
+            for target_rate in [48_000, 96_000, 192_000, 384_000] {
+                for source_channels in [1, 2, 8] {
+                    for target_channels in [1, 2, 8] {
+                        for playback_rate in [0.25, 1.0, 4.0, 1.0 + RATE_TOLERANCE * 0.5] {
+                            let samples = (0..19 * source_channels).map(|index|
+                                (index as f32 * 0.173).sin() * 0.8).collect::<Vec<_>>();
+                            let resampled = resample_interleaved(&samples, source_channels as u32, source_rate, target_rate);
+                            let converted = convert_interleaved_channels(&resampled, source_channels as u32, target_channels as u32);
+                            let mut old_stretch = signalsmith_stretch::Stretch::preset_default(target_channels as u32, target_rate);
+                            let mut new_stretch = signalsmith_stretch::Stretch::preset_default(target_channels as u32, target_rate);
+                            let expected = if (playback_rate - DEFAULT_PLAYBACK_RATE).abs() <= RATE_TOLERANCE {
+                                converted
+                            } else {
+                                let frames = ((converted.len() / target_channels) as f64 / playback_rate).ceil().max(1.0) as usize;
+                                let mut output = vec![0.0; frames * target_channels];
+                                old_stretch.process(&converted, &mut output);
+                                output
+                            };
+                            let actual = prepare_stream_chunk(&samples, source_channels as u32, source_rate,
+                                target_rate, target_channels, playback_rate, &mut new_stretch).unwrap();
+                            assert_eq!(actual.iter().map(|sample| sample.to_bits()).collect::<Vec<_>>(),
+                                expected.iter().map(|sample| sample.to_bits()).collect::<Vec<_>>(),
+                                "{source_rate}->{target_rate}, {source_channels}->{target_channels}, rate={playback_rate}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn low_rate_high_channel_stream_fits_without_resampled_source_allocation() {
+        assert!(project_stream_chunk(2048, 1, 48_000, 2, 1.0).unwrap_err().contains("ring capacity"));
+        let samples = vec![0.25; 8 * 32767];
+        let mut stretch = signalsmith_stretch::Stretch::preset_default(2, 48_000);
+        let output = prepare_stream_chunk(&samples, 32767, 1, 48_000, 2, 1.0, &mut stretch).unwrap();
+        assert_eq!(output.len(), 8 * 48_000 * 2);
+        assert!(output.iter().all(|sample| *sample == 0.25));
+        assert!(project_stream_chunk(8, 1, 48_000, 2, 0.25).is_err());
+        assert_eq!(project_stream_chunk(32, 1, 48_000, 2, 4.0).unwrap(), (32 * 48_000, 8 * 48_000));
+    }
+
+    #[test]
+    fn wav_fmt_parser_checks_declared_bounds_padding_and_duplicates() {
+        let path = std::env::temp_dir().join(format!("tuneforge-wav-bounds-{}.wav", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let mut fmt = Vec::new();
+        fmt.extend_from_slice(&1_u16.to_le_bytes());
+        fmt.extend_from_slice(&1_u16.to_le_bytes());
+        fmt.extend_from_slice(&48_000_u32.to_le_bytes());
+        fmt.extend_from_slice(&96_000_u32.to_le_bytes());
+        fmt.extend_from_slice(&2_u16.to_le_bytes());
+        fmt.extend_from_slice(&16_u16.to_le_bytes());
+        let make = |chunks: &[(&[u8; 4], u32, Vec<u8>)]| {
+            let mut body = b"WAVE".to_vec();
+            for (id, declared, bytes) in chunks {
+                body.extend_from_slice(*id);
+                body.extend_from_slice(&declared.to_le_bytes());
+                body.extend_from_slice(bytes);
+            }
+            let mut file = b"RIFF".to_vec();
+            file.extend_from_slice(&(body.len() as u32).to_le_bytes());
+            file.extend_from_slice(&body);
+            file
+        };
+        for chunks in [
+            vec![(b"fmt ", u32::MAX, fmt.clone())],
+            vec![(b"fmt ", 16, fmt.clone()), (b"fmt ", 16, fmt.clone()), (b"data", 2, vec![0, 0])],
+            vec![(b"fmt ", 16, fmt.clone()), (b"data", 1, vec![0])],
+        ] {
+            fs::write(&path, make(&chunks)).unwrap();
+            assert!(WavStreamDecoder::open(&path, 48_000, 1, 1.0, 0.0).is_err());
+            assert!(StreamingDecoder::open_inner(path.clone(), 48_000, 1, 1.0, 0.0, None).is_err());
+        }
+        let mut extended = fmt;
+        extended.extend_from_slice(&[0; 32]);
+        fs::write(&path, make(&[(b"fmt ", 48, extended), (b"data", 2, vec![0, 0])])).unwrap();
+        let mut decoder = WavStreamDecoder::open(&path, 48_000, 1, 1.0, 0.0).unwrap();
+        assert_eq!(decoder.next_chunk().unwrap().unwrap(), vec![0.0]);
+        assert!(decoder.next_chunk().unwrap().is_none());
+        decoder.seek(0.0).unwrap();
+        assert_eq!(decoder.next_chunk().unwrap().unwrap(), vec![0.0]);
+        fs::remove_file(path).unwrap();
+    }
+
 }

@@ -1641,7 +1641,7 @@ mod mobile_backend_tests {
                 base_revision_id: None,
                 author_device_id: "device_peer_1".to_string(),
                 source_artifact_id: Some(artifact_id.clone()),
-                content_sha256: source_sha256.to_string(),
+                content_sha256: storage::revision_payload_sha256(&json!({})),
                 state: "active".to_string(),
                 metadata: json!({}),
                 payload: json!({}),
@@ -2506,7 +2506,7 @@ mod mobile_backend_tests {
         project_id: &str,
         entity_type: &str,
         revision_type: &str,
-        content_sha256: &str,
+        _legacy_content_sha256: &str,
         metadata: Value,
         payload: Value,
     ) -> SyncProjectManifestEntityRevisionSchema {
@@ -2519,7 +2519,7 @@ mod mobile_backend_tests {
             base_revision_id: None,
             author_device_id: "device_desktop_fixture".to_string(),
             source_artifact_id: Some("art_source_audio".to_string()),
-            content_sha256: content_sha256.to_string(),
+            content_sha256: storage::revision_payload_sha256(&payload),
             state: "active".to_string(),
             metadata,
             payload,
@@ -2815,7 +2815,7 @@ mod mobile_backend_tests {
             },
         );
 
-        let previous_chord_revision = SyncProjectManifestEntityRevisionSchema {
+        let mut previous_chord_revision = SyncProjectManifestEntityRevisionSchema {
             revision_id: "rev_chords_previous".to_string(),
             state: "superseded".to_string(),
             source_artifact_id: Some("art_source_audio".to_string()),
@@ -2838,6 +2838,7 @@ mod mobile_backend_tests {
                 json!({}),
             )
         };
+        previous_chord_revision.content_sha256 = storage::revision_payload_sha256(&previous_chord_revision.payload);
         let mut current_chord_revision = mobile_contract_revision(
             "rev_chords_current",
             &project_id,

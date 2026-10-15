@@ -154,6 +154,10 @@ the row and matching `SyncEntityRevision` in one transaction. Result imports sel
 Hydration and repair use the same winner; stale replay cannot replace it. Analysis snapshots have
 no parent and only the current snapshot is advertised, while older rows remain local. Chord and
 lyric revision history remains available.
+Revision hashes use Python-compatible canonical JSON, including shortest decimal tie rounding.
+Android recognizes verified hashes from its earlier local formatter when reading existing rows;
+export and comparisons use canonical hashes without rewriting stored revisions. Incoming payloads
+must still match their canonical digest.
 
 New results do not write JSON sidecars. Legacy `analysis_json` artifacts are excluded centrally
 from sync metadata, manifests, announcements and artifact tombstones. Their files remain intact

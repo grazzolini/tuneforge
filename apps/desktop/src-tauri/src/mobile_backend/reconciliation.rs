@@ -254,6 +254,26 @@ fn plan_sync_reconciliation_parts(
     manifests: &[SyncProjectManifestSchema],
     peer_inventory: &[SyncPeerInventoryEntrySchema],
 ) -> Result<SyncReconciliationPlanResponse, String> {
+    for project in &remote_library.projects {
+        if let Some(hash) = project.source_sha256.as_deref() { normalize_sha256(hash, "source_sha256")?; }
+    }
+    for artifact in &remote_library.artifacts {
+        if let Some(hash) = artifact.content_sha256.as_deref() { normalize_sha256(hash, "content_sha256")?; }
+        super::manifests::validate_new_manifest_artifact_id(connection, &artifact.artifact_id)?;
+    }
+    for revision in &remote_library.entity_revisions {
+        normalize_sha256(&revision.content_sha256, "content_sha256")?;
+        if storage::revision_payload_sha256(&revision.payload) != revision.content_sha256 {
+            return Err("Entity revision payload does not match its SHA-256 digest.".to_string());
+        }
+    }
+    for manifest in manifests {
+        validate_project_manifest_identity(manifest)?;
+        for artifact in &manifest.artifacts { super::manifests::validate_new_manifest_artifact_id(connection, &artifact.artifact_id)?; }
+    }
+    for inventory in peer_inventory {
+        for hash in &inventory.available_content_sha256 { normalize_sha256(hash, "content_sha256")?; }
+    }
     let providers = providers_by_hash(connection, peer_inventory)?;
     let manifests_by_project = manifest_by_project_id(manifests);
     let mut items = Vec::new();
@@ -633,14 +653,15 @@ fn plan_sync_reconciliation_parts(
         ) {
             continue;
         }
-        let existing_hash: Option<String> = connection
+        let existing_hash = connection
             .query_row(
-                "SELECT content_sha256 FROM sync_entity_revisions WHERE id = ?1",
+                &format!("SELECT {SYNC_ENTITY_REVISION_COLUMNS} FROM sync_entity_revisions WHERE id = ?1"),
                 params![revision.revision_id],
-                |row| row.get(0),
+                row_entity_revision,
             )
             .optional()
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| error.to_string())?
+            .map(|revision| revision.content_sha256);
         if let Some(existing_hash) = existing_hash {
             if existing_hash == revision.content_sha256 {
                 items.push(reconciliation_item(
@@ -1609,7 +1630,7 @@ mod tests {
         key: Option<&str>,
         timestamp: &str,
     ) -> SyncProjectManifestEntityRevisionSchema {
-        SyncProjectManifestEntityRevisionSchema {
+        let mut revision = SyncProjectManifestEntityRevisionSchema {
             revision_id: id.to_string(),
             project_id: project_id.to_string(),
             entity_type: "project_metadata".to_string(),
@@ -1632,7 +1653,9 @@ mod tests {
             }),
             created_at: timestamp.to_string(),
             updated_at: timestamp.to_string(),
-        }
+        };
+        revision.content_sha256 = storage::revision_payload_sha256(&revision.payload);
+        revision
     }
 
     fn desktop_wire_manifest(manifest: SyncProjectManifestSchema) -> SyncProjectManifestSchema {
@@ -1692,6 +1715,220 @@ mod tests {
             )
             .unwrap();
         identity.sync_group_id
+    }
+
+
+    #[test]
+    fn legacy_float_revision_hashes_survive_wire_reopen_export_and_replay() {
+        const PYTHON_HASH: &str = "b4cdaee7d8a3a8d04aeaf56501b3d0bd7cf3aa60ceab2c8d10bf8bed52812214";
+        const LEGACY_HASH: &str = "c1eb6e6002f49a2fe1e58583d799c176a220dd2d06578f8c3e26988ff4130b33";
+        let payload: Value = serde_json::from_str(r#"{"backend":"openai-whisper","device":"cpu","has_user_edits":false,"language":"en","language_override":null,"model_name":"turbo","requested_device":"cpu","segments":[{"end_seconds":12.0,"start_seconds":11.000991821289062,"text":"Synthetic lyric"}],"source_kind":"source_audio","source_segments":[{"end_seconds":12.0,"start_seconds":11.000991821289062,"text":"Synthetic lyric"}]}"#).unwrap();
+        let root = synthetic_root("legacy-float-revisions");
+        let sender_root = root.join("sender");
+        let connection = storage::db_at_root(&sender_root).unwrap();
+        insert_trusted_peer(&connection, "device_peer_1");
+        let (source_hash, source_size) = staged_wav(&connection, &sender_root, "source", 0.0);
+        let project_id = source_hash_to_project_id(&source_hash).unwrap();
+        let timestamp = "2026-01-02T00:00:00Z";
+        let initial: SyncProjectManifestSchema = serde_json::from_value(json!({
+            "schema_version": SYNC_PROJECT_MANIFEST_SCHEMA_VERSION,
+            "exported_at": timestamp,
+            "project": {"project_id": project_id, "display_name": "Synthetic",
+                "source_sha256": source_hash, "duration_seconds": 0.1,
+                "sample_rate": 8000, "channels": 1,
+                "created_at": timestamp, "updated_at": timestamp},
+            "artifacts": [manifest_artifact(&project_id, "art_source", "source_audio",
+                "source/source.wav", &source_hash, source_size, false, timestamp)],
+            "entity_revisions": [], "delete_tombstones": [],
+        }))
+        .unwrap();
+        let (_, summary, _) = apply_manifest(&connection, &sender_root, initial);
+        assert_eq!(summary.failed_actions, 0);
+        for (id, state) in [
+            ("legacy_history", "superseded"),
+            ("legacy_current", "active"),
+        ] {
+            connection.execute(
+                "INSERT INTO sync_entity_revisions (id,project_id,entity_type,entity_id,revision_type,author_device_id,source_artifact_id,content_sha256,state,metadata_json,payload_json,created_at,updated_at) VALUES (?1,?2,'lyrics',?2,'generated','device_peer_1','art_source',?3,?4,'{}',?5,?6,?6)",
+                params![id, project_id, LEGACY_HASH, state, payload.to_string(), timestamp],
+            ).unwrap();
+        }
+        fn stored_rows(connection: &Connection) -> Vec<Vec<rusqlite::types::Value>> {
+            connection
+                .prepare(&format!(
+                    "SELECT {SYNC_ENTITY_REVISION_COLUMNS} FROM sync_entity_revisions ORDER BY id"
+                ))
+                .unwrap()
+                .query_map([], |row| (0..14).map(|index| row.get(index)).collect())
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+        }
+        let original_rows = stored_rows(&connection);
+        drop(connection);
+        let connection = Connection::open(sender_root.join("mobile.sqlite3")).unwrap();
+        let exported = get_project_manifest(&connection, &sender_root, &project_id).unwrap();
+        assert_eq!(exported.entity_revisions.len(), 2);
+        for revision in &exported.entity_revisions {
+            assert_eq!(revision.content_sha256, PYTHON_HASH);
+            assert_eq!(revision.payload, payload);
+            assert_eq!(revision.created_at, timestamp);
+            assert_eq!(revision.updated_at, timestamp);
+        }
+        assert_eq!(
+            connection.total_changes(),
+            0,
+            "legacy compatibility is read-only"
+        );
+        assert_eq!(stored_rows(&connection), original_rows);
+        let body = crate::sync_transport::manifest_roundtrip_plan_body_for_test(
+            serde_json::to_value(&exported).unwrap(),
+        );
+        let request: SyncReconciliationPlanRequest = serde_json::from_value(body).unwrap();
+        let plan = plan_sync_reconciliation_parts(
+            &connection,
+            &sender_root,
+            &request.remote_library,
+            &request.project_manifests,
+            &request.peer_inventory,
+        )
+        .unwrap();
+        assert_eq!(plan.summary.total_conflicts, 0);
+        assert!(
+            plan.actions.is_empty(),
+            "canonical desktop roundtrip is already local"
+        );
+        let standalone = SyncReconciliationRemoteLibrarySchema {
+            projects: Vec::new(),
+            artifacts: Vec::new(),
+            entity_revisions: exported.entity_revisions.clone(),
+            delete_tombstones: Vec::new(),
+        };
+        let standalone_plan =
+            plan_sync_reconciliation_parts(&connection, &sender_root, &standalone, &[], &[]).unwrap();
+        assert_eq!(
+            standalone_plan.summary.total_conflicts, 0,
+            "standalone canonical revisions must recognize verified local legacy hashes"
+        );
+        assert!(standalone_plan.actions.is_empty());
+        for _ in 0..2 {
+            let applied = apply_sync_reconciliation_parts(
+                &connection,
+                &sender_root,
+                SyncReconciliationApplyRequest {
+                    remote_library: standalone.clone(),
+                    project_manifests: Vec::new(),
+                    peer_inventory: Vec::new(),
+                    staging_root: None,
+                    use_content_addressed_staging: true,
+                    project_ids: vec![project_id.clone()],
+                    include_timing_evidence: false,
+                },
+                Vec::new(),
+            )
+            .unwrap();
+            assert_eq!(applied.summary.failed_actions, 0);
+            assert!(applied.plan.actions.is_empty());
+            assert!(applied.results.is_empty());
+            assert_eq!(stored_rows(&connection), original_rows);
+        }
+        super::super::manifests::import_entity_revisions(
+            &connection,
+            &request.project_manifests[0].entity_revisions,
+        )
+        .unwrap();
+        assert_eq!(
+            stored_rows(&connection),
+            original_rows,
+            "identity, payload, states and clocks remain stored unchanged"
+        );
+        let receiver_root = root.join("receiver");
+        let receiver = storage::db_at_root(&receiver_root).unwrap();
+        insert_trusted_peer(&receiver, "device_peer_1");
+        staged_wav(&receiver, &receiver_root, "source", 0.0);
+        let (_, summary, results) = apply_manifest(&receiver, &receiver_root, exported.clone());
+        assert_eq!(
+            summary.failed_actions,
+            0,
+            "{}",
+            serde_json::to_string(&results).unwrap()
+        );
+        let receiver_rows = stored_rows(&receiver);
+        let (replay, summary, results) = apply_manifest(&receiver, &receiver_root, exported.clone());
+        assert_eq!(
+            summary.failed_actions,
+            0,
+            "{}",
+            serde_json::to_string(&results).unwrap()
+        );
+        assert!(replay.actions.is_empty());
+        assert_eq!(stored_rows(&receiver), receiver_rows);
+        drop(receiver);
+        let receiver = Connection::open(receiver_root.join("mobile.sqlite3")).unwrap();
+        let reexported = get_project_manifest(&receiver, &receiver_root, &project_id).unwrap();
+        assert_eq!(reexported.entity_revisions[0].content_sha256, PYTHON_HASH);
+        for mode in [
+            "legacy_wire_hash",
+            "wrong_hash",
+            "changed_payload",
+            "rehashed_payload",
+        ] {
+            let mut tampered = exported.entity_revisions.clone();
+            match mode {
+                "legacy_wire_hash" => tampered[0].content_sha256 = LEGACY_HASH.to_string(),
+                "wrong_hash" => tampered[0].content_sha256 = "f".repeat(64),
+                _ => {
+                    tampered[0].payload["segments"][0]["text"] = json!("Changed");
+                    if mode == "rehashed_payload" {
+                        tampered[0].content_sha256 =
+                            storage::revision_payload_sha256(&tampered[0].payload);
+                    }
+                }
+            }
+            assert!(
+                super::super::manifests::import_entity_revisions(&connection, &tampered).is_err(),
+                "{mode}"
+            );
+            let mut remote = standalone.clone();
+            remote.entity_revisions = tampered;
+            let planned = plan_sync_reconciliation_parts(&connection, &sender_root, &remote, &[], &[]);
+            if mode == "rehashed_payload" {
+                assert!(planned.unwrap().summary.total_conflicts > 0);
+            } else {
+                assert!(planned.is_err(), "standalone {mode}");
+            }
+            assert_eq!(stored_rows(&connection), original_rows);
+        }
+        for (stored_hash, stored_payload) in [
+            ("f".repeat(64), payload.to_string()),
+            (
+                LEGACY_HASH.to_string(),
+                json!({"changed": true}).to_string(),
+            ),
+            (LEGACY_HASH.to_string(), "invalid JSON".to_string()),
+        ] {
+            connection.execute("UPDATE sync_entity_revisions SET content_sha256=?1,payload_json=?2 WHERE id='legacy_history'", params![stored_hash, stored_payload]).unwrap();
+            let revision = connection.query_row(&format!("SELECT {SYNC_ENTITY_REVISION_COLUMNS} FROM sync_entity_revisions WHERE id='legacy_history'"), [], row_entity_revision).unwrap();
+            assert_eq!(
+                revision.content_sha256, stored_hash,
+                "unverified stored corruption must not be normalized"
+            );
+            assert!(super::super::manifests::import_entity_revisions(
+                &connection,
+                &exported.entity_revisions
+            )
+            .is_err());
+            let planned =
+                plan_sync_reconciliation_parts(&connection, &sender_root, &standalone, &[], &[])
+                    .unwrap();
+            assert!(
+                planned.summary.total_conflicts > 0,
+                "standalone lookup must not bless corrupt stored rows"
+            );
+        }
+        drop(receiver);
+        drop(connection);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -1976,6 +2213,7 @@ mod tests {
         current_metadata.payload["duration_seconds"] = json!(0.2);
         current_metadata.payload["sample_rate"] = json!(16_000);
         current_metadata.payload["channels"] = json!(2);
+        current_metadata.content_sha256 = storage::revision_payload_sha256(&current_metadata.payload);
         let tombstone = SyncDeleteTombstoneSchema {
             tombstone_id: "tomb_old_stem".to_string(),
             sync_group_id,

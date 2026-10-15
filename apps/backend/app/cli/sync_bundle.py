@@ -82,8 +82,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "--provider-device-id",
         metavar="ID",
         help=(
-            "Stable provider device id to write into bundle metadata and peer inventory. "
-            "Use the same id for repeated exports from the same source device."
+            "Optional equality assertion for this device's derived signing identity. "
+            "Exports always use the local Ed25519 identity; aliases are rejected."
         ),
     )
 
@@ -111,8 +111,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "--provider-device-id",
         metavar="ID",
         help=(
-            "Provider device id expected in the bundle metadata or peer inventory. "
-            "Pass this when the source peer should be pinned explicitly."
+            "Expected signed bundle signer device id. The signer must already be a "
+            "non-revoked trusted peer in this sync group."
         ),
     )
 

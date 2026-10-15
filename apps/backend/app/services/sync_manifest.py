@@ -429,6 +429,11 @@ def import_staged_project_manifest(
         use_content_addressed_staging = staged_content_addressed
 
     project_manifest = _coerce_project_manifest(manifest)
+    from app.services.paths import validate_new_artifact_id
+
+    for artifact in project_manifest.artifacts:
+        if session.get(Artifact, artifact.artifact_id) is None:
+            validate_new_artifact_id(artifact.artifact_id)
     _validate_project_manifest_schema_version(project_manifest)
     _validate_project_manifest_identity(project_manifest)
     source_artifact = _validate_staged_import_source_artifact(project_manifest)
@@ -2460,13 +2465,7 @@ def _optional_datetime(source: Mapping[str, Any] | object, name: str) -> datetim
 
 
 def _is_sha256(value: str) -> bool:
-    if len(value) != 64:
-        return False
-    try:
-        int(value, 16)
-    except ValueError:
-        return False
-    return True
+    return len(value) == 64 and all(char in "0123456789abcdefABCDEF" for char in value)
 
 
 def _safe_relative_path(relative_path: str) -> Path:

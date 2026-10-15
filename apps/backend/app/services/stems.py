@@ -23,7 +23,7 @@ from app.models import Artifact, Project, utcnow
 from app.services.artifacts import refresh_artifact_file_metadata, register_artifact
 from app.services.audio_working import materialize_pcm_wav
 from app.services.drum_substems import invalidate_drum_refinement
-from app.services.paths import project_stems_dir
+from app.services.paths import artifact_storage_key, contained_output_path, project_stems_dir
 from app.services.project_storage import queue_project_storage_reconciliation
 from app.services.stem_models import (
     STEM_ARTIFACT_TYPES,
@@ -94,14 +94,16 @@ def build_stem_plan(
     stem_model: StemModelDefinition,
     generation_id: str | None = None,
 ) -> list[StemOutputPlan]:
-    stems_dir = project_stems_dir(source_artifact.project_id) / source_artifact.id / stem_model.id
+    stems_dir = project_stems_dir(source_artifact.project_id) / artifact_storage_key(source_artifact.id) / stem_model.id
     if generation_id is not None:
         stems_dir = stems_dir / generation_id
     return [
         StemOutputPlan(
             source=source,
             artifact_type=model_output_artifact_type(source),
-            path=stems_dir / f"{source}.{output_format}",
+            path=contained_output_path(
+                project_stems_dir(source_artifact.project_id), stems_dir / f"{source}.{output_format}",
+            ),
             output_format=output_format,
         )
         for source in stem_model.sources

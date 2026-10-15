@@ -22,7 +22,7 @@ from app.services.drum_substem_model import (
     drumsep_capabilities,
     resolve_drumsep_checkpoint,
 )
-from app.services.paths import project_stems_dir
+from app.services.paths import artifact_storage_key, contained_output_path, project_stems_dir
 from app.services.project_storage import queue_project_storage_reconciliation
 from app.services.stem_models import DRUM_SUBSTEM_ARTIFACT_TYPES, DRUM_SUBSTEM_SOURCES
 from app.services.sync_tombstones import record_artifact_delete_tombstone
@@ -167,7 +167,10 @@ def generate_drum_substems(
 
     source_id = str(parent.metadata_json["source_artifact_id"])
     generation_id = new_id("drumset")
-    final_dir = project_stems_dir(project.id) / source_id / "htdemucs_6s" / generation_id
+    final_dir = contained_output_path(
+        project_stems_dir(project.id),
+        project_stems_dir(project.id) / artifact_storage_key(source_id) / "htdemucs_6s" / generation_id,
+    )
     final_dir.parent.mkdir(parents=True, exist_ok=True)
     metadata: dict[str, object]
     with tempfile.TemporaryDirectory(prefix=".tuneforge-drumsep-", dir=final_dir.parent) as temp_name:

@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.config import ensure_data_dirs, get_settings
 from app.db import SessionLocal, reconfigure_engine, run_migrations
+from app.errors import AppError
 from app.models import (
     Artifact,
     ChordTimeline,
@@ -2804,6 +2805,10 @@ def test_missing_project_manifest_rejects_invalid_non_source_artifacts(
         ],
     }
 
+    if case == "invalid_content_sha256":
+        with pytest.raises(AppError, match="full SHA-256"):
+            plan_sync_reconciliation(db_session, request)
+        return
     plan = plan_sync_reconciliation(db_session, request)
 
     item = _item(plan, ITEM_PROJECT, project_id)
@@ -3607,3 +3612,28 @@ def _table_counts(session: Session) -> dict[str, int]:
         model.__tablename__: int(session.scalar(select(func.count()).select_from(model)) or 0)
         for model in models
     }
+
+
+@pytest.mark.parametrize("malicious", ["../outside", "a" * 63, "g" * 64, "+" + "a" * 63, "a" * 32 + "/" + "b" * 31])
+@pytest.mark.parametrize("representation", ["project", "artifact", "inventory", "manifest"])
+def test_existing_project_rejects_invalid_hashes_before_noop(
+    db_session: Session, tmp_path: Path, malicious: str, representation: str,
+) -> None:
+    source_hash, _, project_id = _seed_existing_project_with_source(db_session, tmp_path, filename="source.wav")
+    request: dict[str, Any] = {
+        "remote_library": {"projects": [{"project_id": project_id, "source_sha256": source_hash}]},
+    }
+    if representation == "project":
+        request["remote_library"]["projects"][0]["source_sha256"] = malicious
+    elif representation == "artifact":
+        request["remote_library"]["artifacts"] = [{
+            "artifact_id": "source", "project_id": project_id, "content_sha256": malicious,
+        }]
+    elif representation == "inventory":
+        request["peer_inventory"] = [{"device_id": "peer-a", "available_content_sha256": [malicious]}]
+    else:
+        manifest = _project_manifest(project_id, source_hash)
+        manifest["artifacts"][0]["content_sha256"] = malicious
+        request["project_manifests"] = [manifest]
+    with pytest.raises(AppError, match="full SHA-256"):
+        plan_sync_reconciliation(db_session, request)

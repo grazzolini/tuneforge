@@ -15,7 +15,10 @@ transports. It is not a dependency, product requirement, or source of library tr
 
 ## Export
 
-Run from the repository root. Use a provider device id that the receiving install already trusts.
+Run from the repository root. Export signs bundle version 2 with this install's local Ed25519
+identity. Pair the receiving install with this signer first. Version 1 unsigned bundles are rejected;
+export them again with an upgraded sender. The optional export `--provider-device-id` must exactly
+match the local derived device ID. Aliases such as `peer-a` are rejected.
 
 ```sh
 export TUNEFORGE_DATA_DIR=/tmp/tuneforge-peer-a/data
@@ -23,8 +26,7 @@ export TUNEFORGE_SYNC_BUNDLE=/tmp/tuneforge-syncthing/bundle
 mkdir -p "$TUNEFORGE_SYNC_BUNDLE"
 
 pnpm sync:bundle -- export \
-  --bundle-root "$TUNEFORGE_SYNC_BUNDLE" \
-  --provider-device-id peer-a
+  --bundle-root "$TUNEFORGE_SYNC_BUNDLE"
 ```
 
 To export selected projects only, repeat `--project-id`:
@@ -32,7 +34,6 @@ To export selected projects only, repeat `--project-id`:
 ```sh
 pnpm sync:bundle -- export \
   --bundle-root "$TUNEFORGE_SYNC_BUNDLE" \
-  --provider-device-id peer-a \
   --project-id proj_sha256_example_a \
   --project-id proj_sha256_example_b
 ```
@@ -49,10 +50,14 @@ export TUNEFORGE_SYNC_BUNDLE=/tmp/tuneforge-syncthing/bundle
 
 pnpm sync:bundle -- import \
   --bundle-root "$TUNEFORGE_SYNC_BUNDLE" \
-  --provider-device-id peer-a
+  --provider-device-id "$TUNEFORGE_EXPECTED_SIGNER_DEVICE_ID"
 ```
 
-Import stages and verifies content-addressed blobs, rewrites paths for the local install, then applies manifests, revisions, and tombstones through TuneForge services. It does not attach the project to the Syncthing folder.
+Import verifies the metadata signature against a non-revoked trusted peer in the local sync group
+before staging. The signature binds the signer, manifest hashes and sizes, blob inventory, and other
+bundle metadata. `--provider-device-id` optionally pins that signer; an inventory alias cannot replace
+it. Set `TUNEFORGE_EXPECTED_SIGNER_DEVICE_ID` to the sender's actual device ID from its paired identity.
+Import then verifies the actual manifest and blob bytes, stages content-addressed blobs, rewrites paths for the local install, then applies manifests, revisions, and tombstones through TuneForge services. It does not attach the project to the Syncthing folder.
 
 ## Control Benchmark
 
@@ -79,20 +84,19 @@ sync, and it does not validate raw folder sync of TuneForge app data.
 
 Avoid simultaneous exports into the same bundle. Let one peer export, let Syncthing finish, then import on the other peer.
 
-To send changes back, export from the second peer with its trusted provider id, wait for Syncthing, then import on the first peer:
+To send changes back, export from the second peer, wait for Syncthing, then import on the first peer with the second peer's actual signer ID:
 
 ```sh
 export TUNEFORGE_DATA_DIR=/tmp/tuneforge-peer-b/data
 export TUNEFORGE_SYNC_BUNDLE=/tmp/tuneforge-syncthing/bundle
 pnpm sync:bundle -- export \
-  --bundle-root "$TUNEFORGE_SYNC_BUNDLE" \
-  --provider-device-id peer-b
+  --bundle-root "$TUNEFORGE_SYNC_BUNDLE"
 
 export TUNEFORGE_DATA_DIR=/tmp/tuneforge-peer-a/data
 export TUNEFORGE_SYNC_BUNDLE=/tmp/tuneforge-syncthing/bundle
 pnpm sync:bundle -- import \
   --bundle-root "$TUNEFORGE_SYNC_BUNDLE" \
-  --provider-device-id peer-b
+  --provider-device-id "$TUNEFORGE_EXPECTED_SIGNER_DEVICE_ID"
 ```
 
 After every intended peer has imported the bundle, remove the folder from Syncthing first. If you no longer need the

@@ -254,6 +254,26 @@ fn plan_sync_reconciliation_parts(
     manifests: &[SyncProjectManifestSchema],
     peer_inventory: &[SyncPeerInventoryEntrySchema],
 ) -> Result<SyncReconciliationPlanResponse, String> {
+    for project in &remote_library.projects {
+        if let Some(hash) = project.source_sha256.as_deref() { normalize_sha256(hash, "source_sha256")?; }
+    }
+    for artifact in &remote_library.artifacts {
+        if let Some(hash) = artifact.content_sha256.as_deref() { normalize_sha256(hash, "content_sha256")?; }
+        super::manifests::validate_new_manifest_artifact_id(connection, &artifact.artifact_id)?;
+    }
+    for revision in &remote_library.entity_revisions {
+        normalize_sha256(&revision.content_sha256, "content_sha256")?;
+        if storage::revision_payload_sha256(&revision.payload) != revision.content_sha256 {
+            return Err("Entity revision payload does not match its SHA-256 digest.".to_string());
+        }
+    }
+    for manifest in manifests {
+        validate_project_manifest_identity(manifest)?;
+        for artifact in &manifest.artifacts { super::manifests::validate_new_manifest_artifact_id(connection, &artifact.artifact_id)?; }
+    }
+    for inventory in peer_inventory {
+        for hash in &inventory.available_content_sha256 { normalize_sha256(hash, "content_sha256")?; }
+    }
     let providers = providers_by_hash(connection, peer_inventory)?;
     let manifests_by_project = manifest_by_project_id(manifests);
     let mut items = Vec::new();
@@ -1609,7 +1629,7 @@ mod tests {
         key: Option<&str>,
         timestamp: &str,
     ) -> SyncProjectManifestEntityRevisionSchema {
-        SyncProjectManifestEntityRevisionSchema {
+        let mut revision = SyncProjectManifestEntityRevisionSchema {
             revision_id: id.to_string(),
             project_id: project_id.to_string(),
             entity_type: "project_metadata".to_string(),
@@ -1632,7 +1652,9 @@ mod tests {
             }),
             created_at: timestamp.to_string(),
             updated_at: timestamp.to_string(),
-        }
+        };
+        revision.content_sha256 = storage::revision_payload_sha256(&revision.payload);
+        revision
     }
 
     fn desktop_wire_manifest(manifest: SyncProjectManifestSchema) -> SyncProjectManifestSchema {
@@ -1976,6 +1998,7 @@ mod tests {
         current_metadata.payload["duration_seconds"] = json!(0.2);
         current_metadata.payload["sample_rate"] = json!(16_000);
         current_metadata.payload["channels"] = json!(2);
+        current_metadata.content_sha256 = storage::revision_payload_sha256(&current_metadata.payload);
         let tombstone = SyncDeleteTombstoneSchema {
             tombstone_id: "tomb_old_stem".to_string(),
             sync_group_id,

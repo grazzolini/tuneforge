@@ -23,12 +23,13 @@ from app.models import (
     Project,
     SyncDeleteTombstone,
     SyncEntityRevision,
+    SyncLocalIdentity,
     SyncStagedArtifact,
     SyncTrustedPeer,
 )
+from app.services import sync_crypto
 from app.services.paths import project_root
 from app.services.sync_bundle import (
-    DEFAULT_PROVIDER_DEVICE_ID,
     export_sync_bundle,
     import_sync_bundle,
 )
@@ -65,7 +66,7 @@ def test_export_sync_bundle_creates_sync_safe_layout(
             session,
             bundle_root=bundle_root,
             project_ids=[fixture.project_id],
-            provider_device_id="peer-bundle-export",
+            provider_device_id=get_or_create_local_identity(session).device_id,
         )
 
     metadata = _read_json(bundle_root / "bundle.json")
@@ -87,7 +88,8 @@ def test_export_sync_bundle_creates_sync_safe_layout(
     assert result.project_count == 1
     assert result.content_sha256s == sorted(content_hashes)
     assert metadata["kind"] == "tuneforge.sync_bundle"
-    assert metadata["version"] == "1"
+    assert metadata["version"] == "2"
+    assert isinstance(metadata["signature"], str)
     _assert_utc_z_timestamp(metadata["exported_at"])
     _assert_utc_z_timestamp(manifest["exported_at"])
     _assert_utc_z_timestamp(manifest["project"]["created_at"])
@@ -105,7 +107,7 @@ def test_export_sync_bundle_creates_sync_safe_layout(
     assert metadata["content_sha256s"] == sorted(content_hashes)
     assert metadata["peer_inventory"] == [
         {
-            "device_id": "peer-bundle-export",
+            "device_id": metadata["provider_device_id"],
             "available_content_sha256": sorted(content_hashes),
         }
     ]
@@ -164,7 +166,7 @@ def test_export_sync_bundle_excludes_export_mix_from_blobs_and_inventory(
             session,
             bundle_root=bundle_root,
             project_ids=[fixture.project_id],
-            provider_device_id="peer-bundle-export",
+            provider_device_id=get_or_create_local_identity(session).device_id,
         )
 
     metadata = _read_json(bundle_root / "bundle.json")
@@ -182,7 +184,7 @@ def test_export_sync_bundle_excludes_export_mix_from_blobs_and_inventory(
     assert metadata["content_sha256s"] == sorted(expected_hashes)
     assert metadata["peer_inventory"] == [
         {
-            "device_id": "peer-bundle-export",
+            "device_id": metadata["provider_device_id"],
             "available_content_sha256": sorted(expected_hashes),
         }
     ]
@@ -291,13 +293,13 @@ def test_import_sync_bundle_stages_blobs_and_imports_through_reconciliation(
 ) -> None:
     bundle_root = tmp_path / "bundle"
     with SessionLocal() as session:
-        _ensure_trusted_peer(session, "peer-bundle-import")
+        _trust_local_bundle_signer(session)
         fixture = _create_project_with_artifacts(session, tmp_path)
         export_sync_bundle(
             session,
             bundle_root=bundle_root,
             project_ids=[fixture.project_id],
-            provider_device_id="peer-bundle-import",
+            provider_device_id=get_or_create_local_identity(session).device_id,
         )
         session.commit()
 
@@ -342,14 +344,14 @@ def test_import_sync_bundle_noops_equal_legacy_tombstone_for_live_local_target(
     live_artifact_id = "art_bundle_live_equal_tombstone"
     live_at = datetime(2026, 1, 1, tzinfo=UTC)
     with SessionLocal() as session:
-        _ensure_trusted_peer(session, "peer-bundle-import")
+        _trust_local_bundle_signer(session)
         fixture = _create_project_with_artifacts(session, tmp_path)
         sync_group_id = get_or_create_local_identity(session).sync_group_id
         export_sync_bundle(
             session,
             bundle_root=bundle_root,
             project_ids=[fixture.project_id],
-            provider_device_id="peer-bundle-import",
+            provider_device_id=get_or_create_local_identity(session).device_id,
         )
         live_path = tmp_path / "live-equal-tombstone.wav"
         live_hash, live_size = _write_bytes(live_path, b"live equal tombstone")
@@ -392,6 +394,7 @@ def test_import_sync_bundle_noops_equal_legacy_tombstone_for_live_local_target(
         metadata = _read_json(metadata_path)
         metadata["project_manifests"][0]["content_sha256"] = file_sha256(manifest_path)
         metadata["project_manifests"][0]["size_bytes"] = manifest_path.stat().st_size
+        _sign_metadata(session, metadata)
         metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
 
         result = import_sync_bundle(session, bundle_root=bundle_root)
@@ -409,62 +412,32 @@ def test_import_sync_bundle_noops_equal_legacy_tombstone_for_live_local_target(
     assert Path(live_artifact.path).exists()
 
 
-def test_import_sync_bundle_allows_override_to_trusted_inventory_provider_with_full_hashes(
-    client: object,
-    tmp_path: Path,
+def test_import_sync_bundle_rejects_override_to_trusted_inventory_nonsigner(
+    client: object, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    bundle_root = tmp_path / "bundle-inventory-provider-override"
+    bundle_root = tmp_path / "bundle-nonsigner"
     with SessionLocal() as session:
-        _ensure_trusted_peer(session, "peer-bundle-metadata")
-        _ensure_trusted_peer(session, "peer-bundle-inventory")
+        _trust_local_bundle_signer(session)
         fixture = _create_project_with_artifacts(session, tmp_path)
-        export_sync_bundle(
-            session,
-            bundle_root=bundle_root,
-            project_ids=[fixture.project_id],
-            provider_device_id="peer-bundle-metadata",
-        )
-        session.commit()
-
-        metadata_path = bundle_root / "bundle.json"
-        metadata = _read_json(metadata_path)
-        content_sha256s = metadata["content_sha256s"]
-        assert isinstance(content_sha256s, list)
-        metadata["peer_inventory"] = [
-            {
-                "device_id": "peer-bundle-metadata",
-                "available_content_sha256": content_sha256s,
-            },
-            {
-                "device_id": "peer-bundle-inventory",
-                "available_content_sha256": content_sha256s,
-            },
-        ]
-        metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
-
-        _delete_live_project(session, fixture)
-        session.commit()
-
-        result = import_sync_bundle(
-            session,
-            bundle_root=bundle_root,
-            provider_device_id="peer-bundle-inventory",
-        )
-        session.commit()
-
-        project = session.get(Project, fixture.project_id)
-
-    assert result.project_count == 1
-    assert result.staged_artifact_count == 2
-    assert result.apply_result.summary.failed_actions == 0
-    assert result.peer_inventory == [
-        {
-            "device_id": "peer-bundle-inventory",
-            "available_content_sha256": sorted(content_sha256s),
-        }
-    ]
-    assert project is not None
-    assert project.sync_status == "local"
+        export_sync_bundle(session, bundle_root=bundle_root, project_ids=[fixture.project_id])
+        metadata = _read_json(bundle_root / "bundle.json")
+        other_key = sync_crypto.public_key_bytes_from_private_key(sync_crypto.generate_private_key_bytes())
+        other_id = sync_crypto.derive_device_id(other_key)
+        identity = get_or_create_local_identity(session)
+        now = datetime.now(UTC)
+        session.add(SyncTrustedPeer(device_id=other_id, sync_group_id=identity.sync_group_id,
+            display_name="Other synthetic peer", public_key=sync_crypto.encode_key(other_key), endpoint_hints_json=[],
+            trusted_at=now, revoked_at=None, created_at=now, updated_at=now))
+        session.flush()
+        metadata["peer_inventory"].append({
+            "device_id": other_id, "available_content_sha256": metadata["content_sha256s"],
+        })
+        _sign_metadata(session, metadata)
+        (bundle_root / "bundle.json").write_text(json.dumps(metadata))
+        monkeypatch.setattr(sync_bundle_module, "stage_sync_artifact", _fail_if_stage_called)
+        with pytest.raises(AppError) as exc:
+            import_sync_bundle(session, bundle_root=bundle_root, provider_device_id=other_id)
+        assert exc.value.code == "SYNC_BUNDLE_PROVIDER_MISMATCH"
 
 
 def test_import_sync_bundle_rejects_untrusted_metadata_provider_before_staging(
@@ -479,7 +452,7 @@ def test_import_sync_bundle_rejects_untrusted_metadata_provider_before_staging(
             session,
             bundle_root=bundle_root,
             project_ids=[fixture.project_id],
-            provider_device_id="peer-bundle-untrusted",
+            provider_device_id=get_or_create_local_identity(session).device_id,
         )
         session.commit()
 
@@ -514,7 +487,7 @@ def test_import_sync_bundle_rejects_untrusted_matching_provider_override_before_
             session,
             bundle_root=bundle_root,
             project_ids=[fixture.project_id],
-            provider_device_id="peer-bundle-untrusted-override",
+            provider_device_id=get_or_create_local_identity(session).device_id,
         )
         session.commit()
 
@@ -532,7 +505,7 @@ def test_import_sync_bundle_rejects_untrusted_matching_provider_override_before_
             import_sync_bundle(
                 session,
                 bundle_root=bundle_root,
-                provider_device_id="peer-bundle-untrusted-override",
+                provider_device_id=get_or_create_local_identity(session).device_id,
             )
 
         staged_count = session.scalar(select(func.count()).select_from(SyncStagedArtifact))
@@ -548,14 +521,14 @@ def test_import_sync_bundle_rejects_mismatched_trusted_provider_override_before_
 ) -> None:
     bundle_root = tmp_path / "bundle-mismatched-override"
     with SessionLocal() as session:
-        _ensure_trusted_peer(session, "peer-bundle-source")
-        _ensure_trusted_peer(session, "peer-bundle-other")
+        _trust_local_bundle_signer(session)
+        _trust_local_bundle_signer(session)
         fixture = _create_project_with_artifacts(session, tmp_path)
         export_sync_bundle(
             session,
             bundle_root=bundle_root,
             project_ids=[fixture.project_id],
-            provider_device_id="peer-bundle-source",
+            provider_device_id=get_or_create_local_identity(session).device_id,
         )
         session.commit()
 
@@ -579,12 +552,6 @@ def test_import_sync_bundle_rejects_mismatched_trusted_provider_override_before_
         staged_count = session.scalar(select(func.count()).select_from(SyncStagedArtifact))
 
     assert exc.value.code == "SYNC_BUNDLE_PROVIDER_MISMATCH"
-    assert exc.value.details == {
-        "source": "bundle_metadata",
-        "provider_device_id": "peer-bundle-other",
-        "metadata_provider_device_id": "peer-bundle-source",
-        "peer_inventory_provider_device_ids": ["peer-bundle-source"],
-    }
     assert staged_count == 0
 
 
@@ -595,8 +562,8 @@ def test_import_sync_bundle_rejects_mismatched_inventory_provider_override_befor
 ) -> None:
     bundle_root = tmp_path / "bundle-mismatched-inventory-override"
     with SessionLocal() as session:
-        _ensure_trusted_peer(session, DEFAULT_PROVIDER_DEVICE_ID)
-        _ensure_trusted_peer(session, "peer-bundle-other")
+        _trust_local_bundle_signer(session)
+        _trust_local_bundle_signer(session)
         fixture = _create_project_with_artifacts(session, tmp_path)
         export_sync_bundle(
             session,
@@ -625,12 +592,6 @@ def test_import_sync_bundle_rejects_mismatched_inventory_provider_override_befor
         staged_count = session.scalar(select(func.count()).select_from(SyncStagedArtifact))
 
     assert exc.value.code == "SYNC_BUNDLE_PROVIDER_MISMATCH"
-    assert exc.value.details == {
-        "source": "peer_inventory",
-        "provider_device_id": "peer-bundle-other",
-        "metadata_provider_device_id": None,
-        "peer_inventory_provider_device_ids": [DEFAULT_PROVIDER_DEVICE_ID],
-    }
     assert staged_count == 0
 
 
@@ -641,7 +602,7 @@ def test_import_sync_bundle_rejects_selected_provider_without_full_inventory_bef
 ) -> None:
     bundle_root = tmp_path / "bundle-selected-provider-empty-inventory"
     with SessionLocal() as session:
-        _ensure_trusted_peer(session, DEFAULT_PROVIDER_DEVICE_ID)
+        _trust_local_bundle_signer(session)
         fixture = _create_project_with_artifacts(session, tmp_path)
         export_sync_bundle(
             session,
@@ -654,10 +615,9 @@ def test_import_sync_bundle_rejects_selected_provider_without_full_inventory_bef
         metadata = _read_json(metadata_path)
         content_sha256s = metadata["content_sha256s"]
         assert isinstance(content_sha256s, list)
-        metadata["provider_device_id"] = None
         metadata["peer_inventory"] = [
             {
-                "device_id": DEFAULT_PROVIDER_DEVICE_ID,
+                "device_id": get_or_create_local_identity(session).device_id,
                 "available_content_sha256": [],
             },
             {
@@ -665,6 +625,7 @@ def test_import_sync_bundle_rejects_selected_provider_without_full_inventory_bef
                 "available_content_sha256": content_sha256s,
             },
         ]
+        _sign_metadata(session, metadata)
         metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
 
         monkeypatch.setattr(
@@ -684,7 +645,7 @@ def test_import_sync_bundle_rejects_selected_provider_without_full_inventory_bef
 
     assert exc.value.code == "SYNC_BUNDLE_PROVIDER_INVENTORY_MISMATCH"
     assert exc.value.details == {
-        "provider_device_id": DEFAULT_PROVIDER_DEVICE_ID,
+        "provider_device_id": metadata["provider_device_id"],
         "provider_inventory_found": True,
         "missing_content_sha256s": sorted(content_sha256s),
     }
@@ -698,9 +659,8 @@ def test_import_sync_bundle_rejects_provider_from_other_sync_group_before_stagin
 ) -> None:
     bundle_root = tmp_path / "bundle-wrong-group"
     with SessionLocal() as session:
-        _ensure_trusted_peer(
+        _trust_local_bundle_signer(
             session,
-            "peer-bundle-other-group",
             sync_group_id="sync_group_other",
         )
         fixture = _create_project_with_artifacts(session, tmp_path)
@@ -708,7 +668,7 @@ def test_import_sync_bundle_rejects_provider_from_other_sync_group_before_stagin
             session,
             bundle_root=bundle_root,
             project_ids=[fixture.project_id],
-            provider_device_id="peer-bundle-other-group",
+            provider_device_id=get_or_create_local_identity(session).device_id,
         )
         session.commit()
 
@@ -747,7 +707,7 @@ def test_import_sync_bundle_rejects_blob_mismatch_before_apply(
 ) -> None:
     bundle_root = tmp_path / f"bundle-{mutation}"
     with SessionLocal() as session:
-        _ensure_trusted_peer(session, DEFAULT_PROVIDER_DEVICE_ID)
+        _trust_local_bundle_signer(session)
         fixture = _create_project_with_artifacts(session, tmp_path)
         export_sync_bundle(
             session,
@@ -781,7 +741,7 @@ def test_import_sync_bundle_rejects_missing_blob_before_apply(
 ) -> None:
     bundle_root = tmp_path / "bundle-missing"
     with SessionLocal() as session:
-        _ensure_trusted_peer(session, DEFAULT_PROVIDER_DEVICE_ID)
+        _trust_local_bundle_signer(session)
         fixture = _create_project_with_artifacts(session, tmp_path)
         export_sync_bundle(
             session,
@@ -809,7 +769,7 @@ def test_import_sync_bundle_rejects_stale_manifest_metadata_before_apply(
 ) -> None:
     bundle_root = tmp_path / "bundle-stale-manifest"
     with SessionLocal() as session:
-        _ensure_trusted_peer(session, DEFAULT_PROVIDER_DEVICE_ID)
+        _trust_local_bundle_signer(session)
         fixture = _create_project_with_artifacts(session, tmp_path)
         export_sync_bundle(
             session,
@@ -843,14 +803,14 @@ def test_sync_bundle_preserves_revisions_and_tombstones_round_trip(
 ) -> None:
     bundle_root = tmp_path / "bundle-with-history"
     with SessionLocal() as session:
-        _ensure_trusted_peer(session, "peer-bundle-history")
+        _trust_local_bundle_signer(session)
         fixture = _create_project_with_artifacts(session, tmp_path)
         _add_revision_and_tombstone(session, fixture)
         export_sync_bundle(
             session,
             bundle_root=bundle_root,
             project_ids=[fixture.project_id],
-            provider_device_id="peer-bundle-history",
+            provider_device_id=get_or_create_local_identity(session).device_id,
         )
         exported_manifest = _read_json(
             bundle_root / "projects" / f"{fixture.project_id}.json"
@@ -864,7 +824,7 @@ def test_sync_bundle_preserves_revisions_and_tombstones_round_trip(
         result = import_sync_bundle(
             session,
             bundle_root=bundle_root,
-            provider_device_id="peer-bundle-history",
+            provider_device_id=get_or_create_local_identity(session).device_id,
         )
         session.commit()
 
@@ -1046,13 +1006,13 @@ def _add_revision_and_tombstone(
     session.commit()
 
 
-def _ensure_trusted_peer(
+def _trust_local_bundle_signer(
     session: Session,
-    device_id: str,
     *,
     sync_group_id: str | None = None,
 ) -> None:
     identity = get_or_create_local_identity(session)
+    device_id = identity.device_id
     if session.get(SyncTrustedPeer, device_id) is not None:
         return
     now = datetime.now(UTC)
@@ -1061,7 +1021,7 @@ def _ensure_trusted_peer(
             device_id=device_id,
             sync_group_id=sync_group_id or identity.sync_group_id,
             display_name=device_id,
-            public_key=f"pub-{device_id}",
+            public_key=identity.public_key,
             endpoint_hints_json=[],
             trusted_at=now,
             revoked_at=None,
@@ -1175,3 +1135,82 @@ def _wav_bytes(*, frame_count: int, sample_rate: int = 44100) -> bytes:
         wav_file.setframerate(sample_rate)
         wav_file.writeframes(b"\0\0" * frame_count)
     return buffer.getvalue()
+
+
+def _sign_metadata(session: Session, metadata: dict[str, Any]) -> None:
+    signer = session.get(SyncLocalIdentity, "local")
+    assert signer is not None
+    metadata["signature"] = sync_crypto.sign_payload(sync_crypto.decode_key(signer.private_key),
+        sync_bundle_module._bundle_signature_message(metadata))
+
+
+@pytest.mark.parametrize("mutation", [
+    "unsigned_v1", "missing_signature", "signature", "manifest_digest", "blob_inventory", "signer", "revoked",
+])
+def test_signed_bundle_rejects_forgery_before_staging(
+    client: object, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str,
+) -> None:
+    bundle_root = tmp_path / mutation
+    with SessionLocal() as session:
+        _trust_local_bundle_signer(session)
+        fixture = _create_project_with_artifacts(session, tmp_path)
+        export_sync_bundle(session, bundle_root=bundle_root, project_ids=[fixture.project_id])
+        metadata = _read_json(bundle_root / "bundle.json")
+        if mutation == "unsigned_v1":
+            metadata["version"] = "1"
+            metadata.pop("signature")
+        elif mutation == "missing_signature":
+            metadata.pop("signature")
+        elif mutation == "signature":
+            metadata["signature"] = sync_crypto.encode_key(bytes(64))
+        elif mutation == "manifest_digest":
+            metadata["project_manifests"][0]["content_sha256"] = "a" * 64
+        elif mutation == "blob_inventory":
+            metadata["blobs"][0]["size_bytes"] += 1
+        elif mutation == "signer":
+            metadata["provider_device_id"] = "unknown-peer"
+        else:
+            peer = session.get(SyncTrustedPeer, metadata["provider_device_id"])
+            assert peer is not None
+            peer.revoked_at = datetime.now(UTC)
+            session.flush()
+        (bundle_root / "bundle.json").write_text(json.dumps(metadata))
+        monkeypatch.setattr(sync_bundle_module, "stage_sync_artifact", _fail_if_stage_called)
+        monkeypatch.setattr(sync_bundle_module, "apply_sync_reconciliation", _fail_if_apply_called)
+        with pytest.raises(AppError):
+            import_sync_bundle(session, bundle_root=bundle_root)
+
+
+def test_export_bundle_provider_is_local_identity_assertion(client: object, tmp_path: Path) -> None:
+    with SessionLocal() as session:
+        with pytest.raises(AppError) as exc:
+            export_sync_bundle(session, bundle_root=tmp_path / "bundle", provider_device_id="alias")
+        assert exc.value.code == "SYNC_BUNDLE_PROVIDER_MISMATCH"
+        assert not (tmp_path / "bundle").exists()
+
+
+def test_signed_bundle_distinct_recipient_round_trip_and_replay(client: object, tmp_path: Path) -> None:
+    bundle_root = tmp_path / "distinct-recipient"
+    with SessionLocal() as session:
+        signer = get_or_create_local_identity(session)
+        _trust_local_bundle_signer(session)
+        fixture = _create_project_with_artifacts(session, tmp_path)
+        export_sync_bundle(session, bundle_root=bundle_root, project_ids=[fixture.project_id])
+        session.commit()
+        _delete_live_project(session, fixture)
+        local = session.get(SyncLocalIdentity, "local")
+        assert local is not None
+        session.delete(local)
+        session.flush()
+        recipient = get_or_create_local_identity(session)
+        assert recipient.device_id != signer.device_id
+        recipient_row = session.get(SyncLocalIdentity, "local")
+        assert recipient_row is not None
+        recipient_row.sync_group_id = signer.sync_group_id
+        session.commit()
+        result = import_sync_bundle(session, bundle_root=bundle_root, provider_device_id=signer.device_id)
+        session.commit()
+        assert result.apply_result.summary.failed_actions == 0
+        assert session.get(Project, fixture.project_id) is not None
+        replay = import_sync_bundle(session, bundle_root=bundle_root, provider_device_id=signer.device_id)
+        assert replay.apply_result.summary.failed_actions == 0

@@ -421,13 +421,40 @@ pub(super) fn local_tombstone_superseded_by_live_target(
 pub(super) fn validate_project_manifest_identity(
     manifest: &SyncProjectManifestSchema,
 ) -> Result<(), String> {
-    validate_sync_project_manifest_identity(manifest)
+    validate_sync_project_manifest_identity(manifest)?;
+    for revision in &manifest.entity_revisions {
+        if normalize_sha256(&revision.content_sha256, "content_sha256")?
+            != storage::revision_payload_sha256(&revision.payload)
+        {
+            return Err("Entity revision payload does not match its SHA-256 digest.".to_string());
+        }
+    }
+    Ok(())
 }
+
+pub(super) fn validate_new_manifest_artifact_id(connection: &Connection, artifact_id: &str) -> Result<(), String> {
+    let exists: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM artifacts WHERE id = ?1)",
+        params![artifact_id], |row| row.get(0)).map_err(|error| error.to_string())?;
+    if !exists && (artifact_id.is_empty() || matches!(artifact_id, "." | "..")
+        || artifact_id.chars().any(|ch| ch.is_control() || matches!(ch, '/' | '\\' | ':'))) {
+        return Err("New artifact identifiers must not contain paths or control characters.".to_string());
+    }
+    Ok(())
+}
+
+
 
 pub(super) fn import_entity_revisions(
     connection: &Connection,
     revisions: &[SyncProjectManifestEntityRevisionSchema],
 ) -> Result<(), String> {
+    for revision in revisions {
+        if normalize_sha256(&revision.content_sha256, "content_sha256")?
+            != storage::revision_payload_sha256(&revision.payload)
+        {
+            return Err("Entity revision payload does not match its SHA-256 digest.".to_string());
+        }
+    }
     for revision in revisions {
         match revision.entity_type.as_str() {
             "analysis" => {
@@ -461,6 +488,9 @@ pub(super) fn import_entity_revisions(
                 || existing.entity_id != revision.entity_id
                 || existing.revision_type != revision.revision_type
                 || existing.author_device_id != revision.author_device_id
+                || existing.base_revision_id != revision.base_revision_id
+                || existing.source_artifact_id != revision.source_artifact_id
+                || existing.payload != revision.payload
             {
                 return Err(
                     "A synced entity revision conflicts with an existing local revision."
@@ -469,17 +499,8 @@ pub(super) fn import_entity_revisions(
             }
             connection
                 .execute(
-                    "UPDATE sync_entity_revisions SET base_revision_id = ?1, source_artifact_id = ?2, state = ?3, metadata_json = ?4, payload_json = ?5, created_at = ?6, updated_at = ?7 WHERE id = ?8",
-                    params![
-                        revision.base_revision_id,
-                        revision.source_artifact_id,
-                        revision.state,
-                        revision.metadata.to_string(),
-                        revision.payload.to_string(),
-                        revision.created_at,
-                        revision.updated_at,
-                        revision.revision_id,
-                    ],
+                    "UPDATE sync_entity_revisions SET state = ?1, updated_at = ?2 WHERE id = ?3",
+                    params![revision.state, revision.updated_at, revision.revision_id],
                 )
                 .map_err(|error| error.to_string())?;
             continue;
@@ -1344,6 +1365,9 @@ pub(super) fn import_sync_project_manifest(
     payload: SyncProjectStagedImportRequest,
 ) -> Result<ProjectSchema, String> {
     validate_project_manifest_identity(&payload.manifest)?;
+    for artifact in &payload.manifest.artifacts {
+        validate_new_manifest_artifact_id(connection, &artifact.artifact_id)?;
+    }
     validate_manifest_delete_tombstones(connection, &payload.manifest)?;
     let project_id = validate_project_source_identity(
         &payload.manifest.project.project_id,
@@ -1907,6 +1931,11 @@ mod tests {
         display_name: &str,
         updated_at: &str,
     ) -> SyncProjectManifestEntityRevisionSchema {
+        let payload = json!({
+            "project_id": project_id, "display_name": display_name,
+            "source_sha256": project_id.trim_start_matches(PROJECT_ID_PREFIX),
+            "duration_seconds": 2.0, "sample_rate": 16_000, "channels": 2,
+        });
         SyncProjectManifestEntityRevisionSchema {
             revision_id: revision_id.to_string(),
             project_id: project_id.to_string(),
@@ -1916,24 +1945,10 @@ mod tests {
             base_revision_id: None,
             author_device_id: "device_peer_1".to_string(),
             source_artifact_id: None,
-            content_sha256: revision_id
-                .bytes()
-                .fold(0_u8, u8::wrapping_add)
-                .to_string()
-                .repeat(64)
-                .chars()
-                .take(64)
-                .collect(),
+            content_sha256: storage::revision_payload_sha256(&payload),
             state: state.to_string(),
             metadata: json!({}),
-            payload: json!({
-                "project_id": project_id,
-                "display_name": display_name,
-                "source_sha256": project_id.trim_start_matches(PROJECT_ID_PREFIX),
-                "duration_seconds": 2.0,
-                "sample_rate": 16_000,
-                "channels": 2,
-            }),
+            payload,
             created_at: "2026-01-01T00:00:00Z".to_string(),
             updated_at: updated_at.to_string(),
         }
@@ -2202,4 +2217,52 @@ mod tests {
         assert_eq!(artifact_count, 1);
         assert_eq!(revision_state, "active");
     }
+    #[test]
+    fn revision_import_verifies_payload_before_insert_and_preserves_existing_identity() {
+        let connection = Connection::open_in_memory().unwrap();
+        let project_id = source_hash_to_project_id(&"a".repeat(64)).unwrap();
+        let manifest = metadata_manifest(&project_id, Vec::new());
+        insert_manifest_project(&connection, &manifest);
+        let original = metadata_revision(&project_id, "revision", "active", "Original", "2026-01-03T00:00:00Z");
+        let mut tampered = original.clone();
+        tampered.revision_id = "tampered".to_string();
+        tampered.payload["display_name"] = json!("Injected");
+        assert!(import_entity_revisions(&connection, &[original.clone(), tampered.clone()]).is_err());
+        assert_eq!(connection.query_row("SELECT COUNT(*) FROM sync_entity_revisions", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
+        import_entity_revisions(&connection, &[original.clone()]).unwrap();
+        tampered.revision_id = original.revision_id.clone();
+        assert!(import_entity_revisions(&connection, &[tampered.clone()]).is_err());
+        tampered.content_sha256 = storage::revision_payload_sha256(&tampered.payload);
+        assert!(import_entity_revisions(&connection, &[tampered]).is_err());
+        let mut changed_identity = original.clone();
+        changed_identity.source_artifact_id = Some("different_source".to_string());
+        assert!(import_entity_revisions(&connection, &[changed_identity]).is_err());
+        let mut changed_state = original.clone();
+        changed_state.state = "superseded".to_string();
+        changed_state.created_at = "2099-01-01T00:00:00Z".to_string();
+        changed_state.metadata = json!({"untrusted_update": true});
+        import_entity_revisions(&connection, &[changed_state]).unwrap();
+        let persisted = connection.query_row(&format!("SELECT {SYNC_ENTITY_REVISION_COLUMNS} FROM sync_entity_revisions WHERE id = 'revision'"), [], row_entity_revision).unwrap();
+        assert_eq!(persisted.payload, original.payload);
+        assert_eq!(persisted.metadata, original.metadata);
+        assert_eq!(persisted.created_at, normalize_sync_timestamp_utc(&original.created_at, "created_at").unwrap());
+        assert_eq!(persisted.state, "superseded");
+    }
+
+    #[test]
+    fn new_manifest_artifact_ids_reject_paths_but_preserve_persisted_logical_ids() {
+        let connection = Connection::open_in_memory().unwrap();
+        migrate_mobile_db(&connection).unwrap();
+        for id in ["source", "art_source_audio", "é"] {
+            validate_new_manifest_artifact_id(&connection, id).unwrap();
+        }
+        for id in ["../escape", "a/b", "a\\b", "C:stream", ".", "..", "nul\0id"] {
+            assert!(validate_new_manifest_artifact_id(&connection, id).is_err());
+        }
+        connection.execute("INSERT INTO artifacts (id,project_id,type,format,path,content_sha256,size_bytes,generated_by,can_delete,can_regenerate,metadata_json,created_at) VALUES ('../persisted','project','source_audio','wav','/existing/path',?1,0,'test',0,0,'{}','2026-01-01T00:00:00Z')", params!["a".repeat(64)]).unwrap();
+        validate_new_manifest_artifact_id(&connection, "../persisted").unwrap();
+        let path: String = connection.query_row("SELECT path FROM artifacts WHERE id = '../persisted'", [], |row| row.get(0)).unwrap();
+        assert_eq!(path, "/existing/path");
+    }
+
 }

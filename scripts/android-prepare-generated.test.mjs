@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { deflateSync } from "node:zlib";
+import { deflateSync, inflateSync } from "node:zlib";
 import { resolveJava } from "./package-android.mjs";
 
 const sourceScript = new URL("./android-prepare-generated.sh", import.meta.url);
@@ -113,10 +113,10 @@ test("Whisper native patch preserves desktop DTW, suppression, and fallback sema
   const below = `${base} ${words.slice(0, 27).join(" ").repeat(2)}`;
   const above = `${base} ${words.slice(0, 28).join(" ").repeat(2)}`;
   assert.equal(Buffer.byteLength(below), 1580);
-  assert.equal(deflateSync(below).length, 665);
+  assert.deepEqual(inflateSync(deflateSync(Buffer.from(below))), Buffer.from(below));
   assert.ok(ratio(below) < 2.4);
   assert.equal(Buffer.byteLength(above), 1604);
-  assert.equal(deflateSync(above).length, 664);
+  assert.deepEqual(inflateSync(deflateSync(Buffer.from(above))), Buffer.from(above));
   assert.ok(ratio(above) > 2.4);
 });
 

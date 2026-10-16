@@ -145,6 +145,7 @@ export async function waitForBackend(child, port, dataRoot, { timeoutMs = 30_000
     }
     await delay(50);
   }
+  assertAlive(child, "Backend");
   throw new Error("Backend readiness timed out.");
 }
 

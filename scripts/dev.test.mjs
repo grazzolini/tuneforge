@@ -162,8 +162,21 @@ test("readiness fails closed for wrong root or URL and never starts frontend", a
 
 test("child exit, spawn failure, timeout and port collision fail closed", async (t) => {
   const f = fixture(t);
-  for (const [command, expected] of [[[process.execPath, "-e", "process.exit(7)"], /exited before/], [["/synthetic/missing-command"], /ENOENT/], [[process.execPath, "-e", "setInterval(()=>{},1000)"], /timed out/]]) {
-    await assert.rejects(startDevelopment({ env: f.env, profileOptions: f.options, backendCommand: command, frontendCommand: frontend, stdio: "ignore", handleSignals: false, timeoutMs: 300 }), expected);
+  const record = path.join(f.root, "unexpected-frontend");
+  const unexpectedFrontend = [process.execPath, "-e", "require('node:fs').writeFileSync(process.env.RECORD, 'started')"];
+  const failedStart = (command) => startDevelopment({ env: { ...f.env, RECORD: record }, profileOptions: f.options, backendCommand: command, frontendCommand: unexpectedFrontend, stdio: "ignore", handleSignals: false, timeoutMs: 300 });
+  t.mock.timers.enable({ apis: ["Date"], now: 0 });
+  const watchdog = setInterval(() => t.mock.timers.tick(10_000), 5000);
+  try {
+    await assert.rejects(failedStart([process.execPath, "-e", "process.exit(7)"]), /exited before/);
+  } finally {
+    clearInterval(watchdog);
+    t.mock.timers.reset();
+  }
+  assert.equal(fs.existsSync(record), false);
+  for (const [command, expected] of [ [["/synthetic/missing-command"], /ENOENT/], [[process.execPath, "-e", "setInterval(()=>{},1000)"], /timed out/]]) {
+    await assert.rejects(failedStart(command), expected);
+    assert.equal(fs.existsSync(record), false);
   }
   const expectedRoot = resolveDevProfile([], { env: f.env, ...f.options }).dataRoot;
   const server = http.createServer((req, res) => res.end(JSON.stringify({ data_root: expectedRoot, api_base_url: "http://127.0.0.1:" + server.address().port + "/api/v1" })));
@@ -171,6 +184,23 @@ test("child exit, spawn failure, timeout and port collision fail closed", async 
   t.after(() => server.close());
   await assert.rejects(startDevelopment({ env: f.env, profileOptions: f.options, port: server.address().port, backendCommand: [process.execPath, "-e", "setInterval(()=>{},1000)"], frontendCommand: frontend, stdio: "ignore", handleSignals: false, timeoutMs: 1000 }), /EADDRINUSE/);
   assert.equal(server.listening, true);
+});
+
+test("readiness classifies child state after the final polling sleep", async (t) => {
+  for (const [state, expected] of [[{ exitCode: 7 }, /exited before/], [{ signalCode: "SIGTERM" }, /exited before/], [{ failure: new Error("spawn ENOENT") }, /spawn ENOENT/], [{}, /readiness timed out/]]) {
+    t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 0 });
+    try {
+      const child = { exitCode: null, signalCode: null };
+      const pending = assert.rejects(waitForBackend(child, 1234, "/synthetic", { timeoutMs: 100, fetchHealth: async () => ({ ok: false }) }), expected);
+      await Promise.resolve();
+      t.mock.timers.tick(25);
+      Object.assign(child, state);
+      t.mock.timers.tick(75);
+      await pending;
+    } finally {
+      t.mock.timers.reset();
+    }
+  }
 });
 
 test("liveness is rechecked after a health response", async () => {

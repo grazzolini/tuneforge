@@ -10,7 +10,7 @@ import { acquirePinnedFile, ffmpegCorrespondingSourcesFileName, reusableOutput }
 import { soxrCorrespondingSourcesFileName, validateSoxrOutput } from "./build-soxr.mjs";
 
 function fixture(t) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "tuneforge-ffmpeg-download-test-"));
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "tuneforge-ffmpeg-download-test-")));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const bytes = Buffer.from("pinned source bytes");
   return { root, bytes, input: { url: "https://example.invalid/source.tar.xz", name: "source.tar.xz",

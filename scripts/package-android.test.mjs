@@ -210,7 +210,7 @@ test("generated Android quoted labels keep their quotes and restore exactly", (t
     /main_activity_title/);
 });
 function temp(t) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "tuneforge-android-"));
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "tuneforge-android-")));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   return root;
 }
@@ -858,7 +858,7 @@ test("release variables are removed from unrelated children and scoped to the pu
   assert.equal(resolveSdk({ env: signingEnv("/release.p12"), homeDir: root, runCapture }), root);
   ndkFixture(root, ndkRevision);
   assert.equal(resolveNdk(root, { env: { ANDROID_NDK_HOME: root, ...signingEnv("/release.p12") },
-    runCapture }).path, root);
+    hostPlatform: "linux", hostArch: "x64", runCapture }).path, root);
 });
 test("packaging lock rejects contention and never removes a lock whose ownership changed", (t) => {
   const lockPath = path.join(temp(t), "target/package.lock");
@@ -1179,7 +1179,7 @@ test("SDK discovery resolves sdkmanager symlinks and Linux system locations", (t
   const root = temp(t), sdk = path.join(root, "SDK with spaces"), bin = path.join(root, "bin");
   const manager = path.join(sdk, "cmdline-tools/latest/bin/sdkmanager");
   executable(manager); fs.mkdirSync(bin); fs.symlinkSync(manager, path.join(bin, "sdkmanager"));
-  assert.equal(resolveSdk({ env: { PATH: bin }, homeDir: root, runCapture: () => ({ ok: false, output: "" }) }), sdk);
+  assert.equal(resolveSdk({ env: { PATH: bin }, homeDir: root, runCapture: () => ({ ok: false, output: "" }) }), fs.realpathSync(sdk));
   for (const selected of ["/opt/android-sdk", "/usr/lib/android-sdk"]) {
     assert.equal(resolveSdk({ env: {}, homeDir: root, hostPlatform: "linux", isDirectory: (candidate) => candidate === selected,
       runCapture: () => ({ ok: false, output: "" }) }), selected);
@@ -1457,7 +1457,7 @@ test("Tauri NDK_HOME uses the selected authoritative root including external ins
   const root = temp(t), external = ndkFixture(path.join(root, "external ndk"), "30.0.1");
   const incomplete = ndkFixture(path.join(root, "sdk/ndk/31.0.1"), "31.0.1");
   fs.unlinkSync(path.join(incomplete, "shader-tools/linux-x86_64/glslc"));
-  const selected = resolveNdk(path.join(root, "sdk"), { env: { NDK_HOME: external }, standaloneRoots: [] });
+  const selected = resolveNdk(path.join(root, "sdk"), { env: { NDK_HOME: external }, standaloneRoots: [], hostPlatform: "linux", hostArch: "x64" });
   assert.deepEqual(selected, { path: external, version: "30.0.1" });
   assert.throws(() => resolveNdk(root, { env: { NDK_HOME: external, ANDROID_NDK_HOME: incomplete } }), /same NDK/);
   assert.throws(() => resolveNdk(root, { env: { NDK_HOME: "/missing" } }), /no stable revision/);

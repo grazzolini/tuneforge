@@ -269,21 +269,43 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "26"
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Select Java 17 and verify script prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${JAVA_HOME_17_X64:?Hosted Java 17 is required}"
+          export JAVA_HOME="$JAVA_HOME_17_X64"
+          export PATH="$JAVA_HOME/bin:$PATH"
+          echo "JAVA_HOME=$JAVA_HOME" >> "$GITHUB_ENV"
+          echo "$JAVA_HOME/bin" >> "$GITHUB_PATH"
+          java -version 2>&1 | tee /tmp/tuneforge-java-version
+          grep -Eq 'version "17[.]' /tmp/tuneforge-java-version
+          javac -version 2>&1 | grep -E '^javac 17[.]'
+          keytool -help >/dev/null
+          command -v c++ || { echo "A C++17 compiler is required" >&2; exit 1; }
+          printf '#include <zlib.h>\nint main() { return zlibVersion() ? 0 : 1; }\n' | c++ -std=c++17 -x c++ - -lz -o /tmp/tuneforge-zlib-probe
+          /tmp/tuneforge-zlib-probe
 
       - name: Test deterministic Node scripts
-        run: node --test scripts/build-info.test.mjs scripts/package-options.test.mjs scripts/flatpak-options.test.mjs scripts/flatpak-pnpm.test.mjs scripts/desktop-e2e.test.mjs scripts/sync-validation.test.mjs scripts/release-license-inventory.test.mjs scripts/capture-release-media.test.mjs scripts/ci-image-policy.test.mjs scripts/verify-ci-image.test.mjs scripts/ci-scope-policy.test.mjs scripts/ci-image-impact.test.mjs scripts/ci-image-run.test.mjs
+        run: node --test scripts/build-info.test.mjs scripts/package-options.test.mjs scripts/flatpak-options.test.mjs scripts/flatpak-pnpm.test.mjs scripts/desktop-e2e.test.mjs scripts/sync-validation.test.mjs scripts/release-license-inventory.test.mjs scripts/capture-release-media.test.mjs scripts/ci-image-policy.test.mjs scripts/verify-ci-image.test.mjs scripts/ci-scope-policy.test.mjs scripts/ci-image-impact.test.mjs scripts/ci-image-run.test.mjs scripts/validate-android-release-jni.test.mjs scripts/package-dmg.test.mjs scripts/package-profile.test.mjs scripts/dev.test.mjs scripts/android-prepare-generated.test.mjs
 
-      - name: Test Android diagnostic, root alias, and supported API boundaries
+      - name: Test Android packaging helpers
+        run: node --test --test-reporter=spec scripts/package-android.test.mjs
+
+      - name: Test Android Studio shim
         run: >-
           node --test --test-reporter=spec
-          --test-name-pattern='^(Java discovery failures preserve guidance|resolved Android environment selects llvm-readelf|libsoxr ELF invocation failures exclude|SDK aliases accept symlinks|NDK aliases accept symlinks|AGP API cap|compilation SDK|owned generator migrates|stable integer and dotted SDK|toolchain profiles follow|complete profile selection preserves)'
-          scripts/package-android.test.mjs
+          --test-name-pattern='^Studio root shim'
+          scripts/android-studio-root-shim.test.mjs
 
-      - name: Test Android Studio shim and FFmpeg provenance
-        run: >-
-          node --test --test-reporter=spec
-          --test-name-pattern='^(Studio root shim|FFmpeg Android provenance|FFmpeg corresponding sources import independently)'
-          scripts/android-studio-root-shim.test.mjs scripts/build-ffmpeg.test.mjs
+      - name: Test FFmpeg provenance and runtime helpers
+        run: node --test --test-reporter=spec scripts/build-ffmpeg.test.mjs
 
       - name: Check release script syntax
         run: |

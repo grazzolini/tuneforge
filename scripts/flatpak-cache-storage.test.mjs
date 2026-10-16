@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,7 +15,7 @@ import { parsePackageOptions } from "./package-options.mjs";
 const root = fileURLToPath(new URL("../", import.meta.url));
 const hasOstree = spawnSync("ostree", ["--version"], { stdio: "ignore" }).status === 0;
 function temporary(context) {
-  const directory = mkdtempSync(path.join(os.tmpdir(), "tuneforge-flatpak-storage-"));
+  const directory = realpathSync(mkdtempSync(path.join(os.tmpdir(), "tuneforge-flatpak-storage-")));
   context.after(() => rmSync(directory, { recursive: true, force: true }));
   return directory;
 }

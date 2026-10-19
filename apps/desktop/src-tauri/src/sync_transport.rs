@@ -1,6 +1,11 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+#[cfg(test)]
+pub(crate) fn manifest_roundtrip_plan_body_for_test(manifest: Value) -> Value {
+    desktop::manifest_roundtrip_plan_body_for_test(manifest)
+}
+
 fn default_true() -> bool {
     true
 }
@@ -1035,6 +1040,7 @@ mod sync_core {
         fn send_message(&mut self, message: &ProtocolMessage) -> Result<(), String>;
         fn read_message(&mut self) -> Result<ProtocolMessage, String>;
         fn handshake_hash(&self) -> &str;
+        fn mark_authenticated(&mut self) -> Result<(), String> { Ok(()) }
     }
 
     pub(crate) fn encode_message_chunk_frame(chunk: &EncryptedChunk) -> Result<Vec<u8>, String> {
@@ -1257,6 +1263,8 @@ mod sync_core {
             &remote_nonce,
             connection.handshake_hash(),
         )?;
+
+        connection.mark_authenticated()?;
 
         let endpoint_hints = normalize_advisory_endpoint_hints(local_endpoint_hints.to_vec())?;
         connection.send_message(&ProtocolMessage::EndpointHints {
@@ -1631,7 +1639,7 @@ mod desktop {
         process,
         str::FromStr,
         sync::{
-            atomic::{AtomicBool, Ordering},
+            atomic::{AtomicBool, AtomicUsize, Ordering},
             mpsc, Arc, Mutex,
         },
         thread::{self, JoinHandle},
@@ -4289,9 +4297,16 @@ mod desktop {
             parse_discovery_beacon(bytes, local_device_id, observed_at, expires_at_instant)
         {
             update_status(shared_status, |status| {
-                status
-                    .nearby_peers
-                    .insert(entry.peer.device_id.clone(), entry);
+                let now = Instant::now();
+                status.nearby_peers.retain(|_, peer| peer.expires_at_instant > now);
+                if !status.nearby_peers.contains_key(&entry.peer.device_id) && status.nearby_peers.len() >= 256 {
+                    if let Some(oldest) = status.nearby_peers.iter()
+                        .min_by_key(|(id, peer)| (peer.expires_at_instant, *id))
+                        .map(|(id, _)| id.clone()) {
+                        status.nearby_peers.remove(&oldest);
+                    }
+                }
+                status.nearby_peers.insert(entry.peer.device_id.clone(), entry);
             });
         }
     }
@@ -4821,6 +4836,137 @@ mod desktop {
     #[cfg(not(unix))]
     fn set_owner_only_file_permissions(_path: &Path) {}
 
+    const PREAUTH_TIMEOUT: Duration = Duration::from_secs(60);
+    static PREAUTH_COUNT: AtomicUsize = AtomicUsize::new(0);
+    thread_local! {
+        static PREAUTH: std::cell::RefCell<Option<Arc<PreauthState>>> = const { std::cell::RefCell::new(None) };
+    }
+
+    struct PreauthState {
+        deadline: Instant,
+        authenticated: AtomicBool,
+        released: AtomicBool,
+        tcp: Mutex<Vec<Arc<TcpStream>>>,
+        iroh: Mutex<Option<Connection>>,
+        #[cfg(any(mobile, test))]
+        sqlite: Mutex<Vec<rusqlite::InterruptHandle>>,
+    }
+
+    impl PreauthState {
+        fn acquire() -> Option<Arc<Self>> {
+            Self::acquire_for(PREAUTH_TIMEOUT)
+        }
+
+        fn acquire_for(timeout: Duration) -> Option<Arc<Self>> {
+            PREAUTH_COUNT.try_update(Ordering::SeqCst, Ordering::SeqCst,
+                |count| (count < 4).then_some(count + 1)).ok()?;
+            let state = Arc::new(Self {
+                deadline: Instant::now() + timeout,
+                authenticated: AtomicBool::new(false), released: AtomicBool::new(false),
+                tcp: Mutex::new(Vec::new()), iroh: Mutex::new(None),
+                #[cfg(any(mobile, test))]
+                sqlite: Mutex::new(Vec::new()),
+            });
+            let weak = Arc::downgrade(&state);
+            thread::spawn(move || {
+                while let Some(state) = weak.upgrade() {
+                    if state.authenticated.load(Ordering::SeqCst) { break; }
+                    if Instant::now() >= state.deadline {
+                        state.close();
+                    }
+                    drop(state);
+                    thread::sleep(Duration::from_millis(20));
+                }
+            });
+            Some(state)
+        }
+
+        fn check(&self) -> Result<(), String> {
+            if !self.authenticated.load(Ordering::SeqCst) && Instant::now() >= self.deadline {
+                self.close();
+                return Err("Sync peer authentication exceeded its 60 second deadline.".to_string());
+            }
+            Ok(())
+        }
+
+        fn close(&self) {
+            if let Ok(streams) = self.tcp.lock() {
+                if self.authenticated.load(Ordering::SeqCst) { return; }
+                for stream in streams.iter() { let _ = stream.shutdown(Shutdown::Both); }
+                if let Ok(connection) = self.iroh.lock() {
+                    if let Some(connection) = connection.as_ref() { connection.close(VarInt::from_u32(0), b"authentication expired"); }
+                }
+                #[cfg(any(mobile, test))]
+                if let Ok(handles) = self.sqlite.lock() {
+                    for handle in handles.iter() { handle.interrupt(); }
+                }
+            }
+        }
+
+        fn release(&self) {
+            if !self.released.swap(true, Ordering::SeqCst) {
+                PREAUTH_COUNT.fetch_sub(1, Ordering::SeqCst);
+            }
+        }
+
+        fn register_tcp(&self, stream: &TcpStream) -> Result<(), String> {
+            let stream = stream.try_clone().map_err(|error| error.to_string())?;
+            self.tcp.lock().map_err(|_| "Authentication socket lock poisoned.".to_string())?.push(Arc::new(stream));
+            self.check()
+        }
+    }
+
+    impl Drop for PreauthState {
+        fn drop(&mut self) { self.close(); self.release(); }
+    }
+
+    #[cfg(any(mobile, test))]
+    pub(crate) fn preauth_database_deadline() -> Option<Instant> {
+        PREAUTH.with(|slot| slot.borrow().as_ref().map(|state| state.deadline))
+    }
+
+    #[cfg(any(mobile, test))]
+    pub(crate) fn configure_preauth_database(connection: &rusqlite::Connection) -> Result<(), String> {
+        PREAUTH.with(|slot| {
+            if let Some(state) = slot.borrow().as_ref() {
+                state.check()?;
+                connection.busy_handler(Some(preauth_database_busy)).map_err(|error| error.to_string())?;
+                state.sqlite.lock().map_err(|_| "Authentication database lock poisoned.".to_string())?
+                    .push(connection.get_interrupt_handle());
+                state.check()?;
+            }
+            Ok(())
+        })
+    }
+
+    #[cfg(any(mobile, test))]
+    fn preauth_database_busy(_attempts: i32) -> bool {
+        let Some(deadline) = preauth_database_deadline() else { return false; };
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() { return false; }
+        thread::sleep(remaining.min(Duration::from_millis(5)));
+        Instant::now() < deadline
+    }
+
+    struct PreauthPeerStream {
+        stream: Box<dyn PeerStream>,
+        state: Arc<PreauthState>,
+    }
+    impl PeerStream for PreauthPeerStream {
+        fn read_exact(&mut self, buffer: &mut [u8]) -> io::Result<()> {
+            self.state.check().map_err(io::Error::other)?;
+            self.stream.read_exact(buffer)?;
+            self.state.check().map_err(io::Error::other)
+        }
+        fn write_all(&mut self, buffer: &[u8]) -> io::Result<()> {
+            self.state.check().map_err(io::Error::other)?;
+            self.stream.write_all(buffer)?;
+            self.state.check().map_err(io::Error::other)
+        }
+        fn set_read_timeout(&mut self, timeout: Duration) -> io::Result<()> { self.stream.set_read_timeout(timeout) }
+        fn tcp_abort_stream(&self) -> Option<Arc<TcpStream>> { self.stream.tcp_abort_stream() }
+    }
+
     fn accept_loop(
         listener: TcpListener,
         backend: BackendAccess,
@@ -4832,6 +4978,11 @@ mod desktop {
         while !stop.load(Ordering::SeqCst) {
             match listener.accept() {
                 Ok((stream, address)) => {
+                    let Some(preauth) = PreauthState::acquire() else {
+                        let _ = stream.shutdown(Shutdown::Both);
+                        continue;
+                    };
+                    if preauth.register_tcp(&stream).is_err() { continue; }
                     let backend = backend.clone();
                     let shared_status = Arc::clone(&shared_status);
                     let endpoint_hints = endpoint_hints.clone();
@@ -4852,6 +5003,7 @@ mod desktop {
                             shared_status,
                             endpoint_hints,
                             active_transfer_reservations,
+                            preauth,
                         ),
                         Err(error) => {
                             update_status(&shared_status, |status| {
@@ -4888,6 +5040,10 @@ mod desktop {
             while !stop.load(Ordering::SeqCst) {
                 match tokio::time::timeout(ACCEPT_SLEEP, transport.endpoint.accept()).await {
                     Ok(Some(incoming)) => {
+                        let Some(preauth) = PreauthState::acquire() else {
+                            incoming.refuse();
+                            continue;
+                        };
                         let backend = backend.clone();
                         let shared_status = Arc::clone(&shared_status);
                         let endpoint_hints = endpoint_hints.clone();
@@ -4900,15 +5056,16 @@ mod desktop {
                             status.last_sync = None;
                         });
                         tauri::async_runtime::spawn(async move {
-                            let stream = match incoming.await {
-                                Ok(connection) => {
+                            let stream = match tokio::time::timeout_at(tokio::time::Instant::from_std(preauth.deadline), incoming).await {
+                                Ok(Ok(connection)) => {
+                                    *preauth.iroh.lock().expect("authentication connection lock") = Some(connection.clone());
                                     let runtime_handle = tokio::runtime::Handle::current();
                                     let iroh_data = IrohDataConnection {
                                         connection: connection.clone(),
                                         runtime_handle: runtime_handle.clone(),
                                     };
-                                    match connection.accept_bi().await {
-                                        Ok((send, recv)) => Ok((
+                                    match tokio::time::timeout_at(tokio::time::Instant::from_std(preauth.deadline), connection.accept_bi()).await {
+                                        Ok(Ok((send, recv))) => Ok((
                                             Box::new(IrohPeerStream::new(
                                                 send,
                                                 recv,
@@ -4917,14 +5074,12 @@ mod desktop {
                                                 as Box<dyn PeerStream>,
                                             iroh_data,
                                         )),
-                                        Err(error) => Err(format!(
-                                            "Could not accept Iroh sync stream: {error}"
-                                        )),
+                                        Ok(Err(error)) => Err(format!("Could not accept Iroh sync stream: {error}")),
+                                        Err(_) => { preauth.close(); Err("Iroh authentication deadline expired accepting stream.".to_string()) },
                                     }
                                 }
-                                Err(error) => {
-                                    Err(format!("Could not accept Iroh sync connection: {error}"))
-                                }
+                                Ok(Err(error)) => Err(format!("Could not accept Iroh sync connection: {error}")),
+                                Err(_) => Err("Iroh authentication deadline expired accepting connection.".to_string()),
                             };
                             match stream {
                                 Ok((stream, iroh_data)) => {
@@ -4939,6 +5094,7 @@ mod desktop {
                                             session_status,
                                             endpoint_hints,
                                             active_transfer_reservations,
+                                            preauth,
                                         );
                                     });
                                     if let Err(error) = join.await {
@@ -5094,7 +5250,10 @@ mod desktop {
         shared_status: Arc<Mutex<SharedStatus>>,
         endpoint_hints: Vec<String>,
         active_transfer_reservations: ActiveTransferReservations,
+        preauth: Arc<PreauthState>,
     ) {
+        PREAUTH.with(|slot| *slot.borrow_mut() = Some(Arc::clone(&preauth)));
+        let stream = Box::new(PreauthPeerStream { stream, state: preauth });
         let run_id = sync_run_id();
         let run_started_at = Utc::now();
         let run_started_instant = Instant::now();
@@ -5177,6 +5336,7 @@ mod desktop {
         update_status(&shared_status, |status| {
             apply_incoming_session_status_result(status, result, &run_id);
         });
+        PREAUTH.with(|slot| { slot.borrow_mut().take(); });
     }
 
     fn apply_incoming_session_status_result(
@@ -6230,6 +6390,7 @@ mod desktop {
         noise: snow::TransportState,
         handshake_hash: String,
         next_message_id: u64,
+        authenticated: bool,
         transport: TransportKind,
         iroh_data: Option<IrohDataConnection>,
     }
@@ -6265,6 +6426,7 @@ mod desktop {
                 noise,
                 handshake_hash,
                 next_message_id: 1,
+                authenticated: false,
                 transport,
                 iroh_data,
             })
@@ -6301,6 +6463,7 @@ mod desktop {
                 noise,
                 handshake_hash,
                 next_message_id: 1,
+                authenticated: false,
                 transport,
                 iroh_data,
             })
@@ -6399,9 +6562,14 @@ mod desktop {
             if first.chunk_index != 0 {
                 return Err("Encrypted sync transport chunks arrived out of order.".to_string());
             }
-            let mut chunks = Vec::with_capacity(first.chunk_count as usize);
+            if !self.authenticated && (first.chunk_count != 1 || first.data.len() > 8_192_usize.div_ceil(3) * 4) {
+                return Err("Unauthenticated sync messages must fit one 8 KiB chunk.".to_string());
+            }
+            let mut payload = decode_standard_base64(&first.data)?;
+            if !self.authenticated && payload.len() > 8_192 {
+                return Err("Unauthenticated sync message exceeds 8 KiB.".to_string());
+            }
             let message_id = first.message_id;
-            chunks.push(decode_standard_base64(&first.data)?);
             for expected_index in 1..first.chunk_count {
                 let next = match self.read_encrypted_frame()? {
                     EncryptedFrame::MessageChunk(chunk) => chunk,
@@ -6418,9 +6586,12 @@ mod desktop {
                 if next.chunk_count != first.chunk_count {
                     return Err("Encrypted sync transport chunk count changed.".to_string());
                 }
-                chunks.push(decode_standard_base64(&next.data)?);
+                let chunk = decode_standard_base64(&next.data)?;
+                payload.len().checked_add(chunk.len()).filter(|length| *length <= isize::MAX as usize)
+                    .ok_or_else(|| "Sync message size overflow.".to_string())?;
+                payload.try_reserve(chunk.len()).map_err(|_| "Could not allocate sync message.".to_string())?;
+                payload.extend_from_slice(&chunk);
             }
-            let payload = chunks.concat();
             serde_json::from_slice(&payload)
                 .map_err(|error| format!("Could not decode sync transport message: {error}"))
         }
@@ -6648,6 +6819,25 @@ mod desktop {
 
         fn read_message(&mut self) -> Result<ProtocolMessage, String> {
             SecurePeerConnection::read_message(self)
+        }
+
+        fn mark_authenticated(&mut self) -> Result<(), String> {
+            PREAUTH.with(|slot| {
+                if let Some(state) = slot.borrow_mut().take() {
+                    let mut sockets = state.tcp.lock().map_err(|_| "Authentication socket lock poisoned.".to_string())?;
+                    if Instant::now() >= state.deadline {
+                        for socket in sockets.iter() { let _ = socket.shutdown(Shutdown::Both); }
+                        return Err("Sync peer authentication exceeded its 60 second deadline.".to_string());
+                    }
+                    state.authenticated.store(true, Ordering::SeqCst);
+                    sockets.clear();
+                    state.iroh.lock().map_err(|_| "Authentication connection lock poisoned.".to_string())?.take();
+                    state.release();
+                }
+                Ok::<(), String>(())
+            })?;
+            self.authenticated = true;
+            Ok(())
         }
 
         fn handshake_hash(&self) -> &str {
@@ -8501,7 +8691,6 @@ mod desktop {
         normalize_compact_staged_references(references)
     }
 
-    #[cfg(any(test, target_os = "android"))]
     fn normalize_compact_sha256(value: &str) -> Result<String, String> {
         let normalized = value.trim().to_ascii_lowercase();
         if normalized.len() != 64
@@ -8574,6 +8763,26 @@ mod desktop {
                 "metadata": { "transport": transport_id },
             }],
         })
+    }
+
+    #[cfg(test)]
+    pub(super) fn manifest_roundtrip_plan_body_for_test(manifest: Value) -> Value {
+        let offer = ProtocolMessage::ManifestOffer(ManifestOffer {
+            metadata: serde_json::json!({}),
+            project_manifests: vec![manifest],
+            manifest_errors: Vec::new(),
+        });
+        let encoded = serde_json::to_vec(&offer).unwrap();
+        let ProtocolMessage::ManifestOffer(decoded) = serde_json::from_slice(&encoded).unwrap()
+        else {
+            panic!("expected manifest offer")
+        };
+        reconciliation_plan_body_for_manifest_chunk(
+            "device_peer_1",
+            &decoded.metadata,
+            &decoded.project_manifests,
+            "iroh",
+        )
     }
 
     fn reconciliation_plan_body_for_manifest_chunk(
@@ -10315,6 +10524,14 @@ mod desktop {
             return false;
         }
 
+        for pending_transfer in &pending {
+            if let Err(error) = normalize_compact_sha256(&pending_transfer.artifact.content_sha256) {
+                for transfer in pending {
+                    record_transfer(Err(transfer_failure(&transfer.artifact, TransferTimer::zero_now(), error.clone())), false, apply_worker);
+                }
+                return false;
+            }
+        }
         let temp_root = match client.temp_artifact_root() {
             Ok(root) => root,
             Err(error) => {
@@ -10336,7 +10553,8 @@ mod desktop {
         let mut expected = HashMap::new();
         for pending_transfer in &pending {
             let temp_path =
-                temp_artifact_path_in(temp_root.clone(), &pending_transfer.artifact.content_sha256);
+                temp_artifact_path_in(temp_root.clone(), &pending_transfer.artifact.content_sha256)
+                    .expect("pending artifact digest validated before accessing temp storage");
             expected.insert(
                 pending_transfer.artifact.artifact_id.clone(),
                 IrohPendingReceive {
@@ -11043,7 +11261,7 @@ mod desktop {
                 ));
             }
         }
-        let mut file = match File::create(&pending.temp_path) {
+        let mut file = match File::options().write(true).create_new(true).open(&pending.temp_path) {
             Ok(file) => file,
             Err(error) => {
                 return Err(known_iroh_receive_failure(
@@ -11441,7 +11659,7 @@ mod desktop {
                 ));
             }
         }
-        let mut file = match File::create(&temp_path) {
+        let mut file = match File::options().write(true).create_new(true).open(&temp_path) {
             Ok(file) => file,
             Err(error) => {
                 timings.push(timer.finish());
@@ -11633,12 +11851,9 @@ mod desktop {
         }
     }
 
-    fn temp_artifact_path_in(root: PathBuf, content_sha256: &str) -> PathBuf {
-        root.join(format!(
-            "{}-{}-{content_sha256}",
-            process::id(),
-            random_nonce()
-        ))
+    fn temp_artifact_path_in(root: PathBuf, content_sha256: &str) -> Result<PathBuf, String> {
+        let content_sha256 = normalize_compact_sha256(content_sha256)?;
+        Ok(root.join(format!("{}-{}-{content_sha256}", process::id(), random_nonce())))
     }
 
     fn cleanup_stale_transport_temp_artifacts(root: &Path) -> Result<(), String> {
@@ -12911,6 +13126,12 @@ mod desktop {
 
         #[cfg(not(mobile))]
         fn connect_with_timeout(&self, timeout: Duration) -> Result<TcpStream, BackendError> {
+            let timeout = PREAUTH.with(|slot| {
+                if let Some(state) = slot.borrow().as_ref() {
+                    state.check().map_err(BackendError::local)?;
+                    Ok(timeout.min(state.deadline.saturating_duration_since(Instant::now())))
+                } else { Ok(timeout) }
+            })?;
             let host = self
                 .host
                 .strip_prefix('[')
@@ -12929,7 +13150,15 @@ mod desktop {
             let mut last_error = None;
             for address in addresses {
                 match TcpStream::connect_timeout(&address, timeout) {
-                    Ok(stream) => return Ok(stream),
+                    Ok(stream) => {
+                        PREAUTH.with(|slot| {
+                            if let Some(state) = slot.borrow().as_ref() {
+                                state.register_tcp(&stream).map_err(BackendError::local)?;
+                            }
+                            Ok::<(), BackendError>(())
+                        })?;
+                        return Ok(stream);
+                    }
                     Err(error) => last_error = Some(error),
                 }
             }
@@ -13267,10 +13496,8 @@ mod desktop {
     trait ArtifactStagingClient {
         fn temp_artifact_root(&self) -> Result<PathBuf, String>;
         fn temp_artifact_path(&self, content_sha256: &str) -> Result<PathBuf, String> {
-            Ok(temp_artifact_path_in(
-                self.temp_artifact_root()?,
-                content_sha256,
-            ))
+            let content_sha256 = normalize_compact_sha256(content_sha256)?;
+            temp_artifact_path_in(self.temp_artifact_root()?, &content_sha256)
         }
         fn post_json_value(&self, path: &str, body: &Value) -> Result<Value, BackendError>;
     }
@@ -14436,6 +14663,7 @@ mod desktop {
             request_bodies: &Arc<Mutex<Vec<(String, Value)>>>,
             responses: &TestBackendResponses,
         ) {
+            stream.set_nonblocking(false).expect("set test backend stream blocking");
             let mut reader = BufReader::new(stream);
             let mut request_line = String::new();
             if reader.read_line(&mut request_line).is_err() {
@@ -19095,6 +19323,59 @@ mod desktop {
 
         #[cfg(not(target_os = "android"))]
         #[test]
+        fn test_backend_handler_waits_for_fragmented_request_body() {
+            let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+            let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+            client.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            let body = br#"{"project_ids":["synthetic"]}"#;
+            write!(
+                client,
+                "POST /api/v1/sync/projects/manifests HTTP/1.1\r\nContent-Length: {}\r\n\r\n",
+                body.len()
+            ).unwrap();
+            let (stream, _) = listener.accept().unwrap();
+            stream.set_nonblocking(true).unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            let batches = Arc::new(Mutex::new(Vec::new()));
+            let captured_batches = Arc::clone(&batches);
+            let (done_sender, done_receiver) = mpsc::channel();
+            let handler = thread::spawn(move || {
+                let responses = TestBackendResponses {
+                    data_root: PathBuf::new(),
+                    staged_artifact_sizes: HashMap::new(),
+                    artifact_files: HashMap::new(),
+                    artifact_file_errors: HashMap::new(),
+                    staging_failure: None,
+                    project_manifests: HashMap::new(),
+                    manifest_batch_status: Some(404),
+                    manifest_batch_status_by_project_ids: HashMap::new(),
+                    manifest_batch_requests: captured_batches,
+                    manifest_get_requests: Arc::new(Mutex::new(Vec::new())),
+                    apply_failure_project_ids: HashSet::new(),
+                };
+                handle_test_backend_stream(
+                    stream,
+                    &Arc::new(Mutex::new(Vec::new())),
+                    &Arc::new(Mutex::new(Vec::new())),
+                    &responses,
+                );
+                done_sender.send(()).unwrap();
+            });
+            let completed_before_body =
+                done_receiver.recv_timeout(Duration::from_millis(50)).is_ok();
+            if !completed_before_body {
+                client.write_all(body).unwrap();
+            }
+            let mut response = String::new();
+            client.read_to_string(&mut response).unwrap();
+            handler.join().unwrap();
+            assert!(!completed_before_body, "mock returned before the request body arrived");
+            assert!(response.starts_with("HTTP/1.1 404"));
+            assert_eq!(*batches.lock().unwrap(), vec![vec!["synthetic".to_string()]]);
+        }
+
+        #[cfg(not(target_os = "android"))]
+        #[test]
         fn unavailable_manifest_batch_route_falls_back_to_single_project_exports() {
             let project_ids = (0..(LOCAL_MANIFEST_EXPORT_BATCH_SIZE + 1))
                 .map(|index| format!("proj_{index:02}"))
@@ -21859,8 +22140,8 @@ mod desktop {
 
         #[test]
         fn temp_artifact_path_is_unique_per_transfer() {
-            let first = temp_artifact_path_in(env::temp_dir(), "hash_same");
-            let second = temp_artifact_path_in(env::temp_dir(), "hash_same");
+            let first = temp_artifact_path_in(env::temp_dir(), &"a".repeat(64)).unwrap();
+            let second = temp_artifact_path_in(env::temp_dir(), &"a".repeat(64)).unwrap();
 
             assert_ne!(first, second);
         }
@@ -21878,7 +22159,7 @@ mod desktop {
                     .join("sync")
                     .join("transport-tmp")
             );
-            let temp_path = temp_artifact_path_in(root.clone(), "hash_one");
+            let temp_path = temp_artifact_path_in(root.clone(), &"b".repeat(64)).unwrap();
             assert!(temp_path.starts_with(&root));
             assert!(!temp_path
                 .to_string_lossy()
@@ -22084,10 +22365,189 @@ mod desktop {
                 "dev_ed25519_abc-DEF_123"
             );
         }
+        static PREAUTH_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+        #[test]
+        fn preauth_database_deadline_cancels_busy_queries_and_post_expiry_query_start() {
+            let _test_lock = PREAUTH_TEST_LOCK.lock().unwrap();
+            let path = env::temp_dir().join(format!("tuneforge-auth-db-{}.sqlite", random_nonce()));
+            let lock = rusqlite::Connection::open(&path).unwrap();
+            lock.execute_batch("CREATE TABLE auth_probe(value INTEGER); BEGIN EXCLUSIVE;").unwrap();
+            let state = PreauthState::acquire_for(Duration::from_millis(80)).unwrap();
+            let worker_state = Arc::clone(&state);
+            let worker_path = path.clone();
+            let started = Instant::now();
+            let worker = thread::spawn(move || {
+                PREAUTH.with(|slot| *slot.borrow_mut() = Some(worker_state));
+                let connection = rusqlite::Connection::open(worker_path).unwrap();
+                configure_preauth_database(&connection).unwrap();
+                let result = connection.query_row("SELECT COUNT(*) FROM auth_probe", [], |row| row.get::<_, i64>(0));
+                PREAUTH.with(|slot| { slot.borrow_mut().take(); });
+                result
+            });
+            assert!(worker.join().unwrap().is_err());
+            assert!(started.elapsed() < Duration::from_secs(1));
+            assert!(!state.released.load(Ordering::SeqCst));
+            drop(state);
+            lock.execute_batch("ROLLBACK").unwrap();
+            drop(lock);
+            fs::remove_file(&path).unwrap();
+
+            for delay in [Duration::ZERO, Duration::from_millis(120)] {
+                let state = PreauthState::acquire_for(Duration::from_millis(80)).unwrap();
+                let worker_state = Arc::clone(&state);
+                let started = Instant::now();
+                let worker = thread::spawn(move || {
+                    PREAUTH.with(|slot| *slot.borrow_mut() = Some(worker_state));
+                    let connection = rusqlite::Connection::open_in_memory().unwrap();
+                    configure_preauth_database(&connection).unwrap();
+                    thread::sleep(delay);
+                    let result = connection.query_row("WITH RECURSIVE t(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM t WHERE n<10000000) SELECT sum(n) FROM t", [], |row| row.get::<_, i64>(0));
+                    PREAUTH.with(|slot| { slot.borrow_mut().take(); });
+                    result
+                });
+                assert!(worker.join().unwrap().is_err());
+                assert!(started.elapsed() < Duration::from_secs(1));
+                assert!(!state.released.load(Ordering::SeqCst));
+                drop(state);
+            }
+        }
+
+        #[test]
+        fn preauth_budget_deadline_cancels_trickle_and_backend_without_early_release() {
+            let _test_lock = PREAUTH_TEST_LOCK.lock().unwrap();
+            let permits = (0..4).map(|_| PreauthState::acquire().unwrap()).collect::<Vec<_>>();
+            assert!(PreauthState::acquire().is_none());
+            drop(permits);
+
+            let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+            let mut sender = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+            let (stream, _) = listener.accept().unwrap();
+            let state = PreauthState::acquire_for(Duration::from_millis(80)).unwrap();
+            state.register_tcp(&stream).unwrap();
+            let worker_state = Arc::clone(&state);
+            let started = Instant::now();
+            let reader = thread::spawn(move || {
+                let mut stream = PreauthPeerStream { stream: Box::new(TcpPeerStream::new(stream).unwrap()), state: worker_state };
+                stream.read_exact(&mut [0; 1024])
+            });
+            let trickle = thread::spawn(move || {
+                while sender.write_all(&[0]).is_ok() { thread::sleep(Duration::from_millis(5)); }
+            });
+            assert!(reader.join().unwrap().is_err());
+            trickle.join().unwrap();
+            assert!(started.elapsed() < Duration::from_secs(1));
+            assert!(!state.released.load(Ordering::SeqCst), "expiry must not release a running owner");
+            drop(state);
+
+            let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let backend = thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut bytes = [0; 1024];
+                let _ = stream.read(&mut bytes);
+                while stream.write_all(b"H").is_ok() { thread::sleep(Duration::from_millis(5)); }
+            });
+            let state = PreauthState::acquire_for(Duration::from_millis(80)).unwrap();
+            let worker_state = Arc::clone(&state);
+            let started = Instant::now();
+            let worker = thread::spawn(move || {
+                PREAUTH.with(|slot| *slot.borrow_mut() = Some(worker_state));
+                let client = BackendClient { host: "127.0.0.1".to_string(), port,
+                    sync_transport_temp_root: Arc::new(Mutex::new(None)) };
+                let result = client.local_identity();
+                PREAUTH.with(|slot| { slot.borrow_mut().take(); });
+                result
+            });
+            assert!(worker.join().unwrap().is_err());
+            backend.join().unwrap();
+            assert!(started.elapsed() < Duration::from_secs(1));
+            assert!(!state.released.load(Ordering::SeqCst));
+            drop(state);
+            assert_eq!(PREAUTH_COUNT.load(Ordering::SeqCst), 0);
+        }
+
+        #[test]
+        fn unauthenticated_encrypted_messages_reject_counts_and_sizes_before_reserve() {
+            for (count, payload) in [(u32::MAX, b"{}".to_vec()), (2, b"{}".to_vec()),
+                (1, vec![b'a'; 8_193])] {
+                let (connection, peer) = spawn_test_sync_peer(move |mut peer| {
+                    peer.send_encrypted_chunk(&EncryptedChunk { message_id: 1, chunk_index: 0,
+                        chunk_count: count, data: encode_standard_base64(&payload) })
+                });
+                assert!(connection.read_message().unwrap_err().contains("8 KiB"));
+                peer.join().unwrap().unwrap();
+            }
+            for message in [
+                ProtocolMessage::AuthChallenge { protocol_version: "x".repeat(9_000), device_id: "peer".to_string(), session_nonce: "n".to_string() },
+                ProtocolMessage::AuthProof { handshake_signature: json!({"signature": "x".repeat(9_000)}) },
+                ProtocolMessage::Error(ProtocolError { code: "unexpected".to_string(), message: "x".repeat(9_000) }),
+            ] {
+                let (connection, peer) = spawn_test_sync_peer(move |mut peer| peer.send_message(&message));
+                assert!(connection.read_message().unwrap_err().contains("8 KiB"));
+                peer.join().unwrap().unwrap();
+            }
+        }
+
+        #[test]
+        fn authenticated_large_manifest_reassembles_without_preauth_cap() {
+            let payload = "x".repeat(17 * 1024 * 1024);
+            let expected = payload.len();
+            let (connection, peer) = spawn_test_sync_peer(move |mut peer| {
+                peer.mark_authenticated()?;
+                peer.send_message(&ProtocolMessage::Error(ProtocolError { code: "large_manifest_control".to_string(), message: payload }))
+            });
+            connection.with_connection(|connection| connection.mark_authenticated()).unwrap();
+            match connection.read_message().unwrap() {
+                ProtocolMessage::Error(error) => assert_eq!(error.message.len(), expected),
+                other => panic!("unexpected {}", other.kind()),
+            }
+            peer.join().unwrap().unwrap();
+        }
+
+        #[test]
+        fn transport_temp_names_reject_all_path_hash_forms_before_storage_access() {
+            for value in ["../outside", "/absolute", "a/b", "a\\b", "", &"g".repeat(64), &"a".repeat(63)] {
+                assert!(temp_artifact_path_in(PathBuf::from("/uncreated/fixture"), value).is_err());
+            }
+        }
+
+        #[test]
+        fn discovery_insertion_prunes_expired_and_evicts_oldest_deterministically() {
+            let shared = Arc::new(Mutex::new(SharedStatus::default()));
+            let now = Instant::now();
+            for index in 0..300 {
+                let identity = SyncLocalIdentity { device_id: format!("peer_{index:04}"), sync_group_id: "group".to_string(),
+                    display_name: None, public_key: "synthetic".to_string() };
+                let beacon = discovery_beacon_payload(&identity, &[], Utc::now()).unwrap();
+                record_discovery_beacon(&shared, &serde_json::to_vec(&beacon).unwrap(), "self", Utc::now(), now + DISCOVERY_PEER_TTL);
+            }
+            let mut status = shared.lock().unwrap();
+            assert_eq!(status.nearby_peers.len(), 256);
+            assert!(!status.nearby_peers.contains_key("peer_0000"));
+            assert!(status.nearby_peers.contains_key("peer_0299"));
+            for peer in status.nearby_peers.values_mut() { peer.expires_at_instant = now - Duration::from_secs(1); }
+            drop(status);
+            let identity = SyncLocalIdentity { device_id: "fresh".to_string(), sync_group_id: "group".to_string(), display_name: None, public_key: "synthetic".to_string() };
+            let beacon = discovery_beacon_payload(&identity, &[], Utc::now()).unwrap();
+            record_discovery_beacon(&shared, &serde_json::to_vec(&beacon).unwrap(), "self", Utc::now(), now + DISCOVERY_PEER_TTL);
+            assert_eq!(shared.lock().unwrap().nearby_peers.len(), 1);
+        }
+
     }
 }
 
 pub use desktop::SyncTransportState;
+
+#[cfg(any(mobile, test))]
+pub(crate) fn preauth_database_deadline() -> Option<std::time::Instant> {
+    desktop::preauth_database_deadline()
+}
+
+#[cfg(any(mobile, test))]
+pub(crate) fn configure_preauth_database(connection: &rusqlite::Connection) -> Result<(), String> {
+    desktop::configure_preauth_database(connection)
+}
 
 #[tauri::command]
 pub fn sync_transport_start_listener(

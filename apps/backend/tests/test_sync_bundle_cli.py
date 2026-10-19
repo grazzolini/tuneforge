@@ -32,13 +32,13 @@ def test_cli_help_describes_bundle_paths_and_import_flow(capsys: pytest.CaptureF
     assert "--bundle-root PATH" in normalized_export_help
     assert "Point Syncthing or another external folder sync tool at this directory" in normalized_export_help
     assert "--provider-device-id ID" in normalized_export_help
-    assert "Use the same id for repeated exports from the same source device." in normalized_export_help
+    assert "Exports always use the local Ed25519 identity; aliases are rejected." in normalized_export_help
 
     assert "--bundle-root PATH" in normalized_import_help
     assert "TuneForge's sync staging and reconciliation services" in normalized_import_help
     assert "--provider-device-id ID" in normalized_import_help
-    assert "bundle metadata or peer inventory" in normalized_import_help
-    assert "source peer should be pinned explicitly" in normalized_import_help
+    assert "Expected signed bundle signer device id." in normalized_import_help
+    assert "non-revoked trusted peer in this sync group." in normalized_import_help
 
 
 def test_export_cli_calls_service_with_repeatable_project_ids(

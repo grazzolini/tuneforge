@@ -17,6 +17,7 @@ from app.engines.stem_signal import STEM_SIGNAL_THRESHOLDS
 from app.errors import AppError, JobCancelledError
 from app.models import Artifact, ChordTimeline, Job
 from app.services.artifacts import register_artifact
+from app.services.paths import artifact_storage_key
 from app.services.projects import get_project, import_project
 from app.services.stem_signal_metadata import STEM_SIGNAL_METADATA_KEY, STEM_SIGNAL_METADATA_VERSION
 from app.utils.ids import new_id
@@ -478,7 +479,7 @@ def test_stem_generation_creates_vocal_and_instrumental_artifacts(client, sample
     assert Path(vocal_artifact["path"]).exists()
     assert Path(instrumental_artifact["path"]).exists()
     assert Path(vocal_artifact["path"]).parent.parent.name == "htdemucs_ft"
-    assert Path(vocal_artifact["path"]).parent.parent.parent.name == source_artifact["id"]
+    assert Path(vocal_artifact["path"]).parent.parent.parent.name == artifact_storage_key(source_artifact["id"])
 
     vocal_signal, _ = sf.read(vocal_artifact["path"], always_2d=True)
     instrumental_signal, _ = sf.read(instrumental_artifact["path"], always_2d=True)
@@ -2002,3 +2003,25 @@ def test_mix_audio_files_closes_open_handles_when_later_open_fails(tmp_path: Pat
         mix_audio_files([tmp_path / "first.wav", tmp_path / "second.wav"], tmp_path / "mix.wav")
 
     assert closed == ["first.wav"]
+
+
+@pytest.mark.parametrize("artifact_id", [
+    "source", "art_source_audio", "../outside", "a/b", "a\\b", " x ", "x", "é", "e\u0301",
+])
+def test_stem_output_path_hashes_exact_logical_identifier(artifact_id: str) -> None:
+    import hashlib
+
+    from app.services.paths import project_stems_dir
+    from app.services.stem_models import resolve_stem_model
+    from app.services.stems import build_stem_plan
+
+    source = Artifact(id=artifact_id, project_id="proj_sha256_" + "a" * 64)
+    outputs = build_stem_plan(
+        source, output_format="wav", stem_model=resolve_stem_model("htdemucs_ft", require_available=False),
+    )
+    key = hashlib.sha256(artifact_id.encode("utf-8")).hexdigest()
+    for output in outputs:
+        assert output.path.is_relative_to(project_stems_dir(source.project_id))
+        assert output.path.parent.parent.name == key
+    assert artifact_storage_key("x") != artifact_storage_key(" x ")
+    assert artifact_storage_key("x") != artifact_storage_key(artifact_storage_key("x"))

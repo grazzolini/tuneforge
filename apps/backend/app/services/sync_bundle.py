@@ -14,7 +14,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.errors import AppError
-from app.models import Artifact, Project, SyncTrustedPeer
+from app.models import Artifact, Project, SyncLocalIdentity, SyncTrustedPeer
+from app.services import sync_crypto
 from app.services.sync_manifest import (
     SyncArtifactManifest,
     SyncProjectManifest,
@@ -32,9 +33,9 @@ from app.services.sync_trust import get_or_create_local_identity
 from app.utils.hashing import file_sha256
 
 SYNC_BUNDLE_KIND = "tuneforge.sync_bundle"
-SYNC_BUNDLE_VERSION = "1"
+SYNC_BUNDLE_VERSION = "2"
+SYNC_BUNDLE_SIGNATURE_CONTEXT = b"tuneforge.sync.bundle.v2\x00"
 SYNC_BUNDLE_METADATA_FILE = "bundle.json"
-DEFAULT_PROVIDER_DEVICE_ID = "sync-bundle"
 HEX_DIGITS = frozenset("0123456789abcdef")
 SYNC_BUNDLE_ALLOWED_TOP_LEVEL_NAMES = frozenset(
     {SYNC_BUNDLE_METADATA_FILE, "projects", "blobs"}
@@ -153,6 +154,10 @@ def export_sync_bundle(
     project_ids: Sequence[str] | None = None,
     provider_device_id: str | None = None,
 ) -> SyncBundleExportResult:
+    identity = get_or_create_local_identity(session)
+    if provider_device_id is not None and provider_device_id != identity.device_id:
+        raise AppError("SYNC_BUNDLE_PROVIDER_MISMATCH", "Export provider must match the local signing identity.")
+    provider_device_id = identity.device_id
     root = _export_bundle_root(bundle_root)
     _validate_export_bundle_root(root)
     root.mkdir(parents=True, exist_ok=True)
@@ -225,7 +230,7 @@ def export_sync_bundle(
     ]
     content_sha256s = [blob.content_sha256 for blob in blobs]
     peer_inventory = _peer_inventory(
-        provider_device_id or DEFAULT_PROVIDER_DEVICE_ID,
+        provider_device_id,
         content_sha256s,
     )
     metadata = {
@@ -238,6 +243,11 @@ def export_sync_bundle(
         "content_sha256s": content_sha256s,
         "peer_inventory": peer_inventory,
     }
+    signer = session.get(SyncLocalIdentity, "local")
+    assert signer is not None
+    metadata["signature"] = sync_crypto.sign_payload(
+        sync_crypto.decode_key(signer.private_key), _bundle_signature_message(metadata),
+    )
     metadata_path = _safe_bundle_write_path(
         root,
         SYNC_BUNDLE_METADATA_FILE,
@@ -264,11 +274,7 @@ def import_sync_bundle(
     metadata_path = root / SYNC_BUNDLE_METADATA_FILE
     metadata = _read_json_object(metadata_path, label="bundle metadata")
     _validate_bundle_metadata(metadata)
-    stage_provider = _trusted_bundle_provider_device_id(
-        session,
-        metadata=metadata,
-        provider_device_id=provider_device_id,
-    )
+    stage_provider = _verify_bundle_signature(session, metadata, expected_signer=provider_device_id)
 
     manifests, manifest_payloads = _read_bundle_manifests(root, metadata)
     blob_entries = _bundle_blob_entries(metadata)
@@ -322,6 +328,35 @@ def import_sync_bundle(
         apply_result=apply_result,
         peer_inventory=peer_inventory,
     )
+
+
+def _bundle_signature_message(metadata: Mapping[str, Any]) -> bytes:
+    signed_metadata = {key: value for key, value in metadata.items() if key != "signature"}
+    return SYNC_BUNDLE_SIGNATURE_CONTEXT + json.dumps(
+        signed_metadata, ensure_ascii=True, sort_keys=True, separators=(",", ":"), allow_nan=False,
+    ).encode("utf-8")
+
+
+def _verify_bundle_signature(
+    session: Session, metadata: Mapping[str, Any], *, expected_signer: str | None,
+) -> str:
+    signer_id = metadata.get("provider_device_id")
+    if not isinstance(signer_id, str) or not signer_id:
+        raise AppError("SYNC_BUNDLE_PROVIDER_INVALID", "Signed bundle requires a signer identity.")
+    if expected_signer is not None and signer_id != expected_signer:
+        raise AppError("SYNC_BUNDLE_PROVIDER_MISMATCH", "Bundle signer does not match the expected signer.")
+    _require_trusted_bundle_provider(session, signer_id, source="bundle_signer")
+    peer = session.get(SyncTrustedPeer, signer_id)
+    assert peer is not None
+    signature = metadata.get("signature")
+    try:
+        public_key = sync_crypto.decode_key(peer.public_key)
+        if sync_crypto.derive_device_id(public_key) != signer_id or not isinstance(signature, str):
+            raise ValueError("Invalid signing identity.")
+        sync_crypto.verify_payload_signature(public_key, _bundle_signature_message(metadata), signature)
+    except (ValueError, TypeError) as exc:
+        raise AppError("SYNC_BUNDLE_SIGNATURE_INVALID", "Bundle metadata signature is invalid.") from exc
+    return signer_id
 
 
 def _bundle_root(bundle_root: Path | str) -> Path:
@@ -1237,77 +1272,6 @@ def _jsonable(value: Any) -> Any:
     return value
 
 
-def _trusted_bundle_provider_device_id(
-    session: Session,
-    *,
-    metadata: Mapping[str, Any],
-    provider_device_id: str | None,
-) -> str:
-    provider_override = _normalize_provider_device_id(provider_device_id)
-    if provider_device_id is not None and provider_override is None:
-        raise AppError(
-            "SYNC_BUNDLE_PROVIDER_INVALID",
-            "Sync bundle provider device id must not be blank.",
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-        )
-    metadata_provider = _normalize_provider_device_id(metadata.get("provider_device_id"))
-    inventory_provider_ids = _peer_inventory_provider_device_ids(metadata)
-    if provider_override is not None:
-        _validate_provider_override_matches_bundle(
-            provider_override,
-            metadata_provider=metadata_provider,
-            inventory_provider_ids=inventory_provider_ids,
-        )
-        return _require_trusted_bundle_provider(
-            session,
-            provider_override,
-            source="provider_override",
-        )
-
-    if metadata_provider is not None:
-        return _require_trusted_bundle_provider(
-            session,
-            metadata_provider,
-            source="bundle_metadata",
-        )
-
-    for inventory_provider_id in inventory_provider_ids:
-        if _bundle_provider_is_trusted(session, inventory_provider_id):
-            return inventory_provider_id
-
-    raise AppError(
-        "SYNC_BUNDLE_PROVIDER_UNTRUSTED",
-        "Sync bundle provider is not a non-revoked trusted peer in this sync group.",
-        status_code=status.HTTP_403_FORBIDDEN,
-        details={
-            "source": "peer_inventory",
-            "provider_device_ids": inventory_provider_ids,
-        },
-    )
-
-
-def _validate_provider_override_matches_bundle(
-    provider_override: str,
-    *,
-    metadata_provider: str | None,
-    inventory_provider_ids: list[str],
-) -> None:
-    if provider_override == metadata_provider or provider_override in inventory_provider_ids:
-        return
-
-    raise AppError(
-        "SYNC_BUNDLE_PROVIDER_MISMATCH",
-        "Sync bundle provider device id does not match the bundle provider identity.",
-        status_code=status.HTTP_409_CONFLICT,
-        details={
-            "source": "bundle_metadata" if metadata_provider is not None else "peer_inventory",
-            "provider_device_id": provider_override,
-            "metadata_provider_device_id": metadata_provider,
-            "peer_inventory_provider_device_ids": inventory_provider_ids,
-        },
-    )
-
-
 def _require_trusted_bundle_provider(
     session: Session,
     provider_device_id: str,
@@ -1335,18 +1299,6 @@ def _bundle_provider_is_trusted(session: Session, provider_device_id: str) -> bo
         and peer.revoked_at is None
         and peer.sync_group_id == identity.sync_group_id
     )
-
-
-def _peer_inventory_provider_device_ids(metadata: Mapping[str, Any]) -> list[str]:
-    peer_inventory = metadata.get("peer_inventory")
-    provider_ids: list[str] = []
-    if isinstance(peer_inventory, list):
-        for entry in peer_inventory:
-            if isinstance(entry, Mapping):
-                provider_id = _normalize_provider_device_id(entry.get("device_id"))
-                if provider_id is not None and provider_id not in provider_ids:
-                    provider_ids.append(provider_id)
-    return provider_ids
 
 
 def _normalize_provider_device_id(value: object) -> str | None:

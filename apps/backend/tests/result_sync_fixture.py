@@ -57,7 +57,9 @@ def build(root: Path, *, count: int, variant: str) -> None:
     def analyze(*_args, **_kwargs):
         return {
             "estimated_key": "G major" if advanced else "C major",
-            "key_confidence": 0.9,
+            # This exact float formats differently in Python and legacy Rust, exposing
+            # a sync payload hash mismatch.
+            "key_confidence": 0.08916091918945312,
             "estimated_reference_hz": 441.0 if advanced else 440.0,
             "tuning_offset_cents": 1.0 if advanced else 0.0,
             "tempo_bpm": 128.0 if advanced else 100.0,
@@ -87,7 +89,12 @@ def build(root: Path, *, count: int, variant: str) -> None:
             model="turbo",
             language="pt",
             segments=[
-                {"start_seconds": 0.0, "end_seconds": 0.5, "text": "Canção 🎵" if advanced else "Synthetic lyric"}
+                {
+                    # This timestamp exercises the same float-formatting hash regression for lyrics.
+                    "start_seconds": 0.010202407836914062,
+                    "end_seconds": 0.5,
+                    "text": "Canção 🎵" if advanced else "Synthetic lyric",
+                }
             ],
         )
 

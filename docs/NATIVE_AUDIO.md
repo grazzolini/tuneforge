@@ -29,6 +29,13 @@ for browsers and non-Tauri runtimes, and for a Tauri build compiled with the for
   Followed clicks are silent while project playback is paused, stopped, or complete, and resume with
   project playback. With Follow off, Tools runs independently alongside playback.
 - Native tempo changes use `signalsmith-stretch` for pitch-preserving playback.
+- Streaming playback checks decoded chunk expansion against the existing eight-second output ring
+  before copying or resampling. Oversized chunks fail with a playback error. WAV keeps 2048-frame
+  chunks; Symphonia keeps whole decoded packets. Interpolation and channel conversion share one
+  output pass, preserving playback samples without a resampled source-channel buffer.
+- Analysis linear and high-quality resampling permit at most 8x upsampling. Lower-rate inputs that
+  would exceed this ratio, including 4 kHz to 44.1 kHz, fail before output allocation. This does not
+  impose a song-duration limit or change ordinary playback's device-rate conversion.
 - A normal Tauri native failure is terminal for that resource. Playback holds its last authoritative
   position and shows the transport error; tuner capture clears live input. Neither path starts Web
   Audio. A later explicit Play, metronome Start, tuner Retry, or input selection starts one fresh

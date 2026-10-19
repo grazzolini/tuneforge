@@ -18,6 +18,15 @@ download, installation, verification, signature, and publication instructions.
 
 ### Fixed
 
+- Fix Android sync rejecting some generated lyrics and analysis numbers; preserve existing revision
+  history and no-op replay while keeping payload hash verification strict.
+
+- Validate sync content hashes and artifact identifiers before filesystem use, bound unauthenticated
+  peer sessions and discovery, and verify mobile revision payloads before storage. Offline bundles
+  now require a trusted device's signed version 2 metadata; unsigned bundles must be exported again.
+- Keep Android provider filenames out of import staging paths, and reject malformed WAV chunks or
+  excessive audio expansion before allocation while preserving normal playback samples.
+
 - Prepare Web playback before audible count-ins at original and adjusted tempos. Cancelled or
   failed preparation cannot start the song later; explicit Play retries with a fresh count-in.
 

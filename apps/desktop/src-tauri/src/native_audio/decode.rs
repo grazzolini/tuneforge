@@ -226,7 +226,7 @@ pub fn read_resampled_mono_audio(
 ) -> Result<DecodedAudio, String> {
     let decoded = read_mobile_audio(path)?;
     Ok(DecodedAudio {
-        samples: resample_mono(&decoded.samples, decoded.sample_rate, target_sample_rate),
+        samples: resample_mono(&decoded.samples, decoded.sample_rate, target_sample_rate)?,
         sample_rate: target_sample_rate,
         channels: 1,
     })
@@ -451,21 +451,33 @@ pub fn read_wav_audio_interleaved(path: &Path) -> Result<DecodedInterleavedAudio
     })
 }
 
+pub(crate) fn checked_analysis_output_len(length: usize, input_rate: u32, output_rate: u32) -> Result<usize, String> {
+    if input_rate == 0 || output_rate == 0 || u64::from(output_rate) > u64::from(input_rate) * 8 {
+        return Err("Audio analysis resampling supports at most 8x upsampling.".to_string());
+    }
+    let count = (length as u128).checked_mul(u128::from(output_rate))
+        .ok_or_else(|| "Audio analysis output is too large.".to_string())?
+        .div_ceil(u128::from(input_rate));
+    let count = usize::try_from(count).map_err(|_| "Audio analysis output is too large.".to_string())?;
+    if count > isize::MAX as usize / std::mem::size_of::<f32>() {
+        return Err("Audio analysis output is too large.".to_string());
+    }
+    Ok(count)
+}
+
 pub fn resample_mono(
     samples: &[f32],
     source_sample_rate: u32,
     target_sample_rate: u32,
-) -> Vec<f32> {
+) -> Result<Vec<f32>, String> {
+    let output_len = checked_analysis_output_len(samples.len(), source_sample_rate, target_sample_rate)?;
     if samples.is_empty() || source_sample_rate == 0 || source_sample_rate == target_sample_rate {
-        return samples.to_vec();
+        return Ok(samples.to_vec());
     }
 
-    let output_len = ((samples.len() as f64) * target_sample_rate as f64
-        / source_sample_rate as f64)
-        .ceil()
-        .max(1.0) as usize;
     let ratio = source_sample_rate as f64 / target_sample_rate as f64;
-    let mut output = Vec::with_capacity(output_len);
+    let mut output = Vec::new();
+    output.try_reserve_exact(output_len).map_err(|_| "Audio analysis resampling allocation failed.".to_string())?;
     for index in 0..output_len {
         let source_position = index as f64 * ratio;
         let left_index = source_position.floor() as usize;
@@ -475,7 +487,7 @@ pub fn resample_mono(
         let right = samples[right_index];
         output.push(left + (right - left) * fraction);
     }
-    output
+    Ok(output)
 }
 
 pub fn resample_interleaved(
@@ -632,7 +644,7 @@ mod tests {
     fn resample_returns_original_when_sample_rates_match() {
         let samples = vec![0.0, 0.5, -0.5];
 
-        assert_eq!(resample_mono(&samples, 44_100, 44_100), samples);
+        assert_eq!(resample_mono(&samples, 44_100, 44_100).unwrap(), samples);
     }
 
     #[test]

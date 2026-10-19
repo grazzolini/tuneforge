@@ -363,7 +363,22 @@ pub(super) fn app_data_root(app: &AppHandle) -> Result<PathBuf, String> {
 
 pub(super) fn db(app: &AppHandle) -> Result<Connection, String> {
     let root = app_data_root(app)?;
+    if crate::sync_transport::preauth_database_deadline().is_some() {
+        return auth_db_at_root(&root);
+    }
     db_at_root(&root)
+}
+
+fn auth_db_at_root(root: &Path) -> Result<Connection, String> {
+    // Listener startup initializes the database before it accepts peers. Authentication
+    // reads that initialized state; an unauthenticated peer cannot trigger migrations,
+    // job recovery, identity creation, or revision materialization.
+    let connection = Connection::open_with_flags(root.join("mobile.sqlite3"), rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)
+        .map_err(|error| error.to_string())?;
+    crate::sync_transport::configure_preauth_database(&connection)?;
+    connection.query_row("SELECT 1 FROM sync_local_identities WHERE id = 'local'", [], |row| row.get::<_, i64>(0))
+        .map_err(|error| format!("Sync authentication requires an initialized local identity: {error}"))?;
+    Ok(connection)
 }
 
 pub(super) fn db_at_root(root: &Path) -> Result<Connection, String> {
@@ -974,7 +989,9 @@ pub(super) fn row_entity_revision(
 ) -> rusqlite::Result<SyncProjectManifestEntityRevisionSchema> {
     let metadata_raw: String = row.get(10)?;
     let payload_raw: String = row.get(11)?;
-    Ok(SyncProjectManifestEntityRevisionSchema {
+    let payload = serde_json::from_str(&payload_raw);
+    let valid_payload = payload.is_ok();
+    let mut revision = SyncProjectManifestEntityRevisionSchema {
         revision_id: row.get(0)?,
         project_id: row.get(1)?,
         entity_type: row.get(2)?,
@@ -986,10 +1003,21 @@ pub(super) fn row_entity_revision(
         content_sha256: row.get(8)?,
         state: row.get(9)?,
         metadata: serde_json::from_str(&metadata_raw).unwrap_or_else(|_| json!({})),
-        payload: serde_json::from_str(&payload_raw).unwrap_or_else(|_| json!({})),
+        payload: payload.unwrap_or_else(|_| json!({})),
         created_at: row.get(12)?,
         updated_at: row.get(13)?,
-    })
+    };
+    if valid_payload {
+        let canonical_hash = revision_payload_sha256(&revision.payload);
+        // Only recognize hashes authored by the old local formatter for this exact payload.
+        // Incoming manifests still require the canonical Python-compatible hash.
+        if revision.content_sha256 != canonical_hash
+            && revision.content_sha256 == legacy_revision_payload_sha256(&revision.payload)
+        {
+            revision.content_sha256 = canonical_hash;
+        }
+    }
+    Ok(revision)
 }
 
 pub(super) fn row_delete_tombstone(row: &Row<'_>) -> rusqlite::Result<SyncDeleteTombstoneSchema> {
@@ -1624,6 +1652,10 @@ pub(super) fn current_result_revision(
 
 // Match Python json.dumps(ensure_ascii=True, sort_keys=True, separators=(",", ":")).
 pub(super) fn canonical_revision_payload(value: &Value) -> String {
+    canonical_revision_payload_with_format(value, false)
+}
+
+fn canonical_revision_payload_with_format(value: &Value, legacy_float_format: bool) -> String {
     match value {
         Value::Object(object) => {
             let sorted = object.iter().collect::<BTreeMap<_, _>>();
@@ -1634,8 +1666,10 @@ pub(super) fn canonical_revision_payload(value: &Value) -> String {
                     .map(|(key, value)| {
                         format!(
                             "{}:{}",
-                            canonical_revision_payload(&Value::String(key.clone())),
-                            canonical_revision_payload(value)
+                            canonical_revision_payload_with_format(
+                                &Value::String(key.clone()), legacy_float_format,
+                            ),
+                            canonical_revision_payload_with_format(value, legacy_float_format)
                         )
                     })
                     .collect::<Vec<_>>()
@@ -1646,7 +1680,7 @@ pub(super) fn canonical_revision_payload(value: &Value) -> String {
             "[{}]",
             values
                 .iter()
-                .map(canonical_revision_payload)
+                .map(|value| canonical_revision_payload_with_format(value, legacy_float_format))
                 .collect::<Vec<_>>()
                 .join(",")
         ),
@@ -1664,14 +1698,21 @@ pub(super) fn canonical_revision_payload(value: &Value) -> String {
             escaped
         }
         Value::Number(number) if number.is_f64() => {
-            python_float_json(number.as_f64().expect("finite JSON float"))
+            python_float_json(
+                number.as_f64().expect("finite JSON float"), legacy_float_format,
+            )
         }
         _ => value.to_string(),
     }
 }
 
-fn python_float_json(value: f64) -> String {
-    let raw = format!("{value:?}");
+fn python_float_json(value: f64, legacy_float_format: bool) -> String {
+    let raw = if legacy_float_format {
+        format!("{value:?}")
+    } else {
+        // Debug formatting breaks Python's shortest-decimal ties-to-even convention.
+        serde_json::to_string(&value).expect("finite JSON float")
+    };
     let (negative, raw) = raw
         .strip_prefix('-')
         .map_or((false, raw.as_str()), |raw| (true, raw));
@@ -1721,6 +1762,12 @@ fn python_float_json(value: f64) -> String {
             )
         }
     }
+}
+
+fn legacy_revision_payload_sha256(payload: &Value) -> String {
+    hex_digest(&Sha256::digest(
+        canonical_revision_payload_with_format(payload, true).as_bytes(),
+    ))
 }
 
 pub(super) fn revision_payload_sha256(payload: &Value) -> String {
@@ -2802,6 +2849,28 @@ pub fn mobile_list_projects(
     })
 }
 
+#[cfg(any(target_os = "android", test))]
+struct OwnedImportDirectory {
+    path: PathBuf,
+}
+
+#[cfg(any(target_os = "android", test))]
+impl OwnedImportDirectory {
+    fn create(parent: &Path) -> Result<Self, String> {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        let path = parent.join(new_id("import"));
+        fs::create_dir(&path).map_err(|error| error.to_string())?;
+        Ok(Self { path })
+    }
+}
+
+#[cfg(any(target_os = "android", test))]
+impl Drop for OwnedImportDirectory {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
 #[cfg(target_os = "android")]
 pub fn mobile_import_project(
     app: AppHandle,
@@ -2817,17 +2886,10 @@ pub fn mobile_import_project(
 
     let source_file_name = source_filename(&app, &payload.source_path);
     let output_extension = payload.output_format.clone();
-    let needs_copy = true;
-    let temporary_import_path = if needs_copy {
-        let temp_dir = root.join("sync").join("imports").join(new_id("import"));
-        fs::create_dir_all(&temp_dir).map_err(|error| error.to_string())?;
-        let temp_path = temp_dir.join(&source_file_name);
-        copy_source_into_project(&app, &payload.source_path, &temp_path)?;
-        Some(temp_path)
-    } else {
-        None
-    };
-    let hash_source_path = temporary_import_path.as_ref().unwrap_or(&source);
+    let temporary_import = OwnedImportDirectory::create(&root.join("sync").join("imports"))?;
+    let temporary_import_path = temporary_import.path.join("source");
+    copy_source_into_project(&app, &payload.source_path, &temporary_import_path)?;
+    let hash_source_path = &temporary_import_path;
     let source_sha256 = file_sha256(hash_source_path)?;
     let project_id = source_hash_to_project_id(&source_sha256)?;
     discard_deleted_project_placeholders(&connection, &root, &project_id, &source_sha256)?;
@@ -2837,11 +2899,6 @@ pub fn mobile_import_project(
     });
     if let Some(existing) = existing_project {
         if !upgrading_placeholder {
-            if let Some(temp_path) = temporary_import_path {
-                if let Some(parent) = temp_path.parent() {
-                    let _ = fs::remove_dir_all(parent);
-                }
-            }
             return Err(format!(
                 "This project is already imported with name \"{}\".",
                 existing.display_name
@@ -2852,7 +2909,7 @@ pub fn mobile_import_project(
     let project_root = project_root_path(&root, &project_id)?;
     let source_dir = project_root.join("source");
     fs::create_dir_all(&source_dir).map_err(|error| error.to_string())?;
-    let conversion_source = temporary_import_path.as_ref().unwrap_or(&source);
+    let conversion_source = &temporary_import_path;
     let staged_import = source_dir.join(format!(".{}.{}", new_id("import"), output_extension));
     let imported_path = source_dir.join(format!("imported.{output_extension}"));
     let conversion_result =
@@ -2863,11 +2920,6 @@ pub fn mobile_import_project(
                     .map_err(|error| error.to_string())
             },
         );
-    if let Some(temp_path) = temporary_import_path {
-        if let Some(parent) = temp_path.parent() {
-            let _ = fs::remove_dir_all(parent);
-        }
-    }
     let rendered = match conversion_result {
         Ok(rendered) => rendered,
         Err(message) => {
@@ -3929,4 +3981,44 @@ mod mobile_media_tests {
         drop(connection);
         fs::remove_dir_all(root).unwrap();
     }
+}
+
+#[cfg(test)]
+#[test]
+fn owned_import_directory_cleans_only_its_generated_directory_on_error() {
+    let root = std::env::temp_dir().join(new_id("owned-import-test"));
+    let sentinel = root.join("sentinel");
+    fs::create_dir_all(&root).unwrap();
+    fs::write(&sentinel, b"preserve").unwrap();
+    let mut path = PathBuf::new();
+    let result = (|| -> Result<(), String> {
+        let staging = OwnedImportDirectory::create(&root)?;
+        path = staging.path.clone();
+        fs::write(staging.path.join("source"), b"synthetic").unwrap();
+        Err("simulated copy/hash/conversion/duplicate failure".to_string())
+    })();
+    assert!(result.is_err());
+    assert!(!path.exists());
+    assert_eq!(fs::read(&sentinel).unwrap(), b"preserve");
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(test)]
+#[test]
+fn auth_database_requires_initialized_identity_and_does_not_run_startup_work() {
+    let root = std::env::temp_dir().join(new_id("auth-db-initialization"));
+    fs::create_dir_all(&root).unwrap();
+    assert!(auth_db_at_root(&root).is_err());
+    assert!(!root.join("mobile.sqlite3").exists());
+    let empty = Connection::open(root.join("mobile.sqlite3")).unwrap();
+    assert!(auth_db_at_root(&root).is_err());
+    assert_eq!(empty.query_row("SELECT COUNT(*) FROM sqlite_master", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
+    drop(empty);
+    drop(db_at_root(&root).unwrap());
+    let auth = auth_db_at_root(&root).unwrap();
+    assert_eq!(auth.total_changes(), 0);
+    assert!(local_identity(&auth).is_ok());
+    assert_eq!(auth.total_changes(), 0);
+    drop(auth);
+    fs::remove_dir_all(root).unwrap();
 }

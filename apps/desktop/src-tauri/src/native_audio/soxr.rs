@@ -15,15 +15,14 @@ unsafe extern "C" {
 }
 
 pub fn resample_hq(samples: &[f32], input_rate: u32, output_rate: u32) -> Result<Vec<f32>, String> {
-    if input_rate == 0 || output_rate == 0 {
-        return Err("Audio analysis resampler received an invalid sample rate.".to_string());
-    }
+    let expected = super::decode::checked_analysis_output_len(samples.len(), input_rate, output_rate)?;
+    let mut output = Vec::new();
+    output.try_reserve_exact(expected).map_err(|_| "Audio analysis resampling allocation failed.".to_string())?;
     if samples.is_empty() || input_rate == output_rate {
-        return Ok(samples.to_vec());
+        output.extend_from_slice(samples);
+        return Ok(output);
     }
-    let expected =
-        (samples.len() as u128 * output_rate as u128).div_ceil(input_rate as u128) as usize;
-    let mut output = vec![0.0_f32; expected];
+    output.resize(expected, 0.0_f32);
     let mut produced = 0_usize;
     let status = unsafe {
         tuneforge_soxr_resample_f32(
@@ -64,4 +63,15 @@ mod tests {
             );
         }
     }
+    #[test]
+    fn analysis_resamplers_reject_expansion_before_allocation() {
+        for (input_rate, output_rate) in [(1, 48_000), (4_000, 44_100), (0, 48_000)] {
+            assert!(resample_hq(&[0.0; 8], input_rate, output_rate).is_err());
+            assert!(super::super::decode::resample_mono(&[0.0; 8], input_rate, output_rate).is_err());
+        }
+        assert!(super::super::decode::checked_analysis_output_len(usize::MAX, 1, 8).is_err());
+        assert_eq!(resample_hq(&[0.0; 8], 1, 2).unwrap().len(), 16);
+        assert_eq!(super::super::decode::resample_mono(&[0.0; 8], 1, 2).unwrap().len(), 16);
+    }
+
 }

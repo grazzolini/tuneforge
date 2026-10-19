@@ -2876,3 +2876,33 @@ def test_staged_manifest_rejects_path_escape_before_any_outside_write(
         assert session.get(Project, fixture.project_id) is None
     assert sentinel.read_bytes() == b"outside sentinel"
     assert list(outside_root.iterdir()) == [sentinel]
+
+
+@pytest.mark.parametrize("malicious_id", ["../outside", "a/b", "a\\b", "C:stream", ".", "..", "nul\0id"])
+def test_import_rejects_new_path_identifiers_before_staging(
+    client: object, tmp_path: Path, malicious_id: str,
+) -> None:
+    from app.services.sync_manifest import export_project_manifest, import_staged_project_manifest
+
+    with SessionLocal() as session:
+        fixture = _create_project_with_artifacts(session, tmp_path)
+        manifest = _plain_manifest(export_project_manifest(session, fixture.project_id))
+        manifest["artifacts"][0]["artifact_id"] = malicious_id
+        with pytest.raises(AppError, match="identifiers must not contain"):
+            import_staged_project_manifest(session, manifest=manifest, staging_root=tmp_path / "not-created")
+        assert not (tmp_path / "not-created").exists()
+
+
+@pytest.mark.parametrize("prefix", ["+", "-"])
+def test_manifest_import_requires_hex_characters_not_integer_syntax(
+    client: object, tmp_path: Path, prefix: str,
+) -> None:
+    from app.services.sync_manifest import export_project_manifest, import_staged_project_manifest
+
+    with SessionLocal() as session:
+        fixture = _create_project_with_artifacts(session, tmp_path)
+        manifest = _plain_manifest(export_project_manifest(session, fixture.project_id))
+        manifest["artifacts"][0]["content_sha256"] = prefix + "a" * 63
+        with pytest.raises(AppError, match="full SHA-256"):
+            import_staged_project_manifest(session, manifest=manifest, staging_root=tmp_path / "not-created")
+        assert not (tmp_path / "not-created").exists()

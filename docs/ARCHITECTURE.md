@@ -157,7 +157,19 @@ lyric revision history remains available.
 Revision hashes use Python-compatible canonical JSON, including shortest decimal tie rounding.
 Android recognizes verified hashes from its earlier local formatter when reading existing rows;
 export and comparisons use canonical hashes without rewriting stored revisions. Incoming payloads
-must still match their canonical digest.
+must still match their canonical digest. Repeated local row reads reuse a process-local FIFO memo
+of at most 4,096 computed payload digests, keyed by SHA-256 of the stored raw JSON bytes. The memo
+retains no payloads or claimed hashes; legacy digests are computed lazily. Each read still parses
+the row and checks its current claimed hash. Payload changes, eviction or an unavailable memo
+fall back to computation without changing stored rows or incoming validation.
+Desktop reconciliation retains global revision identities and bindings, while loading full revision
+payloads only for the requested projects and referenced revision IDs. Full selected rows pair all
+bindings and payload in the same query; detached metadata snapshots cannot lazy-load payloads.
+Lyrics protection fields remain eagerly loaded together. Planning and apply still perform their
+existing verification, repair and cleanup.
+Native current-revision reconciliation selects only entity identity, timestamp, author and revision
+ID to choose winners. It does not load payload JSON or compute digests for that state-only pass;
+manifest import still verifies incoming payloads and checks complete rows for ID collisions.
 
 New results do not write JSON sidecars. Legacy `analysis_json` artifacts are excluded centrally
 from sync metadata, manifests, announcements and artifact tombstones. Their files remain intact

@@ -8,8 +8,8 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy import or_, select
+from sqlalchemy.orm import Session, make_transient_to_detached
 
 from app.engines.audio_encoding import DURABLE_AUDIO_FORMATS
 from app.errors import AppError
@@ -235,10 +235,7 @@ def plan_sync_reconciliation(
 ) -> SyncReconciliationPlan:
     """Build a deterministic, read-only sync reconciliation plan."""
 
-    local = _load_local_state(session)
-    remote = _coerce_remote_request(
-        request, trusted_device_ids=local.trusted_device_ids, existing_artifact_ids=frozenset(local.artifacts),
-    )
+    local, remote = _load_local_state(session, request)
 
     items_by_key: dict[tuple[str, str], SyncReconciliationItem] = {}
     actions: list[SyncReconciliationAction] = []
@@ -439,7 +436,10 @@ def plan_sync_reconciliation(
     return SyncReconciliationPlan(summary=summary, items=items, actions=deduped_actions)
 
 
-def _load_local_state(session: Session) -> _LocalState:
+def _load_local_state(
+    session: Session,
+    request: object | Mapping[str, Any],
+) -> tuple[_LocalState, _RemoteRequest]:
     identity = session.get(SyncLocalIdentity, LOCAL_IDENTITY_ID)
     trusted_device_ids: frozenset[str]
     if identity is None:
@@ -469,17 +469,10 @@ def _load_local_state(session: Session) -> _LocalState:
         if content_hash is not None:
             artifacts_by_hash.setdefault(content_hash, []).append(artifact)
 
-    revisions = {
-        revision.id: revision
-        for revision in session.scalars(
-            select(SyncEntityRevision).order_by(
-                SyncEntityRevision.project_id.asc(),
-                SyncEntityRevision.entity_type.asc(),
-                SyncEntityRevision.entity_id.asc(),
-                SyncEntityRevision.id.asc(),
-            )
-        )
-    }
+    remote = _coerce_remote_request(
+        request, trusted_device_ids=trusted_device_ids, existing_artifact_ids=frozenset(artifacts),
+    )
+    revisions = _load_local_revisions(session, remote)
     revisions_by_entity: dict[tuple[str, str, str], list[SyncEntityRevision]] = {}
     for revision in revisions.values():
         key = (revision.project_id, revision.entity_type, revision.entity_id)
@@ -521,7 +514,58 @@ def _load_local_state(session: Session) -> _LocalState:
         chord_project_ids=chord_project_ids,
         lyrics_transcripts_by_project=lyrics_transcripts,
         tombstones=tombstones,
+    ), remote
+
+
+def _load_local_revisions(
+    session: Session,
+    remote: _RemoteRequest,
+) -> dict[str, SyncEntityRevision]:
+    incoming = list(remote.entity_revisions.values())
+    for manifest in remote.project_manifests_by_id.values():
+        incoming.extend(_manifest_entity_revisions(manifest))
+    project_ids = set(remote.projects) | set(remote.project_manifests_by_id)
+    project_ids.update(revision.project_id for revision in incoming)
+    revision_ids = {revision.revision_id for revision in incoming}
+    revision_ids.update(revision.base_revision_id for revision in incoming if revision.base_revision_id)
+    revision_ids.update(
+        tombstone.target_id for tombstone in remote.tombstones
+        if tombstone.target_type == ITEM_ENTITY_REVISION
     )
+
+    table = SyncEntityRevision.__table__
+    metadata_columns = [column for column in table.c if column.name != "payload_json"]
+    revisions: dict[str, SyncEntityRevision] = {}
+    # Detached snapshots cannot lazily combine earlier bindings with a later payload,
+    # and never refresh or overwrite pending objects in the caller's identity map.
+    for row in session.execute(select(*metadata_columns).order_by(table.c.id)).mappings():
+        snapshot = SyncEntityRevision(**row)
+        make_transient_to_detached(snapshot)
+        revisions[snapshot.id] = snapshot
+        if snapshot.project_id in project_ids:
+            revision_ids.add(snapshot.id)
+
+    # Retain initial scoped IDs too: a row rebound to another project between reads
+    # must be refreshed in full, not disappear from the project-filtered result.
+    terms = [("project", key) for key in sorted(project_ids)]
+    terms.extend(("revision", key) for key in sorted(revision_ids))
+    full_revisions: dict[str, SyncEntityRevision] = {}
+    for start in range(0, len(terms), 500):
+        chunk = terms[start:start + 500]
+        project_chunk = [key for kind, key in chunk if kind == "project"]
+        revision_chunk = [key for kind, key in chunk if kind == "revision"]
+        statement = select(table).where(or_(
+            table.c.project_id.in_(project_chunk),
+            table.c.id.in_(revision_chunk),
+        ))
+        for row in session.execute(statement).mappings():
+            snapshot = SyncEntityRevision(**row)
+            make_transient_to_detached(snapshot)
+            full_revisions[snapshot.id] = snapshot
+    for revision_id in revision_ids:
+        revisions.pop(revision_id, None)
+    revisions.update(full_revisions)
+    return revisions
 
 
 def _has_imported_local_project(local: _LocalState, project_id: str) -> bool:

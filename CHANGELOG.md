@@ -5,6 +5,8 @@ download, installation, verification, signature, and publication instructions.
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-10-21
+
 ### Added
 
 - Remember browser output names and expose the Settings default. First selector opening and
@@ -15,6 +17,15 @@ download, installation, verification, signature, and publication instructions.
   with distinct identity, icon, data, and model caches from production packages.
 - Development now defaults to separate test file storage, with TEST visuals in both modes;
   `pnpm dev --production-data` opens the existing production library and file settings.
+
+### Performance
+
+- Reuse computed result-revision digests during repeated Android sync reads with a bounded
+  in-memory memo, while preserving payload verification and legacy hash compatibility.
+- Limit desktop reconciliation revision payload reads to requested projects and referenced IDs,
+  while retaining global identity checks and full payload verification.
+- Reduce Android manifest import memory by reconciling revision winners from scalar fields,
+  while preserving timestamp ordering and complete import integrity checks.
 
 ### Fixed
 
@@ -272,7 +283,8 @@ download, installation, verification, signature, and publication instructions.
 
 - Development used `0.1.0` metadata; `v1.0.0` was the first tagged release.
 
-[Unreleased]: https://github.com/grazzolini/tuneforge/compare/v1.7.0...main
+[Unreleased]: https://github.com/grazzolini/tuneforge/compare/v1.8.0...main
+[1.8.0]: https://github.com/grazzolini/tuneforge/compare/v1.7.0...v1.8.0
 [1.7.0]: https://github.com/grazzolini/tuneforge/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/grazzolini/tuneforge/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/grazzolini/tuneforge/compare/v1.4.0...v1.5.0

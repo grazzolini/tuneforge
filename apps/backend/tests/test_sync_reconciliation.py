@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -9,8 +10,9 @@ from typing import Any
 import numpy as np
 import pytest
 import soundfile as sf
-from sqlalchemy import func, select
+from sqlalchemy import delete, event, func, select, text
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.exc import DetachedInstanceError
 
 from app.config import ensure_data_dirs, get_settings
 from app.db import SessionLocal, reconfigure_engine, run_migrations
@@ -25,6 +27,7 @@ from app.models import (
     SyncLocalIdentity,
     SyncTrustedPeer,
 )
+from app.services import sync_reconciliation as reconciliation
 from app.services.sync_identity import source_hash_to_project_id
 from app.services.sync_reconciliation import (
     ACTION_APPLY_DELETE_TOMBSTONE,
@@ -60,6 +63,281 @@ def db_session() -> Any:
         yield session
     finally:
         session.close()
+
+
+@pytest.mark.parametrize("case", ["noop", "changed", "foreign_id", "foreign_base", "standalone", "manifest"])
+def test_scoped_revision_plan_matches_complete_revision_loading(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    case: str,
+) -> None:
+    _add_identity_and_peers(db_session)
+    project = _add_project(db_session, "proj_scope", source_sha256=_sha("scope"))
+    foreign = _add_project(db_session, "proj_other", source_sha256=_sha("other"))
+    payload = {"revision_id": "rev_scope"}
+    _add_revision(
+        db_session, project_id=foreign.id if case == "foreign_id" else project.id,
+        revision_id="rev_scope", content_sha256=revision_payload_sha256(payload), base_revision_id=None,
+        payload=payload,
+    )
+    _add_revision(
+        db_session, project_id=foreign.id, revision_id="rev_foreign_base",
+        content_sha256=_revision_payload_sha("rev_foreign_base"), base_revision_id=None,
+    )
+    revision = _revision_manifest(
+        project.id, revision_id="rev_new" if case == "foreign_base" else "rev_scope",
+        content_sha256=_revision_payload_sha("rev_new" if case == "foreign_base" else "rev_scope"),
+        base_revision_id="rev_foreign_base" if case == "foreign_base" else None,
+    )
+    if case == "changed":
+        revision["payload"] = {"revision_id": "rev_scope", "changed": True}
+        revision["content_sha256"] = revision_payload_sha256(revision["payload"])
+    request: dict[str, Any] = {"remote_library": {
+        "projects": [] if case == "standalone" else [
+            {"project_id": project.id, "source_sha256": project.source_sha256}
+        ],
+        "entity_revisions": [revision],
+    }}
+    if case == "manifest":
+        request = {"project_manifests": [_project_manifest(
+            project.id, project.source_sha256, extra_revisions=[revision],
+        )]}
+    db_session.commit()
+    engine = db_session.get_bind()
+    with Session(bind=engine) as session:
+        actual = asdict(plan_sync_reconciliation(session, request))
+
+    def complete_rows(session: Session, _remote: object) -> dict[str, SyncEntityRevision]:
+        return {row.id: row for row in session.scalars(select(SyncEntityRevision))}
+
+    monkeypatch.setattr(reconciliation, "_load_local_revisions", complete_rows)
+    with Session(bind=engine) as session:
+        assert asdict(plan_sync_reconciliation(session, request)) == actual
+
+
+def test_scoped_revision_payloads_are_selected_only_and_metadata_cannot_lazy_load(
+    db_session: Session,
+) -> None:
+    _add_identity_and_peers(db_session)
+    selected = _add_project(db_session, "proj_selected", source_sha256=_sha("selected"))
+    other = _add_project(db_session, "proj_unrelated", source_sha256=_sha("unrelated"))
+    for project in [selected, other]:
+        _add_revision(db_session, project_id=project.id, revision_id=f"rev_{project.id}",
+                      content_sha256=_sha(project.id), base_revision_id=None)
+    db_session.commit()
+    selected_id, other_id = selected.id, other.id
+    engine = db_session.get_bind()
+    request = {"remote_library": {"projects": [{"project_id": selected_id}]}}
+    with Session(bind=engine) as session:
+        warm = session.get(SyncEntityRevision, f"rev_{other_id}")
+        assert warm is not None
+        warm_payload = warm.payload_json
+        with Session(bind=engine) as writer:
+            writer.execute(text("UPDATE sync_entity_revisions SET payload_json='not-json' WHERE id=:id"),
+                           {"id": warm.id})
+            writer.commit()
+        local, _ = reconciliation._load_local_state(session, request)
+        assert set(local.entity_revisions) == {f"rev_{selected_id}", f"rev_{other_id}"}
+        assert local.entity_revisions[f"rev_{selected_id}"].payload_json
+        metadata = local.entity_revisions[f"rev_{other_id}"]
+        assert metadata is not warm
+        with pytest.raises(DetachedInstanceError):
+            _ = metadata.payload_json
+        assert warm.payload_json is warm_payload
+        assert (other_id, "chords", other_id) in local.entity_revisions_by_entity
+    with Session(bind=engine) as session, pytest.raises(json.JSONDecodeError):
+        reconciliation._load_local_state(session, {"remote_library": {"projects": [{"project_id": other_id}]}})
+
+
+def test_scoped_revision_snapshots_do_not_clobber_or_flush_pending_session_objects(
+    db_session: Session,
+) -> None:
+    _add_identity_and_peers(db_session)
+    project = _add_project(db_session, "proj_pending", source_sha256=_sha("pending"))
+    _add_revision(db_session, project_id=project.id, revision_id="rev_pending",
+                  content_sha256=_revision_payload_sha("rev_pending"), base_revision_id=None)
+    db_session.commit()
+    request = {"remote_library": {"projects": [{"project_id": project.id}]}}
+    with Session(bind=db_session.get_bind()) as session:
+        pending = session.get(SyncEntityRevision, "rev_pending")
+        assert pending is not None
+        pending.payload_json = {"pending": True}
+        pending.entity_id = "pending-entity"
+        statements: list[str] = []
+
+        def record(_connection: Any, _cursor: Any, statement: str, *_args: Any) -> None:
+            statements.append(statement)
+
+        event.listen(session.get_bind(), "before_cursor_execute", record)
+        try:
+            with session.no_autoflush:
+                local, _ = reconciliation._load_local_state(session, request)
+        finally:
+            event.remove(session.get_bind(), "before_cursor_execute", record)
+        snapshot = local.entity_revisions["rev_pending"]
+        assert snapshot is not pending
+        assert snapshot.payload_json == {"revision_id": "rev_pending"}
+        assert snapshot.entity_id == project.id
+        assert pending.payload_json == {"pending": True}
+        assert pending.entity_id == "pending-entity"
+        assert pending in session.dirty
+        assert all(statement.lstrip().upper().startswith("SELECT") for statement in statements)
+
+
+@pytest.mark.parametrize("reinsert", [False, True])
+def test_scoped_revision_refresh_handles_delete_and_same_id_foreign_reinsert_atomically(
+    db_session: Session,
+    reinsert: bool,
+) -> None:
+    _add_identity_and_peers(db_session)
+    project = _add_project(db_session, "proj_race", source_sha256=_sha("race"))
+    foreign = _add_project(db_session, "proj_race_foreign", source_sha256=_sha("race foreign"))
+    _add_revision(db_session, project_id=project.id, revision_id="rev_race",
+                  content_sha256=_sha("old payload"), base_revision_id=None, payload={"old": True})
+    db_session.commit()
+    project_id, foreign_id = project.id, foreign.id
+    remote_payload = {"revision_id": "rev_race", "new": True}
+    remote_revision = _revision_manifest(project_id, revision_id="rev_race",
+                                         content_sha256=revision_payload_sha256(remote_payload), base_revision_id=None)
+    remote_revision["payload"] = remote_payload
+    request = {"remote_library": {"entity_revisions": [remote_revision]}}
+    engine = db_session.get_bind()
+    changed = False
+
+    def replace_before_full_select(_connection: Any, _cursor: Any, statement: str, *_args: Any) -> None:
+        nonlocal changed
+        if changed or not statement.lstrip().upper().startswith("SELECT"):
+            return
+        if "sync_entity_revisions.payload_json" not in statement or "WHERE" not in statement:
+            return
+        changed = True
+        with Session(bind=engine) as writer:
+            writer.execute(delete(SyncEntityRevision).where(SyncEntityRevision.id == "rev_race"))
+            if reinsert:
+                _add_revision(writer, project_id=foreign_id, revision_id="rev_race",
+                              content_sha256=revision_payload_sha256(remote_payload),
+                              base_revision_id=None, payload=remote_payload)
+            writer.commit()
+
+    event.listen(engine, "before_cursor_execute", replace_before_full_select)
+    try:
+        with Session(bind=engine) as session:
+            plan = plan_sync_reconciliation(session, request)
+    finally:
+        event.remove(engine, "before_cursor_execute", replace_before_full_select)
+    assert changed
+    item = _item(plan, ITEM_ENTITY_REVISION, "rev_race")
+    if reinsert:
+        assert item.status == "conflicted"
+        assert "different local project" in (item.reason or "")
+        with Session(bind=engine) as session:
+            result = apply_sync_reconciliation(session, request)
+            assert result.plan.summary.total_conflicts >= 1
+            stored = session.get(SyncEntityRevision, "rev_race")
+            assert stored is not None and stored.project_id == foreign_id
+            assert stored.payload_json == remote_payload
+    else:
+        assert item.status != "identical_content"
+        with Session(bind=engine) as session:
+            local, _ = reconciliation._load_local_state(session, request)
+            assert "rev_race" not in local.entity_revisions
+
+
+def test_scoped_revision_refresh_catches_rebound_siblings_and_new_project_rows(
+    db_session: Session,
+) -> None:
+    _add_identity_and_peers(db_session)
+    project = _add_project(db_session, "proj_siblings", source_sha256=_sha("siblings"))
+    foreign = _add_project(db_session, "proj_siblings_other", source_sha256=_sha("siblings other"))
+    _add_revision(db_session, project_id=project.id, revision_id="rev_sibling",
+                  content_sha256=_sha("sibling"), base_revision_id=None)
+    db_session.commit()
+    project_id, foreign_id = project.id, foreign.id
+    engine = db_session.get_bind()
+    changed = False
+
+    def change_before_full_select(_connection: Any, _cursor: Any, statement: str, *_args: Any) -> None:
+        nonlocal changed
+        if changed or "sync_entity_revisions.payload_json" not in statement:
+            return
+        changed = True
+        with Session(bind=engine) as writer:
+            writer.execute(delete(SyncEntityRevision).where(SyncEntityRevision.id == "rev_sibling"))
+            _add_revision(writer, project_id=foreign_id, revision_id="rev_sibling",
+                          content_sha256=_sha("rebound"), base_revision_id=None, payload={"rebound": True})
+            _add_revision(writer, project_id=project_id, revision_id="rev_inserted",
+                          content_sha256=_sha("inserted"), base_revision_id=None)
+            writer.commit()
+
+    event.listen(engine, "before_cursor_execute", change_before_full_select)
+    try:
+        with Session(bind=engine) as session:
+            local, _ = reconciliation._load_local_state(
+                session, {"remote_library": {"projects": [{"project_id": project_id}]}},
+            )
+    finally:
+        event.remove(engine, "before_cursor_execute", change_before_full_select)
+    assert changed
+    assert local.entity_revisions["rev_sibling"].project_id == foreign_id
+    assert local.entity_revisions["rev_sibling"].payload_json == {"rebound": True}
+    assert local.entity_revisions["rev_inserted"].project_id == project_id
+    assert [row.id for row in local.entity_revisions_by_entity[(project_id, "chords", project_id)]] == ["rev_inserted"]
+
+
+def test_scoped_revision_raw_manifest_bases_and_tombstone_targets_are_fully_loaded(
+    db_session: Session,
+) -> None:
+    _add_identity_and_peers(db_session)
+    project = _add_project(db_session, "proj_raw_scope", source_sha256=_sha("raw"))
+    foreign = _add_project(db_session, "proj_raw_other", source_sha256=_sha("raw other"))
+    for revision_id in ["rev_raw_base_a", "rev_raw_base_b", "rev_raw_deleted", "rev_raw_unrelated"]:
+        _add_revision(db_session, project_id=foreign.id, revision_id=revision_id,
+                      content_sha256=_sha(revision_id), base_revision_id=None)
+    db_session.commit()
+    raw_revisions = [_revision_manifest(project.id, revision_id="rev_shadowed", content_sha256=_sha("shadowed"),
+                                       base_revision_id=base) for base in ["rev_raw_base_a", "rev_raw_base_b"]]
+    request = {"project_manifests": [_project_manifest(project.id, project.source_sha256,
+                                                       extra_revisions=raw_revisions)],
+               "remote_library": {"delete_tombstones": [{"tombstone_id": "tomb_scope", "project_id": project.id,
+                                                          "target_type": ITEM_ENTITY_REVISION,
+                                                          "target_id": "rev_raw_deleted"}]}}
+    with Session(bind=db_session.get_bind()) as session:
+        local, remote = reconciliation._load_local_state(session, request)
+        assert remote.entity_revisions["rev_shadowed"].base_revision_id == "rev_raw_base_b"
+        for revision_id in ["rev_raw_base_a", "rev_raw_base_b", "rev_raw_deleted"]:
+            assert local.entity_revisions[revision_id].payload_json
+        with pytest.raises(DetachedInstanceError):
+            _ = local.entity_revisions["rev_raw_unrelated"].payload_json
+
+
+def test_scoped_revision_full_queries_obey_portable_parameter_limit(db_session: Session) -> None:
+    project = _add_project(db_session, "proj_chunk_scope", source_sha256=_sha("chunk scope"))
+    foreign = _add_project(db_session, "proj_chunk_foreign", source_sha256=_sha("chunk foreign"))
+    incoming = []
+    for index in range(600):
+        revision_id = f"rev_chunk_{index}"
+        _add_revision(db_session, project_id=foreign.id, revision_id=revision_id,
+                      content_sha256=_sha(revision_id), base_revision_id=None)
+        incoming.append(_revision_manifest(project.id, revision_id=revision_id,
+                                          content_sha256=_sha(revision_id), base_revision_id=None))
+    db_session.commit()
+    counts: list[int] = []
+
+    def count_parameters(_connection: Any, _cursor: Any, statement: str, parameters: Any, *_args: Any) -> None:
+        if "sync_entity_revisions.payload_json" in statement and statement.lstrip().upper().startswith("SELECT"):
+            counts.append(len(parameters))
+
+    engine = db_session.get_bind()
+    event.listen(engine, "before_cursor_execute", count_parameters)
+    try:
+        with Session(bind=engine) as session:
+            local, _ = reconciliation._load_local_state(session, {"remote_library": {"entity_revisions": incoming}})
+            assert len(local.entity_revisions) == 600
+            assert all(row.payload_json for row in local.entity_revisions.values())
+    finally:
+        event.remove(engine, "before_cursor_execute", count_parameters)
+    assert len(counts) == 2
+    assert max(counts) <= 500
 
 
 def test_artifact_classification_uses_recorded_metadata_and_trusted_provider_choice(

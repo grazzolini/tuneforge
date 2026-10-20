@@ -6,6 +6,8 @@ use super::staging_cleanup::{
 use super::*;
 #[cfg(all(test, not(target_os = "android")))]
 use serde_json::json;
+use std::collections::VecDeque;
+use std::sync::{Mutex, OnceLock};
 
 #[cfg(all(test, not(target_os = "android")))]
 fn local_tombstone_superseded_by_live_target(
@@ -984,8 +986,102 @@ pub(super) fn row_staged_artifact(row: &Row<'_>) -> rusqlite::Result<SyncStagedA
     })
 }
 
+const REVISION_PAYLOAD_DIGEST_CACHE_CAPACITY: usize = 4096;
+
+#[derive(Clone)]
+struct RevisionPayloadDigests {
+    canonical: String,
+    legacy: Option<String>,
+}
+
+#[derive(Default)]
+struct RevisionPayloadDigestMemo {
+    entries: HashMap<[u8; 32], RevisionPayloadDigests>,
+    insertion_order: VecDeque<[u8; 32]>,
+}
+
+impl RevisionPayloadDigestMemo {
+    fn insert(&mut self, key: [u8; 32], digests: RevisionPayloadDigests) {
+        if let Some(existing) = self.entries.get_mut(&key) {
+            if existing.legacy.is_none() {
+                existing.legacy = digests.legacy;
+            }
+            return;
+        }
+        if self.entries.len() == REVISION_PAYLOAD_DIGEST_CACHE_CAPACITY {
+            if let Some(oldest) = self.insertion_order.pop_front() {
+                self.entries.remove(&oldest);
+            }
+        }
+        self.entries.insert(key, digests);
+        self.insertion_order.push_back(key);
+    }
+}
+
+#[derive(Default)]
+struct RevisionPayloadDigestCache {
+    memo: Mutex<RevisionPayloadDigestMemo>,
+    #[cfg(test)]
+    canonical_computations: std::sync::atomic::AtomicUsize,
+    #[cfg(test)]
+    legacy_computations: std::sync::atomic::AtomicUsize,
+}
+
+fn revision_payload_digest_cache() -> &'static RevisionPayloadDigestCache {
+    static CACHE: OnceLock<RevisionPayloadDigestCache> = OnceLock::new();
+    CACHE.get_or_init(RevisionPayloadDigestCache::default)
+}
+
+fn revision_payload_digests(
+    cache: &RevisionPayloadDigestCache,
+    payload_raw: &str,
+    payload: &Value,
+    stored_hash: &str,
+) -> RevisionPayloadDigests {
+    // Cache only computed digests of the actual payload bytes, never a row's claimed hash.
+    let key: [u8; 32] = Sha256::digest(payload_raw.as_bytes()).into();
+    let cached = cache
+        .memo
+        .lock()
+        .ok()
+        .and_then(|memo| memo.entries.get(&key).cloned());
+    let missing = cached.is_none();
+    let mut digests = cached.unwrap_or_else(|| {
+        #[cfg(test)]
+        cache
+            .canonical_computations
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        RevisionPayloadDigests {
+            canonical: revision_payload_sha256(payload),
+            legacy: None,
+        }
+    });
+    let needs_legacy = stored_hash != digests.canonical && digests.legacy.is_none();
+    if needs_legacy {
+        #[cfg(test)]
+        cache
+            .legacy_computations
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        digests.legacy = Some(legacy_revision_payload_sha256(payload));
+    }
+    // Formatting and hashing stay outside the mutex; duplicate misses may compute independently.
+    if missing || needs_legacy {
+        if let Ok(mut memo) = cache.memo.lock() {
+            memo.insert(key, digests.clone());
+        }
+    }
+    digests
+}
+
 pub(super) fn row_entity_revision(
     row: &Row<'_>,
+) -> rusqlite::Result<SyncProjectManifestEntityRevisionSchema> {
+    row_entity_revision_with_cache(row, revision_payload_digest_cache())
+}
+
+fn row_entity_revision_with_cache(
+    row: &Row<'_>,
+    cache: &RevisionPayloadDigestCache,
 ) -> rusqlite::Result<SyncProjectManifestEntityRevisionSchema> {
     let metadata_raw: String = row.get(10)?;
     let payload_raw: String = row.get(11)?;
@@ -1008,13 +1104,17 @@ pub(super) fn row_entity_revision(
         updated_at: row.get(13)?,
     };
     if valid_payload {
-        let canonical_hash = revision_payload_sha256(&revision.payload);
-        // Only recognize hashes authored by the old local formatter for this exact payload.
-        // Incoming manifests still require the canonical Python-compatible hash.
-        if revision.content_sha256 != canonical_hash
-            && revision.content_sha256 == legacy_revision_payload_sha256(&revision.payload)
+        let digests = revision_payload_digests(
+            cache,
+            &payload_raw,
+            &revision.payload,
+            &revision.content_sha256,
+        );
+        // Recheck this row's current claim even when another row populated the digest cache.
+        if revision.content_sha256 != digests.canonical
+            && digests.legacy.as_deref() == Some(revision.content_sha256.as_str())
         {
-            revision.content_sha256 = canonical_hash;
+            revision.content_sha256 = digests.canonical;
         }
     }
     Ok(revision)
@@ -1774,6 +1874,373 @@ pub(super) fn revision_payload_sha256(payload: &Value) -> String {
     hex_digest(&Sha256::digest(
         canonical_revision_payload(payload).as_bytes(),
     ))
+}
+
+#[cfg(test)]
+mod revision_payload_digest_tests {
+    use super::*;
+    use std::sync::atomic::Ordering;
+    use std::sync::{Arc, Barrier};
+
+    fn database(raw: &str, claim: &str) -> Connection {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch("CREATE TABLE sync_entity_revisions (id TEXT, project_id TEXT, entity_type TEXT, entity_id TEXT, revision_type TEXT, base_revision_id TEXT, author_device_id TEXT, source_artifact_id TEXT, content_sha256 TEXT, state TEXT, metadata_json TEXT, payload_json TEXT, created_at TEXT, updated_at TEXT);").unwrap();
+        connection.execute("INSERT INTO sync_entity_revisions VALUES ('synthetic-revision','synthetic-project','lyrics','synthetic-entity','user_edit','synthetic-base','synthetic-author','synthetic-source',?1,'active','{\"synthetic\":true}',?2,'2026-01-01T00:00:00Z','2026-01-02T00:00:00Z')", params![claim, raw]).unwrap();
+        connection
+    }
+
+    fn read(connection: &Connection, cache: &RevisionPayloadDigestCache) -> Value {
+        let writes = connection.total_changes();
+        let revision = connection
+            .query_row(
+                &format!("SELECT {SYNC_ENTITY_REVISION_COLUMNS} FROM sync_entity_revisions"),
+                [],
+                |row| row_entity_revision_with_cache(row, cache),
+            )
+            .unwrap();
+        assert_eq!(connection.total_changes(), writes);
+        let value = serde_json::to_value(revision).unwrap();
+        assert_eq!(value.as_object().unwrap().len(), 14);
+        value
+    }
+
+    fn expected(raw: &str, claim: &str) -> Value {
+        let parsed = serde_json::from_str::<Value>(raw);
+        let returned_hash = match &parsed {
+            Ok(payload) if claim == legacy_revision_payload_sha256(payload) => {
+                revision_payload_sha256(payload)
+            }
+            _ => claim.to_string(),
+        };
+        json!({
+            "revision_id":"synthetic-revision", "project_id":"synthetic-project",
+            "entity_type":"lyrics", "entity_id":"synthetic-entity", "revision_type":"user_edit",
+            "base_revision_id":"synthetic-base", "author_device_id":"synthetic-author",
+            "source_artifact_id":"synthetic-source", "content_sha256":returned_hash,
+            "state":"active", "metadata":{"synthetic":true},
+            "payload":parsed.unwrap_or_else(|_| json!({})),
+            "created_at":"2026-01-01T00:00:00Z", "updated_at":"2026-01-02T00:00:00Z"
+        })
+    }
+
+    fn counts(cache: &RevisionPayloadDigestCache) -> (usize, usize) {
+        (
+            cache.canonical_computations.load(Ordering::Relaxed),
+            cache.legacy_computations.load(Ordering::Relaxed),
+        )
+    }
+
+    #[test]
+    fn cold_and_warm_rows_preserve_all_fields_and_stored_bytes() {
+        let vectors: Vec<Value> = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../packages/shared-types/fixtures/result-revisions.json"
+        )))
+        .unwrap();
+        let payloads = vectors
+            .into_iter()
+            .map(|vector| vector["payload"].clone())
+            .chain([
+                Value::Null,
+                json!(true),
+                json!([1.0, -0.0]),
+                json!("synthetic"),
+            ]);
+        for payload in payloads {
+            let raw = payload.to_string();
+            let canonical = revision_payload_sha256(&payload);
+            let legacy = legacy_revision_payload_sha256(&payload);
+            for claim in [
+                canonical.clone(),
+                legacy.clone(),
+                "0".repeat(64),
+                canonical.to_uppercase(),
+                legacy.to_uppercase(),
+            ] {
+                let cache = RevisionPayloadDigestCache::default();
+                let connection = database(&raw, &claim);
+                let cold = read(&connection, &cache);
+                let cold_counts = counts(&cache);
+                assert_eq!(cold, expected(&raw, &claim));
+                assert_eq!(read(&connection, &cache), cold);
+                assert_eq!(counts(&cache), cold_counts);
+                assert_eq!(cold_counts, (1, usize::from(claim != canonical)));
+                let stored: (String, String) = connection
+                    .query_row(
+                        "SELECT payload_json, content_sha256 FROM sync_entity_revisions",
+                        [],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .unwrap();
+                assert_eq!(stored, (raw.clone(), claim));
+            }
+        }
+    }
+
+    #[test]
+    fn current_claim_is_rechecked_and_legacy_digest_is_lazy() {
+        let payload = json!({"seconds":11.000991821289062});
+        let raw = payload.to_string();
+        let canonical = revision_payload_sha256(&payload);
+        let legacy = legacy_revision_payload_sha256(&payload);
+        assert_ne!(canonical, legacy);
+        let cache = RevisionPayloadDigestCache::default();
+        let connection = database(&raw, &canonical);
+        assert_eq!(read(&connection, &cache), expected(&raw, &canonical));
+        assert_eq!(counts(&cache), (1, 0));
+        for claim in [
+            &legacy,
+            &"invalid-claim".to_string(),
+            &canonical.to_uppercase(),
+        ] {
+            connection
+                .execute(
+                    "UPDATE sync_entity_revisions SET content_sha256=?1",
+                    params![claim],
+                )
+                .unwrap();
+            assert_eq!(read(&connection, &cache), expected(&raw, claim));
+            assert_eq!(counts(&cache), (1, 1));
+        }
+        connection
+            .execute(
+                "UPDATE sync_entity_revisions SET content_sha256=?1",
+                params![canonical],
+            )
+            .unwrap();
+        assert_eq!(read(&connection, &cache), expected(&raw, &canonical));
+        assert_eq!(counts(&cache), (1, 1));
+        let memo = cache.memo.lock().unwrap();
+        assert_eq!(memo.entries.len(), 1);
+        assert_eq!(memo.insertion_order.len(), 1);
+    }
+
+    #[test]
+    fn changed_payload_under_same_identity_gets_new_computed_digests() {
+        let raw = r#"{"seconds":11.000991821289062}"#;
+        let payload: Value = serde_json::from_str(raw).unwrap();
+        let legacy = legacy_revision_payload_sha256(&payload);
+        let connection = database(raw, &legacy);
+        let cache = RevisionPayloadDigestCache::default();
+        assert_eq!(read(&connection, &cache), expected(raw, &legacy));
+        let changed = r#"{"seconds":12.0}"#;
+        connection
+            .execute(
+                "UPDATE sync_entity_revisions SET payload_json=?1",
+                params![changed],
+            )
+            .unwrap();
+        assert_eq!(read(&connection, &cache), expected(changed, &legacy));
+        assert_eq!(read(&connection, &cache)["content_sha256"], legacy);
+        assert_eq!(counts(&cache), (2, 2));
+        assert_eq!(cache.memo.lock().unwrap().entries.len(), 2);
+    }
+
+    #[test]
+    fn cross_database_reuse_keeps_each_rows_claim_identity_and_state() {
+        let raw = r#"{"seconds":11.000991821289062}"#;
+        let payload: Value = serde_json::from_str(raw).unwrap();
+        let legacy = legacy_revision_payload_sha256(&payload);
+        let cache = RevisionPayloadDigestCache::default();
+        let first = database(raw, &legacy);
+        assert_eq!(read(&first, &cache), expected(raw, &legacy));
+        let second = database(raw, "wrong-current-claim");
+        second.execute("UPDATE sync_entity_revisions SET id='other-revision',project_id='other-project',entity_type='analysis',entity_id='other-entity',revision_type='generated',base_revision_id=NULL,author_device_id='other-author',source_artifact_id=NULL,state='deleted',metadata_json='{\"other\":true}',created_at='2026-02-01T00:00:00Z',updated_at='2026-02-02T00:00:00Z'", []).unwrap();
+        let mut wanted = expected(raw, "wrong-current-claim");
+        for (key, value) in [
+            ("revision_id", json!("other-revision")),
+            ("project_id", json!("other-project")),
+            ("entity_type", json!("analysis")),
+            ("entity_id", json!("other-entity")),
+            ("revision_type", json!("generated")),
+            ("base_revision_id", Value::Null),
+            ("author_device_id", json!("other-author")),
+            ("source_artifact_id", Value::Null),
+            ("state", json!("deleted")),
+            ("metadata", json!({"other":true})),
+            ("created_at", json!("2026-02-01T00:00:00Z")),
+            ("updated_at", json!("2026-02-02T00:00:00Z")),
+        ] {
+            wanted[key] = value;
+        }
+        assert_eq!(read(&second, &cache), wanted);
+        assert_eq!(read(&first, &cache), expected(raw, &legacy));
+        assert_eq!(counts(&cache), (1, 1));
+    }
+
+    #[test]
+    fn malformed_json_bypasses_memo_and_raw_format_changes_get_distinct_keys() {
+        let cache = RevisionPayloadDigestCache::default();
+        for raw in ["{", "not-json", "[1,"] {
+            let connection = database(raw, "wrong-current-claim");
+            assert_eq!(
+                read(&connection, &cache),
+                expected(raw, "wrong-current-claim")
+            );
+        }
+        assert_eq!(counts(&cache), (0, 0));
+        assert!(cache.memo.lock().unwrap().entries.is_empty());
+        for raw in [
+            r#"{"seconds":11.000991821289062}"#,
+            "{ \"seconds\" : 11.000991821289062 }",
+        ] {
+            let payload: Value = serde_json::from_str(raw).unwrap();
+            let canonical = revision_payload_sha256(&payload);
+            let connection = database(raw, &canonical);
+            assert_eq!(read(&connection, &cache), expected(raw, &canonical));
+        }
+        assert_eq!(counts(&cache), (2, 0));
+        assert_eq!(cache.memo.lock().unwrap().entries.len(), 2);
+    }
+
+    #[test]
+    fn concurrent_misses_and_lazy_upgrades_keep_one_complete_fifo_entry() {
+        let cache = Arc::new(RevisionPayloadDigestCache::default());
+        let payload = Arc::new(json!({"seconds":11.000991821289062,"values":vec![0.5;4096]}));
+        let raw = Arc::new(payload.to_string());
+        let canonical = revision_payload_sha256(&payload);
+        let legacy = legacy_revision_payload_sha256(&payload);
+        for claim in [&canonical, &legacy] {
+            let start = Arc::new(Barrier::new(8));
+            std::thread::scope(|scope| {
+                for _ in 0..8 {
+                    let (cache, payload, raw, start) =
+                        (cache.clone(), payload.clone(), raw.clone(), start.clone());
+                    scope.spawn(move || {
+                        start.wait();
+                        let digests = revision_payload_digests(&cache, &raw, &payload, claim);
+                        assert_eq!(digests.canonical, revision_payload_sha256(&payload));
+                        if claim != &digests.canonical {
+                            assert_eq!(digests.legacy.as_deref(), Some(claim.as_str()));
+                        }
+                    });
+                }
+            });
+        }
+        let memo = cache.memo.lock().unwrap();
+        assert_eq!(memo.entries.len(), 1);
+        assert_eq!(memo.insertion_order.len(), 1);
+        assert_eq!(
+            memo.entries.values().next().unwrap().legacy.as_ref(),
+            Some(&legacy)
+        );
+        let (canonical_count, legacy_count) = counts(&cache);
+        assert!((1..=8).contains(&canonical_count));
+        assert!((1..=8).contains(&legacy_count));
+    }
+
+    #[test]
+    fn fifo_capacity_bounds_both_collections_and_duplicate_updates_preserve_legacy() {
+        let cache = RevisionPayloadDigestCache::default();
+        let mut first_key = [0; 32];
+        for index in 0..REVISION_PAYLOAD_DIGEST_CACHE_CAPACITY {
+            let payload = json!({"index":index});
+            let raw = payload.to_string();
+            let canonical = revision_payload_sha256(&payload);
+            revision_payload_digests(&cache, &raw, &payload, &canonical);
+            if index == 0 {
+                first_key = Sha256::digest(raw.as_bytes()).into();
+            }
+        }
+        let first = json!({"index":0});
+        revision_payload_digests(
+            &cache,
+            &first.to_string(),
+            &first,
+            &revision_payload_sha256(&first),
+        );
+        assert_eq!(counts(&cache).0, REVISION_PAYLOAD_DIGEST_CACHE_CAPACITY);
+        for index in
+            REVISION_PAYLOAD_DIGEST_CACHE_CAPACITY..REVISION_PAYLOAD_DIGEST_CACHE_CAPACITY + 9
+        {
+            let payload = json!({"index":index});
+            revision_payload_digests(
+                &cache,
+                &payload.to_string(),
+                &payload,
+                &revision_payload_sha256(&payload),
+            );
+        }
+        {
+            let mut memo = cache.memo.lock().unwrap();
+            assert_eq!(memo.entries.len(), REVISION_PAYLOAD_DIGEST_CACHE_CAPACITY);
+            assert_eq!(
+                memo.insertion_order.len(),
+                REVISION_PAYLOAD_DIGEST_CACHE_CAPACITY
+            );
+            assert!(
+                !memo.entries.contains_key(&first_key),
+                "hits must not change FIFO order"
+            );
+            let key = *memo.insertion_order.front().unwrap();
+            let canonical = memo.entries[&key].canonical.clone();
+            memo.insert(
+                key,
+                RevisionPayloadDigests {
+                    canonical: canonical.clone(),
+                    legacy: Some("computed-legacy-digest".into()),
+                },
+            );
+            memo.insert(
+                key,
+                RevisionPayloadDigests {
+                    canonical,
+                    legacy: None,
+                },
+            );
+            assert_eq!(
+                memo.entries[&key].legacy.as_deref(),
+                Some("computed-legacy-digest")
+            );
+            assert_eq!(
+                memo.insertion_order.len(),
+                REVISION_PAYLOAD_DIGEST_CACHE_CAPACITY
+            );
+            assert_eq!(
+                memo.insertion_order.iter().collect::<HashSet<_>>().len(),
+                REVISION_PAYLOAD_DIGEST_CACHE_CAPACITY
+            );
+        }
+        revision_payload_digests(
+            &cache,
+            &first.to_string(),
+            &first,
+            &revision_payload_sha256(&first),
+        );
+        assert_eq!(
+            counts(&cache).0,
+            REVISION_PAYLOAD_DIGEST_CACHE_CAPACITY + 10
+        );
+    }
+
+    #[test]
+    fn poisoned_memo_falls_back_to_full_checks_without_writes() {
+        let cache = RevisionPayloadDigestCache::default();
+        let _ = std::panic::catch_unwind(|| {
+            let _guard = cache.memo.lock().unwrap();
+            panic!("synthetic cache poison");
+        });
+        assert!(cache.memo.is_poisoned());
+        let raw = r#"{"seconds":11.000991821289062}"#;
+        let payload: Value = serde_json::from_str(raw).unwrap();
+        let legacy = legacy_revision_payload_sha256(&payload);
+        let connection = database(raw, &legacy);
+        for _ in 0..2 {
+            assert_eq!(read(&connection, &cache), expected(raw, &legacy));
+        }
+        assert_eq!(counts(&cache), (2, 2));
+        connection
+            .execute(
+                "UPDATE sync_entity_revisions SET content_sha256='wrong-current-claim'",
+                [],
+            )
+            .unwrap();
+        assert_eq!(
+            read(&connection, &cache),
+            expected(raw, "wrong-current-claim")
+        );
+        assert_eq!(counts(&cache), (3, 3));
+    }
 }
 
 #[cfg(test)]

@@ -537,40 +537,45 @@ fn reconcile_current_revision_states(
     project_id: Option<&str>,
 ) -> Result<(), String> {
     let revisions = {
-        let mut statement = connection.prepare(&format!("SELECT {SYNC_ENTITY_REVISION_COLUMNS} FROM sync_entity_revisions WHERE state IN ('active', 'current') AND (?1 IS NULL OR project_id = ?1)"))
+        let mut statement = connection
+            .prepare("SELECT project_id, entity_type, entity_id, updated_at, author_device_id, id FROM sync_entity_revisions WHERE state IN ('active', 'current') AND (?1 IS NULL OR project_id = ?1)")
             .map_err(|error| error.to_string())?;
         let revisions = statement
-            .query_map(params![project_id], row_entity_revision)
+            .query_map(params![project_id], |row| {
+                let updated_at: String = row.get(3)?;
+                Ok((
+                    (
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ),
+                    (
+                        parse_sync_timestamp_utc(&updated_at, "revision updated_at")
+                            .map(|timestamp| timestamp.timestamp_micros())
+                            .unwrap_or(i64::MIN),
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                    ),
+                ))
+            })
             .map_err(|error| error.to_string())?;
         revisions
             .collect::<Result<Vec<_>, _>>()
             .map_err(|error| error.to_string())?
     };
     let mut winners = BTreeMap::new();
-    for revision in &revisions {
-        let key = (
-            &revision.project_id,
-            &revision.entity_type,
-            &revision.entity_id,
-        );
-        let entry = winners.entry(key).or_insert(revision);
-        if super::storage::revision_lww_key(revision) > super::storage::revision_lww_key(entry) {
-            *entry = revision;
+    for (entity, key) in &revisions {
+        let winner = winners.entry(entity).or_insert(key);
+        if key > *winner {
+            *winner = key;
         }
     }
-    for revision in &revisions {
-        if winners[&(
-            &revision.project_id,
-            &revision.entity_type,
-            &revision.entity_id,
-        )]
-            .revision_id
-            != revision.revision_id
-        {
+    for (entity, key) in &revisions {
+        if winners[entity].2 != key.2 {
             connection
                 .execute(
                     "UPDATE sync_entity_revisions SET state = 'superseded' WHERE id = ?1",
-                    params![revision.revision_id],
+                    params![key.2],
                 )
                 .map_err(|error| error.to_string())?;
         }
@@ -1863,6 +1868,320 @@ mod tests {
     use super::*;
     use rusqlite::{params, Connection};
     use serde_json::json;
+
+    fn insert_state_revision(
+        connection: &Connection,
+        revision: &SyncProjectManifestEntityRevisionSchema,
+    ) {
+        connection.execute(
+            "INSERT INTO sync_entity_revisions (id, project_id, entity_type, entity_id, revision_type, base_revision_id, source_artifact_id, content_sha256, author_device_id, state, metadata_json, payload_json, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
+            params![revision.revision_id,revision.project_id,revision.entity_type,revision.entity_id,
+                    revision.revision_type,revision.base_revision_id,revision.source_artifact_id,
+                    revision.content_sha256,revision.author_device_id,revision.state,
+                    revision.metadata.to_string(),revision.payload.to_string(),revision.created_at,revision.updated_at],
+        ).unwrap();
+    }
+
+    fn revision_states(connection: &Connection) -> BTreeMap<String, String> {
+        connection
+            .prepare("SELECT id,state FROM sync_entity_revisions ORDER BY id")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn current_revision_reconciliation_preserves_global_lww_groups_and_timestamp_ordering() {
+        let connection = Connection::open_in_memory().unwrap();
+        migrate_mobile_db(&connection).unwrap();
+        for (id, project, entity_type, entity_id, updated_at, author, state) in [
+            (
+                "invalid",
+                "project_a",
+                "analysis",
+                "main",
+                "not-a-date",
+                "zz",
+                "active",
+            ),
+            (
+                "utc",
+                "project_a",
+                "analysis",
+                "main",
+                "2026-01-01T00:00:00Z",
+                "a",
+                "active",
+            ),
+            (
+                "tie_y",
+                "project_a",
+                "analysis",
+                "main",
+                "2026-01-01T01:00:00+01:00",
+                "z",
+                "active",
+            ),
+            (
+                "tie_z",
+                "project_a",
+                "analysis",
+                "main",
+                "2025-12-31T19:00:00-05:00",
+                "z",
+                "current",
+            ),
+            (
+                "other_entity",
+                "project_a",
+                "analysis",
+                "other",
+                "",
+                "a",
+                "current",
+            ),
+            ("bad_a", "project_a", "chords", "main", "", "z", "active"),
+            (
+                "bad_z",
+                "project_a",
+                "chords",
+                "main",
+                "malformed",
+                "z",
+                "active",
+            ),
+            (
+                "micro_a",
+                "project_a",
+                "lyrics",
+                "main",
+                "2026-01-01T00:00:00.0000009Z",
+                "a",
+                "active",
+            ),
+            (
+                "micro_z",
+                "project_a",
+                "lyrics",
+                "main",
+                "2026-01-01T00:00:00.0000001Z",
+                "a",
+                "active",
+            ),
+            (
+                "naive",
+                "project_a",
+                "analysis",
+                "formats",
+                "2026-01-01T00:00:00",
+                "a",
+                "active",
+            ),
+            (
+                "sqlite_utc",
+                "project_a",
+                "analysis",
+                "formats",
+                "2026-01-01 00:00:00 UTC",
+                "z",
+                "active",
+            ),
+            (
+                "foreign_old",
+                "project_b",
+                "analysis",
+                "main",
+                "2025-01-01T00:00:00Z",
+                "z",
+                "active",
+            ),
+            (
+                "foreign_new",
+                "project_b",
+                "analysis",
+                "main",
+                "2026-01-01T00:00:00Z",
+                "a",
+                "active",
+            ),
+            (
+                "deleted",
+                "project_a",
+                "analysis",
+                "main",
+                "2099-01-01T00:00:00Z",
+                "zz",
+                "deleted",
+            ),
+            (
+                "superseded",
+                "project_a",
+                "analysis",
+                "main",
+                "2099-01-01T00:00:00Z",
+                "zz",
+                "superseded",
+            ),
+            (
+                "uppercase",
+                "project_a",
+                "analysis",
+                "main",
+                "2099-01-01T00:00:00Z",
+                "zz",
+                "ACTIVE",
+            ),
+        ] {
+            let mut revision = metadata_revision(project, id, state, "Synthetic", updated_at);
+            revision.entity_type = entity_type.to_string();
+            revision.entity_id = entity_id.to_string();
+            revision.author_device_id = author.to_string();
+            insert_state_revision(&connection, &revision);
+        }
+        reconcile_current_revision_states(&connection, None).unwrap();
+        let states = revision_states(&connection);
+        for id in [
+            "invalid",
+            "utc",
+            "tie_y",
+            "bad_a",
+            "micro_a",
+            "naive",
+            "foreign_old",
+            "superseded",
+        ] {
+            assert_eq!(states[id], "superseded", "state for {id}");
+        }
+        for id in ["bad_z", "micro_z", "sqlite_utc", "foreign_new"] {
+            assert_eq!(states[id], "active", "state for {id}");
+        }
+        assert_eq!(states["tie_z"], "current");
+        assert_eq!(states["other_entity"], "current");
+        assert_eq!(states["deleted"], "deleted");
+        assert_eq!(states["uppercase"], "ACTIVE");
+        let writes = connection.total_changes();
+        reconcile_current_revision_states(&connection, None).unwrap();
+        assert_eq!(connection.total_changes(), writes);
+    }
+
+    #[test]
+    fn current_revision_reconciliation_keeps_explicit_project_scope() {
+        let connection = Connection::open_in_memory().unwrap();
+        migrate_mobile_db(&connection).unwrap();
+        for project in ["project_a", "project_b"] {
+            for (suffix, time) in [
+                ("old", "2025-01-01T00:00:00Z"),
+                ("new", "2026-01-01T00:00:00Z"),
+            ] {
+                let revision = metadata_revision(
+                    project,
+                    &format!("{project}_{suffix}"),
+                    "active",
+                    "Synthetic",
+                    time,
+                );
+                insert_state_revision(&connection, &revision);
+            }
+        }
+        reconcile_current_revision_states(&connection, Some("project_a")).unwrap();
+        let states = revision_states(&connection);
+        assert_eq!(states["project_a_old"], "superseded");
+        assert_eq!(states["project_a_new"], "active");
+        assert_eq!(states["project_b_old"], "active");
+        assert_eq!(states["project_b_new"], "active");
+        let writes = connection.total_changes();
+        reconcile_current_revision_states(&connection, Some("missing_project")).unwrap();
+        assert_eq!(connection.total_changes(), writes);
+        reconcile_current_revision_states(&connection, None).unwrap();
+        assert_eq!(revision_states(&connection)["project_b_old"], "superseded");
+    }
+
+    #[test]
+    fn current_revision_reconciliation_never_reads_revision_documents_or_digests() {
+        use rusqlite::ffi;
+        use std::ffi::{c_char, c_int, c_void, CStr};
+
+        unsafe extern "C" fn deny_document_reads(
+            _context: *mut c_void,
+            action: c_int,
+            table: *const c_char,
+            column: *const c_char,
+            _database: *const c_char,
+            _trigger: *const c_char,
+        ) -> c_int {
+            if action != ffi::SQLITE_READ || table.is_null() || column.is_null() {
+                return ffi::SQLITE_OK;
+            }
+            // SQLite supplies valid, NUL-terminated names for this synchronous callback.
+            let table = unsafe { CStr::from_ptr(table) }.to_bytes();
+            let column = unsafe { CStr::from_ptr(column) }.to_bytes();
+            if table == b"sync_entity_revisions"
+                && matches!(
+                    column,
+                    b"payload_json" | b"metadata_json" | b"content_sha256"
+                )
+            {
+                ffi::SQLITE_DENY
+            } else {
+                ffi::SQLITE_OK
+            }
+        }
+
+        let connection = Connection::open_in_memory().unwrap();
+        migrate_mobile_db(&connection).unwrap();
+        for (id, time) in [
+            ("old", "2025-01-01T00:00:00Z"),
+            ("new", "2026-01-01T00:00:00Z"),
+        ] {
+            insert_state_revision(
+                &connection,
+                &metadata_revision("project", id, "active", "Synthetic", time),
+            );
+        }
+        let large_payload = "synthetic".repeat(256 * 1024);
+        connection
+            .execute(
+                "UPDATE sync_entity_revisions SET payload_json=?1,metadata_json='not-json'",
+                params![large_payload],
+            )
+            .unwrap();
+        // The connection is local to this test; the callback retains no borrowed state.
+        unsafe {
+            assert_eq!(
+                ffi::sqlite3_set_authorizer(
+                    connection.handle(),
+                    Some(deny_document_reads),
+                    std::ptr::null_mut()
+                ),
+                ffi::SQLITE_OK
+            );
+        }
+        for column in ["payload_json", "metadata_json", "content_sha256"] {
+            assert!(connection
+                .prepare(&format!("SELECT {column} FROM sync_entity_revisions"))
+                .is_err());
+        }
+        let result = reconcile_current_revision_states(&connection, None);
+        unsafe {
+            assert_eq!(
+                ffi::sqlite3_set_authorizer(connection.handle(), None, std::ptr::null_mut()),
+                ffi::SQLITE_OK
+            );
+        }
+        result.unwrap();
+        assert_eq!(revision_states(&connection)["old"], "superseded");
+        assert_eq!(revision_states(&connection)["new"], "active");
+        let persisted: String = connection
+            .query_row(
+                "SELECT payload_json FROM sync_entity_revisions WHERE id='new'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(persisted, large_payload);
+    }
 
     fn insert_trusted_peer(connection: &Connection, device_id: &str) -> String {
         migrate_mobile_db(connection).unwrap();

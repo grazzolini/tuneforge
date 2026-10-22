@@ -92,17 +92,18 @@ def materialize_result_revisions(session: Session, project_id: str | None = None
     by_entity: dict[tuple[str, str], list[SyncEntityRevision]] = {}
     for revision in revisions:
         by_entity.setdefault((revision.project_id, revision.entity_type), []).append(revision)
+    project_tombstones = select(SyncDeleteTombstone).where(SyncDeleteTombstone.target_type == "project")
+    result_tombstones = select(SyncDeleteTombstone).where(SyncDeleteTombstone.target_type == "entity_revision")
+    if project_id is not None:
+        project_tombstones = project_tombstones.where(SyncDeleteTombstone.target_id == project_id)
+        result_tombstones = result_tombstones.where(SyncDeleteTombstone.project_id == project_id)
     deleted_projects = {
         tombstone.target_id: _as_utc(tombstone.deleted_at)
-        for tombstone in session.scalars(
-            select(SyncDeleteTombstone).where(SyncDeleteTombstone.target_type == "project")
-        )
+        for tombstone in session.scalars(project_tombstones)
     }
     deleted_results = {
         (tombstone.project_id, tombstone.prior_metadata_json.get("entity_type"))
-        for tombstone in session.scalars(
-            select(SyncDeleteTombstone).where(SyncDeleteTombstone.target_type == "entity_revision")
-        )
+        for tombstone in session.scalars(result_tombstones)
         if tombstone.prior_metadata_json.get("entity_id") == tombstone.project_id
         and isinstance(tombstone.prior_metadata_json.get("entity_type"), str)
     }

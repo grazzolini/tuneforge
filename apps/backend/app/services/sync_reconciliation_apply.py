@@ -11,10 +11,10 @@ from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, load_only
 
 from app.errors import AppError
-from app.models import Artifact, Project, SyncDeleteTombstone, SyncEntityRevision
+from app.models import Artifact, Project, SyncDeleteTombstone, SyncEntityRevision, SyncStagedArtifact
 from app.services.artifacts import register_artifact
 from app.services.paths import project_root
 from app.services.project_storage import queue_project_storage_reconciliation
@@ -973,11 +973,29 @@ def _cleanup_imported_content_addressed_staging(
     imported_hashes: set[str] = set()
     pending_hashes: set[str] = set()
     imported_references: list[dict[str, Any]] = []
+    artifacts_by_id: dict[str, Artifact] | None = None
+    if not any(isinstance(row, (Artifact, SyncStagedArtifact))
+               for rows in (session.new, session.dirty, session.deleted) for row in rows):
+        artifact_ids = sorted({
+            artifact_id
+            for manifest in context.project_manifests_by_id.values()
+            for artifact in _list_field(manifest, "artifacts")
+            if (artifact_id := _string_field(artifact, "artifact_id", "id")) is not None
+        })
+        artifacts_by_id = {}
+        for start in range(0, len(artifact_ids), 500):
+            artifacts_by_id.update((row.id, row) for row in session.scalars(
+                select(Artifact).where(Artifact.id.in_(artifact_ids[start:start + 500])).options(
+                    load_only(Artifact.id, Artifact.project_id, Artifact.content_sha256,
+                              Artifact.size_bytes, Artifact.path)
+                )
+            ))
     for project_id, manifest in context.project_manifests_by_id.items():
         imported_project_hashes, pending_project_hashes, imported_project_references = _manifest_artifact_import_state(
             session,
             manifest,
             project_id=project_id,
+            artifacts_by_id=artifacts_by_id,
         )
         imported_hashes.update(imported_project_hashes)
         imported_references.extend(imported_project_references)
@@ -1066,6 +1084,7 @@ def _manifest_artifact_import_state(
     manifest: object,
     *,
     project_id: str,
+    artifacts_by_id: Mapping[str, Artifact] | None = None,
 ) -> tuple[set[str], set[str], list[dict[str, Any]]]:
     imported_hashes: set[str] = set()
     pending_hashes: set[str] = set()
@@ -1077,7 +1096,8 @@ def _manifest_artifact_import_state(
         size_bytes = _int_field(artifact, "size_bytes")
         if artifact_id is None or artifact_project_id != project_id or content_sha256 is None or size_bytes is None:
             continue
-        local_artifact = session.get(Artifact, artifact_id)
+        local_artifact = (session.get(Artifact, artifact_id) if artifacts_by_id is None
+                          else artifacts_by_id.get(artifact_id))
         if (
             local_artifact is None
             or not _artifact_matches_manifest_metadata(

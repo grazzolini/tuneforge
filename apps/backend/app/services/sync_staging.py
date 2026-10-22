@@ -11,11 +11,12 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from fastapi import status
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.errors import AppError
-from app.models import SyncStagedArtifact, utcnow
+from app.models import Artifact, SyncStagedArtifact, utcnow
 from app.utils.hashing import file_sha256
 
 HEX_DIGITS = frozenset("0123456789abcdef")
@@ -152,8 +153,18 @@ def cleanup_staged_artifacts(
             references_by_hash.setdefault(normalized_sha256, []).append(cleanup_reference)
         normalized_hashes.add(normalized_sha256)
 
+    records: dict[str, SyncStagedArtifact] | None = None
+    if not any(isinstance(row, (Artifact, SyncStagedArtifact))
+               for rows in (session.new, session.dirty, session.deleted) for row in rows):
+        records = {}
+        hashes = sorted(normalized_hashes)
+        for start in range(0, len(hashes), 500):
+            records.update((row.content_sha256, row) for row in session.scalars(
+                select(SyncStagedArtifact).where(SyncStagedArtifact.content_sha256.in_(hashes[start:start + 500]))
+            ))
     for content_sha256 in sorted(normalized_hashes):
-        record = session.get(SyncStagedArtifact, content_sha256)
+        record = (session.get(SyncStagedArtifact, content_sha256) if records is None
+                  else records.get(content_sha256))
         if record is None:
             continue
         metadata = record.metadata_json if isinstance(record.metadata_json, dict) else {}

@@ -5,6 +5,11 @@ download, installation, verification, signature, and publication instructions.
 
 ## [Unreleased]
 
+### Performance
+
+- Reduce repeated desktop sync reads and staging cleanup queries for already synchronized libraries,
+  while preserving conflict, deletion, and live file checks.
+
 ## [1.8.0] - 2026-10-21
 
 ### Added

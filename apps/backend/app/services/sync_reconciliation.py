@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import RowMapping, or_, select
 from sqlalchemy.orm import Session, make_transient_to_detached
 
 from app.engines.audio_encoding import DURABLE_AUDIO_FORMATS
@@ -207,6 +207,13 @@ class _RemoteRequest:
     provider_device_ids_by_content_sha256: dict[str, tuple[str, ...]]
 
 
+@dataclass
+class _DonorLookup:
+    session: Session
+    ids_by_hash: dict[str, list[str]] | None = None
+    candidates: dict[str, tuple[Artifact, ...]] = field(default_factory=dict)
+
+
 @dataclass(frozen=True)
 class _LocalState:
     identity: SyncLocalIdentity | None
@@ -219,6 +226,7 @@ class _LocalState:
     chord_project_ids: frozenset[str]
     lyrics_transcripts_by_project: dict[str, LyricsTranscript]
     tombstones: tuple[SyncDeleteTombstone, ...]
+    donor_lookup: _DonorLookup | None = None
 
 
 @dataclass(frozen=True)
@@ -436,10 +444,69 @@ def plan_sync_reconciliation(
     return SyncReconciliationPlan(summary=summary, items=items, actions=deduped_actions)
 
 
+def _id_chunks(ids: Iterable[str]) -> Iterable[list[str]]:
+    ordered = sorted(set(ids))
+    for start in range(0, len(ordered), 500):
+        yield ordered[start:start + 500]
+
+
+def _rows_for_ids(session: Session, model: Any, column: Any, ids: set[str]) -> list[Any]:
+    return [row for chunk in _id_chunks(ids) for row in session.scalars(select(model).where(column.in_(chunk)))]
+
+
+def _request_sources(request: object) -> list[Any]:
+    library = _first_field(request, "remote_library", "remote_library_manifest", "library_manifest", "library",
+                           default=request)
+    # Keep raw duplicate entries: shadowed revisions can still reference foreign bases.
+    sources = [library]
+    for source in (request, library):
+        for name in ("project_manifest", "project_manifests", "manifests"):
+            sources.extend(_list_field(source, name))
+        for project in _list_field(source, "projects"):
+            manifest = _first_field(project, "manifest", "project_manifest", default=None)
+            if manifest is not None:
+                sources.append(manifest)
+    return sources
+
+
+def _owners_outside_scope(
+    session: Session,
+    model: Any,
+    ids: set[str],
+    project_ids: set[str],
+    bindings: Iterable[tuple[str, str]] = (),
+    cache: dict[Any, dict[str, str | None]] | None = None,
+) -> bool:
+    owners = {} if cache is None else cache.setdefault(model, {})
+    missing = ids - owners.keys()
+    owners.update((key, None) for key in missing)
+    owners.update((key, owner) for chunk in _id_chunks(missing)
+                  for key, owner in session.execute(select(model.id, model.project_id).where(model.id.in_(chunk))))
+    owners = {key: owner for key in ids if (owner := owners[key]) is not None}
+    if any(owner not in project_ids for owner in owners.values()):
+        return True
+    for key, expected in bindings:
+        if key in owners and owners[key] != expected:
+            return True
+    for key, owner in owners.items():
+        row = session.identity_map.get(session.identity_key(model, key))
+        if row is not None and row.project_id != owner:
+            return True
+    return False
+
+
 def _load_local_state(
     session: Session,
     request: object | Mapping[str, Any],
+    *,
+    _unrestricted: bool = False,
+    _extra_revision_ids: set[str] | None = None,
 ) -> tuple[_LocalState, _RemoteRequest]:
+    if not _unrestricted and any(
+        isinstance(row, (Project, Artifact, ChordTimeline, LyricsTranscript, SyncDeleteTombstone, SyncEntityRevision))
+        for rows in (session.new, session.dirty, session.deleted) for row in rows
+    ):
+        return _load_local_state(session, request, _unrestricted=True)
     identity = session.get(SyncLocalIdentity, LOCAL_IDENTITY_ID)
     trusted_device_ids: frozenset[str]
     if identity is None:
@@ -455,46 +522,139 @@ def _load_local_state(
             )
         )
 
-    projects = {
-        project.id: project
-        for project in session.scalars(select(Project).order_by(Project.id.asc()))
+    raw_sources = _request_sources(request)
+    raw_artifacts = [raw for source in raw_sources for raw in _list_field(source, "artifacts")]
+    raw_revisions = [raw for source in raw_sources for raw in _list_field(source, "entity_revisions", "revisions")]
+    incoming_artifacts = [incoming_artifact for raw in raw_artifacts
+                          if (incoming_artifact := _coerce_remote_artifact(raw)) is not None]
+    incoming_revisions = [incoming_revision for raw in raw_revisions
+                          if (incoming_revision := _coerce_remote_revision(raw)) is not None]
+    raw_artifact_ids = {key for raw in raw_artifacts if (key := _str_field(raw, "artifact_id", "id")) is not None}
+    existing_ids: set[str] = set()
+    if not _unrestricted:
+        for chunk in _id_chunks(raw_artifact_ids):
+            existing_ids.update(session.scalars(select(Artifact.id).where(Artifact.id.in_(chunk))))
+    projects = {} if not _unrestricted else {
+        project.id: project for project in session.scalars(select(Project).order_by(Project.id.asc()))
     }
-    artifacts = {
+    artifacts = {} if not _unrestricted else {
         artifact.id: artifact
         for artifact in session.scalars(select(Artifact).order_by(Artifact.project_id.asc(), Artifact.id.asc()))
     }
+    remote = _coerce_remote_request(
+        request, trusted_device_ids=trusted_device_ids,
+        existing_artifact_ids=frozenset(artifacts if _unrestricted else existing_ids),
+    )
+    project_scope: set[str] | None = None
+    owner_cache: dict[Any, dict[str, str | None]] = {}
+    artifact_ids = set(raw_artifact_ids)
+    artifact_ids.update(key for raw in raw_revisions if (key := _str_field(raw, "source_artifact_id")) is not None)
+    revision_ids = {key for raw in raw_revisions if (key := _str_field(raw, "revision_id", "id")) is not None}
+    revision_ids.update(key for raw in raw_revisions if (key := _str_field(raw, "base_revision_id")) is not None)
+    if not _unrestricted:
+        project_scope = set(remote.projects) | set(remote.project_manifests_by_id)
+        project_scope.update(key for raw in (*raw_artifacts, *raw_revisions)
+                             if (key := _str_field(raw, "project_id")) is not None)
+        project_scope.update(key for source in raw_sources if (key := _project_id_from_manifest(source)) is not None)
+        for tombstone in remote.tombstones:
+            project_scope.add(tombstone.project_id)
+            if tombstone.target_type == ITEM_PROJECT:
+                project_scope.add(tombstone.target_id)
+            elif tombstone.target_type == ITEM_ARTIFACT:
+                artifact_ids.add(tombstone.target_id)
+            elif tombstone.target_type == ITEM_ENTITY_REVISION:
+                revision_ids.add(tombstone.target_id)
+        artifact_bindings = [(artifact.artifact_id, artifact.project_id) for artifact in incoming_artifacts]
+        artifact_bindings.extend((revision.source_artifact_id, revision.project_id)
+                                 for revision in incoming_revisions if revision.source_artifact_id)
+        revision_bindings = [(revision.revision_id, revision.project_id) for revision in incoming_revisions]
+        revision_bindings.extend((revision.base_revision_id, revision.project_id)
+                                 for revision in incoming_revisions if revision.base_revision_id)
+        if (_owners_outside_scope(session, Artifact, artifact_ids, project_scope, artifact_bindings, owner_cache)
+                or _owners_outside_scope(
+                    session, SyncEntityRevision, revision_ids, project_scope, revision_bindings, owner_cache
+                )):
+            return _load_local_state(session, request, _unrestricted=True)
+        projects = {row.id: row for row in _rows_for_ids(session, Project, Project.id, project_scope)}
+        artifacts = {row.id: row for row in _rows_for_ids(session, Artifact, Artifact.project_id, project_scope)}
+        if any(row.project_id not in project_scope for row in artifacts.values()):
+            return _load_local_state(session, request, _unrestricted=True)
     artifacts_by_hash: dict[str, list[Artifact]] = {}
     for artifact in artifacts.values():
         content_hash = _normalize_sha256(artifact.content_sha256)
         if content_hash is not None:
             artifacts_by_hash.setdefault(content_hash, []).append(artifact)
-
-    remote = _coerce_remote_request(
-        request, trusted_device_ids=trusted_device_ids, existing_artifact_ids=frozenset(artifacts),
-    )
-    revisions = _load_local_revisions(session, remote)
+    revisions = _load_local_revisions(session, remote, project_scope, revision_ids | (_extra_revision_ids or set()))
+    if project_scope is not None:
+        artifact_ids.update(artifacts)
+        revision_ids.update(revisions)
+        artifact_ids.update(row.source_artifact_id for row in revisions.values() if row.source_artifact_id)
+        revision_ids.update(row.base_revision_id for row in revisions.values() if row.base_revision_id)
+        if (any(row.project_id not in project_scope for row in revisions.values())
+                or _owners_outside_scope(session, Artifact, artifact_ids, project_scope,
+                                         [(row.source_artifact_id, row.project_id) for row in revisions.values()
+                                          if row.source_artifact_id], owner_cache)
+                or _owners_outside_scope(session, SyncEntityRevision, revision_ids, project_scope,
+                                         [(row.base_revision_id, row.project_id) for row in revisions.values()
+                                          if row.base_revision_id], owner_cache)):
+            return _load_local_state(session, request, _unrestricted=True, _extra_revision_ids=set(revisions))
     revisions_by_entity: dict[tuple[str, str, str], list[SyncEntityRevision]] = {}
     for revision in revisions.values():
-        key = (revision.project_id, revision.entity_type, revision.entity_id)
-        revisions_by_entity.setdefault(key, []).append(revision)
+        entity_key = (revision.project_id, revision.entity_type, revision.entity_id)
+        revisions_by_entity.setdefault(entity_key, []).append(revision)
 
-    tombstones = tuple(
-        session.scalars(
-            select(SyncDeleteTombstone).order_by(
-                SyncDeleteTombstone.project_id.asc(),
-                SyncDeleteTombstone.target_type.asc(),
-                SyncDeleteTombstone.target_id.asc(),
-                SyncDeleteTombstone.deleted_at.asc(),
-                SyncDeleteTombstone.id.asc(),
-            )
-        )
-    )
+    tombstone_statement = select(SyncDeleteTombstone)
+    tombstones_by_id: dict[str, SyncDeleteTombstone] = {}
+    if project_scope is None:
+        tombstones_by_id = {row.id: row for row in session.scalars(tombstone_statement.order_by(
+            SyncDeleteTombstone.project_id.asc(), SyncDeleteTombstone.target_type.asc(),
+            SyncDeleteTombstone.target_id.asc(), SyncDeleteTombstone.deleted_at.asc(), SyncDeleteTombstone.id.asc(),
+        ))}
+    else:
+        terms = [("project", key) for key in sorted(project_scope)]
+        terms.extend(("target", key) for key in sorted(project_scope | artifact_ids | revision_ids))
+        for start in range(0, len(terms), 500):
+            term_chunk = terms[start:start + 500]
+            statement = tombstone_statement.where(or_(
+                SyncDeleteTombstone.project_id.in_([key for kind, key in term_chunk if kind == "project"]),
+                SyncDeleteTombstone.target_id.in_([key for kind, key in term_chunk if kind == "target"]),
+            ))
+            tombstones_by_id.update((row.id, row) for row in session.scalars(statement))
+        artifact_targets: list[tuple[str, str]] = []
+        revision_targets: list[tuple[str, str]] = []
+        invalid = False
+        for row in tombstones_by_id.values():
+            target_type = _normalize_target_type(row.target_type)
+            invalid |= row.project_id not in project_scope
+            if target_type == ITEM_PROJECT:
+                invalid |= row.target_id != row.project_id
+            elif target_type == ITEM_ARTIFACT:
+                artifact_targets.append((row.target_id, row.project_id))
+            elif target_type == ITEM_ENTITY_REVISION:
+                revision_targets.append((row.target_id, row.project_id))
+        if (invalid or _owners_outside_scope(session, Artifact, {key for key, _ in artifact_targets},
+                                             project_scope, artifact_targets, owner_cache)
+                or _owners_outside_scope(session, SyncEntityRevision, {key for key, _ in revision_targets},
+                                         project_scope, revision_targets, owner_cache)):
+            return _load_local_state(session, request, _unrestricted=True, _extra_revision_ids=set(revisions))
+    tombstones = tuple(tombstones_by_id.values()) if project_scope is None else tuple(sorted(
+        tombstones_by_id.values(), key=lambda row: (
+            row.project_id, row.target_type, row.target_id, parse_sync_datetime(row.deleted_at), row.id,
+        ),
+    ))
     chord_project_ids = frozenset(
         session.scalars(select(ChordTimeline.project_id).order_by(ChordTimeline.project_id.asc()))
+    ) if project_scope is None else frozenset(
+        project_id for chunk in _id_chunks(project_scope)
+        for project_id in session.scalars(select(ChordTimeline.project_id).where(ChordTimeline.project_id.in_(chunk)))
     )
     lyrics_transcripts = {
-        lyrics.project_id: lyrics
-        for lyrics in session.scalars(select(LyricsTranscript).order_by(LyricsTranscript.project_id.asc()))
+        lyrics.project_id: lyrics for lyrics in (
+            session.scalars(select(LyricsTranscript).order_by(LyricsTranscript.project_id.asc()))
+            if project_scope is None else _rows_for_ids(
+                session, LyricsTranscript, LyricsTranscript.project_id, project_scope
+            )
+        )
     }
 
     return _LocalState(
@@ -514,12 +674,15 @@ def _load_local_state(
         chord_project_ids=chord_project_ids,
         lyrics_transcripts_by_project=lyrics_transcripts,
         tombstones=tombstones,
+        donor_lookup=_DonorLookup(session) if project_scope is not None else None,
     ), remote
 
 
 def _load_local_revisions(
     session: Session,
     remote: _RemoteRequest,
+    project_scope: set[str] | None = None,
+    extra_revision_ids: set[str] | None = None,
 ) -> dict[str, SyncEntityRevision]:
     incoming = list(remote.entity_revisions.values())
     for manifest in remote.project_manifests_by_id.values():
@@ -533,12 +696,25 @@ def _load_local_revisions(
         if tombstone.target_type == ITEM_ENTITY_REVISION
     )
 
+    revision_ids.update(extra_revision_ids or ())
+    if project_scope is not None:
+        project_ids = project_scope
+
     table = SyncEntityRevision.__table__
     metadata_columns = [column for column in table.c if column.name != "payload_json"]
     revisions: dict[str, SyncEntityRevision] = {}
     # Detached snapshots cannot lazily combine earlier bindings with a later payload,
     # and never refresh or overwrite pending objects in the caller's identity map.
-    for row in session.execute(select(*metadata_columns).order_by(table.c.id)).mappings():
+    metadata_rows: list[RowMapping] = []
+    if project_scope is None:
+        metadata_rows.extend(session.execute(select(*metadata_columns).order_by(table.c.id)).mappings())
+    else:
+        for chunk in _id_chunks(project_ids):
+            metadata_rows.extend(session.execute(select(*metadata_columns).where(table.c.project_id.in_(chunk))).mappings())
+        captured_ids = {row["id"] for row in metadata_rows}
+        for chunk in _id_chunks(revision_ids - captured_ids):
+            metadata_rows.extend(session.execute(select(*metadata_columns).where(table.c.id.in_(chunk))).mappings())
+    for row in metadata_rows:
         snapshot = SyncEntityRevision(**row)
         make_transient_to_detached(snapshot)
         revisions[snapshot.id] = snapshot
@@ -547,21 +723,14 @@ def _load_local_revisions(
 
     # Retain initial scoped IDs too: a row rebound to another project between reads
     # must be refreshed in full, not disappear from the project-filtered result.
-    terms = [("project", key) for key in sorted(project_ids)]
-    terms.extend(("revision", key) for key in sorted(revision_ids))
     full_revisions: dict[str, SyncEntityRevision] = {}
-    for start in range(0, len(terms), 500):
-        chunk = terms[start:start + 500]
-        project_chunk = [key for kind, key in chunk if kind == "project"]
-        revision_chunk = [key for kind, key in chunk if kind == "revision"]
-        statement = select(table).where(or_(
-            table.c.project_id.in_(project_chunk),
-            table.c.id.in_(revision_chunk),
-        ))
-        for row in session.execute(statement).mappings():
-            snapshot = SyncEntityRevision(**row)
-            make_transient_to_detached(snapshot)
-            full_revisions[snapshot.id] = snapshot
+    for column, ids in ((table.c.project_id, project_ids), (table.c.id, revision_ids)):
+        outstanding = set(ids) if column is table.c.project_id else set(ids) - set(full_revisions)
+        for chunk in _id_chunks(outstanding):
+            for row in session.execute(select(table).where(column.in_(chunk))).mappings():
+                snapshot = SyncEntityRevision(**row)
+                make_transient_to_detached(snapshot)
+                full_revisions[snapshot.id] = snapshot
     for revision_id in revision_ids:
         revisions.pop(revision_id, None)
     revisions.update(full_revisions)
@@ -3201,7 +3370,21 @@ def _recorded_artifact_for_hash(
     exclude_artifact_id: str | None = None,
     size_bytes: int | None = None,
 ) -> Artifact | None:
-    for artifact in local.artifacts_by_content_sha256.get(content_sha256, ()):
+    candidates = local.artifacts_by_content_sha256.get(content_sha256, ())
+    lookup = local.donor_lookup
+    if lookup is not None:
+        if lookup.ids_by_hash is None:
+            lookup.ids_by_hash = {}
+            for artifact_id, raw_hash in lookup.session.execute(select(Artifact.id, Artifact.content_sha256)):
+                normalized = _normalize_sha256(raw_hash)
+                if normalized is not None:
+                    lookup.ids_by_hash.setdefault(normalized, []).append(artifact_id)
+        if content_sha256 not in lookup.candidates:
+            rows = _rows_for_ids(lookup.session, Artifact, Artifact.id,
+                                 set(lookup.ids_by_hash.get(content_sha256, ())))
+            lookup.candidates[content_sha256] = tuple(sorted(rows, key=lambda row: (row.project_id, row.id)))
+        candidates = lookup.candidates[content_sha256]
+    for artifact in candidates:
         if artifact.id == exclude_artifact_id:
             continue
         if _artifact_has_recorded_content(artifact, content_sha256, size_bytes):

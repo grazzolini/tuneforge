@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import func, select
+from sqlalchemy import event, func, select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -3570,3 +3570,53 @@ def _wav_bytes(*, frame_count: int, sample_rate: int = 44100) -> bytes:
         wav_file.setframerate(sample_rate)
         wav_file.writeframes(b"\0\0" * frame_count)
     return buffer.getvalue()
+
+
+def test_cleanup_batches_all_manifest_ids_and_preserves_unselected_pending_hash(
+    client: TestClient, tmp_path: Path,
+) -> None:
+    _ensure_identity_and_peers("peer-cleanup-bulk")
+    with SessionLocal() as session:
+        fixture = _create_project_with_artifacts(session, tmp_path, slug="cleanup-bulk", source_frames=90)
+        source = session.get(Artifact, fixture.source_artifact_id)
+        assert source is not None
+        source_path, source_hash, source_size = source.path, source.content_sha256, source.size_bytes
+        assert source_hash is not None and source_size is not None
+        artifact_ids = [f"art_cleanup_{index}" for index in range(501)]
+        session.add_all([Artifact(id=artifact_id, project_id=fixture.project_id, path=source_path,
+                                  content_sha256=source_hash, size_bytes=source_size,
+                                  type="source_audio", format="wav") for artifact_id in artifact_ids])
+        stage_sync_artifact(session, source_path=source_path, content_sha256=source_hash, size_bytes=source_size)
+        session.commit()
+        manifests = {fixture.project_id: {"artifacts": [
+            {"artifact_id": artifact_id, "project_id": fixture.project_id,
+             "content_sha256": source_hash, "size_bytes": source_size} for artifact_id in artifact_ids
+        ]}, "proj_unselected": {"artifacts": [
+            {"artifact_id": "art_unselected", "project_id": "proj_unselected",
+             "content_sha256": source_hash, "size_bytes": source_size}
+        ]}}
+        context = sync_reconciliation_apply_service._ApplyContext(
+            project_manifests_by_id=manifests, tombstones_by_id={}, tombstones_by_target={},
+            scoped_project_ids=frozenset({fixture.project_id}), staging_root=None,
+            use_content_addressed_staging=True, include_timing_evidence=False,
+        )
+        queries: list[int] = []
+
+        def record(_connection: Any, _cursor: Any, statement: str, parameters: Any, *_args: Any) -> None:
+            if statement.lstrip().upper().startswith("SELECT") and "FROM artifacts" in statement:
+                queries.append(len(parameters))
+
+        event.listen(session.get_bind(), "before_cursor_execute", record)
+        try:
+            details = sync_reconciliation_apply_service._cleanup_imported_content_addressed_staging(session, context)
+        finally:
+            event.remove(session.get_bind(), "before_cursor_execute", record)
+        assert queries == [500, 2]
+        assert details["pending_content_sha256_count"] == 1
+        assert details["cleaned_content_sha256_count"] == 0
+        assert session.get(SyncStagedArtifact, source_hash) is not None
+        manifests.pop("proj_unselected")
+        details = sync_reconciliation_apply_service._cleanup_imported_content_addressed_staging(session, context)
+        assert details["pending_content_sha256_count"] == 0
+        assert details["cleaned_content_sha256_count"] == 1
+        assert session.get(SyncStagedArtifact, source_hash) is None

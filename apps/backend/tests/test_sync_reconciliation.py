@@ -107,7 +107,7 @@ def test_scoped_revision_plan_matches_complete_revision_loading(
     with Session(bind=engine) as session:
         actual = asdict(plan_sync_reconciliation(session, request))
 
-    def complete_rows(session: Session, _remote: object) -> dict[str, SyncEntityRevision]:
+    def complete_rows(session: Session, _remote: object, *_scope: object) -> dict[str, SyncEntityRevision]:
         return {row.id: row for row in session.scalars(select(SyncEntityRevision))}
 
     monkeypatch.setattr(reconciliation, "_load_local_revisions", complete_rows)
@@ -137,6 +137,11 @@ def test_scoped_revision_payloads_are_selected_only_and_metadata_cannot_lazy_loa
                            {"id": warm.id})
             writer.commit()
         local, _ = reconciliation._load_local_state(session, request)
+        assert set(local.entity_revisions) == {f"rev_{selected_id}"}
+        assert local.entity_revisions[f"rev_{selected_id}"].payload_json
+        assert local.donor_lookup is not None
+        assert warm.payload_json is warm_payload
+        local, _ = reconciliation._load_local_state(session, request, _unrestricted=True)
         assert set(local.entity_revisions) == {f"rev_{selected_id}", f"rev_{other_id}"}
         assert local.entity_revisions[f"rev_{selected_id}"].payload_json
         metadata = local.entity_revisions[f"rev_{other_id}"]
@@ -336,7 +341,7 @@ def test_scoped_revision_full_queries_obey_portable_parameter_limit(db_session: 
             assert all(row.payload_json for row in local.entity_revisions.values())
     finally:
         event.remove(engine, "before_cursor_execute", count_parameters)
-    assert len(counts) == 2
+    assert counts == [1, 500, 100]
     assert max(counts) <= 500
 
 
@@ -3915,3 +3920,275 @@ def test_existing_project_rejects_invalid_hashes_before_noop(
         request["project_manifests"] = [manifest]
     with pytest.raises(AppError, match="full SHA-256"):
         plan_sync_reconciliation(db_session, request)
+
+
+@pytest.mark.parametrize("model", [Project, Artifact, ChordTimeline, LyricsTranscript,
+                                    SyncDeleteTombstone, SyncEntityRevision])
+@pytest.mark.parametrize("mutation", ["new", "dirty", "deleted"])
+def test_pending_participating_rows_keep_unrestricted_view_without_dml(
+    db_session: Session, tmp_path: Path, model: Any, mutation: str,
+) -> None:
+    project = _add_project(db_session, "proj_pending_scope", source_sha256=_sha("pending scope"))
+    other = _add_project(db_session, "proj_pending_other", source_sha256=_sha("pending other"))
+    artifact = _add_artifact(db_session, artifact_id="art_pending_scope", project_id=project.id,
+                             path=tmp_path / "absent.wav", content_sha256=_sha("absent"), size_bytes=1)
+    revision = _add_revision(db_session, project_id=project.id, revision_id="rev_pending_scope",
+                             content_sha256=_sha("revision"), base_revision_id=None)
+    chords = ChordTimeline(project_id=project.id)
+    lyrics = LyricsTranscript(project_id=project.id)
+    tombstone = SyncDeleteTombstone(id="tomb_pending_scope", project_id=project.id, sync_group_id="group-a",
+                                    target_type="artifact", target_id="absent", author_device_id="dev-local",
+                                    deleted_at=datetime.now(UTC))
+    db_session.add_all([chords, lyrics, tombstone])
+    db_session.commit()
+    selected_id, other_id = project.id, other.id
+    rows = {Project: project, Artifact: artifact, SyncEntityRevision: revision, ChordTimeline: chords,
+            LyricsTranscript: lyrics, SyncDeleteTombstone: tombstone}
+    row = rows[model]
+    # Load every column before introducing pending state or recording read-only statements.
+    values = {column.key: getattr(row, column.key) for column in model.__table__.columns}
+    if mutation == "new":
+        values["id" if "id" in values else "project_id"] = "pending_new"
+        db_session.add(model(**values))
+    elif mutation == "deleted":
+        db_session.delete(row)
+    else:
+        key = "display_name" if model is Project else "project_id"
+        setattr(row, key, "pending-value")
+    pending = (set(db_session.new), set(db_session.dirty), set(db_session.deleted))
+    statements: list[str] = []
+
+    def record(_connection: Any, _cursor: Any, statement: str, *_args: Any) -> None:
+        statements.append(statement)
+
+    event.listen(db_session.get_bind(), "before_cursor_execute", record)
+    try:
+        local, _ = reconciliation._load_local_state(
+            db_session, {"remote_library": {"projects": [{"project_id": selected_id}]}},
+        )
+    finally:
+        event.remove(db_session.get_bind(), "before_cursor_execute", record)
+    assert other_id in local.projects
+    assert local.donor_lookup is None
+    assert pending == (set(db_session.new), set(db_session.dirty), set(db_session.deleted))
+    assert all(statement.lstrip().upper().startswith("SELECT") for statement in statements)
+    db_session.rollback()
+    clean, _ = reconciliation._load_local_state(
+        db_session, {"remote_library": {"projects": [{"project_id": selected_id}]}},
+    )
+    assert set(clean.projects) == {selected_id}
+    assert clean.donor_lookup is not None
+
+
+@pytest.mark.parametrize("case", ["foreign_owner", "misbound_artifact", "misbound_project", "missing_target"])
+def test_scoped_tombstone_aliases_and_owner_fallback_match_unrestricted_plan(
+    db_session: Session, tmp_path: Path, case: str,
+) -> None:
+    _add_identity_and_peers(db_session)
+    selected = _add_project(db_session, "proj_tomb_scope", source_sha256=_sha("tomb scope"))
+    other = _add_project(db_session, "proj_tomb_other", source_sha256=_sha("tomb other"))
+    _add_artifact(db_session, artifact_id="art_tomb_scope", project_id=selected.id,
+                  path=tmp_path / "absent", content_sha256=_sha("absent"), size_bytes=1)
+    tombstone = SyncDeleteTombstone(
+        id="tomb_alias", sync_group_id="group-a", author_device_id="dev-local", deleted_at=datetime.now(UTC),
+        project_id=other.id if case in {"foreign_owner", "misbound_artifact"} else selected.id,
+        target_type=" Project " if case == "misbound_project" else " Artifact ",
+        target_id=other.id if case == "misbound_project" else
+                  "missing_target" if case == "missing_target" else "art_tomb_scope",
+    )
+    db_session.add(tombstone)
+    db_session.commit()
+    request = {"remote_library": {"projects": [{"project_id": selected.id}]}}
+    if case == "misbound_artifact":
+        request["remote_library"]["projects"].append({"project_id": other.id})
+    actual = asdict(plan_sync_reconciliation(db_session, request))
+    local, _ = reconciliation._load_local_state(db_session, request)
+    assert "tomb_alias" in {row.id for row in local.tombstones}
+    assert (local.donor_lookup is not None) == (case == "missing_target")
+    assert actual == asdict(plan_sync_reconciliation_unrestricted(db_session, request))
+
+
+def plan_sync_reconciliation_unrestricted(session: Session, request: dict[str, Any]) -> SyncReconciliationPlan:
+    # Exercise the existing unrestricted loader through the public planner without changing results.
+    from unittest.mock import patch
+
+    loader = reconciliation._load_local_state
+    with patch.object(reconciliation, "_load_local_state",
+                      side_effect=lambda active, payload: loader(active, payload, _unrestricted=True)):
+        return plan_sync_reconciliation(session, request)
+
+
+def test_scoped_donors_are_lazy_ordered_and_rechecked_on_next_request(
+    db_session: Session, tmp_path: Path,
+) -> None:
+    selected = _add_project(db_session, "proj_donor_scope", source_sha256=_sha("donor scope"))
+    for project_id in ["proj_donor_b", "proj_donor_a"]:
+        _add_project(db_session, project_id, source_sha256=_sha(project_id))
+        content_hash, size = _write_file(tmp_path / f"{project_id}.wav", b"same donor")
+        _add_artifact(db_session, artifact_id=f"art_{project_id}", project_id=project_id,
+                      path=tmp_path / f"{project_id}.wav", content_sha256=content_hash.upper(), size_bytes=size)
+    _add_artifact(db_session, artifact_id="art_exact", project_id=selected.id,
+                  path=tmp_path / "proj_donor_a.wav", content_sha256=content_hash, size_bytes=size)
+    db_session.commit()
+    request = {"remote_library": {"artifacts": [
+        _artifact_manifest(selected.id, "art_exact", content_hash, size),
+    ]}}
+    statements: list[str] = []
+
+    def record(_connection: Any, _cursor: Any, statement: str, *_args: Any) -> None:
+        statements.append(statement)
+
+    event.listen(db_session.get_bind(), "before_cursor_execute", record)
+    try:
+        plan = plan_sync_reconciliation(db_session, request)
+    finally:
+        event.remove(db_session.get_bind(), "before_cursor_execute", record)
+    assert _item(plan, ITEM_ARTIFACT, "art_exact").status == "identical_content"
+    assert not any("FROM artifacts" in statement and "WHERE" not in statement for statement in statements)
+    request["remote_library"]["artifacts"][0]["artifact_id"] = "art_incoming"
+    first = plan_sync_reconciliation(db_session, request)
+    assert _item(first, ITEM_ARTIFACT, "art_incoming").details["local_artifact_id"] == "art_proj_donor_a"
+    assert asdict(first) == asdict(plan_sync_reconciliation_unrestricted(db_session, request))
+    (tmp_path / "proj_donor_a.wav").unlink()
+    second = plan_sync_reconciliation(db_session, request)
+    assert _item(second, ITEM_ARTIFACT, "art_incoming").details["local_artifact_id"] == "art_proj_donor_b"
+    (tmp_path / "proj_donor_b.wav").write_bytes(b"truncated")
+    third = plan_sync_reconciliation(db_session, request)
+    assert _item(third, ITEM_ARTIFACT, "art_incoming").status == "missing_provider"
+    assert asdict(third) == asdict(plan_sync_reconciliation_unrestricted(db_session, request))
+
+
+@pytest.mark.parametrize("attribute,value", [("id", "art_changed"), ("project_id", "proj_changed"),
+                                             ("content_sha256", "f" * 64)])
+def test_pending_artifact_identity_owner_and_hash_survive_plan_and_rollback(
+    db_session: Session, tmp_path: Path, attribute: str, value: str,
+) -> None:
+    selected = _add_project(db_session, "proj_rollback", source_sha256=_sha("rollback"))
+    other = _add_project(db_session, "proj_rollback_other", source_sha256=_sha("rollback other"))
+    artifact = _add_artifact(db_session, artifact_id="art_rollback", project_id=selected.id,
+                             path=tmp_path / "absent", content_sha256=_sha("rollback bytes"), size_bytes=1)
+    db_session.commit()
+    original = getattr(artifact, attribute)
+    selected_id, other_id = selected.id, other.id
+    setattr(artifact, attribute, value)
+    local, _ = reconciliation._load_local_state(
+        db_session, {"remote_library": {"projects": [{"project_id": selected_id}]}},
+    )
+    assert local.donor_lookup is None
+    assert other_id in local.projects
+    assert getattr(artifact, attribute) == value
+    assert artifact in db_session.dirty
+    assert artifact in local.artifacts.values()
+    db_session.rollback()
+    assert getattr(artifact, attribute) == original
+    clean, _ = reconciliation._load_local_state(
+        db_session, {"remote_library": {"projects": [{"project_id": selected_id}]}},
+    )
+    assert clean.donor_lookup is not None
+    assert set(clean.artifacts) == {"art_rollback"}
+
+
+def test_clean_scoped_reads_obey_total_parameter_limit_without_global_rows(db_session: Session) -> None:
+    count = 600
+    projects = [Project(id=f"proj_read_{index}", display_name=f"Project {index}", source_sha256=_sha(str(index)),
+                        source_path="synthetic", imported_path="synthetic") for index in range(count)]
+    db_session.add_all(projects)
+    db_session.flush()
+    artifacts = [Artifact(id=f"art_read_{index}", project_id=project.id, path="synthetic", type="source_audio",
+                          format="wav", content_sha256=_sha(f"artifact {index}"), size_bytes=1)
+                 for index, project in enumerate(projects)]
+    db_session.add_all(artifacts)
+    db_session.flush()
+    revisions = [SyncEntityRevision(id=f"rev_read_{index}", project_id=project.id, entity_type="chords",
+                                    entity_id=project.id, revision_type="generated", author_device_id="synthetic",
+                                    source_artifact_id=artifacts[index].id, content_sha256=_sha(f"revision {index}"),
+                                    state="active", payload_json={"index": index})
+                 for index, project in enumerate(projects)]
+    db_session.add_all(revisions)
+    db_session.commit()
+    request = {"remote_library": {
+        "projects": [{"project_id": row.id} for row in projects],
+        "artifacts": [_artifact_manifest(row.project_id, row.id, row.content_sha256 or "", 1) for row in artifacts],
+        "entity_revisions": [_revision_manifest(row.project_id, revision_id=row.id,
+                                                 content_sha256=row.content_sha256, base_revision_id=None)
+                             for row in revisions],
+    }}
+    statements: list[tuple[str, int]] = []
+
+    def record(_connection: Any, _cursor: Any, statement: str, parameters: Any, *_args: Any) -> None:
+        statements.append((statement, len(parameters)))
+
+    event.listen(db_session.get_bind(), "before_cursor_execute", record)
+    try:
+        local, _ = reconciliation._load_local_state(db_session, request)
+    finally:
+        event.remove(db_session.get_bind(), "before_cursor_execute", record)
+    assert local.donor_lookup is not None
+    assert len(local.projects) == len(local.artifacts) == len(local.entity_revisions) == count
+    assert all(row.payload_json for row in local.entity_revisions.values())
+    assert max(parameters for _, parameters in statements) <= 500
+    assert all(statement.lstrip().upper().startswith("SELECT") for statement, _ in statements)
+    assert all("WHERE" in statement for statement, _ in statements if "FROM artifacts" in statement)
+
+
+@pytest.mark.parametrize("unrestricted", [False, True])
+def test_mixed_retained_and_sqlite_tombstone_timestamps_keep_deterministic_order(
+    db_session: Session, unrestricted: bool,
+) -> None:
+    project = _add_project(db_session, "proj_mixed_timestamps", source_sha256=_sha("mixed timestamps"))
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    retained = SyncDeleteTombstone(id="tomb_aware", sync_group_id="group-a", project_id=project.id,
+                                   target_type="artifact", target_id="missing", author_device_id="synthetic",
+                                   deleted_at=now)
+    reloaded = SyncDeleteTombstone(id="tomb_naive", sync_group_id="group-b", project_id=project.id,
+                                   target_type="artifact", target_id="missing", author_device_id="synthetic",
+                                   deleted_at=now + timedelta(microseconds=1))
+    db_session.add_all([retained, reloaded])
+    db_session.commit()
+    db_session.expire(reloaded, ["deleted_at"])
+    assert retained.deleted_at.tzinfo is UTC
+    assert reloaded.deleted_at.tzinfo is None
+    request = {"remote_library": {"projects": [{"project_id": project.id}]}}
+    local, _ = reconciliation._load_local_state(db_session, request, _unrestricted=unrestricted)
+    assert [row.id for row in local.tombstones] == ["tomb_aware", "tomb_naive"]
+    assert (local.donor_lookup is None) == unrestricted
+    assert asdict(plan_sync_reconciliation(db_session, request)) == asdict(
+        plan_sync_reconciliation_unrestricted(db_session, request)
+    )
+
+
+def test_raw_artifact_id_admission_preserves_legacy_exemption_before_coercion(
+    db_session: Session, tmp_path: Path,
+) -> None:
+    project = _add_project(db_session, "proj_legacy_admission", source_sha256=_sha("legacy admission"))
+    _add_artifact(db_session, artifact_id="legacy/known", project_id=project.id, path=tmp_path / "absent",
+                  content_sha256=_sha("legacy bytes"), size_bytes=1)
+    db_session.commit()
+    request = {"remote_library": {"artifacts": [{"artifact_id": "legacy/known"}]}}
+    assert asdict(plan_sync_reconciliation(db_session, request)) == asdict(
+        plan_sync_reconciliation_unrestricted(db_session, request)
+    )
+    request["remote_library"]["artifacts"][0]["artifact_id"] = "new/unsafe"
+    for planner in (plan_sync_reconciliation, plan_sync_reconciliation_unrestricted):
+        with pytest.raises(AppError, match="identifiers must not contain"):
+            planner(db_session, request)
+
+
+def test_raw_incomplete_revision_dependencies_and_owners_keep_conservative_fallback(db_session: Session) -> None:
+    selected = _add_project(db_session, "proj_raw_incomplete", source_sha256=_sha("raw incomplete"))
+    other = _add_project(db_session, "proj_raw_owner", source_sha256=_sha("raw owner"))
+    foreign = _add_project(db_session, "proj_raw_foreign", source_sha256=_sha("raw foreign"))
+    _add_revision(db_session, project_id=foreign.id, revision_id="rev_incomplete_base",
+                  content_sha256=_sha("incomplete base"), base_revision_id=None)
+    db_session.commit()
+    request = {"remote_library": {"projects": [{"project_id": selected.id}], "entity_revisions": [
+        {"revision_id": "rev_incomplete", "project_id": other.id, "base_revision_id": "rev_incomplete_base"},
+    ]}}
+    local, remote = reconciliation._load_local_state(db_session, request)
+    assert not remote.entity_revisions
+    assert local.donor_lookup is None
+    assert set(local.projects) == {selected.id, other.id, foreign.id}
+    assert local.entity_revisions["rev_incomplete_base"].payload_json
+    assert asdict(plan_sync_reconciliation(db_session, request)) == asdict(
+        plan_sync_reconciliation_unrestricted(db_session, request)
+    )

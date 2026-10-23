@@ -3,12 +3,14 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from sqlalchemy import event
 
 from app.config import get_settings
 from app.db import SessionLocal
 from app.errors import AppError
 from app.models import SyncStagedArtifact
 from app.services.sync_staging import (
+    cleanup_staged_artifacts,
     get_staged_artifact_path,
     require_staged_artifact,
     stage_sync_artifact,
@@ -307,3 +309,29 @@ def test_staging_rejects_symlink_destination_before_outside_write(client: object
         assert session.get(SyncStagedArtifact, content_sha256) is None
     assert list(outside.iterdir()) == []
     assert source.read_bytes() == b"fixture source"
+
+
+def test_cleanup_batches_all_staged_hashes_before_deleting(client: object) -> None:
+    from typing import Any
+
+    hashes = [f"{index:064x}" for index in range(1001)]
+    with SessionLocal() as session:
+        session.add_all([SyncStagedArtifact(content_sha256=content_hash, size_bytes=0,
+                                            relative_path=f"sha256/{content_hash[:2]}/{content_hash}",
+                                            metadata_json={}) for content_hash in hashes])
+        session.commit()
+        statements: list[tuple[str, int]] = []
+
+        def record(_connection: Any, _cursor: Any, statement: str, parameters: Any, *_args: Any) -> None:
+            statements.append((statement, len(parameters)))
+
+        event.listen(session.get_bind(), "before_cursor_execute", record)
+        try:
+            assert cleanup_staged_artifacts(session, content_sha256s=hashes + [hashes[0].upper()]) == 1001
+        finally:
+            event.remove(session.get_bind(), "before_cursor_execute", record)
+        reads = [(statement, count) for statement, count in statements
+                 if statement.lstrip().upper().startswith("SELECT")]
+        assert [count for _, count in reads] == [500, 500, 1]
+        assert all(statement.lstrip().upper().startswith("SELECT") for statement, _ in statements[:3])
+        assert all("sync_staged_artifacts" in statement for statement, _ in reads)

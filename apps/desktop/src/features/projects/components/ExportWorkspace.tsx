@@ -1,3 +1,4 @@
+import { exportSummaryConsistent } from "../../../lib/jobLifecycle";
 import { Link } from "react-router-dom";
 import { useEffect, useRef } from "react";
 import {
@@ -414,17 +415,15 @@ export function ExportWorkspace() {
                   role={latestExportJob.status === "failed" ? "alert" : "status"}
                 >
                   <span>Latest export</span>
-                  <strong>{latestExportJob.export_result?.outcome ?? latestExportJob.status}</strong>
-                  {isMobileRuntime ? (
-                    <small>{latestExportJob.runtime_detail ?? (
-                      latestExportJob.status === "cancelled"
-                        ? "The picker was closed. No verified receipt was saved."
-                        : latestExportJob.status === "failed"
-                          ? "Export failed. A provider may retain partial output; TuneForge saved no receipt."
-                          : latestExportJob.status === "completed"
-                            ? "The provider export finished."
-                            : "Export state will update here."
-                    )}</small>
+                  <strong>{["cancelled", "failed"].includes(latestExportJob.status) || !exportSummaryConsistent(latestExportJob) ? latestExportJob.status : latestExportJob.export_result?.outcome ?? latestExportJob.status}</strong>
+                  {!latestExportJob.export_result || !exportSummaryConsistent(latestExportJob) ? (
+                    <small>Export details are unavailable.</small>
+                  ) : isMobileRuntime ? (
+                    <small>{latestExportJob.status === "cancelled"
+                      ? "Export was cancelled. A provider may retain partial output."
+                      : latestExportJob.runtime_detail ?? (latestExportJob.status === "failed"
+                        ? "Export failed. A provider may retain partial output; TuneForge saved no receipt."
+                        : "The provider export finished.")}</small>
                   ) : null}
                 </div>
               ) : null}

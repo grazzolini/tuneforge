@@ -2709,7 +2709,74 @@ export function getApiBaseUrl() {
   return apiBaseUrl;
 }
 
-export const api: TuneForgeClient = {
+export type JobOperationEvent = {
+  runtime: object;
+  id: number;
+  projectId: string | null;
+  startedAt: number;
+  kind: "submit" | "import" | "cancel" | "read";
+  settled: boolean;
+  jobs: JobSchema[];
+};
+const jobOperationListeners = new Set<(event: JobOperationEvent) => void | Promise<void>>();
+const pendingJobOperations = new Map<number, JobOperationEvent>();
+let nextJobOperationId = 0;
+export const getJobRuntimeIdentity = (): object => activeClient;
+export function subscribeJobOperations(listener: (event: JobOperationEvent) => void | Promise<void>) {
+  jobOperationListeners.add(listener);
+  pendingJobOperations.forEach(listener);
+  return () => { jobOperationListeners.delete(listener); };
+}
+async function publishJobOperation(event: JobOperationEvent) {
+  await Promise.all([...jobOperationListeners].map((listener) => listener(event)));
+}
+
+// Instrument the common facade, preserving each adapter's public contract.
+export function withJobLifecycle(client: TuneForgeClient, runtime: () => object = () => client): TuneForgeClient {
+  async function operation<T>(projectId: string | null, kind: JobOperationEvent["kind"], run: () => Promise<T>, jobs: (response: T) => JobSchema[]): Promise<T> {
+    const event: JobOperationEvent = { runtime: runtime(), id: ++nextJobOperationId, projectId, startedAt: Date.now(), kind, settled: false, jobs: [] };
+    if (kind !== "read") { pendingJobOperations.set(event.id, event); void publishJobOperation(event); }
+    try {
+      const response = await run();
+      event.jobs = jobs(response);
+      if (kind === "import") event.projectId = (response as components["schemas"]["ProjectResponse"] | undefined)?.project?.id ?? event.projectId;
+      return response;
+    } finally {
+      pendingJobOperations.delete(event.id);
+      await publishJobOperation({ ...event, settled: true });
+    }
+  }
+  const cancellations = new WeakMap<object, Map<string, ReturnType<TuneForgeClient["cancelJob"]>>>();
+  const submit = <T extends { job: JobSchema }>(projectId: string, run: () => Promise<T>) => operation(projectId, "submit", run, (response) => [response.job]);
+  return {
+    ...client,
+    analyzeProject: (...args) => submit(args[0], () => client.analyzeProject(...args)),
+    createChords: (...args) => submit(args[0], () => client.createChords(...args)),
+    createLyrics: (...args) => submit(args[0], () => client.createLyrics(...args)),
+    createPreview: (...args) => submit(args[0], () => client.createPreview(...args)),
+    createStems: (...args) => submit(args[0], () => client.createStems(...args)),
+    createDrumSubstems: (...args) => submit(args[0], () => client.createDrumSubstems(...args)),
+    createRetune: (...args) => submit(args[0], () => client.createRetune(...args)),
+    createTranspose: (...args) => submit(args[0], () => client.createTranspose(...args)),
+    createExport: (...args) => submit(args[0], () => client.createExport(...args)),
+    importProject: (...args) => operation(null, "import", () => client.importProject(...args), () => []),
+    bulkJobs: (...args) => operation(null, "submit", () => client.bulkJobs(...args), (response) => response.created_jobs),
+    cancelJob: (...args) => {
+      const identity = runtime();
+      const requests = cancellations.get(identity) ?? new Map<string, ReturnType<TuneForgeClient["cancelJob"]>>();
+      cancellations.set(identity, requests);
+      const existing = requests.get(args[0]);
+      if (existing) return existing;
+      const request = operation(null, "cancel", () => client.cancelJob(...args), (response) => [response.job]).finally(() => requests.delete(args[0]));
+      requests.set(args[0], request);
+      return request;
+    },
+    listJobs: (...args) => operation(args[0]?.project_id ?? null, "read", () => client.listJobs(...args), (response) => response.jobs),
+    getJob: (...args) => operation(null, "read", () => client.getJob(...args), (response) => [response.job]),
+  };
+}
+
+export const api: TuneForgeClient = withJobLifecycle({
   getMobileCapabilities: () => activeClient.getMobileCapabilities(),
   ensureWebMediaTransport: () => activeClient.ensureWebMediaTransport(),
   getHealth: () => activeClient.getHealth(),
@@ -2762,4 +2829,4 @@ export const api: TuneForgeClient = {
   syncTrustedPeerNow: (deviceId: string, options?: SyncTransportSyncNowOptions) =>
     activeClient.syncTrustedPeerNow(deviceId, options),
   streamArtifactUrl: (artifactId: string) => activeClient.streamArtifactUrl(artifactId),
-};
+}, getJobRuntimeIdentity);

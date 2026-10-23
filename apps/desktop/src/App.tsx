@@ -17,6 +17,7 @@ import { useAudioOutput } from "./lib/audioOutputContext";
 import { OutputVolumeControl } from "./components/OutputVolumeControl";
 import { usePackageIdentity } from "./lib/packageIdentity";
 import { ThemeProvider } from "./lib/theme";
+import { JobLifecycleProvider } from "./features/projects/hooks/useActiveJobPolling";
 
 function MiniMetallicGlyphDefs({ gradientId }: { gradientId: string }) {
   return (
@@ -301,7 +302,7 @@ function AppChrome() {
 
 export default function App() {
   return (
-    <ThemeProvider>
+    <JobLifecycleProvider><ThemeProvider>
       <PreferencesProvider>
         <AudioOutputProvider>
           <PlaybackProvider>
@@ -313,6 +314,6 @@ export default function App() {
           </PlaybackProvider>
         </AudioOutputProvider>
       </PreferencesProvider>
-    </ThemeProvider>
+    </ThemeProvider></JobLifecycleProvider>
   );
 }

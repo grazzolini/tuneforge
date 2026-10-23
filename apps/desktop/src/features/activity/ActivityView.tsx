@@ -1,4 +1,6 @@
-import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { jobsOptions } from "../../lib/jobLifecycle";
+import { useJobLifecycleScope } from "../projects/hooks/useActiveJobPolling";
+import { useDeferredValue, useMemo, useState } from "react";
 import { useInfiniteQuery, useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Activity, Layers, Mic, RefreshCw } from "lucide-react";
 import { Link } from "react-router-dom";
@@ -27,14 +29,8 @@ import {
 import { ActivitySyncPanel } from "./ActivitySyncPanel";
 
 const CANCELABLE_JOB_STATUSES = new Set(["pending", "running"]);
-const ACTIVE_JOB_STATUSES = ["running", "pending"] as const;
 const TERMINAL_JOB_STATUS_VALUES = ["completed", "failed", "cancelled"] as const;
 const TERMINAL_JOB_STATUSES = new Set<string>(TERMINAL_JOB_STATUS_VALUES);
-const ACTIVE_JOBS_LIMIT = 200;
-const TERMINAL_JOBS_PAGE_SIZE = 50;
-const ACTIVE_JOB_REFETCH_MS = 1500;
-const ACTIVE_JOBS_QUERY_KEY = ["jobs", "activity", "active"] as const;
-const TERMINAL_JOBS_QUERY_KEY = ["jobs", "activity", "terminal"] as const;
 const ACTIVITY_PROJECTS_QUERY_KEY = ["projects", "activity"] as const;
 const ACTIVITY_PROJECT_STALE_MS = 5 * 60 * 1000;
 const ACTIVITY_TABS = [
@@ -182,10 +178,6 @@ function formatJobDetails(job: JobSchema, { includeRuntimeDevice = true } = {}) 
 
 function activeStageStatusLabel(stageLabel: string, runtimeSummary: string | null) {
   return runtimeSummary ? `Current stage: ${stageLabel}, ${runtimeSummary}` : `Current stage: ${stageLabel}`;
-}
-
-function hasActiveJob(jobs: JobSchema[] | undefined) {
-  return jobs?.some((job) => CANCELABLE_JOB_STATUSES.has(job.status)) ?? false;
 }
 
 function bulkJobsSummary(action: BulkJobAction, response: BulkJobsResponse) {
@@ -418,7 +410,6 @@ export function ActivityView() {
   } | null>(null);
   const [bulkPreflightError, setBulkPreflightError] = useState<string | null>(null);
   const deferredSearch = useDeferredValue(searchDraft.trim());
-  const previousActiveJobIds = useRef<Set<string>>(new Set());
   const queryClient = useQueryClient();
   const { defaultDurableAudioFormat, defaultStemModel } = usePreferences();
   const { beatBackendForAction } = useBeatBackendActionSelection();
@@ -432,59 +423,13 @@ export function ActivityView() {
   const isIOSRuntime = mobileCapabilitiesQuery.data?.platform === "ios";
   const activeTab = isIOSRuntime ? "sync" : selectedTab;
   const jobsEnabled = (!isIOSHost || mobileCapabilitiesQuery.isSuccess) && !isIOSRuntime;
-  const activeJobsQueryKey = useMemo(
-    () => [...ACTIVE_JOBS_QUERY_KEY, deferredSearch] as const,
-    [deferredSearch],
-  );
-  const terminalJobsQueryKey = useMemo(
-    () => [...TERMINAL_JOBS_QUERY_KEY, deferredSearch] as const,
-    [deferredSearch],
-  );
-  const activeJobsQuery = useInfiniteQuery({
-    enabled: jobsEnabled,
-    queryKey: activeJobsQueryKey,
-    initialPageParam: 0,
-    queryFn: async ({ pageParam }) => {
-      const params = {
-        status: [...ACTIVE_JOB_STATUSES],
-        sort_by: "activity" as const,
-        ...(deferredSearch ? { search: deferredSearch } : {}),
-        limit: ACTIVE_JOBS_LIMIT,
-        offset: pageParam,
-      };
-
-      return api.listJobs(params);
-    },
-    getNextPageParam: (lastPage) =>
-      lastPage.has_more ? lastPage.offset + lastPage.jobs.length : undefined,
-  });
+  const activeJobsQuery = useInfiniteQuery({ ...jobsOptions({ search: deferredSearch }, "active"), enabled: jobsEnabled });
   const {
     data: activeJobsData,
-    fetchNextPage: fetchNextActiveJobsPage,
-    hasNextPage: hasNextActiveJobsPage,
     isError: isActiveJobsError,
-    isFetchingNextPage: isFetchingNextActiveJobsPage,
     isLoading: isActiveJobsLoading,
-    isSuccess: isActiveJobsSuccess,
   } = activeJobsQuery;
-  const terminalJobsQuery = useInfiniteQuery({
-    enabled: jobsEnabled,
-    queryKey: terminalJobsQueryKey,
-    initialPageParam: 0,
-    queryFn: async ({ pageParam }) => {
-      const params = {
-        status: [...TERMINAL_JOB_STATUS_VALUES],
-        sort_by: "activity" as const,
-        ...(deferredSearch ? { search: deferredSearch } : {}),
-        limit: TERMINAL_JOBS_PAGE_SIZE,
-        offset: pageParam,
-      };
-
-      return api.listJobs(params);
-    },
-    getNextPageParam: (lastPage) =>
-      lastPage.has_more ? lastPage.offset + lastPage.jobs.length : undefined,
-  });
+  const terminalJobsQuery = useInfiniteQuery({ ...jobsOptions({ search: deferredSearch }, "terminal"), enabled: jobsEnabled });
   const {
     data: terminalJobsData,
     fetchNextPage: fetchNextTerminalJobsPage,
@@ -532,7 +477,6 @@ export function ActivityView() {
   const cancelJobMutation = useMutation({
     mutationFn: (jobId: string) => api.cancelJob(jobId),
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["jobs"] });
     },
   });
   const retryAnalysisMutation = useMutation({
@@ -543,8 +487,6 @@ export function ActivityView() {
       return api.analyzeProject(job.project_id, job.analysis_request);
     },
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["jobs"] });
-      await queryClient.invalidateQueries({ queryKey: ["runtime", "mobile-capabilities"] });
     },
   });
   const bulkJobsMutation = useMutation({
@@ -574,7 +516,6 @@ export function ActivityView() {
     },
     onSuccess: async (response, action) => {
       setBulkJobResult({ action, response });
-      await queryClient.invalidateQueries({ queryKey: ["jobs"] });
     },
   });
 
@@ -584,7 +525,6 @@ export function ActivityView() {
   );
   const displayJobs = useMemo(() => orderJobsForQueue(jobs), [jobs]);
   const activeJobCount = displayJobs.filter(({ job }) => CANCELABLE_JOB_STATUSES.has(job.status)).length;
-  const shouldPollJobs = hasActiveJob(activeJobs);
   const isLoading = isActiveJobsLoading || isTerminalJobsLoading;
   const isError = isActiveJobsError || isTerminalJobsError;
   const showJobList = !isLoading && !isError && displayJobs.length > 0;
@@ -602,37 +542,7 @@ export function ActivityView() {
       rootMargin: "160px 0px",
     });
 
-  useEffect(() => {
-    if (!shouldPollJobs) return;
-
-    const interval = window.setInterval(async () => {
-      await queryClient.invalidateQueries({ queryKey: activeJobsQueryKey });
-    }, ACTIVE_JOB_REFETCH_MS);
-
-    return () => window.clearInterval(interval);
-  }, [activeJobsQueryKey, queryClient, shouldPollJobs]);
-
-  useEffect(() => {
-    if (!hasNextActiveJobsPage || isFetchingNextActiveJobsPage) return;
-
-    fetchNextActiveJobsPage();
-  }, [fetchNextActiveJobsPage, hasNextActiveJobsPage, isFetchingNextActiveJobsPage]);
-
-  useEffect(() => {
-    if (!isActiveJobsSuccess) return;
-
-    const currentActiveJobIds = new Set(activeJobs.map((job) => job.id));
-    const activeJobLeftQueue = [...previousActiveJobIds.current].some(
-      (jobId) => !currentActiveJobIds.has(jobId),
-    );
-    previousActiveJobIds.current = currentActiveJobIds;
-
-    if (activeJobLeftQueue) {
-      queryClient.invalidateQueries({ queryKey: terminalJobsQueryKey });
-      queryClient.invalidateQueries({ queryKey: ["runtime", "mobile-capabilities"] });
-      queryClient.invalidateQueries({ queryKey: ["beat-backends"] });
-    }
-  }, [activeJobs, isActiveJobsSuccess, queryClient, terminalJobsQueryKey]);
+  useJobLifecycleScope(undefined, deferredSearch, jobsEnabled);
 
   async function handleBulkJobAction(action: BulkJobAction) {
     bulkJobsMutation.reset();

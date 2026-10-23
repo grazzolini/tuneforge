@@ -54,7 +54,8 @@ import {
   serializeKey,
   transposeKey,
 } from "../../../lib/music";
-import { useActiveJobPolling } from "./useActiveJobPolling";
+import { useJobLifecycleScope } from "./useActiveJobPolling";
+import { jobsOptions } from "../../../lib/jobLifecycle";
 import {
   activeStemArtifacts,
   describeDrumGroup,
@@ -108,10 +109,6 @@ import {
 type PlaybackDisplayModeSource = "default" | "stored" | "user";
 type PracticeLaneStatus = "loading" | "available" | "empty" | "error";
 type PracticeLane = "lyrics" | "chords";
-const ACTIVE_PROJECT_JOB_STATUSES = ["running", "pending"] as const;
-const TERMINAL_PROJECT_JOB_STATUSES = ["completed", "failed", "cancelled"] as const;
-const ACTIVE_PROJECT_JOBS_LIMIT = 200;
-const PROJECT_HISTORY_JOBS_PAGE_SIZE = 50;
 const EMPTY_JOBS: JobSchema[] = [];
 const PROJECT_PLAYBACK_FALLBACK_NAME = "Project playback";
 
@@ -151,10 +148,6 @@ const LYRICS_LANGUAGE_LABELS = new Map<string, string>(
     option.value === null ? [] : [[option.value, option.label] as const],
   ),
 );
-
-function getNextJobsPageOffset(lastPage: { has_more: boolean; offset: number; jobs: JobSchema[] }) {
-  return lastPage.has_more ? lastPage.offset + lastPage.jobs.length : undefined;
-}
 
 function uniqueJobsById(jobs: JobSchema[]) {
   const jobsById = new Map<string, JobSchema>();
@@ -474,30 +467,10 @@ export function useProjectViewModel() {
     enabled: Boolean(projectId),
   });
   const activeProjectJobsQuery = useInfiniteQuery({
-    queryKey: ["jobs", { projectId, scope: "project", status: "active" }],
-    initialPageParam: 0,
-    queryFn: async ({ pageParam }) =>
-      api.listJobs({
-        project_id: projectId,
-        status: [...ACTIVE_PROJECT_JOB_STATUSES],
-        limit: ACTIVE_PROJECT_JOBS_LIMIT,
-        offset: pageParam,
-      }),
-    enabled: Boolean(projectId) && !isIOSRuntime,
-    getNextPageParam: getNextJobsPageOffset,
+    ...jobsOptions({ projectId }, "active"), enabled: Boolean(projectId) && !isIOSRuntime,
   });
   const terminalProjectJobsQuery = useInfiniteQuery({
-    queryKey: ["jobs", { projectId, scope: "project", status: "terminal" }],
-    initialPageParam: 0,
-    queryFn: async ({ pageParam }) =>
-      api.listJobs({
-        project_id: projectId,
-        status: [...TERMINAL_PROJECT_JOB_STATUSES],
-        limit: PROJECT_HISTORY_JOBS_PAGE_SIZE,
-        offset: pageParam,
-      }),
-    enabled: Boolean(projectId) && !isIOSRuntime,
-    getNextPageParam: getNextJobsPageOffset,
+    ...jobsOptions({ projectId }, "terminal"), enabled: Boolean(projectId) && !isIOSRuntime,
   });
   const projectSyncSummary = useMemo(
     () => getProjectSyncSummary(projectQuery.data),
@@ -517,15 +490,6 @@ export function useProjectViewModel() {
       assertProjectEditable();
       const beatBackendSelection = await beatBackendForAction();
       return api.analyzeProject(projectId, { beat_backend: beatBackendSelection.beat_backend });
-    },
-    onSuccess: async () => {
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["jobs"] }),
-        queryClient.invalidateQueries({ queryKey: ["analysis", projectId] }),
-        queryClient.invalidateQueries({ queryKey: ["artifacts", projectId] }),
-        queryClient.invalidateQueries({ queryKey: ["project", projectId] }),
-        queryClient.invalidateQueries({ queryKey: ["projects"] }),
-      ]);
     },
   });
 
@@ -594,12 +558,6 @@ export function useProjectViewModel() {
         overwrite_user_edits: overwriteUserEdits,
       });
     },
-    onSuccess: async () => {
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["jobs"] }),
-        queryClient.invalidateQueries({ queryKey: ["chords", projectId] }),
-      ]);
-    },
   });
 
   const lyricsMutation = useMutation({
@@ -613,18 +571,11 @@ export function useProjectViewModel() {
     },
     onSuccess: async () => {
       setIsEditingLyrics(false);
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["jobs"] }),
-        queryClient.invalidateQueries({ queryKey: ["lyrics", projectId] }),
-      ]);
     },
   });
 
   const lyricsCancelMutation = useMutation({
     mutationFn: async (jobId: string) => api.cancelJob(jobId),
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["jobs"] });
-    },
   });
 
   const lyricsSaveMutation = useMutation({
@@ -709,12 +660,6 @@ export function useProjectViewModel() {
         transpose: transposeSemitones !== 0 ? { semitones: transposeSemitones } : undefined,
       });
     },
-    onSuccess: async () => {
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["jobs"] }),
-        queryClient.invalidateQueries({ queryKey: ["artifacts", projectId] }),
-      ]);
-    },
     onError: () => {
       pendingPreviewSelection.current = null;
     },
@@ -745,12 +690,6 @@ export function useProjectViewModel() {
         overwrite_chord_edits: overwriteChordEdits,
       });
     },
-    onSuccess: async () => {
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["jobs"] }),
-        queryClient.invalidateQueries({ queryKey: ["artifacts", projectId] }),
-      ]);
-    },
   });
 
   const drumCapabilitiesQuery = useQuery({
@@ -777,13 +716,6 @@ export function useProjectViewModel() {
         allow_download: allowDownload,
       });
     },
-    onSuccess: async () => {
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["jobs"] }),
-        queryClient.invalidateQueries({ queryKey: ["artifacts", projectId] }),
-        queryClient.invalidateQueries({ queryKey: ["drum-substems", "capabilities"] }),
-      ]);
-    },
   });
   const drumDeleteMutation = useMutation({
     mutationFn: async (parentId: string) => api.deleteDrumSubstems(projectId, parentId),
@@ -805,7 +737,6 @@ export function useProjectViewModel() {
   });
   const drumCancelMutation = useMutation({
     mutationFn: (jobId: string) => api.cancelJob(jobId),
-    onSuccess: async () => queryClient.invalidateQueries({ queryKey: ["jobs"] }),
   });
 
   const deleteMutation = useMutation({
@@ -877,7 +808,7 @@ export function useProjectViewModel() {
   const isProjectJobsLoaded =
     activeProjectJobsQuery.isSuccess && terminalProjectJobsQuery.isSuccess;
 
-  useActiveJobPolling(projectId, projectJobs);
+  useJobLifecycleScope(projectId, undefined, Boolean(projectId) && !isIOSRuntime);
 
   const analyzeJob = projectJobs.find((job) => job.type === "analyze");
   const chordJob = projectJobs.find((job) => job.type === "chords");

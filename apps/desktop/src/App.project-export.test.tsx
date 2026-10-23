@@ -793,6 +793,7 @@ describe("project export workspace", () => {
     installExportArtifacts();
     setJobs([{ id: "job_partial", project_id: "proj_123", type: "export", status: "completed", progress: 100,
       export_result: { outcome: "partial", total_count: 2, completed_count: 1, failed_count: 1, items: [
+        { artifact_id: "art_source", output_name: "Demo Song - Source.m4a", status: "completed", progress: 100, result_artifact_id: "receipt", error: null },
         { artifact_id: "art_vocals", output_name: "Demo Song - Practice Mix 1 - Vocals.m4a", status: "failed", progress: 100, result_artifact_id: null, error: "Failed" },
       ] } }]);
     renderApp(["/projects/proj_123"]);
@@ -992,6 +993,31 @@ describe("project export workspace", () => {
     expect(mockCreatePreview).not.toHaveBeenCalled();
   });
 
+  it.each(["cancelled", "failed", "completed"])("shows unavailable details for a %s export without a summary", async (status) => {
+    const user = userEvent.setup();
+    installExportArtifacts();
+    setJobs([{ id: "terminal", project_id: "proj_123", type: "export", status, progress: 0, export_result: null }]);
+    renderApp(["/projects/proj_123"]);
+    await openExportPanel(user);
+    const details = await screen.findByText("Export details are unavailable.");
+    expect(details.closest(".export-latest")).toHaveTextContent(status);
+    expect(screen.queryByRole("button", { name: "Retry failed" })).not.toBeInTheDocument();
+  });
+
+  it.each(["completed", "partial"])("keeps cancellation authoritative over a stale %s export summary", async (outcome) => {
+    const user = userEvent.setup();
+    installExportArtifacts();
+    setJobs([{ id: "cancelled", project_id: "proj_123", type: "export", status: "cancelled", progress: 0,
+      export_result: { outcome, total_count: 1, completed_count: 0, failed_count: 1, items: [{ artifact_id: "art_source", output_name: "Synthetic.wav", status: "failed" }] },
+    }]);
+    renderApp(["/projects/proj_123"]);
+    await openExportPanel(user);
+    const details = await screen.findByText("Export details are unavailable.");
+    expect(details.closest(".export-latest")?.querySelector("strong")).toHaveTextContent("cancelled");
+    expect(screen.queryByRole("button", { name: "Retry failed" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument();
+  });
+
   it("uses one Android file choice, keeps chord context separate, and submits without a destination", async () => {
     const user = userEvent.setup();
     installExportArtifacts();
@@ -1056,7 +1082,7 @@ describe("project export workspace", () => {
     await user.selectOptions(screen.getByLabelText("File format"), "m4a");
     expect(screen.getByLabelText("Suggested file name")).toHaveValue("Demo Song");
     expect(screen.getByLabelText("Suggested file name")).toHaveValue("Demo Song");
-    expect(screen.getByText(/picker was closed/i).closest("[role='status']")).toHaveTextContent(
+    expect(screen.getByText("Export details are unavailable.").closest("[role='status']")).toHaveTextContent(
       /cancelled/i,
     );
 

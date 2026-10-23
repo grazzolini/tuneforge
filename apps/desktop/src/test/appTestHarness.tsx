@@ -70,6 +70,7 @@ const {
   mockListStemModels,
   mockListArtifacts,
   mockListJobs,
+  mockGetJob,
   mockCancelJob,
   mockBulkJobs,
   mockGetSyncPreflight,
@@ -1990,6 +1991,11 @@ const {
       has_more: offset + jobs.length < sortedJobs.length,
     };
   });
+  const mockGetJob = vi.fn(async (id: string) => {
+    const job = state.jobs.find((job) => job.id === id);
+    if (!job) throw new Error("Job not found");
+    return { job };
+  });
   const mockCancelJob = vi.fn(async (jobId: string) => {
     const jobIndex = state.jobs.findIndex((job) => job.id === jobId);
     if (jobIndex === -1) {
@@ -2845,6 +2851,7 @@ const {
     mockListStemModels,
     mockListArtifacts,
     mockListJobs,
+  mockGetJob,
     mockCancelJob,
     mockBulkJobs,
     mockGetSyncPreflight,
@@ -2934,6 +2941,7 @@ export {
   mockListStemModels,
   mockListArtifacts,
   mockListJobs,
+  mockGetJob,
   mockCancelJob,
   mockBulkJobs,
   mockGetSyncPreflight,
@@ -2992,7 +3000,7 @@ vi.mock("../lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/api")>();
   return {
     ...actual,
-    api: {
+    api: actual.withJobLifecycle({
       ...actual.api,
       getHealth: mockGetHealth,
       getExportCapabilities: mockGetExportCapabilities,
@@ -3007,6 +3015,7 @@ vi.mock("../lib/api", async (importOriginal) => {
       listStemModels: mockListStemModels,
       listArtifacts: mockListArtifacts,
       listJobs: mockListJobs,
+      getJob: mockGetJob,
       cancelJob: mockCancelJob,
       bulkJobs: mockBulkJobs,
       getSyncPreflight: mockGetSyncPreflight,
@@ -3039,7 +3048,8 @@ vi.mock("../lib/api", async (importOriginal) => {
       deleteProject: mockDeleteProject,
       getMobileCapabilities: mockGetMobileCapabilities,
       ensureWebMediaTransport: mockEnsureWebMediaTransport,
-    },
+    // Existing fixtures intentionally contain partial synthetic response records.
+    } as unknown as typeof actual.api, actual.getJobRuntimeIdentity),
   };
 });
 
@@ -3443,6 +3453,7 @@ export function resetAppTestHarness() {
   mockGetLyrics.mockClear();
   mockListArtifacts.mockClear();
   mockListJobs.mockClear();
+  mockGetJob.mockClear();
   mockCancelJob.mockClear();
   mockBulkJobs.mockClear();
   mockGetSyncIdentity.mockClear();

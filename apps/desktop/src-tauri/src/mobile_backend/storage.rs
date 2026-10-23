@@ -511,7 +511,7 @@ fn mark_interrupted_jobs_on_first_open(root: &Path, connection: &Connection) -> 
         .get_or_init(|| Mutex::new(HashSet::new()))
         .lock()
         .map_err(|_| "Mobile database open-state lock was poisoned.".to_string())?;
-    if opened.insert(database_path) {
+    if !opened.contains(&database_path) {
         let mut statement = connection
             .prepare(
                 "SELECT DISTINCT project_id FROM jobs WHERE project_id IS NOT NULL AND status IN ('pending', 'running') AND type IN ('analyze', 'chords', 'lyrics', 'export', 'preview', 'retune', 'transpose')",
@@ -522,7 +522,7 @@ fn mark_interrupted_jobs_on_first_open(root: &Path, connection: &Connection) -> 
             .map_err(|error| error.to_string())?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|error| error.to_string())?;
-        #[cfg(target_os = "android")]
+        #[cfg(any(target_os = "android", test))]
         super::export::fail_interrupted_exports(connection)?;
         fail_interrupted_analyses(connection)?;
         fail_interrupted_chords(connection)?;
@@ -531,6 +531,7 @@ fn mark_interrupted_jobs_on_first_open(root: &Path, connection: &Connection) -> 
         for project_id in project_ids {
             reconcile_project_storage_after_commit(connection, root, &project_id);
         }
+        opened.insert(database_path);
     }
     Ok(())
 }
@@ -3780,6 +3781,12 @@ pub fn mobile_cancel_job(app: AppHandle, job_id: String) -> Result<JobResponse, 
         )
         .optional()
         .map_err(|error| error.to_string())?;
+    #[cfg(any(target_os = "android", test))]
+    if job_type.as_deref() == Some("export") {
+        return Ok(JobResponse {
+            job: super::export::cancel_export_job_by_id(&connection, &job_id)?,
+        });
+    }
     connection
         .execute(
             "UPDATE jobs SET status = ?1, cancel_requested = 1, updated_at = ?2 WHERE id = ?3 AND status IN ('pending', 'running')",
@@ -3927,6 +3934,35 @@ mod mobile_media_tests {
 
     const ARTIFACT_ID: &str = "art_0123456789ab";
     const MANIFEST_ARTIFACT_ID: &str = "manifest/source v1";
+
+    #[test]
+    fn export_recovery_retries_after_initial_failure_and_preserves_cancelled_status() {
+        let root = std::env::temp_dir().join(new_id("export-recovery-retry"));
+        fs::create_dir_all(&root).unwrap();
+        let connection = Connection::open(root.join("mobile.sqlite3")).unwrap();
+        migrate_mobile_db(&connection).unwrap();
+        connection.execute("INSERT INTO jobs (id, project_id, type, status, progress, payload_json, result_artifact_ids_json, cancel_requested, created_at, updated_at) VALUES ('legacy', NULL, 'export', 'cancelled', 5, '{}', '[]', 1, ?1, ?1)", params![now_iso()]).unwrap();
+        connection.execute_batch("CREATE TRIGGER reject_recovery BEFORE UPDATE ON jobs BEGIN SELECT RAISE(ABORT, 'synthetic recovery failure'); END").unwrap();
+        assert!(mark_interrupted_jobs_on_first_open(&root, &connection).is_err());
+        connection
+            .execute_batch("DROP TRIGGER reject_recovery")
+            .unwrap();
+        mark_interrupted_jobs_on_first_open(&root, &connection).unwrap();
+        let (status, payload): (String, String) = connection
+            .query_row(
+                "SELECT status, payload_json FROM jobs WHERE id = 'legacy'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "cancelled");
+        assert_eq!(
+            serde_json::from_str::<Value>(&payload).unwrap()["export_result"],
+            Value::Null
+        );
+        drop(connection);
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn mobile_import_conversion_reports_audio_duration() {

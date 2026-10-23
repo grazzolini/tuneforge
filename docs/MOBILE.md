@@ -139,6 +139,14 @@ If provider readback is unsupported, the job completes as unverified and no rece
 or mismatched readback fails the job and creates no receipt. Cancellation and app restart also create
 no receipt or automatic retry; a partial provider file may remain after an interrupted write.
 
+Export creation persists its initial summary atomically with the job. Cancellation persists a
+consistent cancelled summary before acknowledging it; whichever transaction commits first decides
+whether cancellation or verified completion wins. Cancellation does not prove worker shutdown or
+provider-file removal. Startup also normalizes older cancelled exports with unfinished summaries;
+unknown item details remain unavailable instead of being reconstructed. The Export view gives the
+job's cancelled or failed status precedence over conflicting summary data and says when details are
+unavailable.
+
 Desktop does not preserve the original import as a separate canonical file. WAV/PCM remains the
 default; Settings can choose WAV/PCM, FLAC, MP3 at 192 kbps, or AAC-LC M4A at 192 kbps for each new
 durable source, stem set, saved mix, or bulk stem refresh. The choice is captured before the action

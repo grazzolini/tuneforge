@@ -196,26 +196,32 @@ describe("Desktop app library", () => {
   });
 
   it("shows a refetch error after import invalidation fails while keeping loaded rows visible", async () => {
-    const user = userEvent.setup();
-    setLibraryProjects(1);
-    mockOpen.mockResolvedValue(["/tmp/new-alpha.wav", "/tmp/new-beta.wav"]);
-    mockListProjects.mockImplementationOnce(async (params) => ({
-      projects: [makeLibraryProject(1)],
-      total: 1,
-      limit: params?.limit ?? 50,
-      offset: params?.offset ?? 0,
-      has_more: false,
-    }));
-    mockListProjects.mockRejectedValueOnce(new Error("Refresh failed"));
+    const originalRead = mockListProjects.getMockImplementation()!;
+    try {
+      const user = userEvent.setup();
+      setLibraryProjects(1);
+      mockOpen.mockResolvedValue(["/tmp/new-alpha.wav", "/tmp/new-beta.wav"]);
+      mockListProjects.mockImplementationOnce(async (params) => ({
+        projects: [makeLibraryProject(1)],
+        total: 1,
+        limit: params?.limit ?? 50,
+        offset: params?.offset ?? 0,
+        has_more: false,
+      }));
+      // Keep the read failure active across coalesced job/import refreshes.
+      mockListProjects.mockRejectedValue(new Error("Refresh failed"));
 
-    renderApp(["/"]);
+      renderApp(["/"]);
 
-    expect(await screen.findByRole("heading", { name: "Project 1", level: 2 })).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Import Track(s)" }));
+      expect(await screen.findByRole("heading", { name: "Project 1", level: 2 })).toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: "Import Track(s)" }));
 
-    const refetchError = await screen.findByText("Could not refresh projects. Showing saved results.");
-    expect(refetchError.closest('[role="alert"]')).not.toBeNull();
-    expect(screen.getByRole("heading", { name: "Project 1", level: 2 })).toBeInTheDocument();
+      const refetchError = await screen.findByText("Could not refresh projects. Showing saved results.");
+      expect(refetchError.closest('[role="alert"]')).not.toBeNull();
+      expect(screen.getByRole("heading", { name: "Project 1", level: 2 })).toBeInTheDocument();
+    } finally {
+      mockListProjects.mockImplementation(originalRead);
+    }
   });
 
   it("shows library loading, empty, failure, and final-page states", async () => {

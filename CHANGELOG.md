@@ -5,6 +5,13 @@ download, installation, verification, signature, and publication instructions.
 
 ## [Unreleased]
 
+### Fixed
+
+- Discover processing and export jobs while submission is still pending, share job refreshes across
+  views, and preserve partial results with targeted updates.
+- Persist Android export cancellation summaries atomically and recover older incomplete summaries,
+  so cancelled exports retain truthful status and unavailable details remain explicit.
+
 ### Performance
 
 - Reduce repeated desktop sync reads and staging cleanup queries for already synchronized libraries,

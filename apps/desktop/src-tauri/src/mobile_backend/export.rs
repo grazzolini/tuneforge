@@ -964,25 +964,114 @@ fn export_cancel_requested(connection: &Connection, job_id: &str) -> Result<bool
         .map_err(|error| error.to_string())
 }
 
+fn normalize_export_terminal_payload(payload: &mut Value, status: &str) {
+    if !payload.is_object() {
+        *payload = json!({});
+    }
+    payload["stage"] = json!("finalizing");
+    payload["stage_label"] = json!(if status == "cancelled" {
+        "Export cancelled"
+    } else {
+        "Export interrupted"
+    });
+    payload["runtime_detail"] = json!(if status == "cancelled" {
+        "Export cancelled. A provider may retain partial output."
+    } else {
+        EXPORT_INTERRUPTED_MESSAGE
+    });
+    let Some(items) = payload
+        .get_mut("export_result")
+        .and_then(|result| result.get_mut("items"))
+        .and_then(Value::as_array_mut)
+    else {
+        payload["export_result"] = Value::Null;
+        return;
+    };
+    if items.is_empty()
+        || items.iter().any(|item| {
+            let audio = item.get("artifact_id").and_then(Value::as_str).is_some();
+            let document = item
+                .get("generated_document_id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| matches!(id, "lyrics" | "lyrics_with_chords"));
+            audio == document || item.get("output_name").and_then(Value::as_str).is_none()
+        })
+    {
+        payload["export_result"] = Value::Null;
+        return;
+    }
+    for item in items.iter_mut() {
+        if !matches!(
+            item.get("status").and_then(Value::as_str),
+            Some("completed" | "failed" | "cancelled")
+        ) {
+            item["status"] = json!(status);
+            item["progress"] = json!(0);
+            item["result_artifact_id"] = Value::Null;
+            if status == "failed" {
+                item["error"] = json!(EXPORT_INTERRUPTED_MESSAGE);
+            }
+        }
+    }
+    let total = items.len();
+    let completed = items
+        .iter()
+        .filter(|item| item["status"] == "completed")
+        .count();
+    let failed = items
+        .iter()
+        .filter(|item| item["status"] == "failed")
+        .count();
+    let result = &mut payload["export_result"];
+    result["outcome"] = json!(status);
+    result["total_count"] = json!(total);
+    result["completed_count"] = json!(completed);
+    result["failed_count"] = json!(failed);
+}
+
+pub(super) fn cancel_export_job_by_id(
+    connection: &Connection,
+    job_id: &str,
+) -> Result<JobSchema, String> {
+    let transaction =
+        rusqlite::Transaction::new_unchecked(connection, rusqlite::TransactionBehavior::Immediate)
+            .map_err(|error| error.to_string())?;
+    let job = get_export_job(&transaction, job_id)?;
+    if matches!(job.status.as_str(), "completed" | "failed") {
+        transaction.commit().map_err(|error| error.to_string())?;
+        return Ok(job);
+    }
+    let raw: String = transaction
+        .query_row(
+            "SELECT payload_json FROM jobs WHERE id = ?1",
+            params![job_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    let mut payload = serde_json::from_str::<Value>(&raw).unwrap_or_else(|_| json!({}));
+    normalize_export_terminal_payload(&mut payload, "cancelled");
+    if job.status != "cancelled"
+        || payload.to_string() != raw
+        || job.completed_at.is_none()
+        || job.error_message.is_some()
+    {
+        let timestamp = now_iso();
+        transaction.execute(
+            "UPDATE jobs SET status = 'cancelled', cancel_requested = 1, progress = 0, payload_json = ?1, error_message = NULL, completed_at = COALESCE(completed_at, ?2), updated_at = ?2 WHERE id = ?3",
+            params![payload.to_string(), timestamp, job_id],
+        ).map_err(|error| error.to_string())?;
+    }
+    let job = get_export_job(&transaction, job_id)?;
+    transaction.commit().map_err(|error| error.to_string())?;
+    Ok(job)
+}
+
 fn cancel_export_job(
     connection: &Connection,
     job_id: &str,
-    snapshot: &ExportSnapshot,
+    _snapshot: &ExportSnapshot,
 ) -> Result<JobSchema, String> {
-    let timestamp = now_iso();
-    let payload = json!({
-        "stage": "finalizing",
-        "stage_label": "Export cancelled",
-        "runtime_detail": "The picker was closed or export cancellation was requested. No verified receipt was saved.",
-        "export_result": export_result(snapshot, "cancelled", "cancelled", 0, None, None),
-    });
-    connection
-        .execute(
-            "UPDATE jobs SET status = 'cancelled', progress = 0, payload_json = ?1, error_message = NULL, completed_at = ?2, updated_at = ?2 WHERE id = ?3 AND (status IN ('pending', 'running') OR (status = 'cancelled' AND cancel_requested != 0))",
-            params![payload.to_string(), timestamp, job_id],
-        )
-        .map_err(|error| error.to_string())?;
-    get_export_job(connection, job_id)
+    cancel_export_job_by_id(connection, job_id)
 }
 
 fn finish_export_job_if_active(
@@ -1154,14 +1243,17 @@ fn prepare_export(
 ) -> Result<(ExportSnapshot, JobSchema), String> {
     let request = parse_request(payload)?;
     let snapshot = snapshot_export(connection, root, project_id, &request)?;
+    let transaction =
+        rusqlite::Transaction::new_unchecked(connection, rusqlite::TransactionBehavior::Immediate)
+            .map_err(|error| error.to_string())?;
     let job = create_running_job(
-        connection,
+        &transaction,
         project_id,
         "export",
         snapshot.source_artifact_id.clone(),
     )?;
     update_export_job(
-        connection,
+        &transaction,
         &job.id,
         "running",
         5,
@@ -1172,7 +1264,8 @@ fn prepare_export(
         None,
         false,
     )?;
-    let job = get_export_job(connection, &job.id)?;
+    let job = get_export_job(&transaction, &job.id)?;
+    transaction.commit().map_err(|error| error.to_string())?;
     Ok((snapshot, job))
 }
 
@@ -1421,48 +1514,39 @@ pub fn mobile_submit_export(
 }
 
 pub(super) fn fail_interrupted_exports(connection: &Connection) -> Result<(), String> {
-    let timestamp = now_iso();
-    let interrupted = {
-        let mut statement = connection
-            .prepare("SELECT id, payload_json FROM jobs WHERE type = 'export' AND status IN ('pending', 'running')")
+    let transaction =
+        rusqlite::Transaction::new_unchecked(connection, rusqlite::TransactionBehavior::Immediate)
             .map_err(|error| error.to_string())?;
+    let rows = {
+        let mut statement = transaction.prepare("SELECT id, status, payload_json FROM jobs WHERE type = 'export' AND status IN ('pending', 'running', 'cancelled')").map_err(|error| error.to_string())?;
         let rows = statement
             .query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
             })
+            .map_err(|error| error.to_string())?
+            .collect::<Result<Vec<_>, _>>()
             .map_err(|error| error.to_string())?;
-        let mut interrupted = Vec::new();
-        for row in rows {
-            interrupted.push(row.map_err(|error| error.to_string())?);
-        }
-        interrupted
+        rows
     };
-    for (job_id, payload_raw) in interrupted {
-        let mut payload = serde_json::from_str::<Value>(&payload_raw).unwrap_or_else(|_| json!({}));
-        payload["stage"] = json!("finalizing");
-        payload["stage_label"] = json!("Export interrupted");
-        payload["runtime_detail"] = json!(EXPORT_INTERRUPTED_MESSAGE);
-        if let Some(result) = payload.get_mut("export_result") {
-            result["outcome"] = json!("failed");
-            result["completed_count"] = json!(0);
-            result["failed_count"] = json!(1);
-            if let Some(items) = result.get_mut("items").and_then(Value::as_array_mut) {
-                for item in items {
-                    item["status"] = json!("failed");
-                    item["progress"] = json!(0);
-                    item["error"] = json!(EXPORT_INTERRUPTED_MESSAGE);
-                    item["result_artifact_id"] = Value::Null;
-                }
-            }
+    for (id, old_status, raw) in rows {
+        let status = if old_status == "cancelled" {
+            "cancelled"
+        } else {
+            "failed"
+        };
+        let mut payload = serde_json::from_str::<Value>(&raw).unwrap_or_else(|_| json!({}));
+        normalize_export_terminal_payload(&mut payload, status);
+        if old_status == status && payload.to_string() == raw {
+            continue;
         }
-        connection
-            .execute(
-                "UPDATE jobs SET status = 'failed', progress = 0, error_message = ?1, payload_json = ?2, completed_at = ?3, updated_at = ?3 WHERE id = ?4",
-                params![EXPORT_INTERRUPTED_MESSAGE, payload.to_string(), timestamp, job_id],
-            )
-            .map_err(|error| error.to_string())?;
+        transaction.execute("UPDATE jobs SET status = ?1, progress = 0, payload_json = ?2, error_message = ?3, completed_at = COALESCE(completed_at, ?4), updated_at = ?4 WHERE id = ?5",
+            params![status, payload.to_string(), if status == "failed" { Some(EXPORT_INTERRUPTED_MESSAGE) } else { None }, now_iso(), id]).map_err(|error| error.to_string())?;
     }
-    Ok(())
+    transaction.commit().map_err(|error| error.to_string())
 }
 
 #[cfg(test)]
@@ -1601,6 +1685,252 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.root);
         }
+    }
+
+    #[test]
+    fn initial_summary_failure_rolls_back_job_creation() {
+        let fixture = ExportFixture::new("initial-atomicity");
+        fixture.connection.execute_batch("CREATE TRIGGER reject_summary BEFORE UPDATE OF payload_json ON jobs BEGIN SELECT RAISE(ABORT, 'synthetic summary failure'); END").unwrap();
+        assert!(prepare_export(
+            &fixture.connection,
+            &fixture.root,
+            &fixture.project_id,
+            fixture.payload()
+        )
+        .is_err());
+        let count: i64 = fixture
+            .connection
+            .query_row("SELECT COUNT(*) FROM jobs", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+        assert_eq!(fixture.receipt_count(), 0);
+    }
+
+    #[test]
+    fn cancelled_export_is_consistent_before_worker_and_repeated_cancel_is_stable() {
+        let fixture = ExportFixture::new("cancel-before-worker");
+        let (snapshot, job) = prepare_export(
+            &fixture.connection,
+            &fixture.root,
+            &fixture.project_id,
+            fixture.payload(),
+        )
+        .unwrap();
+        let cancelled = cancel_export_job_by_id(&fixture.connection, &job.id).unwrap();
+        assert_eq!(cancelled.status, "cancelled");
+        assert_eq!(
+            cancelled.export_result.as_ref().unwrap()["outcome"],
+            "cancelled"
+        );
+        assert_eq!(
+            cancelled.export_result.as_ref().unwrap()["items"][0]["status"],
+            "cancelled"
+        );
+        let repeated = cancel_export_job(&fixture.connection, &job.id, &snapshot).unwrap();
+        assert_eq!(repeated.updated_at, cancelled.updated_at);
+        assert_eq!(repeated.export_result, cancelled.export_result);
+        let provider = TestProvider {
+            target: None,
+            readback: "verified",
+            selected_names: RefCell::new(Vec::new()),
+        };
+        assert!(complete_verified_export(
+            &fixture.connection,
+            &job.id,
+            &fixture.project_id,
+            &snapshot,
+            &fixture.root.join("external.wav"),
+            &provider,
+            1,
+            "synthetic",
+            Instant::now()
+        )
+        .is_err());
+        assert_eq!(fixture.receipt_count(), 0);
+    }
+
+    #[test]
+    fn cancellation_preserves_completed_publication_and_receipt() {
+        let fixture = ExportFixture::new("completion-wins");
+        let provider = TestProvider {
+            target: Some(fixture.root.join("provider-owned.wav")),
+            readback: "verified",
+            selected_names: RefCell::new(Vec::new()),
+        };
+        let complete = submit_export_with_provider(
+            &fixture.connection,
+            &fixture.root,
+            &fixture.project_id,
+            fixture.payload(),
+            &provider,
+        )
+        .unwrap();
+        let after = cancel_export_job_by_id(&fixture.connection, &complete.id).unwrap();
+        assert_eq!(after.status, "completed");
+        assert_eq!(after.updated_at, complete.updated_at);
+        assert_eq!(after.export_result, complete.export_result);
+        assert_eq!(fixture.receipt_count(), 1);
+    }
+
+    #[test]
+    fn recovery_normalizes_cancelled_missing_summaries_without_inventing_items() {
+        let fixture = ExportFixture::new("legacy-cancelled");
+        let job =
+            create_running_job(&fixture.connection, &fixture.project_id, "export", None).unwrap();
+        fixture
+            .connection
+            .execute(
+                "UPDATE jobs SET status = 'cancelled', cancel_requested = 1 WHERE id = ?1",
+                params![job.id],
+            )
+            .unwrap();
+        fail_interrupted_exports(&fixture.connection).unwrap();
+        let recovered = get_export_job(&fixture.connection, &job.id).unwrap();
+        assert_eq!(recovered.status, "cancelled");
+        assert!(recovered.export_result.as_ref().is_none_or(Value::is_null));
+        assert!(recovered.completed_at.is_some());
+        fail_interrupted_exports(&fixture.connection).unwrap();
+        assert_eq!(
+            get_export_job(&fixture.connection, &job.id)
+                .unwrap()
+                .updated_at,
+            recovered.updated_at
+        );
+        assert_eq!(fixture.receipt_count(), 0);
+    }
+
+    #[test]
+    fn admission_is_visible_to_a_second_connection_only_with_its_summary() {
+        let fixture = ExportFixture::new("reader-admission");
+        let database = fixture.root.join("mobile.sqlite3");
+        let reader = Connection::open(&database).unwrap();
+        reader.execute_batch("BEGIN").unwrap();
+        let count: i64 = reader
+            .query_row("SELECT COUNT(*) FROM jobs", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+        let root = fixture.root.clone();
+        let project = fixture.project_id.clone();
+        let payload = fixture.payload();
+        let worker = std::thread::spawn(move || {
+            let connection = Connection::open(database).unwrap();
+            connection
+                .busy_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+            prepare_export(&connection, &root, &project, payload).map(|(_, job)| job.id)
+        });
+        // A concurrent reader retains its pre-admission snapshot until it ends the read.
+        assert_eq!(
+            reader
+                .query_row("SELECT COUNT(*) FROM jobs", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        reader.execute_batch("COMMIT").unwrap();
+        let id = worker.join().unwrap().unwrap();
+        let published = get_export_job(&reader, &id).unwrap();
+        assert_eq!(published.status, "running");
+        assert_eq!(
+            published.export_result.unwrap()["items"][0]["status"],
+            "running"
+        );
+    }
+
+    #[test]
+    fn recovery_repairs_partial_and_malformed_cancelled_payloads_and_leaves_other_jobs_unchanged() {
+        let fixture = ExportFixture::new("legacy-payloads");
+        let other =
+            create_running_job(&fixture.connection, &fixture.project_id, "analyze", None).unwrap();
+        for raw in [
+            "{",
+            "null",
+            r#"{"export_result":{"items":[]}}"#,
+            r#"{"export_result":{"items":[{"status":"running"}]}}"#,
+        ] {
+            let job = create_running_job(&fixture.connection, &fixture.project_id, "export", None)
+                .unwrap();
+            fixture
+                .connection
+                .execute(
+                    "UPDATE jobs SET status = 'cancelled', payload_json = ?1 WHERE id = ?2",
+                    params![raw, job.id],
+                )
+                .unwrap();
+            fail_interrupted_exports(&fixture.connection).unwrap();
+            let repaired = get_export_job(&fixture.connection, &job.id).unwrap();
+            assert_eq!(repaired.status, "cancelled");
+            assert!(repaired.export_result.as_ref().is_none_or(Value::is_null));
+        }
+        let (snapshot, job) = prepare_export(
+            &fixture.connection,
+            &fixture.root,
+            &fixture.project_id,
+            fixture.payload(),
+        )
+        .unwrap();
+        fixture
+            .connection
+            .execute(
+                "UPDATE jobs SET status = 'cancelled' WHERE id = ?1",
+                params![job.id],
+            )
+            .unwrap();
+        fail_interrupted_exports(&fixture.connection).unwrap();
+        let repaired = get_export_job(&fixture.connection, &job.id).unwrap();
+        assert_eq!(
+            repaired.export_result.unwrap()["items"][0]["status"],
+            "cancelled"
+        );
+        assert_eq!(
+            get_export_job(&fixture.connection, &other.id)
+                .unwrap()
+                .status,
+            "running"
+        );
+        assert_eq!(
+            snapshot.source_artifact_id.as_deref(),
+            Some(fixture.artifact_id.as_str())
+        );
+        assert_eq!(fixture.receipt_count(), 0);
+    }
+
+    #[test]
+    fn legacy_summary_repair_preserves_known_receipts_and_provider_output() {
+        let fixture = ExportFixture::new("legacy-receipt");
+        let target = fixture.root.join("provider-owned.wav");
+        let provider = TestProvider { target: Some(target.clone()), readback: "verified", selected_names: RefCell::new(Vec::new()) };
+        let complete = submit_export_with_provider(&fixture.connection, &fixture.root, &fixture.project_id, fixture.payload(), &provider).unwrap();
+        fixture.connection.execute("UPDATE jobs SET status = 'cancelled', payload_json = '{' WHERE id = ?1", params![complete.id]).unwrap();
+        fail_interrupted_exports(&fixture.connection).unwrap();
+        let repaired = get_export_job(&fixture.connection, &complete.id).unwrap();
+        assert_eq!(repaired.status, "cancelled");
+        assert!(repaired.export_result.as_ref().is_none_or(Value::is_null));
+        assert_eq!(repaired.result_artifact_ids, complete.result_artifact_ids);
+        assert_eq!(fixture.receipt_count(), 1);
+        assert_eq!(fs::read(target).unwrap(), fixture.source_bytes);
+        assert_eq!(provider.selected_names.borrow().len(), 1);
+    }
+
+    #[test]
+    fn terminal_normalization_preserves_finished_items_errors_and_receipts() {
+        let mut payload = json!({ "unrelated": "retained", "export_result": { "items": [
+            { "artifact_id": "audio", "output_name": "a.wav", "status": "completed", "result_artifact_id": "receipt" },
+            { "generated_document_id": "lyrics", "output_name": "l.txt", "status": "failed", "error": "existing failure" },
+            { "generated_document_id": "lyrics_with_chords", "output_name": "c.txt", "status": "running" }
+        ] } });
+        normalize_export_terminal_payload(&mut payload, "cancelled");
+        assert_eq!(payload["unrelated"], "retained");
+        assert_eq!(payload["export_result"]["completed_count"], 1);
+        assert_eq!(payload["export_result"]["failed_count"], 1);
+        assert_eq!(
+            payload["export_result"]["items"][0]["result_artifact_id"],
+            "receipt"
+        );
+        assert_eq!(
+            payload["export_result"]["items"][1]["error"],
+            "existing failure"
+        );
+        assert_eq!(payload["export_result"]["items"][2]["status"], "cancelled");
     }
 
     #[test]

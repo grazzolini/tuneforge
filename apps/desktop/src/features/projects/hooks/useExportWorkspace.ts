@@ -1,5 +1,6 @@
+import { exportSummaryConsistent } from "../../../lib/jobLifecycle";
 import { useEffect, useMemo, useRef } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { confirm, open, save } from "@tauri-apps/plugin-dialog";
 import {
   ApiError,
@@ -24,7 +25,6 @@ import {
 } from "../exportWorkspaceUtils";
 import type { ExportWorkspaceState } from "../projectPlaybackState";
 import { artifactTransposeSemitones } from "../projectViewUtils";
-import { useActiveJobPolling } from "./useActiveJobPolling";
 
 type DestinationType = ExportDestinationType;
 
@@ -74,7 +74,6 @@ export function useExportWorkspace() {
     selectedPrimaryArtifactId,
     visibleJobs,
   } = useProjectViewModelContext();
-  const queryClient = useQueryClient();
   const isCurrentProjectHydrated =
     hydratedProjectId === projectId && projectQuery.data?.id === projectId && artifactsQuery.isSuccess;
   const audioSets = useMemo(
@@ -234,7 +233,7 @@ export function useExportWorkspace() {
     (job) => job.type === "export" && ["pending", "running"].includes(job.status),
   );
   const latestExportJob = visibleJobs.find((job) => job.type === "export") ?? null;
-  const partialExportJob = latestExportJob?.export_result?.outcome === "partial" ? latestExportJob : null;
+  const partialExportJob = latestExportJob?.status === "completed" && latestExportJob.export_result?.outcome === "partial" && exportSummaryConsistent(latestExportJob) ? latestExportJob : null;
   const failedArtifactIds = partialExportJob?.export_result?.items
     .filter((item) => item.status === "failed")
     .map((item) => item.artifact_id)
@@ -490,23 +489,11 @@ export function useExportWorkspace() {
         });
       }
     },
-    onSuccess: async (response) => {
-      if (!response) return;
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["jobs"] }),
-        queryClient.invalidateQueries({ queryKey: ["artifacts", projectQuery.data?.id] }),
-      ]);
-    },
-  });
-
-  useActiveJobPolling(projectId, undefined, {
-    forceActive: isMobileRuntime && exportMutation.isPending,
-    intervalMs: 250,
   });
 
   const cancelMutation = useMutation({
     mutationFn: () => api.cancelJob(activeExportJob?.id ?? ""),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["jobs"] }),
+
   });
 
   function retryFailed() {

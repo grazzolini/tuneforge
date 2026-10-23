@@ -436,7 +436,6 @@ export function LibraryView() {
 
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["projects"] }),
-        queryClient.invalidateQueries({ queryKey: ["jobs"] }),
       ]);
       setImportNotice({
         activityLink: result.summary.importedCount > 0,

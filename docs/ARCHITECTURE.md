@@ -207,6 +207,17 @@ Current job types include:
 
 On startup, previously running jobs are marked failed and pending jobs are re-enqueued. The default worker count is conservative to avoid local CPU/GPU contention.
 
+The frontend uses one job lifecycle owner per QueryClient and runtime. It observes submission
+intents before adapter acknowledgment, discovers persisted active or recently terminal jobs, and
+shares paginated job queries between project views and Activity. A local intent is associated with
+a job only through a returned ID. Imports discover their automatically created jobs by scope.
+Unknown jobs missing from active pages are reconciled by ID rather than assumed complete.
+
+Discovery polls jobs only. Once durable work is observed, the owner refreshes the affected project
+result queries while work runs and after terminal publication, including partial results. Model
+capability queries refresh at setup-stage changes and termination. Scope cleanup and runtime
+replacement dispose the shared scheduler; backend execution and cancellation remain runtime-owned.
+
 ## Contracts
 
 The backend OpenAPI schema is generated into `packages/shared-types/openapi.json` and `packages/shared-types/src/generated/openapi.ts`.

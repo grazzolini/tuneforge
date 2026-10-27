@@ -44,7 +44,8 @@ final class CremaRunner {
         boolean model = file(context, MODEL).exists();
         boolean state = file(context, STATE).exists();
         if (!model && !state) return "download-required";
-        try { return verify(file(context, MODEL), MODEL) && verify(file(context, STATE), STATE) ? "ready" : "corrupt"; }
+        try { return MODEL.verification.verify(file(context, MODEL), () -> verify(file(context, MODEL), MODEL))
+            && STATE.verification.verify(file(context, STATE), () -> verify(file(context, STATE), STATE)) ? "ready" : "corrupt"; }
         catch (Exception ignored) { return "corrupt"; }
     }
 

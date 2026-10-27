@@ -30,7 +30,7 @@ final class BeatThisRunner {
         File model = modelFile(context);
         if (!model.exists()) return "download-required";
         try {
-            return verify(model) ? "ready" : "corrupt";
+            return ASSET.verification.verify(model, () -> verify(model)) ? "ready" : "corrupt";
         } catch (Exception ignored) {
             return "unavailable";
         }

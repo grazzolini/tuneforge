@@ -52,6 +52,21 @@ protected playback or sync work. Denial does not cancel that work; diagnostics r
 notification visibility while Android's system active-app controls remain available. Tuner-only work
 never requests notification permission.
 
+## Android Processing
+
+Analysis, chords, and lyrics use a separate queue-owned `ProcessingService`. A visible user
+submission starts it; native compute waits for foreground acknowledgment. Its notification lasts
+through queue drain and its partial CPU wake lock lasts through active work and cleanup. It never
+sets a screen-on flag and does not claim playback/sync owner reasons or diagnostics. Android 15+
+uses `mediaProcessing`; older supported Android uses local-file `dataSync`.
+
+Service start failure or timeout closes admission while active work unwinds, fails waiting jobs with
+explicit retry, signals native cancellation, and promptly releases the wake lock and service.
+The compute slot remains held until cleanup returns. The service is not sticky, has no boot receiver,
+and does not restart jobs after process death. Notification permission denial alone does not block
+foreground acquisition. Validate notification visibility, screen-off/background/task-dismiss behavior,
+timeout, and release on a physical device using the isolated procedure in [MOBILE.md](MOBILE.md#physical-device-processing-benchmark).
+
 ## Diagnostics
 
 Settings -> Local Data -> Show diagnostics reports:

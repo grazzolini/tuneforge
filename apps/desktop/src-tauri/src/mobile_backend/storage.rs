@@ -387,11 +387,21 @@ pub(super) fn db_at_root(root: &Path) -> Result<Connection, String> {
     fs::create_dir_all(root).map_err(|error| error.to_string())?;
     let connection =
         Connection::open(root.join("mobile.sqlite3")).map_err(|error| error.to_string())?;
-    migrate_mobile_db(&connection)?;
-    #[cfg(target_os = "ios")]
-    relocate_ios_paths(&connection, root)?;
-    mark_interrupted_jobs_on_first_open(root, &connection)?;
-    ensure_local_identity(&connection)?;
+    static INITIALIZED: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+    let key = fs::canonicalize(root).map_err(|error| error.to_string())?;
+    let mut initialized = INITIALIZED.get_or_init(|| Mutex::new(HashSet::new())).lock()
+        .map_err(|_| "Mobile database initialization lock was poisoned.".to_string())?;
+    if !initialized.contains(&key) {
+        migrate_mobile_db(&connection)?;
+        #[cfg(target_os = "ios")]
+        relocate_ios_paths(&connection, root)?;
+        mark_interrupted_jobs_on_first_open(root, &connection)?;
+        ensure_local_identity(&connection)?;
+        // Failed initialization remains retryable.
+        initialized.insert(key);
+    }
+    drop(initialized);
+    // Legacy manifest hydration can insert read models after initialization.
     materialize_pending_result_revisions(&connection)?;
     Ok(connection)
 }
@@ -1277,6 +1287,42 @@ pub(super) fn create_completed_job(
     Ok(job)
 }
 
+pub(super) fn create_pending_processing_job(
+    connection: &Connection, project_id: &str, job_type: &str, source_artifact_id: Option<String>,
+) -> Result<JobSchema, String> {
+    let mut job = create_running_job(connection, project_id, job_type, source_artifact_id)?;
+    connection.execute("UPDATE jobs SET status = 'pending', progress = 0, started_at = NULL WHERE id = ?1", params![job.id]).map_err(|error| error.to_string())?;
+    job.status = "pending".into(); job.progress = 0; job.started_at = None;
+    Ok(job)
+}
+
+pub(super) fn dequeue_processing_job(connection: &Connection, job_id: &str) -> Result<bool, String> {
+    let timestamp = now_iso();
+    connection.execute("UPDATE jobs SET status = 'running', progress = 0, started_at = ?1, updated_at = ?1 WHERE id = ?2 AND status = 'pending' AND cancel_requested = 0", params![timestamp, job_id])
+        .map(|count| count == 1).map_err(|error| error.to_string())
+}
+
+pub(super) fn processing_result_revision(connection: &Connection, project_id: &str, kind: &str) -> Result<Option<String>, String> {
+    let sql = match kind {
+        "chords" => "SELECT json_array(source_segments_json, segments_json, timeline_json, has_user_edits, updated_at) FROM chord_timelines WHERE project_id = ?1",
+        "analyze" => "SELECT json_array(source_artifact_id, estimated_key, key_confidence, estimated_reference_hz, tuning_offset_cents, tempo_bpm, timing_json, analysis_version, updated_at, metadata_json) FROM analysis_results WHERE project_id = ?1",
+        _ => return Err("Unsupported processing result.".into()),
+    };
+    let snapshot: Option<String> = connection.query_row(sql, params![project_id], |row| row.get(0)).optional().map_err(|error| error.to_string())?;
+    Ok(snapshot.map(|value| Sha256::digest(value.as_bytes()).iter().map(|byte| format!("{byte:02x}")).collect()))
+}
+
+pub(super) fn validate_processing_revision(connection: &Connection, project_id: &str, kind: &str, job_id: &str) -> Result<(), String> {
+    let raw: String = connection.query_row("SELECT payload_json FROM jobs WHERE id = ?1", params![job_id], |row| row.get(0)).map_err(|error| error.to_string())?;
+    let payload: Value = serde_json::from_str(&raw).map_err(|error| error.to_string())?;
+    if let Some(expected) = payload.get("result_revision") {
+        if expected.as_str() != processing_result_revision(connection, project_id, kind)?.as_deref() {
+            return Err("Saved results changed while this job was waiting or running. Newer results were preserved. Retry this job.".into());
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn create_running_job(
     connection: &Connection,
     project_id: &str,
@@ -1359,7 +1405,7 @@ pub(super) fn create_lyrics_running_job(
     project_id: &str,
     source_artifact_id: Option<String>,
 ) -> Result<JobSchema, String> {
-    let mut job = create_running_job(connection, project_id, "lyrics", source_artifact_id)?;
+    let mut job = create_pending_processing_job(connection, project_id, "lyrics", source_artifact_id)?;
     set_job_runtime_device(connection, &mut job, None)?;
     Ok(job)
 }
@@ -1450,6 +1496,9 @@ pub(super) fn update_job_progress(
     Ok(())
 }
 
+#[derive(Default)]
+struct ProgressStamp { stage: String, label: String, progress: i64, at: Option<std::time::Instant> }
+
 pub(super) fn update_job_stage(
     connection: &Connection,
     job_id: &str,
@@ -1457,6 +1506,14 @@ pub(super) fn update_job_stage(
     stage: &str,
     stage_label: &str,
 ) -> Result<(), String> {
+    static STAMPS: OnceLock<Mutex<HashMap<(String, String), ProgressStamp>>> = OnceLock::new();
+    let database = connection.path().unwrap_or("").to_string();
+    let mut stamps = STAMPS.get_or_init(|| Mutex::new(HashMap::new())).lock().map_err(|_| "Progress lock was poisoned.".to_string())?;
+    let key = (database, job_id.to_string());
+    if let Some(stamp) = stamps.get(&key) {
+        if stamp.stage == stage && ((stamp.progress == progress && stamp.label == stage_label)
+            || stamp.at.is_some_and(|at| at.elapsed() < std::time::Duration::from_millis(250))) { return Ok(()); }
+    }
     let payload_raw = connection
         .query_row(
             "SELECT payload_json FROM jobs WHERE id = ?1",
@@ -1471,6 +1528,8 @@ pub(super) fn update_job_stage(
         "UPDATE jobs SET progress = ?1, payload_json = ?2, updated_at = ?3 WHERE id = ?4 AND status = 'running' AND cancel_requested = 0",
         params![progress, payload.to_string(), now_iso(), job_id],
     ).map_err(|error| error.to_string())?;
+    if stamps.len() >= 512 { stamps.clear(); }
+    stamps.insert(key, ProgressStamp { stage: stage.to_string(), label: stage_label.to_string(), progress, at: Some(std::time::Instant::now()) });
     Ok(())
 }
 
@@ -4524,4 +4583,78 @@ fn auth_database_requires_initialized_identity_and_does_not_run_startup_work() {
     assert_eq!(auth.total_changes(), 0);
     drop(auth);
     fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(test)]
+#[test]
+fn pending_processing_jobs_start_only_at_dequeue_and_cancel_without_starting() {
+    let root = std::env::temp_dir().join(new_id("processing-persistence"));
+    let connection = db_at_root(&root).unwrap();
+    for kind in ["analyze", "chords", "lyrics"] {
+        let job = create_pending_processing_job(&connection, "synthetic-project", kind, None).unwrap();
+        assert_eq!(job.status, "pending"); assert_eq!(job.started_at, None);
+        assert!(dequeue_processing_job(&connection, &job.id).unwrap());
+        assert!(!dequeue_processing_job(&connection, &job.id).unwrap());
+        let started: Option<String> = connection.query_row("SELECT started_at FROM jobs WHERE id = ?1", params![job.id], |row| row.get(0)).unwrap();
+        assert!(started.is_some());
+        let cancelled = create_pending_processing_job(&connection, "synthetic-project", kind, None).unwrap();
+        connection.execute("UPDATE jobs SET status = 'cancelled', cancel_requested = 1 WHERE id = ?1", params![cancelled.id]).unwrap();
+        assert!(!dequeue_processing_job(&connection, &cancelled.id).unwrap());
+        let started: Option<String> = connection.query_row("SELECT started_at FROM jobs WHERE id = ?1", params![cancelled.id], |row| row.get(0)).unwrap();
+        assert_eq!(started, None);
+    }
+    drop(connection); fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(test)]
+#[test]
+fn database_initialization_retries_failure_and_keeps_live_revision_repair() {
+    let root = std::env::temp_dir().join(new_id("initialization-retry"));
+    fs::create_dir_all(&root).unwrap(); fs::write(root.join("mobile.sqlite3"), b"synthetic invalid database").unwrap();
+    assert!(db_at_root(&root).is_err()); fs::remove_file(root.join("mobile.sqlite3")).unwrap();
+    let connection = db_at_root(&root).unwrap();
+    let project_id = source_hash_to_project_id(&"b".repeat(64)).unwrap(); let timestamp = now_iso();
+    connection.execute("INSERT INTO projects (id, display_name, source_path, imported_path, created_at, updated_at) VALUES (?1, 'Synthetic', 'source.wav', 'source.wav', ?2, ?2)", params![project_id, timestamp]).unwrap();
+    connection.execute("INSERT INTO analysis_results (project_id, analysis_version, estimated_key, created_at, updated_at) VALUES (?1, 'synthetic', 'C', ?2, ?2)", params![project_id, timestamp]).unwrap();
+    // Resetting only the marker makes repeated initialization observable without weakening the schema.
+    connection.pragma_update(None, "user_version", 0).unwrap();
+    drop(connection);
+    let reopened = db_at_root(&root).unwrap();
+    assert_eq!(reopened.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0)).unwrap(), 0);
+    assert_eq!(reopened.query_row("SELECT COUNT(*) FROM sync_entity_revisions WHERE project_id = ?1 AND entity_type = 'analysis'", params![project_id], |row| row.get::<_, i64>(0)).unwrap(), 1);
+    drop(reopened); let again = db_at_root(&root).unwrap();
+    assert_eq!(again.total_changes(), 0);
+    drop(again); fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(test)]
+#[test]
+fn stage_updates_suppress_duplicates_throttle_progress_and_publish_stage_changes() {
+    let root = std::env::temp_dir().join(new_id("processing-progress")); let connection = db_at_root(&root).unwrap();
+    let job = create_running_job(&connection, "synthetic-project", "analyze", None).unwrap();
+    update_job_stage(&connection, &job.id, 10, "decoding", "Preparing audio").unwrap();
+    let changes = connection.total_changes();
+    for progress in [10, 10, 11, 12, 13] { update_job_stage(&connection, &job.id, progress, "decoding", "Preparing audio").unwrap(); }
+    assert_eq!(connection.total_changes(), changes);
+    update_job_stage(&connection, &job.id, 30, "inference", "Analyzing").unwrap();
+    assert_eq!(connection.total_changes(), changes + 1);
+    std::thread::sleep(std::time::Duration::from_millis(260));
+    update_job_stage(&connection, &job.id, 31, "inference", "Analyzing").unwrap();
+    assert_eq!(connection.total_changes(), changes + 2);
+    drop(connection); fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(test)]
+#[test]
+fn queued_result_snapshot_preserves_newer_chord_edits_at_same_timestamp() {
+    let root = std::env::temp_dir().join(new_id("processing-revision")); let connection = db_at_root(&root).unwrap();
+    let project = "synthetic-project"; let timestamp = now_iso();
+    connection.execute("INSERT INTO chord_timelines (project_id, source_segments_json, segments_json, timeline_json, backend, has_user_edits, source_kind, metadata_json, created_at, updated_at) VALUES (?1, '[]', '[]', '[]', 'tuneforge-fast', 0, 'generated', '{}', ?2, ?2)", params![project, timestamp]).unwrap();
+    let job = create_pending_processing_job(&connection, project, "chords", None).unwrap();
+    let revision = processing_result_revision(&connection, project, "chords").unwrap();
+    connection.execute("UPDATE jobs SET payload_json = ?1 WHERE id = ?2", params![json!({"result_revision": revision}).to_string(), job.id]).unwrap();
+    validate_processing_revision(&connection, project, "chords", &job.id).unwrap();
+    connection.execute("UPDATE chord_timelines SET segments_json = '[{\"label\":\"G\"}]', has_user_edits = 1 WHERE project_id = ?1", params![project]).unwrap();
+    assert!(validate_processing_revision(&connection, project, "chords", &job.id).unwrap_err().contains("preserved"));
+    drop(connection); fs::remove_dir_all(root).unwrap();
 }

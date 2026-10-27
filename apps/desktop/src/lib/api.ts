@@ -2489,7 +2489,7 @@ function createHttpTuneForgeClient(): TuneForgeClient {
   };
 }
 
-function createMobileTuneForgeClient(capabilities: MobileCapabilities): TuneForgeClient {
+function createMobileTuneForgeClient(platform: "android" | "ios"): TuneForgeClient {
   let mediaBaseUrl: string | null = null;
   let mediaInitialization: Promise<void> | null = null;
   const ensureWebMediaTransport = () => {
@@ -2530,7 +2530,7 @@ function createMobileTuneForgeClient(capabilities: MobileCapabilities): TuneForg
     ensureWebMediaTransport,
     getHealth: () => invokeMobile("mobile_get_health"),
     getExportCapabilities: async () => {
-      if (capabilities.platform === "ios") {
+      if (platform === "ios") {
         throw unsupportedRuntimeError("Export");
       }
       return {
@@ -2664,6 +2664,9 @@ function createMobileTuneForgeClient(capabilities: MobileCapabilities): TuneForg
 }
 
 let activeClient = createHttpTuneForgeClient();
+let runtimePlatform: "android" | "ios" | null = null;
+
+export function getRuntimePlatform() { return runtimePlatform; }
 
 export async function initializeApi() {
   if (!runtimeInitPromise) {
@@ -2673,10 +2676,13 @@ export async function initializeApi() {
       }
 
       try {
-        const capabilities = await invoke<MobileCapabilities>("mobile_capabilities");
-        apiBaseUrl = EMBEDDED_MOBILE_API_BASE_URL;
-        activeClient = createMobileTuneForgeClient(capabilities);
-        return apiBaseUrl;
+        const platform = await invoke<"android" | "ios" | null>("mobile_runtime_platform");
+        if (platform === "android" || platform === "ios") {
+          runtimePlatform = platform;
+          apiBaseUrl = EMBEDDED_MOBILE_API_BASE_URL;
+          activeClient = createMobileTuneForgeClient(platform);
+          return apiBaseUrl;
+        }
       } catch {
         activeClient = createHttpTuneForgeClient();
       }

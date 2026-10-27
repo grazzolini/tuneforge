@@ -11,6 +11,7 @@ const executorchKeepRule = "-keep class org.pytorch.executorch.** { *; }";
 const fbjniKeepRule = "-keep class com.facebook.jni.** { *; }";
 const onnxRuntimeKeepRule = "-keep class ai.onnxruntime.** { *; }";
 const requiredMethods = new Map([
+  ["setTuneForgeProcessing", "(I)Ljava/lang/String;"],
   ["setTuneForgePowerInhibition", "(I)Ljava/lang/String;"],
   ["getTuneForgePowerInhibitionStatus", "()Ljava/lang/String;"],
   ["getTuneForgeAudioPermissionState", "()Ljava/lang/String;"],

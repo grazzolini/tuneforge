@@ -30,6 +30,7 @@ mod native_audio;
 mod package_identity;
 mod storage_profile;
 pub mod power_inhibition;
+mod processing_service;
 mod sync_transport;
 mod system_media;
 
@@ -694,6 +695,7 @@ pub fn run() {
             sync_transport::sync_transport_record_lifecycle_event,
             sync_transport::sync_transport_create_pairing_offer,
             sync_transport::sync_transport_sync_now,
+            mobile_backend::mobile_runtime_platform,
             mobile_backend::mobile_capabilities,
             mobile_backend::mobile_get_health,
             mobile_backend::mobile_list_projects,

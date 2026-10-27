@@ -198,23 +198,6 @@ fn upsert_lyrics_transcript(
     Ok(())
 }
 
-fn store_lyrics_transcript(
-    connection: &Connection,
-    _root: &Path,
-    project: &ProjectSchema,
-    source_artifact: &ArtifactSchema,
-    transcription: MobileLyricsTranscription,
-) -> Result<LyricsResponse, String> {
-    let transaction = connection
-        .unchecked_transaction()
-        .map_err(|error| error.to_string())?;
-    upsert_lyrics_transcript(&transaction, project, source_artifact, &transcription)?;
-    let response = get_lyrics_response(&transaction, project.id.clone())?;
-    super::storage::record_result_revision(&transaction, &project.id, "lyrics", "generated")?;
-    transaction.commit().map_err(|error| error.to_string())?;
-    Ok(response)
-}
-
 fn payload_lyrics_edits(payload: &Value) -> Result<Vec<String>, String> {
     let segments = payload
         .get("segments")
@@ -524,6 +507,13 @@ fn run_lyrics_job(
 
     let cancellation = AudioJobCancellation::begin(&job_id);
     let result = (|| {
+        if language_override.as_deref() == Some("none") {
+            let (backend, source_kind, requested_device, device, model_name) = no_lyrics_transcript_metadata();
+            finish_lyrics_job(&connection, &root, &job_id, &project, &source_artifact,
+                MobileLyricsTranscription { backend, source_kind, requested_device, device, model_name, language: None, language_override, segments: Vec::new() },
+                started.elapsed().as_secs_f64(), None, None, &cancellation, expected_lyrics_revision.as_deref())?;
+            return Ok(None);
+        }
         let setup_status = crate::native_audio::whisper_model::status();
         let (stage, label) = match setup_status.as_str() {
             "ready" => ("verifying", "Verifying Whisper Turbo"),
@@ -544,7 +534,7 @@ fn run_lyrics_job(
             &job_id,
             &cancellation,
         )?;
-        ensure_source_unchanged(&connection, &project.id, &source_artifact.id)?;
+        ensure_source_unchanged(&connection, &project.id, &source_artifact)?;
         update_job_stage(&connection, &job_id, 30, "loading", "Loading Whisper Turbo")?;
         let (mut transcription, runtime_detail) =
             crate::native_audio::whisper_model::with_inference_lock(|| {
@@ -584,7 +574,7 @@ fn run_lyrics_job(
         if lyrics_cancel_requested(&connection, &job_id)? || cancellation.requested() {
             return Err("LYRICS_CANCELLED".to_string());
         }
-        ensure_source_unchanged(&connection, &project.id, &source_artifact.id)?;
+        ensure_source_unchanged(&connection, &project.id, &source_artifact)?;
         update_job_stage(&connection, &job_id, 90, "saving", "Saving lyrics")?;
         let device = transcription.device;
         finish_lyrics_job(
@@ -733,10 +723,10 @@ fn lyrics_cancel_requested(connection: &Connection, job_id: &str) -> Result<bool
 fn ensure_source_unchanged(
     connection: &Connection,
     project_id: &str,
-    expected_source_id: &str,
+    expected_source: &ArtifactSchema,
 ) -> Result<(), String> {
     let current = get_source_artifact(connection, project_id)?;
-    if current.id != expected_source_id {
+    if current.id != expected_source.id || current.path != expected_source.path || current.content_sha256 != expected_source.content_sha256 {
         return Err(
             "Project audio changed while lyrics were being generated. Retry lyrics.".to_string(),
         );
@@ -766,7 +756,7 @@ fn finish_lyrics_job(
     if lyrics_cancel_requested(&transaction, job_id)? {
         return Err("LYRICS_CANCELLED".to_string());
     }
-    ensure_source_unchanged(&transaction, &project.id, &source_artifact.id)?;
+    ensure_source_unchanged(&transaction, &project.id, &source_artifact)?;
     if lyrics_transcript_revision(&transaction, &project.id)?.as_deref() != expected_lyrics_revision
     {
         return Err(
@@ -797,6 +787,7 @@ pub fn mobile_submit_lyrics(
     project_id: String,
     payload: Value,
 ) -> Result<JobResponse, String> {
+    let _admission = super::audio::PROCESSING_ADMISSION.lock().map_err(|_| "Processing admission lock was poisoned.".to_string())?;
     let connection = db(&app)?;
     let root = app_data_root(&app)?;
     let project = require_sync_editable_project(&connection, &project_id)?;
@@ -830,29 +821,6 @@ pub fn mobile_submit_lyrics(
             });
         }
     };
-    if language_override.as_deref() == Some("none") {
-        let (backend, source_kind, requested_device, device, model_name) =
-            no_lyrics_transcript_metadata();
-        store_lyrics_transcript(
-            &connection,
-            &root,
-            &project,
-            &source_artifact,
-            MobileLyricsTranscription {
-                backend,
-                source_kind,
-                requested_device,
-                device,
-                model_name,
-                language: None,
-                language_override,
-                segments: Vec::new(),
-            },
-        )?;
-        let job = create_lyrics_completed_job(&connection, &project_id, Some(source_artifact.id))?;
-        reconcile_project_storage_after_commit(&connection, &root, &project_id);
-        return Ok(JobResponse { job });
-    }
     let transaction =
         rusqlite::Transaction::new_unchecked(&connection, rusqlite::TransactionBehavior::Immediate)
             .map_err(|error| error.to_string())?;
@@ -875,7 +843,7 @@ pub fn mobile_submit_lyrics(
         .map_err(|error| error.to_string())?;
     transaction.commit().map_err(|error| error.to_string())?;
     let job_id = job.id.clone();
-    thread::spawn(move || {
+    super::audio::enqueue_processing(root.clone(), job.id.clone(), move || {
         run_lyrics_job(
             root,
             job_id,
@@ -884,7 +852,7 @@ pub fn mobile_submit_lyrics(
             language_override,
             expected_lyrics_revision,
         )
-    });
+    })?;
     Ok(JobResponse { job })
 }
 

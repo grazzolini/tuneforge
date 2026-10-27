@@ -1090,6 +1090,7 @@ async function installPageStabilizers(
     }
 
     async function invokeReleaseMediaCommand(command, args) {
+      if (command === "mobile_runtime_platform") return mobileFixture?.capabilities.platform ?? null;
       if (command === "backend_base_url") {
         return "http://127.0.0.1:8765";
       }

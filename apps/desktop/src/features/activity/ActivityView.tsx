@@ -5,7 +5,7 @@ import { useInfiniteQuery, useMutation, useQueries, useQuery, useQueryClient } f
 import { Activity, Layers, Mic, RefreshCw } from "lucide-react";
 import { Link } from "react-router-dom";
 import { confirm } from "@tauri-apps/plugin-dialog";
-import { api, type BulkJobRequest, type BulkJobsResponse, type JobSchema, type ProjectSchema } from "../../lib/api";
+import { api, getRuntimePlatform, type BulkJobRequest, type BulkJobsResponse, type JobSchema, type ProjectSchema } from "../../lib/api";
 import { formatLocalDateTime, normalizeApiDateTime, parseApiDateTime } from "../../lib/datetime";
 import { useLazyLoadSentinel } from "../../lib/useLazyLoadSentinel";
 import { usePreferences } from "../../lib/preferences";
@@ -420,9 +420,11 @@ export function ActivityView() {
   });
   const isIOSHost = /\b(iPhone|iPad|iPod)\b/i.test(navigator.userAgent)
     || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
-  const isIOSRuntime = mobileCapabilitiesQuery.data?.platform === "ios";
+  const runtimePlatform = getRuntimePlatform() ?? mobileCapabilitiesQuery.data?.platform;
+  const isIOSRuntime = runtimePlatform === "ios";
+  const modelsReady = runtimePlatform == null || mobileCapabilitiesQuery.isSuccess;
   const activeTab = isIOSRuntime ? "sync" : selectedTab;
-  const jobsEnabled = (!isIOSHost || mobileCapabilitiesQuery.isSuccess) && !isIOSRuntime;
+  const jobsEnabled = (runtimePlatform != null || !isIOSHost || mobileCapabilitiesQuery.isSuccess) && !isIOSRuntime;
   const activeJobsQuery = useInfiniteQuery({ ...jobsOptions({ search: deferredSearch }, "active"), enabled: jobsEnabled });
   const {
     data: activeJobsData,
@@ -545,6 +547,7 @@ export function ActivityView() {
   useJobLifecycleScope(undefined, deferredSearch, jobsEnabled);
 
   async function handleBulkJobAction(action: BulkJobAction) {
+    if (!modelsReady) return;
     bulkJobsMutation.reset();
     setBulkJobResult(null);
     setBulkPreflightError(null);
@@ -585,7 +588,7 @@ export function ActivityView() {
     bulkJobsMutation.mutate({ ...action, durableFormat });
   }
 
-  if (isIOSHost && mobileCapabilitiesQuery.isPending) {
+  if (runtimePlatform == null && isIOSHost && mobileCapabilitiesQuery.isPending) {
     return <div className="panel" role="status">Loading Activity...</div>;
   }
   if (isIOSHost && mobileCapabilitiesQuery.isError) {
@@ -671,7 +674,7 @@ export function ActivityView() {
               return (
                 <button
                   className="button button--ghost button--small activity-bulk-actions__button"
-                  disabled={isError || bulkJobsMutation.isPending || conversionActive}
+                  disabled={!modelsReady || isError || bulkJobsMutation.isPending || conversionActive}
                   key={action.jobType}
                   onClick={() => {
                     void handleBulkJobAction(action);
@@ -685,6 +688,8 @@ export function ActivityView() {
             })}
           </div>
 
+          {!modelsReady && mobileCapabilitiesQuery.isPending ? <p role="status">Checking models…</p> : null}
+          {!modelsReady && mobileCapabilitiesQuery.isError ? <div role="alert">Could not check models. <button type="button" onClick={() => void mobileCapabilitiesQuery.refetch()}>Retry</button></div> : null}
           {bulkJobsMutation.isPending ? (
             <div className="activity-jobs-panel__state" role="status">
               {bulkJobsMutation.variables?.pendingLabel ?? "Queueing bulk jobs..."}

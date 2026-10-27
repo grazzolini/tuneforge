@@ -5,6 +5,13 @@ download, installation, verification, signature, and publication instructions.
 
 ## [Unreleased]
 
+### Changed
+
+- Queue Android analysis, chords, and lyrics through full cleanup, preserve newer saved results,
+  and continue processing in the background with a separate CPU-only foreground service.
+- Open the mobile library before model checks finish; show model readiness and retry errors while
+  keeping navigation usable.
+
 ### Fixed
 
 - Discover processing and export jobs while submission is still pending, share job refreshes across

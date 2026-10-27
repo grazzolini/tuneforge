@@ -13,6 +13,9 @@ use whisper_rs::{
     WhisperContext, WhisperContextParameters, WhisperSegment,
 };
 
+#[path = "processing_queue.rs"]
+pub(crate) mod processing_queue;
+
 #[path = "audio.rs"]
 mod audio;
 #[path = "export.rs"]

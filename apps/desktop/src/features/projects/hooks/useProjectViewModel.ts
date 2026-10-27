@@ -4,6 +4,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import {
   api,
+  getRuntimePlatform,
   getProjectSyncSummary,
   type ArtifactSchema,
   type JobSchema,
@@ -433,7 +434,12 @@ export function useProjectViewModel() {
     queryFn: async () => api.getMobileCapabilities(),
     staleTime: Infinity,
   });
-  const isIOSRuntime = mobileCapabilitiesQuery.data?.platform === "ios";
+  const mobilePlatform = getRuntimePlatform() ?? mobileCapabilitiesQuery.data?.platform;
+  const isIOSRuntime = mobilePlatform === "ios";
+  const isMobileRuntime = mobilePlatform != null;
+  const mobileModelsChecking = isMobileRuntime && mobileCapabilitiesQuery.isPending;
+  const mobileModelsError = isMobileRuntime && mobileCapabilitiesQuery.isError;
+  const mobileModelsReady = !isMobileRuntime || mobileCapabilitiesQuery.isSuccess;
   const projectQuery = useQuery({
     queryKey: ["project", projectId],
     queryFn: async () => (await api.getProject(projectId)).project,
@@ -696,7 +702,7 @@ export function useProjectViewModel() {
     queryKey: ["drum-substems", "capabilities"],
     queryFn: api.getDrumSubstemCapabilities,
     enabled: Boolean(projectId) && typeof window !== "undefined"
-      && "__TAURI_INTERNALS__" in window && mobileCapabilitiesQuery.data == null,
+      && "__TAURI_INTERNALS__" in window && !isMobileRuntime,
     staleTime: 60_000,
   });
   const drumMutation = useMutation({
@@ -898,7 +904,7 @@ export function useProjectViewModel() {
   );
   const drumGroup = useMemo(() => describeDrumGroup(sourceStemArtifacts), [sourceStemArtifacts]);
   const nativeDesktopHost = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window
-    && mobileCapabilitiesQuery.data == null && !isWebAudioBackendForced();
+    && !isMobileRuntime && !isWebAudioBackendForced();
   const nativeAudioCapabilitiesQuery = useQuery({
     queryKey: ["native-audio-capabilities"],
     queryFn: getNativeAudioCapabilities,
@@ -995,7 +1001,6 @@ export function useProjectViewModel() {
   const canUseTempo = tempoOriginalBpm !== null;
   const precountDisabledReason = canUsePrecount ? null : "Waiting for BPM analysis";
   const mobileCapabilities = mobileCapabilitiesQuery.data ?? null;
-  const isMobileRuntime = mobileCapabilities !== null;
   const effectiveActiveWorkspace = isIOSRuntime ? "playback" : activeWorkspace;
   const sourceKeyOverride = useMemo(
     () => parseStoredKey(projectQuery.data?.source_key_override),
@@ -1041,7 +1046,7 @@ export function useProjectViewModel() {
       lyricsJob.error_message.startsWith("Whisper Turbo failed verification."))
     ? lyricsJob.error_message
     : null;
-  const mobileGenerationMessage = isMobileRuntime
+  const mobileGenerationMessage = isMobileRuntime && mobileModelsReady
     ? lyricsSetupFailure
       ? lyricsSetupFailure
       : lyricsSetupStopped
@@ -1055,10 +1060,10 @@ export function useProjectViewModel() {
           : "Whisper Turbo is unavailable in this build."
     : null;
   const mobileAdvancedAnalysisUnavailable =
-    isMobileRuntime &&
+    isMobileRuntime && mobileModelsReady &&
     defaultBeatAnalysisBackend === "beat-this" &&
     (mobileCapabilities?.platform !== "android" || mobileCapabilities.beatThisAvailable !== true);
-  const mobileBeatAnalysisMessage = !isMobileRuntime
+  const mobileBeatAnalysisMessage = !isMobileRuntime || !mobileModelsReady
     ? null
     : defaultBeatAnalysisBackend === "built-in"
       ? "Basic analysis · Key and tuning; tempo and beat timing unavailable on Android."
@@ -1070,11 +1075,11 @@ export function useProjectViewModel() {
             ? "Advanced analysis · Model repair and verification will run on next use."
             : "Advanced analysis · Verified 9.4 MB model downloads on first use.";
   const canAnalyze =
-    !projectEditLocked &&
+    !projectEditLocked && mobileModelsReady &&
     (!isMobileRuntime || mobileCapabilities?.analysisAvailable === true) &&
     !mobileAdvancedAnalysisUnavailable;
   const canGenerateLyrics =
-    !projectEditLocked &&
+    !projectEditLocked && mobileModelsReady &&
     (!isMobileRuntime || whisperModelStatus !== "unavailable");
   const canGenerateStems =
     !projectEditLocked &&
@@ -1083,11 +1088,11 @@ export function useProjectViewModel() {
   const mobileCremaChordsSelected = defaultChordBackend === "crema-advanced";
   const mobileUnsupportedChordBackend = isMobileRuntime &&
     !mobileBuiltInChordsSelected && !mobileCremaChordsSelected;
-  const mobileAdvancedChordsUnavailable = isMobileRuntime && (
+  const mobileAdvancedChordsUnavailable = isMobileRuntime && mobileModelsReady && (
     mobileUnsupportedChordBackend || (mobileCremaChordsSelected &&
       (mobileCapabilities?.platform !== "android" || mobileCapabilities.cremaAvailable !== true))
   );
-  const mobileChordBackendMessage = !isMobileRuntime ? null
+  const mobileChordBackendMessage = !isMobileRuntime || !mobileModelsReady ? null
     : mobileBuiltInChordsSelected
       ? "Built-in Chords · Ready on this device."
       : mobileUnsupportedChordBackend
@@ -1099,7 +1104,7 @@ export function useProjectViewModel() {
             : mobileCapabilities?.cremaModelStatus === "corrupt"
               ? "Advanced Chords — Crema · Repair and verification run on next use."
               : "Advanced Chords — Crema · Installs and verifies on first use (2.1 MB download unless bundled).";
-  const canGenerateChords = !projectEditLocked && (!isMobileRuntime ||
+  const canGenerateChords = !projectEditLocked && mobileModelsReady && (!isMobileRuntime ||
     (mobileCremaChordsSelected
       ? !mobileAdvancedChordsUnavailable
       : mobileBuiltInChordsSelected && mobileCapabilities?.basicChordsAvailable === true));
@@ -1680,6 +1685,7 @@ export function useProjectViewModel() {
   }
 
   async function handleLyricsAction() {
+    if (!mobileModelsReady) return;
     if (projectEditLocked) {
       return;
     }
@@ -2965,6 +2971,10 @@ export function useProjectViewModel() {
     lowerTargetPreview,
     lowerTargetShiftOptions,
     mobileCapabilities,
+    mobileModelsChecking,
+    mobileModelsError,
+    mobileModelsReady,
+    retryMobileModels: () => mobileCapabilitiesQuery.refetch(),
     mobileBeatAnalysisMessage,
     mobileChordBackendMessage,
     mobileAdvancedChordsUnavailable,

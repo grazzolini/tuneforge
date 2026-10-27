@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -348,6 +349,7 @@ function generatedProject(t, { soxrProfile = "ON" } = {}) {
   fs.mkdirSync(kotlinSource, { recursive: true });
   fs.copyFileSync(mainActivitySource, path.join(kotlinSource, "MainActivity.kt"));
   fs.copyFileSync(powerServiceSource, path.join(kotlinSource, "PowerInhibitionService.kt"));
+  fs.copyFileSync(new URL("../apps/desktop/src-tauri/android/kotlin/com/tuneforge/desktop/ProcessingService.kt", import.meta.url), path.join(kotlinSource, "ProcessingService.kt"));
 
   const icons = path.join(tauri, "target/android-icons/android");
   for (const density of ["mdpi", "hdpi", "xhdpi", "xxhdpi", "xxxhdpi", "anydpi-v26"]) {
@@ -690,4 +692,95 @@ test("generated queued service work applies the latest desired mask", (t) => {
   assert.match(request, /launch\(context, transition\)/);
   assert.match(mainThreadApply, /handler\.post \{ applyReasons\(desiredServiceState\(\)\) \}/);
   assert.doesNotMatch(mainThreadApply, /applyReasons\(requestedMask\)/);
+});
+
+
+test("model verification cache coalesces reads and invalidates replaced files", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "tuneforge-model-verification-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const packageRoot = path.join(root, "com/tuneforge/desktop"); fs.mkdirSync(packageRoot, { recursive: true });
+  fs.copyFileSync(modelAssetSource, path.join(packageRoot, "ModelAssetDescriptor.java"));
+  const harness = path.join(packageRoot, "VerificationHarness.java");
+  fs.writeFileSync(harness, `
+package com.tuneforge.desktop;
+import java.nio.file.*;
+import java.util.concurrent.atomic.AtomicInteger;
+public final class VerificationHarness {
+  public static void main(String[] args) throws Exception {
+    Path root = Path.of(args[0]); Path model = root.resolve("model.bin"); Files.writeString(model, "good");
+    var cache = new ModelAssetDescriptor.VerificationCache(); var calls = new AtomicInteger();
+    ModelAssetDescriptor.Verify verify = () -> { calls.incrementAndGet(); Thread.sleep(20); return Files.readString(model).equals("good"); };
+    Thread[] concurrent = new Thread[8];
+    for (int i = 0; i < concurrent.length; i++) { concurrent[i] = new Thread(() -> { try { if (!cache.verify(model.toFile(), verify)) throw new AssertionError(); } catch (Exception error) { throw new RuntimeException(error); } }); concurrent[i].start(); }
+    for (Thread thread : concurrent) thread.join();
+    if (calls.get() != 1) throw new AssertionError("duplicate integrity work: " + calls);
+    var modified = Files.getLastModifiedTime(model); Path replacement = root.resolve("replacement.bin");
+    Files.writeString(replacement, "bad!"); Files.setLastModifiedTime(replacement, modified);
+    Files.move(replacement, model, StandardCopyOption.REPLACE_EXISTING);
+    if (cache.verify(model.toFile(), verify)) throw new AssertionError("replaced inode admitted");
+    Files.writeString(model, "good");
+    if (!cache.verify(model.toFile(), verify)) throw new AssertionError("repair rejected");
+    var racing = new ModelAssetDescriptor.VerificationCache();
+    if (racing.verify(model.toFile(), () -> { Files.writeString(model, "changed"); return true; })) throw new AssertionError("mutated verification admitted");
+  }
+}
+`);
+  const { home } = resolveJava(); const classes = path.join(root, "classes");
+  execFileSync(path.join(home, "bin/javac"), ["-d", classes, path.join(packageRoot, "ModelAssetDescriptor.java"), harness]);
+  execFileSync(path.join(home, "bin/java"), ["-cp", classes, "com.tuneforge.desktop.VerificationHarness", root]);
+});
+
+
+test("Whisper installs an absent model and repairs a missing or corrupt installed file", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "tuneforge-whisper-fresh-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const packageRoot = path.join(root, "com/tuneforge/desktop");
+  const android = path.join(root, "android/content"); fs.mkdirSync(path.join(android, "res"), { recursive: true }); fs.mkdirSync(packageRoot, { recursive: true });
+  const fixture = "synthetic-model";
+
+  let installer = fs.readFileSync(whisperModelInstallerSource, "utf8");
+  installer = installer.replace('1624555275L, "1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69"',
+    fixture.length + 'L, "' + createHash("sha256").update(fixture).digest("hex") + '"');
+  assert.notEqual(installer, fs.readFileSync(whisperModelInstallerSource, "utf8"));
+  fs.writeFileSync(path.join(packageRoot, "WhisperModelInstaller.java"), installer);
+  fs.copyFileSync(modelAssetSource, path.join(packageRoot, "ModelAssetDescriptor.java"));
+  fs.copyFileSync(inferenceLockSource, path.join(packageRoot, "InferenceLock.java"));
+  fs.writeFileSync(path.join(android, "Context.java"), `package android.content; public abstract class Context { public abstract java.io.File getFilesDir(); public abstract android.content.res.AssetManager getAssets(); }`);
+  fs.writeFileSync(path.join(android, "res/AssetManager.java"), `package android.content.res; public class AssetManager { public static boolean corrupt; public java.io.InputStream open(String path) { return new java.io.ByteArrayInputStream((corrupt ? "invalid-fixture" : "synthetic-model").getBytes(java.nio.charset.StandardCharsets.UTF_8)); } }`);
+  const harness = path.join(packageRoot, "FreshWhisperHarness.java");
+  fs.writeFileSync(harness, `
+package com.tuneforge.desktop;
+import java.io.File;
+import java.nio.file.*;
+public final class FreshWhisperHarness {
+  public static void main(String[] args) throws Exception {
+    var context = new android.content.Context() {
+      public File getFilesDir() { return new File(args[0]); }
+      public android.content.res.AssetManager getAssets() { return new android.content.res.AssetManager(); }
+    };
+    String first = WhisperModelInstaller.prepare(context, "fresh");
+    if (first.isEmpty()) throw new AssertionError("fresh install failed: " + WhisperModelInstaller.takeError("fresh"));
+    Path model = Path.of(first);
+    if (!Files.readString(model).equals("synthetic-model")) throw new AssertionError("wrong model");
+    Files.delete(model);
+    if (!WhisperModelInstaller.prepare(context, "missing-repair").equals(first)) throw new AssertionError("missing repair failed");
+    Files.writeString(model, "corrupt");
+    if (!WhisperModelInstaller.prepare(context, "corrupt-repair").equals(first)) throw new AssertionError("corrupt repair failed");
+    Files.writeString(model, "saved-corrupt");
+    android.content.res.AssetManager.corrupt = true;
+    if (!WhisperModelInstaller.prepare(context, "failed-repair").isEmpty()) throw new AssertionError("invalid asset admitted");
+    if (!Files.readString(model).equals("saved-corrupt")) throw new AssertionError("failed repair replaced previous file");
+  }
+}
+`);
+  const { home } = resolveJava(); const classes = path.join(root, "classes");
+  execFileSync(path.join(home, "bin/javac"), ["-d", classes, path.join(android, "Context.java"), path.join(android, "res/AssetManager.java"), path.join(packageRoot, "WhisperModelInstaller.java"), path.join(packageRoot, "ModelAssetDescriptor.java"), path.join(packageRoot, "InferenceLock.java"), harness]);
+  execFileSync(path.join(home, "bin/java"), ["-cp", classes, "com.tuneforge.desktop.FreshWhisperHarness", path.join(root, "files")]);
+});
+
+test("processing service guards the foreground overload and Android API type boundaries", () => {
+  const service = fs.readFileSync(new URL("../apps/desktop/src-tauri/android/kotlin/com/tuneforge/desktop/ProcessingService.kt", import.meta.url), "utf8");
+  assert.match(service, /if \(Build.VERSION.SDK_INT >= 29\) \{[\s\S]*?Build.VERSION.SDK_INT >= 35[\s\S]*?FOREGROUND_SERVICE_TYPE_MEDIA_PROCESSING[\s\S]*?FOREGROUND_SERVICE_TYPE_DATA_SYNC[\s\S]*?startForeground\(NOTIFICATION, notification, type\)[\s\S]*?\} else \{\s*startForeground\(NOTIFICATION, notification\)/);
+  assert.doesNotMatch(service, /FLAG_KEEP_SCREEN_ON/);
+  assert.match(service, /START_NOT_STICKY/);
 });

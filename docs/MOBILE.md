@@ -115,6 +115,79 @@ cancellation, staging, validation, and persistence; a narrow C shim owns opaque 
 - Source hashes identify the selected input; artifact hashes always describe the converted bytes.
 - Network, GPL, nonfree, version3, and unused FFmpeg features are disabled.
 
+## Processing queue and background lifetime
+
+Android analysis, chords, and lyrics share one native FIFO. Admission persists a pending job and
+snapshots its options; `started_at` begins only when the complete job dequeues. Model verification,
+audio preparation, inference, CPU fallback, result persistence, and temporary-file cleanup all hold
+the same execution slot. Duplicate active submissions for a project and job type return the existing
+job. Saved results remain available while work waits. New source or saved-result revisions prevent
+an older queued job from overwriting newer work.
+
+Canceling a waiting job skips its native work. Canceling active work signals the native engine;
+the next job waits for unwind and cleanup. Failure or a caught Rust panic advances the queue.
+Process restart marks interrupted pending/running work failed and preserves saved results; retry is
+explicit. The app does not restart processing automatically.
+
+The mobile shell selects its embedded client through a cheap platform command before model checks.
+Library and navigation remain usable while dependent actions show **Checking models…** or a retryable
+model-check error. Activity remains the shared source of queue positions, stages, and cancellation.
+Progress changes publish at most four times per second within a stage; stage and terminal changes
+publish immediately.
+
+A dedicated Android processing foreground service starts from a visible user submission and must
+acknowledge foreground acquisition before compute starts. Its notification remains until the FIFO
+drains. It holds a partial CPU wake lock during execution and never keeps the screen on. Android 15+
+uses `mediaProcessing`; older supported versions use `dataSync` for local-file work. Playback and
+sync keep their separate service. Screen-off, backgrounding, and dismissing the task can continue
+while the process lives; force-stop, process death, device power policy, and service timeout can stop
+work. Start failure or timeout fails waiting jobs retryably, cancels active work, and releases service
+protection; execution ownership remains until cleanup completes. Notification permission denial does
+not itself prohibit foreground acquisition.
+
+### Physical-device processing benchmark
+
+No Vulkan wait-policy change is included. The existing ggml final-fence waits remain in place until
+comparable physical-device evidence justifies a candidate. Host tests and emulator timings cannot
+establish that evidence.
+
+Use a dedicated synthetic fixture directory and the separate benchmark package identity. Never
+import personal audio or inspect production/Test app data. Build each immutable baseline/candidate
+in its own checkout and output directory using the same toolchain and optimized profile:
+
+```sh
+pnpm package:android -- --profile --package-name com.tuneforge.desktop.bench
+```
+
+The user installs and operates the APK on their device. Confirm package identity and profileable
+build metadata before collecting anything. Keep the full Whisper `large-v3-turbo` model, SHA-256
+verification, FP16 disabled, language setting, token/word alignment, and CPU fallback policy identical.
+Record APK/source hashes, an anonymous device alias, Android API/ABI, coarse thermal/charging
+conditions, screen state, fixture SHA-256/duration, and installed-model cache state. Use the same
+device for comparisons without collecting device or hardware identifiers. Use locally synthesized
+speech with known text plus synthetic harmonic audio; retain no copyrighted or personal material.
+
+Run baseline/candidate/baseline, three measured repetitions per condition, allowing the device to
+return to the same thermal state between runs. Separate cold verification from warm verified-cache
+runs. For each build: submit analysis, chords, and lyrics across at least two projects; confirm one
+running job and ordered pending jobs. Measure submission-to-pending, pending-to-start, each stage,
+active duration, cleanup-to-next-start, and queue drain. Repeat with queued cancellation, active
+cancellation, a controlled failure, backgrounding, screen-off, task dismissal, notification denial,
+service-start failure, service timeout, and process-death/restart recovery. Repeat lyrics with auto
+language detection and explicit English/Portuguese, including a reload of saved results. Verify the
+next job waits for cleanup, saved results survive, interrupted jobs require explicit retry, and the
+processing notification/wake lock disappear at drain.
+Record real stage timestamps rather than treating displayed percentages as timing measurements.
+
+Use Android Studio's profiler with the profileable benchmark APK to compare process CPU time,
+runnable/blocked time, scheduler wakeups, and native Vulkan fence stacks. Use app-scoped traces only
+temporarily to derive sanitized aggregates; exclude raw traces and private identifiers from retained
+or published handoff evidence. Report aggregate timings, observed backend, medians and ranges,
+alignment/text correctness, fallback count, peak memory, and cancellation latency. Admit a future
+wait-policy candidate only if repeated fence-spin evidence shows reduced CPU/wakeups without
+throughput, timing/alignment, or cancellation regressions. Document thermal/provider variance;
+otherwise retain the current waits. Device runs remain a user-operated handoff.
+
 ## Android Export
 
 The project Export workspace uses Android's native create-document picker for exactly one

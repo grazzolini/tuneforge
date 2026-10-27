@@ -7,6 +7,7 @@ import { assertDexMethods, parseCli, parseJniRules, resolveReleaseArtifact, sele
   validateReleaseJni } from "./validate-android-release-jni.mjs";
 
 const rules = `-keepclassmembers class com.tuneforge.desktop.MainActivity {
+    public java.lang.String setTuneForgeProcessing(int);
     public java.lang.String setTuneForgePowerInhibition(int);
     public java.lang.String getTuneForgePowerInhibitionStatus();
     public java.lang.String getTuneForgeAudioPermissionState();
@@ -35,7 +36,8 @@ const rules = `-keepclassmembers class com.tuneforge.desktop.MainActivity {
 test("parses only exact narrow JNI rules", () => {
   const methods = parseJniRules(rules);
   assert.deepEqual(methods.map(({ name, descriptor }) => [name, descriptor]), [
-    ["setTuneForgePowerInhibition", "(I)Ljava/lang/String;"],
+    ["setTuneForgeProcessing", "(I)Ljava/lang/String;"],
+  ["setTuneForgePowerInhibition", "(I)Ljava/lang/String;"],
     ["getTuneForgePowerInhibitionStatus", "()Ljava/lang/String;"],
     ["getTuneForgeAudioPermissionState", "()Ljava/lang/String;"],
     ["requestTuneForgeAudioPermission", "()Ljava/lang/String;"],

@@ -84,6 +84,7 @@ describe("mobile sync API adapter", () => {
     mockConvertFileSrc.mockClear();
     mockInvoke.mockReset();
     mockInvoke.mockImplementation(async (command: string) => {
+      if (command === "mobile_runtime_platform") return "android";
       if (command === "mobile_capabilities") {
         return mobileCapabilities;
       }
@@ -133,13 +134,7 @@ describe("mobile sync API adapter", () => {
   });
 
   it("routes iOS through mobile IPC without an HTTP fallback", async () => {
-    mockInvoke.mockResolvedValueOnce({
-      ...mobileCapabilities,
-      platform: "ios",
-      mediaBackend: "cpal_coreaudio",
-      analysisAvailable: false,
-      basicChordsAvailable: false,
-    });
+    mockInvoke.mockResolvedValueOnce("ios");
     const apiModule = await import("./api");
     await expect(apiModule.initializeApi()).resolves.toBe("mobile://embedded");
     mockInvoke.mockClear();
@@ -149,10 +144,10 @@ describe("mobile sync API adapter", () => {
     expect(mockInvoke).toHaveBeenCalledWith("mobile_get_health", undefined);
   });
 
-  it("fails closed when an embedded mobile runtime cannot report capabilities", async () => {
+  it("fails closed when an embedded mobile runtime cannot report platform identity", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     mockInvoke.mockImplementation(async (command: string) => {
-      if (command === "mobile_capabilities") {
+      if (command === "mobile_runtime_platform") {
         throw new Error("capabilities unavailable");
       }
       if (command === "backend_base_url") {
@@ -166,6 +161,21 @@ describe("mobile sync API adapter", () => {
     expect(apiModule.getApiBaseUrl()).toBe("mobile://embedded");
     expect(fetchSpy).not.toHaveBeenCalled();
     fetchSpy.mockRestore();
+  });
+
+  it("initializes the mobile shell before model verification completes", async () => {
+    let release!: (value: MobileCapabilities) => void;
+    const capabilities = new Promise<MobileCapabilities>((resolve) => { release = resolve; });
+    mockInvoke.mockImplementation((command: string) => command === "mobile_runtime_platform"
+      ? Promise.resolve("android") : command === "mobile_capabilities" ? capabilities : Promise.resolve({ status: "ok" }));
+    const module = await import("./api");
+    await expect(module.initializeApi()).resolves.toBe("mobile://embedded");
+    expect(module.getRuntimePlatform()).toBe("android");
+    expect(mockInvoke).not.toHaveBeenCalledWith("mobile_capabilities");
+    const checking = module.api.getMobileCapabilities();
+    await expect(module.api.getHealth()).resolves.toEqual({ status: "ok" });
+    release(mobileCapabilities);
+    await expect(checking).resolves.toMatchObject({ platform: "android" });
   });
 
   it("routes latest jobs query params to the mobile jobs command", async () => {
@@ -188,7 +198,7 @@ describe("mobile sync API adapter", () => {
     const apiModule = await import("./api");
     await apiModule.initializeApi();
     expect(mockInvoke).toHaveBeenCalledTimes(1);
-    expect(mockInvoke).toHaveBeenCalledWith("mobile_capabilities");
+    expect(mockInvoke).toHaveBeenCalledWith("mobile_runtime_platform");
     mockInvoke.mockClear();
     const api = apiModule.api;
 
@@ -434,6 +444,7 @@ describe("mobile sync API adapter", () => {
 
   it("normalizes nested native activeProgress from Rust camelCase status payloads", async () => {
     mockInvoke.mockImplementation(async (command: string) => {
+      if (command === "mobile_runtime_platform") return "android";
       if (command === "mobile_capabilities") {
         return mobileCapabilities;
       }
@@ -500,6 +511,7 @@ describe("mobile sync API adapter", () => {
 
 	  it("routes lifecycle events to native transport and normalizes camelCase lifecycle fields", async () => {
     mockInvoke.mockImplementation(async (command: string) => {
+      if (command === "mobile_runtime_platform") return "android";
       if (command === "mobile_capabilities") {
         return mobileCapabilities;
       }

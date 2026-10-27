@@ -30,8 +30,6 @@ final class WhisperModelInstaller {
     private static final Object INSTALL_LOCK = new Object();
     private static final Object INSTALL_STATE_LOCK = new Object();
     private static boolean installInProgress = false;
-    private static volatile long verifiedLength = -1;
-    private static volatile long verifiedLastModified = -1;
     private static final long INSTALL_OVERHEAD_BYTES = 64L * 1024L * 1024L;
 
     private WhisperModelInstaller() {}
@@ -131,7 +129,6 @@ final class WhisperModelInstaller {
                         throw new IllegalStateException("WHISPER_MODEL_INTEGRITY_FAILED");
                     }
                     PROGRESS.put(jobId, 199);
-                    rememberVerified(destination);
                     deleteRecursively(backupRoot);
                 }
             } finally { deleteRecursively(stagingRoot); }
@@ -158,7 +155,6 @@ final class WhisperModelInstaller {
             if (!verifiedBackup.renameTo(targetRoot)) {
                 throw new IllegalStateException("WHISPER_MODEL_RECOVERY_FAILED");
             }
-            rememberVerified(destination);
         } else if (verifiedBackup != null) {
             deleteRecursively(verifiedBackup);
         }
@@ -291,16 +287,7 @@ final class WhisperModelInstaller {
     }
 
     private static boolean verifyCached(File file) throws Exception {
-        if (file.isFile() && file.length() == verifiedLength
-                && file.lastModified() == verifiedLastModified) return true;
-        boolean valid = verify(file);
-        if (valid) rememberVerified(file);
-        return valid;
-    }
-
-    private static void rememberVerified(File file) {
-        verifiedLength = file.length();
-        verifiedLastModified = file.lastModified();
+        return ASSET.verification.verify(file, () -> verify(file));
     }
 
     private static File modelFile(Context context) {

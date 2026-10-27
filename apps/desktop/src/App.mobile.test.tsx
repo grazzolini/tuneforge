@@ -21,6 +21,7 @@ import {
   mockListProjects,
   mockListJobs,
   mockGetMobileCapabilities,
+  mockGetRuntimePlatform,
   mockCreateChords,
   mockStartSyncListener,
   resetAppTestHarness,
@@ -165,12 +166,41 @@ function setTempoAnalysis(tempoBpm = 120) {
 describe("Desktop app mobile capability gates", () => {
   beforeEach(resetAppTestHarness);
   afterEach(() => {
+    vi.restoreAllMocks();
     delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
     Object.defineProperties(window.navigator, {
       userAgent: { configurable: true, value: originalUserAgent },
       platform: { configurable: true, value: originalPlatform },
       maxTouchPoints: { configurable: true, value: originalMaxTouchPoints },
     });
+  });
+
+  it("keeps Android navigation usable while model checks are pending", async () => {
+    mockGetRuntimePlatform.mockReturnValue("android");
+    mockGetMobileCapabilities.mockReturnValue(new Promise(() => {}));
+    renderApp(["/projects/proj_123"]);
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    expect(await screen.findByText("Checking models…")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Analyze Track" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Refresh Chords|Generate Chords/ })).toBeDisabled();
+    expect(screen.queryByText(/Whisper Turbo is unavailable/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Refine Drums/ })).not.toBeInTheDocument();
+    await userEvent.setup().click(screen.getAllByRole("link", { name: "Library" })[0]);
+    expect(await screen.findByRole("heading", { name: "Practice Projects" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Import Track(s)" })).toBeDisabled();
+  });
+
+  it("retries failed Android model checks without blocking the library", async () => {
+    mockGetRuntimePlatform.mockReturnValue("android");
+    mockGetMobileCapabilities.mockRejectedValueOnce(new Error("synthetic verification failure"));
+    renderApp(["/"]);
+    expect(await screen.findByRole("heading", { name: "Practice Projects" })).toBeInTheDocument();
+    expect(await screen.findByText("Could not check models.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Import Track(s)" })).toBeDisabled();
+    enableAndroidRuntime();
+    await userEvent.setup().click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Import Track(s)" })).toBeEnabled());
+    expect(screen.queryByText("Could not check models.")).not.toBeInTheDocument();
   });
 
   it("keeps the iOS library sync-directed", async () => {

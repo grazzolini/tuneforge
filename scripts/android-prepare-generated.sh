@@ -22,6 +22,7 @@ INFERENCE_LOCK_SOURCE="$ANDROID_JAVA_SOURCE/InferenceLock.java"
 ANDROID_KOTLIN_SOURCE="$ROOT_DIR/apps/desktop/src-tauri/android/kotlin/com/tuneforge/desktop"
 MAIN_ACTIVITY_SOURCE="$ANDROID_KOTLIN_SOURCE/MainActivity.kt"
 POWER_SERVICE_SOURCE="$ANDROID_KOTLIN_SOURCE/PowerInhibitionService.kt"
+PROCESSING_SERVICE_SOURCE="$ANDROID_KOTLIN_SOURCE/ProcessingService.kt"
 APP_GRADLE="$ROOT_DIR/apps/desktop/src-tauri/gen/android/app/build.gradle.kts"
 PROGUARD_RULES="$ROOT_DIR/apps/desktop/src-tauri/proguard-tuneforge.pro"
 PROGUARD_DEST="$ROOT_DIR/apps/desktop/src-tauri/gen/android/app/proguard-tuneforge.pro"
@@ -135,6 +136,7 @@ cp "$WHISPER_MODEL_INSTALLER_SOURCE" "$WHISPER_MODEL_INSTALLER"
 cp "$INFERENCE_LOCK_SOURCE" "$INFERENCE_LOCK"
 cp "$MAIN_ACTIVITY_SOURCE" "$MAIN_ACTIVITY"
 cp "$POWER_SERVICE_SOURCE" "$POWER_SERVICE"
+cp "$PROCESSING_SERVICE_SOURCE" "$ANDROID_MAIN/java/com/tuneforge/desktop/ProcessingService.kt"
 
 copy_android_icons() {
   if [[ ! -d "$ANDROID_ICONS" ]]; then
@@ -231,6 +233,19 @@ ensure_power_service() {
   mv "$temp_file" "$MANIFEST"
 }
 
+ensure_processing_service() {
+  if grep -Fq 'android:name=".ProcessingService"' "$MANIFEST"; then return; fi
+  local temp_file
+  temp_file="$(mktemp)"
+  awk '
+    /<\/application>/ {
+      print "        <service android:name=\".ProcessingService\" android:exported=\"false\" android:stopWithTask=\"false\" android:foregroundServiceType=\"mediaProcessing|dataSync\" />"
+    }
+    { print }
+  ' "$MANIFEST" > "$temp_file"
+  mv "$temp_file" "$MANIFEST"
+}
+
 copy_android_icons
 
 ensure_permission "android.permission.INTERNET"
@@ -241,10 +256,12 @@ ensure_permission "android.permission.FOREGROUND_SERVICE"
 ensure_permission "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"
 ensure_permission "android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE"
 ensure_permission "android.permission.FOREGROUND_SERVICE_DATA_SYNC"
+ensure_permission "android.permission.FOREGROUND_SERVICE_MEDIA_PROCESSING"
 ensure_permission "android.permission.POST_NOTIFICATIONS"
 ensure_permission "android.permission.WAKE_LOCK"
 ensure_permission "android.permission.CHANGE_NETWORK_STATE"
 ensure_power_service
+ensure_processing_service
 
 
 

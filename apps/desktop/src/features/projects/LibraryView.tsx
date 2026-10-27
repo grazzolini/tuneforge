@@ -3,7 +3,7 @@ import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tansta
 import { open } from "@tauri-apps/plugin-dialog";
 import { Music2, Upload } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
-import { api, getProjectSyncSummary, type ProjectSchema } from "../../lib/api";
+import { api, getRuntimePlatform, getProjectSyncSummary, type ProjectSchema } from "../../lib/api";
 import { formatLocalDateTime, normalizeApiDateTime } from "../../lib/datetime";
 import { usePreferences } from "../../lib/preferences";
 import {
@@ -304,8 +304,10 @@ export function LibraryView() {
   });
   const isIOSHost = /\b(iPhone|iPad|iPod)\b/i.test(navigator.userAgent)
     || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
-  const isIOSRuntime = mobileCapabilitiesQuery.data?.platform === "ios";
-  const canShowLibrary = !isIOSHost || mobileCapabilitiesQuery.isSuccess;
+  const runtimePlatform = getRuntimePlatform() ?? mobileCapabilitiesQuery.data?.platform;
+  const isIOSRuntime = runtimePlatform === "ios";
+  const canShowLibrary = runtimePlatform != null || !isIOSHost || mobileCapabilitiesQuery.isSuccess;
+  const modelsReady = runtimePlatform == null || mobileCapabilitiesQuery.isSuccess;
 
   const projectsQuery = useInfiniteQuery({
     queryKey: ["projects", deferredSearch],
@@ -487,10 +489,12 @@ export function LibraryView() {
           ) : null}
         </div>
         {canShowLibrary && !isIOSRuntime ? <div className="screen__title-block">
+          {!modelsReady && mobileCapabilitiesQuery.isPending ? <p role="status">Checking models…</p> : null}
+          {!modelsReady && mobileCapabilitiesQuery.isError ? <div role="alert">Could not check models. <button type="button" onClick={() => void mobileCapabilitiesQuery.refetch()}>Retry</button></div> : null}
           <button
             className="button button--primary"
             onClick={() => importMutation.mutate()}
-            disabled={importMutation.isPending || isProjectsLoading || isProjectsError}
+            disabled={!modelsReady || importMutation.isPending || isProjectsLoading || isProjectsError}
           >
             {pendingImportCopy ? pendingImportCopy.buttonLabel : "Import Track(s)"}
             <Upload aria-hidden="true" className="button__icon" />

@@ -29,6 +29,10 @@ export function ProcessingPanel() {
     lyricsJob,
     lyricsMutation,
     mobileCapabilities,
+    mobileModelsChecking,
+    mobileModelsError,
+    mobileModelsReady,
+    retryMobileModels,
     mobileGenerationMessage,
     mobileBeatAnalysisMessage,
     mobileChordBackendMessage,
@@ -54,7 +58,7 @@ export function ProcessingPanel() {
   const analyzeDisabled = projectEditLocked || analyzeMutation.isPending || isAnalysisRunning || !canAnalyze;
   const noLyricsSelected = selectedLyricsLanguageOverride === "none";
   const lyricsDisabled =
-    projectEditLocked ||
+    !mobileModelsReady || projectEditLocked ||
     lyricsMutation.isPending ||
     isLyricsRunning ||
     (!canGenerateLyrics && !noLyricsSelected);
@@ -123,6 +127,8 @@ export function ProcessingPanel() {
         </div>
       </div>
 
+      {mobileModelsChecking ? <p role="status" aria-live="polite" className="subpanel__copy">Checking models…</p> : null}
+      {mobileModelsError ? <div role="alert" className="inline-error">Could not check models. <button className="button button--small" onClick={() => void retryMobileModels()} type="button">Retry</button></div> : null}
       {isMobileRuntime && mobileGenerationMessage ? (
         <p
           aria-live="polite"
@@ -172,7 +178,7 @@ export function ProcessingPanel() {
           ) : null}
           {isChordRunning && chordJob ? (
             <p aria-live="polite" className="subpanel__copy">
-              {chordJob.stage_label ?? "Generating chords"} · {Math.max(0, Math.min(100, Math.round(chordJob.progress)))}% ·{" "}
+              {chordJob.status === "pending" ? "Waiting in queue" : chordJob.stage_label ?? "Generating chords"} · {Math.max(0, Math.min(100, Math.round(chordJob.progress)))}% ·{" "}
               <Link to="/activity">Activity</Link>
             </p>
           ) : null}
@@ -207,7 +213,7 @@ export function ProcessingPanel() {
           ) : null}
           {isLyricsRunning && lyricsJob ? (
             <p aria-live="polite" className="subpanel__copy">
-              {lyricsJob.stage_label ?? "Preparing lyrics"}
+              {lyricsJob.status === "pending" ? "Waiting in queue" : lyricsJob.stage_label ?? "Preparing lyrics"}
               {lyricsJob.stage_label?.includes("%")
                 ? ""
                 : ` · ${Math.max(0, Math.min(100, Math.round(lyricsJob.progress)))}%`} ·{" "}

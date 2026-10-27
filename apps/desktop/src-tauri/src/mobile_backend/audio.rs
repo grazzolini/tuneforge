@@ -9,6 +9,15 @@ use std::sync::{
     Arc, LazyLock, Mutex,
 };
 
+pub(super) static PROCESSING_ADMISSION: Mutex<()> = Mutex::new(());
+
+pub(super) fn enqueue_processing(root: PathBuf, job_id: String, run: impl FnOnce() + Send + 'static) -> Result<(), String> {
+    #[cfg(target_os = "android")]
+    { super::processing_queue::enqueue(root, job_id, run) }
+    #[cfg(not(target_os = "android"))]
+    { let _ = (root, job_id); thread::spawn(run); Ok(()) }
+}
+
 static AUDIO_JOB_CANCELLATIONS: LazyLock<Mutex<HashMap<String, Arc<AtomicBool>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
@@ -339,12 +348,13 @@ fn store_analysis_result(
         .execute_batch("BEGIN IMMEDIATE")
         .map_err(|error| error.to_string())?;
     let publish = (|| -> Result<(), String> {
-        let current_source: String = connection.query_row(
-            "SELECT path FROM artifacts WHERE id = ?1 AND project_id = ?2 AND type = 'source_audio'",
+        validate_processing_revision(connection, &project.id, "analyze", job_id)?;
+        let current_source: (String, Option<String>, String) = connection.query_row(
+            "SELECT artifacts.path, artifacts.content_sha256, projects.imported_path FROM artifacts JOIN projects ON projects.id = artifacts.project_id WHERE artifacts.id = ?1 AND artifacts.project_id = ?2 AND artifacts.type = 'source_audio'",
             params![source_artifact.id, project.id],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         ).map_err(|_| "Analysis source changed before publication.".to_string())?;
-        if current_source != project.imported_path {
+        if current_source.0 != source_artifact.path || current_source.1 != source_artifact.content_sha256 || current_source.2 != project.imported_path {
             return Err("Analysis source changed before publication.".to_string());
         }
         let active: i64 = connection.query_row(
@@ -516,11 +526,12 @@ fn store_chord_timeline(
         .execute_batch("BEGIN IMMEDIATE")
         .map_err(|error| error.to_string())?;
     let publish = (|| -> Result<ChordStoreOutcome, String> {
-        let current_source: (String, String) = connection.query_row(
-            "SELECT artifacts.path, projects.imported_path FROM artifacts JOIN projects ON projects.id = artifacts.project_id WHERE artifacts.id = ?1 AND artifacts.project_id = ?2 AND artifacts.type = 'source_audio'",
-            params![source_artifact.id, project.id], |row| Ok((row.get(0)?, row.get(1)?)),
+        validate_processing_revision(connection, &project.id, "chords", job_id)?;
+        let current_source: (String, String, Option<String>) = connection.query_row(
+            "SELECT artifacts.path, projects.imported_path, artifacts.content_sha256 FROM artifacts JOIN projects ON projects.id = artifacts.project_id WHERE artifacts.id = ?1 AND artifacts.project_id = ?2 AND artifacts.type = 'source_audio'",
+            params![source_artifact.id, project.id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         ).map_err(|_| "Chord source changed before publication.".to_string())?;
-        if current_source.0 != source_artifact.path || current_source.1 != project.imported_path {
+        if current_source.0 != source_artifact.path || current_source.1 != project.imported_path || current_source.2 != source_artifact.content_sha256 {
             return Err("Chord source changed before publication.".to_string());
         }
         let active: i64 = connection.query_row(
@@ -1363,6 +1374,7 @@ pub fn mobile_submit_analyze(
     project_id: String,
     payload: Value,
 ) -> Result<JobResponse, String> {
+    let _admission = PROCESSING_ADMISSION.lock().map_err(|_| "Processing admission lock was poisoned.".to_string())?;
     let connection = db(&app)?;
     let root = app_data_root(&app)?;
     let project = require_sync_editable_project(&connection, &project_id)?;
@@ -1389,24 +1401,27 @@ pub fn mobile_submit_analyze(
     ).optional().map_err(|error| error.to_string())? {
         return Ok(JobResponse { job });
     };
-    let mut job = create_running_job(
-        &connection,
+    let transaction = rusqlite::Transaction::new_unchecked(&connection, rusqlite::TransactionBehavior::Immediate).map_err(|error| error.to_string())?;
+    let mut job = create_pending_processing_job(
+        &transaction,
         &project_id,
         "analyze",
         Some(source_artifact.id.clone()),
     )?;
     let mut job_payload = payload;
+    job_payload["result_revision"] = json!(processing_result_revision(&transaction, &project_id, "analyze")?);
     job_payload["beat_backend"] = json!(beat_backend);
     job.beat_backend = Some(beat_backend.clone());
     job.analysis_request = Some(job_payload.clone());
-    connection
+    transaction
         .execute(
             "UPDATE jobs SET payload_json = ?1, updated_at = ?2 WHERE id = ?3",
             params![job_payload.to_string(), now_iso(), job.id],
         )
         .map_err(|error| error.to_string())?;
+    transaction.commit().map_err(|error| error.to_string())?;
     let job_for_worker = job.clone();
-    thread::spawn(move || {
+    enqueue_processing(root.clone(), job.id.clone(), move || {
         run_analysis_job(
             root,
             job_for_worker.id,
@@ -1414,7 +1429,7 @@ pub fn mobile_submit_analyze(
             source_artifact,
             beat_backend,
         )
-    });
+    })?;
     Ok(JobResponse { job })
 }
 
@@ -1431,6 +1446,7 @@ pub fn mobile_submit_chords(
     project_id: String,
     mut payload: Value,
 ) -> Result<JobResponse, String> {
+    let _admission = PROCESSING_ADMISSION.lock().map_err(|_| "Processing admission lock was poisoned.".to_string())?;
     let connection = db(&app)?;
     let root = app_data_root(&app)?;
     let project = require_sync_editable_project(&connection, &project_id)?;
@@ -1483,15 +1499,17 @@ pub fn mobile_submit_chords(
         job.runtime_detail = Some("Existing saved timeline".to_string());
         return Ok(JobResponse { job });
     }
-    let mut job = create_running_job(
-        &connection,
+    let transaction = rusqlite::Transaction::new_unchecked(&connection, rusqlite::TransactionBehavior::Immediate).map_err(|error| error.to_string())?;
+    let mut job = create_pending_processing_job(
+        &transaction,
         &project_id,
         "chords",
         Some(source_artifact.id.clone()),
     )?;
+    payload["result_revision"] = json!(processing_result_revision(&transaction, &project_id, "chords")?);
     payload["chord_backend"] = json!(backend);
     payload["chord_source"] = json!("source");
-    connection
+    transaction
         .execute(
             "UPDATE jobs SET payload_json = ?1, updated_at = ?2 WHERE id = ?3",
             params![payload.to_string(), now_iso(), job.id],
@@ -1499,8 +1517,9 @@ pub fn mobile_submit_chords(
         .map_err(|error| error.to_string())?;
     job.chord_backend = Some(backend.clone());
     job.chord_source = Some("source".to_string());
+    transaction.commit().map_err(|error| error.to_string())?;
     let job_for_worker = job.clone();
-    thread::spawn(move || {
+    enqueue_processing(root.clone(), job.id.clone(), move || {
         run_chord_job(
             root,
             job_for_worker.id,
@@ -1509,7 +1528,7 @@ pub fn mobile_submit_chords(
             backend,
             overwrite_user_edits,
         )
-    });
+    })?;
     Ok(JobResponse { job })
 }
 

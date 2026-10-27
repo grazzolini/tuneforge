@@ -108,6 +108,7 @@ test("release-media Tauri mock emits correlated contracts without fallback field
   assert.doesNotMatch(mockSource, /\baudio_set_click\b/);
   assert.doesNotMatch(mockSource, /__tuneforgeReleaseMediaTunerFixture/);
   assert.equal((mockSource.match(/page\.addInitScript/g) ?? []).length, 1);
+  assert.match(mockSource, /command === "mobile_runtime_platform"\) return mobileFixture\?\.capabilities.platform \?\? null/);
   assert.match(mockSource, /captureGeneration: tunerFixture\.captureGeneration\(\)/);
   assert.match(mockSource, /generation: playbackSnapshot\.generation/);
   assert.match(mockSource, /timelineRevision: playbackSnapshot\.timelineRevision/);

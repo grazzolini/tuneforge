@@ -45,8 +45,16 @@ class MainActivity : TauriActivity() {
 
   override fun onResume() {
     super.onResume()
+    ProcessingService.visibility(true)
     notifyOutputDevicesChanged()
   }
+
+  override fun onPause() {
+    ProcessingService.visibility(false)
+    super.onPause()
+  }
+
+  fun setTuneForgeProcessing(state: Int): String = ProcessingService.request(this, state)
 
   override fun onDestroy() {
     getSystemService(AudioManager::class.java)?.unregisterAudioDeviceCallback(outputDevices)

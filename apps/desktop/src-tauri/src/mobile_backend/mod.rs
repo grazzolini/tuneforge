@@ -27,8 +27,12 @@ include!("constants.rs");
 include!("schemas.rs");
 include!("helpers.rs");
 
+#[cfg(test)]
+#[allow(dead_code)]
+mod processing_queue;
+
 #[cfg(target_os = "android")]
-mod android;
+pub(crate) mod android;
 #[cfg(target_os = "android")]
 pub use android::{
     mobile_register_sync_staged_reference, mobile_sign_transport_handshake,
@@ -64,7 +68,8 @@ pub use stubs::*;
 mod storage;
 #[cfg(all(test, not(target_os = "android")))]
 use self::storage::{
-    app_data_root, create_completed_job, create_failed_job, create_running_job, db, db_at_root,
+    app_data_root, create_completed_job, create_failed_job, create_pending_processing_job, create_running_job, db, db_at_root,
+    processing_result_revision, validate_processing_revision,
     fail_running_job, file_sha256, find_existing_project_source, get_project_manifest,
     get_project_schema, get_source_artifact, get_staged_artifact, migrate_mobile_db, new_id,
     project_cleanup_root_path, project_root_path, register_job_staging_path,
@@ -196,6 +201,30 @@ macro_rules! android_command {
     };
 }
 
+#[cfg(target_os = "android")]
+static BRIDGE_LANE: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaphore>> = std::sync::LazyLock::new(|| std::sync::Arc::new(tokio::sync::Semaphore::new(4)));
+
+macro_rules! android_blocking_command {
+    ($name:ident, $ret:ty $(, $arg:ident : $ty:ty)*) => {
+        #[cfg(target_os = "android")]
+        #[tauri::command]
+        pub async fn $name($($arg: $ty,)*) -> Result<$ret, String> {
+            let permit = BRIDGE_LANE.clone().acquire_owned().await.map_err(|_| "Mobile bridge is unavailable.".to_string())?;
+            tauri::async_runtime::spawn_blocking(move || {
+                let _permit = permit;
+                android::$name($($arg,)*)
+            }).await.map_err(|_| "Mobile bridge operation stopped unexpectedly.".to_string())?
+        }
+    };
+}
+
+#[tauri::command]
+pub fn mobile_runtime_platform() -> Option<&'static str> {
+    if cfg!(target_os = "android") { Some("android") }
+    else if cfg!(target_os = "ios") { Some("ios") }
+    else { None }
+}
+
 macro_rules! ios_command {
     ($name:ident, $ret:ty $(, $arg:ident : $ty:ty)*) => {
         #[cfg(target_os = "ios")]
@@ -206,30 +235,30 @@ macro_rules! ios_command {
     };
 }
 
-android_command!(mobile_capabilities, MobileCapabilities, app: tauri::AppHandle);
-android_command!(mobile_get_health, HealthResponse, app: tauri::AppHandle);
-android_command!(mobile_list_projects, ProjectsResponse, app: tauri::AppHandle, params: Option<ListProjectsParams>);
-android_command!(mobile_import_project, ProjectResponse, app: tauri::AppHandle, payload: ProjectImportRequest);
-android_command!(mobile_get_project, ProjectResponse, app: tauri::AppHandle, project_id: String);
-android_command!(mobile_update_project, ProjectResponse, app: tauri::AppHandle, project_id: String, payload: ProjectUpdateRequest);
-android_command!(mobile_delete_project, DeleteResponse, app: tauri::AppHandle, project_id: String);
-android_command!(mobile_submit_analyze, JobResponse, app: tauri::AppHandle, project_id: String, payload: Value);
-android_command!(mobile_get_analysis, AnalysisResponse, app: tauri::AppHandle, project_id: String);
-android_command!(mobile_submit_chords, JobResponse, app: tauri::AppHandle, project_id: String, payload: Value);
-android_command!(mobile_get_chords, ChordResponse, app: tauri::AppHandle, project_id: String);
-android_command!(mobile_submit_lyrics, JobResponse, app: tauri::AppHandle, project_id: String, payload: Value);
-android_command!(mobile_get_lyrics, LyricsResponse, app: tauri::AppHandle, project_id: String);
-android_command!(mobile_update_lyrics, LyricsResponse, app: tauri::AppHandle, project_id: String, payload: Value);
-android_command!(mobile_submit_preview, JobResponse, app: tauri::AppHandle, project_id: String, payload: Value);
-android_command!(mobile_submit_stems, JobResponse, app: tauri::AppHandle, project_id: String, payload: Value);
-android_command!(mobile_submit_retune, JobResponse, app: tauri::AppHandle, project_id: String, payload: Value);
-android_command!(mobile_submit_transpose, JobResponse, app: tauri::AppHandle, project_id: String, payload: Value);
-android_command!(mobile_list_artifacts, ArtifactsResponse, app: tauri::AppHandle, project_id: String);
-android_command!(mobile_delete_artifact, DeleteResponse, app: tauri::AppHandle, project_id: String, artifact_id: String);
-android_command!(mobile_submit_export, JobResponse, app: tauri::AppHandle, project_id: String, payload: Value);
-android_command!(mobile_list_jobs, JobsResponse, app: tauri::AppHandle, params: Option<ListJobsParams>);
-android_command!(mobile_get_job, JobResponse, app: tauri::AppHandle, job_id: String);
-android_command!(mobile_cancel_job, JobResponse, app: tauri::AppHandle, job_id: String);
+android_blocking_command!(mobile_capabilities, MobileCapabilities, app: tauri::AppHandle);
+android_blocking_command!(mobile_get_health, HealthResponse, app: tauri::AppHandle);
+android_blocking_command!(mobile_list_projects, ProjectsResponse, app: tauri::AppHandle, params: Option<ListProjectsParams>);
+android_blocking_command!(mobile_import_project, ProjectResponse, app: tauri::AppHandle, payload: ProjectImportRequest);
+android_blocking_command!(mobile_get_project, ProjectResponse, app: tauri::AppHandle, project_id: String);
+android_blocking_command!(mobile_update_project, ProjectResponse, app: tauri::AppHandle, project_id: String, payload: ProjectUpdateRequest);
+android_blocking_command!(mobile_delete_project, DeleteResponse, app: tauri::AppHandle, project_id: String);
+android_blocking_command!(mobile_submit_analyze, JobResponse, app: tauri::AppHandle, project_id: String, payload: Value);
+android_blocking_command!(mobile_get_analysis, AnalysisResponse, app: tauri::AppHandle, project_id: String);
+android_blocking_command!(mobile_submit_chords, JobResponse, app: tauri::AppHandle, project_id: String, payload: Value);
+android_blocking_command!(mobile_get_chords, ChordResponse, app: tauri::AppHandle, project_id: String);
+android_blocking_command!(mobile_submit_lyrics, JobResponse, app: tauri::AppHandle, project_id: String, payload: Value);
+android_blocking_command!(mobile_get_lyrics, LyricsResponse, app: tauri::AppHandle, project_id: String);
+android_blocking_command!(mobile_update_lyrics, LyricsResponse, app: tauri::AppHandle, project_id: String, payload: Value);
+android_blocking_command!(mobile_submit_preview, JobResponse, app: tauri::AppHandle, project_id: String, payload: Value);
+android_blocking_command!(mobile_submit_stems, JobResponse, app: tauri::AppHandle, project_id: String, payload: Value);
+android_blocking_command!(mobile_submit_retune, JobResponse, app: tauri::AppHandle, project_id: String, payload: Value);
+android_blocking_command!(mobile_submit_transpose, JobResponse, app: tauri::AppHandle, project_id: String, payload: Value);
+android_blocking_command!(mobile_list_artifacts, ArtifactsResponse, app: tauri::AppHandle, project_id: String);
+android_blocking_command!(mobile_delete_artifact, DeleteResponse, app: tauri::AppHandle, project_id: String, artifact_id: String);
+android_blocking_command!(mobile_submit_export, JobResponse, app: tauri::AppHandle, project_id: String, payload: Value);
+android_blocking_command!(mobile_list_jobs, JobsResponse, app: tauri::AppHandle, params: Option<ListJobsParams>);
+android_blocking_command!(mobile_get_job, JobResponse, app: tauri::AppHandle, job_id: String);
+android_blocking_command!(mobile_cancel_job, JobResponse, app: tauri::AppHandle, job_id: String);
 android_command!(mobile_get_sync_identity, SyncLocalIdentityResponse, app: tauri::AppHandle);
 android_command!(mobile_create_sync_pairing_offer, SyncPairingOfferResponse, app: tauri::AppHandle, payload: Option<SyncPairingOfferRequest>);
 android_command!(mobile_answer_sync_pairing_offer, SyncPairingAnswerResponse, app: tauri::AppHandle, payload: SyncPairingAnswerRequest);

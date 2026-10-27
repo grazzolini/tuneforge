@@ -104,6 +104,7 @@ const {
   mockGetHealth,
   mockGetExportCapabilities,
   mockGetMobileCapabilities,
+  mockGetRuntimePlatform,
   mockEnsureWebMediaTransport,
   mockScanPairingQrCode,
   setMockSystemInputVolume,
@@ -1778,6 +1779,7 @@ const {
     default_export_format: "wav",
     preview_format: "wav",
   }));
+  const mockGetRuntimePlatform = vi.fn((): "android" | "ios" | null => null);
   const mockGetMobileCapabilities = vi.fn(async (): Promise<unknown> => null);
   const mockGetExportCapabilities = vi.fn(async (): Promise<ExportCapabilitiesResponse> => ({
     capabilities: {
@@ -2885,6 +2887,7 @@ const {
     mockGetHealth,
     mockGetExportCapabilities,
     mockGetMobileCapabilities,
+  mockGetRuntimePlatform,
     mockEnsureWebMediaTransport,
     mockScanPairingQrCode,
     setMockSystemInputVolume,
@@ -2975,6 +2978,7 @@ export {
   mockGetHealth,
   mockGetExportCapabilities,
   mockGetMobileCapabilities,
+  mockGetRuntimePlatform,
   mockEnsureWebMediaTransport,
   mockScanPairingQrCode,
   mockListen,
@@ -3000,6 +3004,7 @@ vi.mock("../lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/api")>();
   return {
     ...actual,
+    getRuntimePlatform: mockGetRuntimePlatform,
     api: actual.withJobLifecycle({
       ...actual.api,
       getHealth: mockGetHealth,
@@ -3491,6 +3496,8 @@ export function resetAppTestHarness() {
   mockGetHealth.mockClear();
   mockGetExportCapabilities.mockClear();
   mockGetMobileCapabilities.mockReset();
+  mockGetRuntimePlatform.mockReset();
+  mockGetRuntimePlatform.mockReturnValue(null);
   mockGetMobileCapabilities.mockResolvedValue(null);
   mockEnsureWebMediaTransport.mockReset();
   mockEnsureWebMediaTransport.mockResolvedValue();

@@ -5,11 +5,28 @@ app lifecycle and installed state in every lane.
 
 ## UI and User-Facing Behavior
 
-Use Product Design on GPT-6 Sol High for a pre-implementation brief and final QA.
-Check screens/states, interaction model, truthfulness, brief consistency, and
-absence of fake or misleading data. Capture screenshots when they are useful
-evidence. Do not use this lane for code, backend contract, or music-theory
-correctness.
+Use applicable stages when UI design work warrants them:
+
+1. **Design:** Product Design on GPT-6.1 Sol (`gpt-6.1-sol`) High prepares the
+   pre-implementation brief, visual hierarchy, interaction model, and acceptance
+   criteria. Sol owns design decisions and implementation.
+2. **Verify:** GPT-6.1 Terra (`gpt-6.1-terra`) Medium exercises bounded flows,
+   inspects states, and collects evidence. Use High for detailed visual
+   verification and screenshot QA. Compare the implementation against the
+   approved brief; check screens/states, interactions, truthfulness, and absence
+   of fake or misleading data. Capture screenshots when useful. Report observed
+   deviations and unverified behavior.
+3. **Review:** GPT-6 Astra (`gpt-6-astra`) High independently assesses design
+   quality, UX tradeoffs, evidence sufficiency, and remaining risks. Astra owns
+   final design-quality judgment.
+
+Terra verification does not approve design quality or establish code correctness.
+Do not use this lane for code, backend contract, or music-theory correctness;
+preserve separate correctness and contract reviews.
+
+Send actionable design findings to the original Sol worker for one remediation
+pass. Terra repeats affected checks; Astra performs one focused design re-review.
+Stop on unresolved critical findings.
 
 ## Contracts
 

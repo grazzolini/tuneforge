@@ -115,15 +115,27 @@ Use at most two only when responsibilities and owned files or evidence streams
 are independent; assign clear ownership. Use one implementation worker across
 dependent stack layers.
 
-For this skill, select model and effort explicitly by task: GPT-6 Luna
-(`gpt-6-luna`) Medium for narrow lookup, extraction, and summarization with
-explicit sources and bounded factual deliverables; GPT-6 Sol (`gpt-6-sol`)
-Medium for broader exploration and research; GPT-6 Sol High for bounded or
-complex implementation, including ambiguity, cross-layer
-architecture, sync/concurrency, transactions, migrations,
-privacy/security/data-loss risk, or ambiguous test failures and findings. Use
-the contract guard on GPT-6 Luna High only at an actual contract boundary and
-Product Design on GPT-6 Sol High only for UI work.
+For this skill, select model and effort explicitly by task:
+
+- GPT-6 Luna (`gpt-6-luna`) Medium for narrow lookup, extraction, and
+  summarization with explicit sources and bounded factual deliverables.
+- GPT-6.1 Sol (`gpt-6.1-sol`) Medium for broader exploration and research.
+- GPT-6.1 Sol High for bounded or complex implementation, including frontend
+  code, ambiguity, cross-layer architecture, sync/concurrency, transactions,
+  migrations, privacy/security/data-loss risk, or ambiguous test failures and
+  findings. Use Sol High for Product Design briefs, visual hierarchy, and
+  interaction design when UI design work warrants them.
+- GPT-6.1 Terra (`gpt-6.1-terra`) Medium for bounded visual inspection,
+  browser/computer verification, and document drafting; High for detailed
+  visual verification and screenshot QA.
+- GPT-6 Astra (`gpt-6-astra`) High for applicable design/UX review and final
+  design-quality judgment.
+- `tuneforge_contract_guard` on GPT-6 Luna High only at an actual contract
+  boundary.
+
+For UI design work, Sol creates, Terra verifies, and Astra reviews. Follow the
+[UI validation lane](references/validation-lanes.md#ui-and-user-facing-behavior)
+for responsibilities and evidence boundaries.
 
 Honor fixed role model/effort settings; do not pass unsupported overrides. If a
 preferred model is unavailable, use an available model under applicable
@@ -170,13 +182,15 @@ research, or one release-safety review for release preparation. Evidence review
 must check methodology, reproducibility, unsupported generalization, licensing,
 and evidence-to-conclusion fit. Release-safety review must check the exact platform
 payload/checksum/signature matrix, provenance, checkpoint authority, manual-only
-operations, and fail-closed gates. Add contract and Product Design review only when
-applicable. Route reviews to GPT-6 Sol High normally; GPT-6 Astra
-(`gpt-6-astra`) High for security, data-loss, migration, concurrency, or complex
-cross-layer review; and
-GPT-6 Astra XHigh only for a focused unresolved critical review dispute. Send
-actionable findings to the original worker for one remediation pass, then
-perform one focused re-review. Stop on unresolved critical findings.
+operations, and fail-closed gates. Add contract and design review only when
+applicable. For correctness, evidence, and release-safety reviews, use GPT-6.1
+Sol High normally; GPT-6 Astra High for security, data-loss, migration,
+concurrency, or complex cross-layer review; and GPT-6 Astra XHigh only for a
+focused unresolved critical review dispute. Applicable design/UX review and
+final design-quality judgment use GPT-6 Astra High, independently of that
+code-review routing. Send actionable findings to the original worker for one
+remediation pass, then perform one focused re-review. Stop on unresolved
+critical findings.
 
 Finish with the selected scope, work kind, delivery/report target, envelope,
 agents and lanes used, validation/evidence, unverified boundaries, remaining

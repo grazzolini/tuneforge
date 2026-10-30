@@ -4,10 +4,7 @@ use super::storage_cleanup::{
     OwnedProjectFile,
 };
 use super::*;
-use crate::native_audio::harmony::{
-    automatic_pitch_spelling, format_chord, parse_display_chord, parse_key,
-    shortest_semitone_delta, KeyMode, KeySignature, PitchSpelling,
-};
+use crate::native_audio::harmony::{call_core, key_from_value, key_value, KeySignature};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -603,29 +600,23 @@ fn document_chord_context(
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .map_err(|error| error.to_string())?;
-    let detected = detected_key.as_deref().and_then(parse_key);
-    let overridden = source_key_override.as_deref().and_then(parse_key);
-    let source_correction = match (&detected, &overridden) {
-        (Some(source), Some(target)) => {
-            shortest_semitone_delta(source.pitch_class, target.pitch_class)
-        }
-        _ => 0,
-    };
-    let mix_transpose = metadata
-        .get("transpose")
-        .and_then(Value::as_object)
-        .and_then(|transpose| transpose.get("semitones"))
-        .and_then(Value::as_i64)
-        .unwrap_or(0);
-    let spelling_key = overridden.or(detected);
-    let active_key = spelling_key.map(|key| KeySignature {
-        pitch_class: (key.pitch_class + mix_transpose).rem_euclid(12),
-        mode: key.mode,
-    });
+    let context = call_core(json!({
+        "operation": "nativeDocumentContext",
+        "detected_key": detected_key,
+        "override_key": source_key_override,
+        "audio_set": {"metadata": metadata},
+        "display_mode": display_mode,
+    }))
+    .map_err(|error| error.to_string())?;
     Ok(ChordContext {
-        transpose_semitones: source_correction + mix_transpose,
-        active_key,
-        display_mode: display_mode.to_string(),
+        transpose_semitones: context["transpose_semitones"]
+            .as_i64()
+            .ok_or("invalid core transpose")?,
+        active_key: key_from_value(&context["active_key"]),
+        display_mode: context["display_mode"]
+            .as_str()
+            .ok_or("invalid core display mode")?
+            .to_owned(),
     })
 }
 
@@ -665,57 +656,20 @@ fn chord_label(segment: &Value) -> String {
         .to_string()
 }
 
-fn format_transposed_chord(
-    root: i64,
-    quality: &str,
-    bass: Option<i64>,
-    context: &ChordContext,
-) -> Option<String> {
-    let root = (root + context.transpose_semitones).rem_euclid(12);
-    let bass = bass.map(|bass| (bass + context.transpose_semitones).rem_euclid(12));
-    if context.display_mode == "dual" {
-        let primary = format_chord(root, quality, bass, PitchSpelling::Sharps)?;
-        let secondary = format_chord(root, quality, bass, PitchSpelling::Flats)?;
-        return Some(if primary == secondary {
-            primary
-        } else {
-            format!("{primary} / {secondary}")
-        });
-    }
-    let spelling = match context.display_mode.as_str() {
-        "sharps" => PitchSpelling::Sharps,
-        "flats" => PitchSpelling::Flats,
-        "auto" => automatic_pitch_spelling(context.active_key),
-        _ => PitchSpelling::Neutral,
-    };
-    format_chord(root, quality, bass, spelling)
-}
-
 fn display_chord_label(segment: &Value, context: &ChordContext) -> String {
-    let label = chord_label(segment);
-    let structured = segment
-        .get("pitch_class")
-        .and_then(Value::as_i64)
-        .zip(segment.get("quality").and_then(Value::as_str))
-        .map(|(root, quality)| {
-            (
-                root,
-                quality,
-                segment.get("bass_pitch_class").and_then(Value::as_i64),
-            )
-        });
-    let parsed = structured.or_else(|| {
-        parse_display_chord(&label).map(|chord| {
-            (
-                chord.root_pitch_class,
-                chord.quality,
-                chord.bass_pitch_class,
-            )
-        })
-    });
-    parsed
-        .and_then(|(root, quality, bass)| format_transposed_chord(root, quality, bass, context))
-        .unwrap_or(label)
+    call_core(json!({
+        "operation": "nativeDisplayChordLabel",
+        "segment": segment,
+        "context": {
+            "transpose_semitones": context.transpose_semitones,
+            "active_key": key_value(context.active_key),
+            "display_mode": context.display_mode,
+        },
+    }))
+    .expect("bundled music core document label")
+    .as_str()
+    .expect("core document label")
+    .to_owned()
 }
 
 fn word_positions(text: &str, words: &[Value]) -> Vec<Option<usize>> {
@@ -1552,6 +1506,7 @@ pub(super) fn fail_interrupted_exports(connection: &Connection) -> Result<(), St
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::native_audio::harmony::{parse_key, shortest_semitone_delta, KeyMode};
     use std::{cell::RefCell, fs};
 
     struct TestProvider {
@@ -2043,6 +1998,9 @@ mod tests {
             ("aug", "Caug"),
             ("dim7", "Cdim7"),
             ("hdim7", "Cm7b5"),
+            ("maj6", "C6"),
+            ("min6", "Cm6"),
+            ("minmaj7", "CmMaj7"),
         ] {
             assert_eq!(
                 display_chord_label(
@@ -2058,7 +2016,7 @@ mod tests {
         );
         assert_eq!(
             display_chord_label(
-                &json!({"label": "keep", "pitch_class": 0, "quality": "maj6"}),
+                &json!({"label": "keep", "pitch_class": 0, "quality": "13"}),
                 &context(0, "sharps")
             ),
             "keep"

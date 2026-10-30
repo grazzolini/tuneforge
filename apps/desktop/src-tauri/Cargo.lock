@@ -7322,8 +7322,16 @@ dependencies = [
  "tauri-plugin-dialog",
  "tauri-plugin-fs",
  "tokio",
+ "tuneforge-music-core",
  "webkit2gtk",
  "whisper-rs",
+]
+
+[[package]]
+name = "tuneforge-music-core"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
 ]
 
 [[package]]

@@ -52,9 +52,11 @@ import {
   parseFlatpakModuleCacheOutput,
 } from "./package-flatpak.mjs";
 import { parsePackageOptions } from "./package-options.mjs";
-import { compareUtf8, createFlatpakSourceSnapshot, flatpakSourceSnapshotInputs } from "./flatpak-source-snapshots.mjs";
+import { compareUtf8, createFlatpakSourceSnapshot, flatpakSourceSnapshotInputs, musicCoreSourceSnapshotInputs } from "./flatpak-source-snapshots.mjs";
 import { createFlatpakDesktopSourceSnapshot, flatpakDesktopSourceSnapshotInputs, generateFlatpakSourceSnapshots } from "./generate-flatpak-sources.mjs";
 import { PRODUCTION_PACKAGE, TEST_PACKAGE } from "./package-profile.mjs";
+
+import { populateFlatpakSnapshotFixture } from "./music-core-test-fixture.mjs";
 
 const manifest = readFileSync(
   new URL("../packaging/flatpak/com.tuneforge.desktop.yml", import.meta.url),
@@ -149,14 +151,7 @@ test("test Flatpak snapshots contain test Tauri, desktop, AppStream, and icon in
   const output = mkdtempSync(path.join(parent, "test-snapshot-"));
   t.after(() => rmSync(output, { recursive: true, force: true }));
   const fixture = path.join(output, "fixture");
-  for (const input of [...flatpakSourceSnapshotInputs.frontend, ...flatpakDesktopSourceSnapshotInputs, ...flatpakSourceSnapshotInputs.backend]) {
-    const source = typeof input === "string" ? input : input.source;
-    const target = path.join(fixture, source);
-    mkdirSync(path.dirname(target), { recursive: true });
-    if (statSync(path.join(repositoryRoot, source)).isDirectory()) mkdirSync(target, { recursive: true });
-    else cpSync(path.join(repositoryRoot, source), target);
-  }
-  cpSync(path.join(repositoryRoot, "apps/desktop/src-tauri/icons/test"), path.join(fixture, "apps/desktop/src-tauri/icons/test"), { recursive: true });
+  populateFlatpakSnapshotFixture(fixture);
   generateFlatpakSourceSnapshots({ root: fixture, generatedRoot: path.join(fixture, "generated"),
     sourceDateEpoch: "1", testPackage: true });
   const generated = path.join(fixture, "generated");
@@ -193,7 +188,7 @@ function tarMembers(archive) {
     const name = archive.subarray(offset, offset + 100).toString("utf8").replace(/\0.*$/, "");
     const prefix = archive.subarray(offset + 345, offset + 500).toString("utf8").replace(/\0.*$/, "");
     const size = Number.parseInt(archive.subarray(offset + 124, offset + 136).toString("utf8"), 8);
-    if (!name) break;
+    if (!name && !prefix) break;
     const member = { name: prefix ? `${prefix}/${name}` : name, mode: archive.subarray(offset + 100, offset + 108).toString("utf8"), type: String.fromCharCode(archive[offset + 156]), link: archive.subarray(offset + 157, offset + 257).toString("utf8").replace(/\0.*$/, "") };
     Object.defineProperty(member, "contents", { value: archive.subarray(offset + 512, offset + 512 + size).toString("utf8") });
     members.push(member);
@@ -484,6 +479,23 @@ test("source snapshots are deterministic and preserve files, modes, empty direct
   }
 });
 
+test("source snapshot inspection continues after a long USTAR directory with an empty name field", (context) => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "tuneforge-long-snapshot-directory-"));
+  context.after(() => rmSync(root, { recursive: true, force: true }));
+  const directory = `input/${"directory".repeat(12)}`;
+  mkdirSync(path.join(root, directory), { recursive: true });
+  writeFileSync(path.join(root, directory, "child.txt"), "retained child");
+  writeFileSync(path.join(root, "input/z-last.txt"), "retained later member");
+  const outputPath = path.join(root, "snapshot.tar");
+  createFlatpakSourceSnapshot({ root, outputPath, inputs: [{ source: "input" }], sourceDateEpoch: "1" });
+  const archive = readFileSync(outputPath);
+  assert.equal(archive.subarray(512, 612).toString("utf8").replace(/\0.*$/, ""), "");
+  assert.equal(archive.subarray(857, 1012).toString("utf8").replace(/\0.*$/, ""), directory);
+  const members = tarMembers(archive);
+  assert.deepEqual(members.map(({ name }) => name), ["input/", `${directory}/`, `${directory}/child.txt`, "input/z-last.txt"]);
+  assert.equal(members.at(-1).contents, "retained later member");
+});
+
 test("source snapshots use byte ordering and retain the exact Flatpak input mappings", () => {
   const root = mkdtempSync(path.join(os.tmpdir(), "tuneforge-source-snapshot-order-"));
   try {
@@ -505,12 +517,14 @@ test("source snapshots use byte ordering and retain the exact Flatpak input mapp
       "packaging/flatpak/seed-pnpm-store.mjs:seed-pnpm-store.mjs", "apps/desktop/package.json", "apps/desktop/index.html",
       "apps/desktop/tsconfig.json", "apps/desktop/tsconfig.node.json", "apps/desktop/vite.config.ts", "apps/desktop/src",
       "packages/shared-types/package.json", "packages/shared-types/src",
+      ...musicCoreSourceSnapshotInputs, "scripts/build-music-core.mjs", "packages/music-core/build/artifacts/wasm",
     ]);
     assert.deepEqual(flatpakSourceSnapshotInputs.desktop, [
       "apps/desktop/src-tauri/Cargo.lock", "apps/desktop/src-tauri/Cargo.toml", "apps/desktop/src-tauri/build.rs",
       "apps/desktop/src-tauri/tauri.conf.json", "apps/desktop/src-tauri/capabilities", "apps/desktop/src-tauri/icons",
       "apps/desktop/src-tauri/resources", "apps/desktop/src-tauri/src",
       "apps/backend/app/storage-profile.json", "apps/desktop/src-tauri/native/whisper-rs-sys",
+      ...musicCoreSourceSnapshotInputs,
     ]);
     assert.deepEqual(flatpakSourceSnapshotInputs.backend.map((input) => typeof input === "string" ? input : `${input.source}:${input.destination}`), [
       "README.md", "LICENSE", "THIRD_PARTY_NOTICES.md", "LICENSES/crema-0.2.0-BSD-2-Clause.txt", "docs/PACKAGING.md",
@@ -520,6 +534,7 @@ test("source snapshots use byte ordering and retain the exact Flatpak input mapp
       "packaging/flatpak/com.tuneforge.desktop.metainfo.xml:com.tuneforge.desktop.metainfo.xml",
       "apps/desktop/src-tauri/icons/32x32.png:icons/32x32.png", "apps/desktop/src-tauri/icons/128x128.png:icons/128x128.png",
       "apps/desktop/src-tauri/icons/512x512.png:icons/512x512.png",
+      ...musicCoreSourceSnapshotInputs,
     ]);
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -532,18 +547,20 @@ test("Flatpak generator desktop snapshot includes the complete local whisper cra
   const root = mkdtempSync(path.join(os.tmpdir(), "tuneforge-whisper-snapshot-"));
   try {
     const generated = path.join(root, "generated");
-    generateFlatpakSourceSnapshots({ root: repositoryRoot, generatedRoot: generated, sourceDateEpoch: "1" });
+    const fixture = path.join(root, "fixture");
+    populateFlatpakSnapshotFixture(fixture);
+    generateFlatpakSourceSnapshots({ root: fixture, generatedRoot: generated, sourceDateEpoch: "1" });
+    for (const group of ["frontend", "desktop", "backend"]) {
+      const members = tarMembers(readFileSync(path.join(generated, `${group}-snapshot.tar`))).map(({ name }) => name);
+      for (const source of ["packages/music-core/resources/unicode-v16.hpp", "packages/music-core/tools/generate_unicode.py",
+        "packages/music-core/licenses/Unicode-LICENSE"]) assert.ok(members.includes(source), `${group} missing ${source}`);
+    }
     const archive = path.join(generated, "desktop-snapshot.tar");
     const required = ["Cargo.toml", "build.rs", "build_support.rs", "build_support_test.rs", "src/lib.rs", "tuneforge_dtw.h", "tuneforge_text.h"]
       .map((file) => `${source}/${file}`);
     const names = tarMembers(readFileSync(archive)).map(({ name }) => name);
     for (const file of required) assert.ok(names.includes(file), `missing ${file}`);
 
-    const fixture = path.join(root, "fixture");
-    for (const snapshotSource of flatpakDesktopSourceSnapshotInputs) {
-      mkdirSync(path.dirname(path.join(fixture, snapshotSource)), { recursive: true });
-      cpSync(path.join(repositoryRoot, snapshotSource), path.join(fixture, snapshotSource), { recursive: true });
-    }
     createFlatpakDesktopSourceSnapshot({ root: fixture, outputPath: archive, sourceDateEpoch: "1" });
     let previous = readFileSync(archive);
     for (const file of ["Cargo.toml", "build.rs", "src/lib.rs", "tuneforge_text.h"]) {
@@ -564,17 +581,7 @@ test("Flatpak generator includes the optional DrumSep descriptor only in the bac
   const fixture = path.join(root, "fixture");
   const generatedRoot = path.join(root, "generated");
   try {
-    const sources = [
-      ...flatpakSourceSnapshotInputs.frontend,
-      ...flatpakDesktopSourceSnapshotInputs,
-      ...flatpakSourceSnapshotInputs.backend,
-    ].map((input) => typeof input === "string" ? input : input.source);
-    for (const source of new Set(sources)) {
-      const target = path.join(fixture, source);
-      if (existsSync(target)) continue;
-      mkdirSync(path.dirname(target), { recursive: true });
-      cpSync(path.join(repositoryRoot, source), target, { recursive: true });
-    }
+    populateFlatpakSnapshotFixture(fixture);
 
     const snapshots = () => {
       generateFlatpakSourceSnapshots({ root: fixture, generatedRoot, sourceDateEpoch: "1" });
@@ -1599,4 +1606,16 @@ test("Flatpak bundle failure stops queued work and terminates active children", 
   await assert.rejects(operation, /ref-1.*status 1/);
   assert.deepEqual(spawned.map(({ refId }) => refId), ["ref-0", "ref-1"]);
   assert.deepEqual(killed, ["ref-0"]);
+});
+
+test("Flatpak snapshot fixtures validate synthetic sources without ignored build artifacts", (context) => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "tuneforge-source-only-snapshot-"));
+  context.after(() => rmSync(root, { recursive: true, force: true }));
+  populateFlatpakSnapshotFixture(root);
+  const source = path.join(root, "packages/music-core/vendor/gingo-src/cpp/snapshot-fixture.cpp");
+  const options = { root, generatedRoot: path.join(root, "generated"), sourceDateEpoch: "1" };
+  generateFlatpakSourceSnapshots(options);
+  assert.match(readFileSync(source, "utf8"), /Synthetic snapshot source/);
+  writeFileSync(source, "tampered");
+  assert.throws(() => generateFlatpakSourceSnapshots(options), /Flatpak core source differs from lock/);
 });

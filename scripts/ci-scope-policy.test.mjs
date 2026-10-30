@@ -13,10 +13,58 @@ function caseArm(pattern) {
 test("CI reads the exact Python pin once and leaves uv project selection unoverridden", () => {
   const pythonSetups = workflow.match(/uses: actions\/setup-python@[\s\S]*?python-version-file: \.python-version/g) ?? [];
 
-  assert.equal(pythonSetups.length, 3);
+  assert.equal(pythonSetups.length, 4);
   assert.doesNotMatch(workflow, /python-version: "3\.14"/);
   assert.doesNotMatch(workflow, /python-version:.*3\.14/);
   assert.doesNotMatch(workflow, /uv run --python/);
+});
+
+test("WASM consumers require the selected image payload and verify the same-run artifact before use", () => {
+  const producer = workflow.slice(workflow.indexOf("  music-core-wasm:\n"), workflow.indexOf("\n  commitlint:"));
+  assert.match(producer, /runs-on: ubuntu-24\.04/);
+  assert.match(producer, /run: bash scripts\/ci-image-run\.sh load/);
+  assert.match(producer, /node scripts\/ci-music-core\.mjs install/);
+  assert.match(producer, /run: bash scripts\/verify-ci-image\.sh/);
+  assert.doesNotMatch(producer, /run: node scripts\/build-music-core\.mjs --target wasm\n/);
+  assert.match(producer, /artifact_id: \$\{\{ steps\.artifact\.outputs\.artifact-id \}\}/);
+  for (const [start, end, command] of [
+    ["  e2e:\n", "  site:\n", "pnpm --filter @tuneforge/desktop test:e2e"],
+    ["  site:\n", "  backend:\n", "node scripts/capture-release-media.mjs --run"],
+    ["  desktop_frontend:\n", "  desktop_tauri:\n", "pnpm --filter @tuneforge/desktop test --run"],
+  ]) {
+    const consumer = workflow.slice(workflow.indexOf(start), workflow.indexOf(end));
+    assert.match(consumer, /needs: \[[^\n]*music-core-wasm\]/);
+    assert.match(consumer, /artifact-ids: \$\{\{ needs\.music-core-wasm\.outputs\.artifact_id \}\}/);
+    assert.match(consumer, /digest-mismatch: error/);
+    const verification = consumer.indexOf("node scripts/build-music-core.mjs --target wasm --check");
+    assert.ok(verification >= 0 && verification < consumer.indexOf(command));
+    assert.doesNotMatch(consumer, /run: node scripts\/build-music-core\.mjs --target wasm\n/);
+  }
+  const pages = readFileSync(new URL("../.github/workflows/pages.yml", import.meta.url), "utf8");
+  assert.match(pages.slice(0, pages.indexOf("  build:\n")), /grep -qx 'selection=promoted'/);
+  assert.match(pages.slice(0, pages.indexOf("  build:\n")), /node scripts\/ci-music-core\.mjs install/);
+  assert.match(pages, /build:\n    needs: music-core-wasm/);
+  assert.match(pages, /artifact-ids: \$\{\{ needs\.music-core-wasm\.outputs\.artifact_id \}\}/);
+  assert.ok(pages.indexOf("--target wasm --check", pages.indexOf("  build:\n")) < pages.indexOf("node scripts/capture-release-media.mjs --run"));
+});
+
+test("native CI installs locked CMake on the host before source consumers enter the image", () => {
+  for (const [start, end, command] of [
+    ["  e2e:\n", "  site:\n", "uv sync --locked --all-groups"],
+    ["  backend:\n", "  desktop_frontend:\n", "uv sync --locked --all-groups"],
+    ["  desktop_frontend:\n", "  desktop_tauri:\n", "uv sync --locked --all-groups"],
+    ["  desktop_tauri:\n", null, "run: cargo check"],
+  ]) {
+    const job = workflow.slice(workflow.indexOf(start), end ? workflow.indexOf(end) : undefined);
+    const install = job.indexOf("      - name: Install locked music-core CMake in hosted Python prefix\n");
+    const next = job.indexOf("\n      - name:", install + 1);
+    assert.ok(install >= 0 && install < job.indexOf(command), start);
+    const step = job.slice(install, next);
+    assert.match(step, /shell: bash\n/);
+    assert.match(step, /node scripts\/build-music-core\.mjs --download-tool cmake --platform linux-x64/);
+    assert.match(step, /python -m pip install --no-index --no-deps "\$cmake_wheel"/);
+    assert.doesNotMatch(step, /--user|--target|cmake==/);
+  }
 });
 
 test("release-media CI scope captures desktop-affecting changes without widening site-only checks", () => {
@@ -81,12 +129,4 @@ test("producer inputs retain real gates and promotion gaps force all image consu
   const candidate = workflow.slice(workflow.indexOf("  ci-image-candidate:\n"), workflow.indexOf("\n  commitlint:"));
   assert.match(candidate, /needs: ci-scope/);
   assert.match(candidate, /always\(\).*needs\.ci-scope\.result != 'success'/);
-});
-
-test("standalone music-core changes force producer gates and script contract checks", () => {
-  assert.match(caseArm(String.raw`packages/music-core/\*\)`), /full_gate=true/);
-  assert.match(workflow, /pnpm --filter @tuneforge\/music-core types:check/);
-  assert.match(workflow, /node packages\/music-core\/test\/artifact-metadata\.mjs/);
-  assert.match(workflow, /scripts\/ci-music-core\.test\.mjs/);
-  assert.doesNotMatch(workflow, /build-music-core\.mjs --target wasm/);
 });

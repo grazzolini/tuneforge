@@ -1437,6 +1437,7 @@ dependencies = [
     { name = "safetensors" },
     { name = "soundfile" },
     { name = "sqlalchemy" },
+    { name = "tuneforge-music-core" },
     { name = "uvicorn" },
 ]
 
@@ -1484,6 +1485,7 @@ requires-dist = [
     { name = "safetensors", specifier = "==0.8.0" },
     { name = "soundfile", specifier = ">=0.14.0,<1.0.0" },
     { name = "sqlalchemy", specifier = ">=2.0.52,<3.0.0" },
+    { name = "tuneforge-music-core", directory = "../../packages/music-core" },
     { name = "uvicorn", specifier = ">=0.52.4,<1.0.0" },
 ]
 provides-extras = ["advanced-chords", "advanced-chords-onnx", "advanced-beats", "lv-chordia"]
@@ -1498,6 +1500,11 @@ dev = [
     { name = "ruff", specifier = ">=0.16.5,<1.0.0" },
     { name = "wheel", specifier = ">=0.48.0,<1.0.0" },
 ]
+
+[[package]]
+name = "tuneforge-music-core"
+version = "0.1.0"
+source = { directory = "../../packages/music-core" }
 
 [[package]]
 name = "typing-extensions"

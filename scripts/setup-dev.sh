@@ -8,6 +8,7 @@ Usage: pnpm setup:dev [options]
 Runs the standard developer setup:
   pnpm install
   pnpm --filter @tuneforge/desktop exec playwright install chromium
+  node scripts/build-music-core.mjs --target wasm
   uv sync --all-groups
   pnpm contracts:generate
   verify model caches and preload/download only missing or invalid assets
@@ -159,6 +160,9 @@ if [[ "${skip_playwright_browsers}" -eq 0 ]]; then
   echo "Installing Playwright Chromium browser..."
   pnpm --filter @tuneforge/desktop exec playwright install chromium
 fi
+
+echo "Building the pinned local music core..."
+node "${repo_root}/scripts/build-music-core.mjs" --target wasm --summary
 
 echo "Checking Tauri build dependencies..."
 source "${repo_root}/scripts/configure-tauri-build-env.sh"

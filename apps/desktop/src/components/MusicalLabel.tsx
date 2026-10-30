@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import {
   formatChordDisplay,
   formatKeyDisplay,
@@ -61,12 +62,15 @@ export function MusicalKeyLabel({
   mode: EnharmonicDisplayMode;
   variant: MusicalLabelVariant;
 }) {
-  return (
-    <RenderMusicalLabel
-      label={formatKeyDisplay(keyValue, { activeKey: activeKey ?? keyValue, mode })}
-      variant={variant}
-    />
-  );
+  const { pitchClass, mode: keyMode } = keyValue;
+  const contextPitchClass = activeKey?.pitchClass ?? pitchClass;
+  const contextMode = activeKey?.mode ?? keyMode;
+  const label = useMemo(() => formatKeyDisplay(
+    { pitchClass, mode: keyMode },
+    { activeKey: { pitchClass: contextPitchClass, mode: contextMode }, mode },
+  ), [pitchClass, keyMode, contextPitchClass, contextMode, mode]);
+
+  return <RenderMusicalLabel label={label} variant={variant} />;
 }
 
 export function MusicalChordLabel({
@@ -86,11 +90,20 @@ export function MusicalChordLabel({
   quality?: string | null;
   variant: MusicalLabelVariant;
 }) {
-  const isSupportedChord = typeof pitchClass === "number" && isSupportedChordQuality(quality);
-  const options: PitchFormatOptions = { activeKey: activeKey ?? null, mode };
-  const label = isSupportedChord
-    ? formatChordDisplay(pitchClass, quality, options, bassPitchClass)
-    : formatRawMusicalLabel(fallbackLabel);
+  const contextPitchClass = activeKey?.pitchClass;
+  const contextMode = activeKey?.mode;
+  const label = useMemo(() => {
+    const isSupportedChord = typeof pitchClass === "number" && isSupportedChordQuality(quality);
+    const options: PitchFormatOptions = {
+      activeKey: contextPitchClass !== undefined && contextMode !== undefined
+        ? { pitchClass: contextPitchClass, mode: contextMode }
+        : null,
+      mode,
+    };
+    return isSupportedChord
+      ? formatChordDisplay(pitchClass, quality, options, bassPitchClass)
+      : formatRawMusicalLabel(fallbackLabel);
+  }, [pitchClass, quality, bassPitchClass, fallbackLabel, contextPitchClass, contextMode, mode]);
 
   return <RenderMusicalLabel label={label} variant={variant} />;
 }

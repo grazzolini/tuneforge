@@ -34,6 +34,7 @@ apps/
     src/                React/Vite/TypeScript frontend
     src-tauri/          Tauri shell, desktop backend launcher, mobile commands
 packages/
+  music-core/           owned Gingo C++17 core, C ABI, Python/Rust/WASM bindings
   shared-types/
     openapi.json        generated OpenAPI schema
     src/generated/      generated TypeScript contracts
@@ -63,6 +64,51 @@ React/Tauri frontend -> http://127.0.0.1:8765/api/v1 -> FastAPI backend
 
 Packaged desktop builds launch the bundled backend process from the Tauri shell. macOS arm64 resolves
 absolute executables from its owned runtime and supplies its library path to child processes.
+
+## Canonical Music Core
+
+`packages/music-core` owns music theory, chord normalization, instrument knowledge, and
+voicing rules. Version `0.1.0` exposes API, C ABI, instrument schema, and parity corpus
+version `1`. Gingo is pinned to `eec410e6f5b09ad89a2b9d987b63e4048d9a738c`;
+`sources.lock.json` records the archive hash, exact `cpp/` and license inventory, and owned patch.
+An explicit producer acquires verified sources into ignored `vendor/gingo-src`; no upstream source
+is tracked. CMake verifies the prepared tree and applies only the additive slash-tone hook in its
+build directory. Gingo retains its own enumeration, finger-count pruning, deduplication and ranking.
+This search does not promise exhaustive difficult-shape coverage.
+Generated guitar positions carry stable position identities; an unavailable saved ID falls back
+without deleting the stored preference. Finger assignments are not verified by this search.
+
+One registry defines the 12 dictionary qualities and three additional Crema semantic qualities
+(`maj6`, `min6`, `minmaj7`). Aliases normalize to the same IDs across bindings; raw labels remain
+provenance. Symbolic case is significant (`M7`/`7M` versus `m7`). Harte labels use the same quality
+aliases and explicit root-relative slash degrees. A diminished seventh projects the formal `bb7`
+degree onto Gingo's existing nine-semitone interval; it does not alter the interval engine.
+
+Piano and accordion treble use bounded close-position registers and cyclic inversions with a
+stateless nearby-center comparator. `preferredTrebleRegion.centerMidi` overrides the active song
+key tonic nearest middle C, then the chord root. The active key independently governs spelling.
+There is no region UI or persistence, progression optimizer, or Open/Shell voicing mode.
+
+Stradella candidates distinguish `standard`, `complete`, and `approx` left hands. Conventional
+seventh and diminished-seventh omissions remain standard, while sounding tones, requested bass,
+left-hand coverage, right-hand notes, and combined coverage remain separate. Bass-only fallback
+requests treble completion; it never fabricates an unsupported button or declares exhaustive
+impossibility. Left-hand selection does not redefine the right-hand inversion.
+
+Python imports the compiled `tuneforge_music_core._native` extension from the standalone
+`tuneforge-music-core` distribution. Rust uses the same C ABI. The frontend loads the
+locally bundled WASM module through a thin adapter. Each binding delegates to the same
+CMake graph and JSON operation boundary; it must not recreate theory or instrument rules.
+Missing or incompatible core artifacts fail explicitly. Runtime acquisition and alternate
+music engines are unsupported.
+
+Build artifacts carry relative-path manifests with source, toolchain, version, license,
+output-size, and SHA-256 evidence. The published immutable CI image supplies verified WASM; one acquisition job installs
+that payload and distributes its exact artifact ID to consumers in the same run. Consumers verify
+the source fingerprint against their checkout before use.
+Verification does not require an SDK or network. Native compilation, standalone wheel
+installation, browser execution, WebView execution, APK linking, and device behavior are
+separate proof boundaries. See [Packaging](PACKAGING.md#music-core-artifacts) for commands.
 
 ## Mobile Runtime
 
@@ -306,11 +352,3 @@ Validation failures return `INVALID_REQUEST` with serialized validation details.
 - Keep mobile additions aligned with the existing project/job/artifact model.
 - Treat practice views as consumers of project artifacts, not as separate sources of analysis truth.
 - Keep display-only harmonic features such as capo-relative chords separate from audio transforms.
-
-### Standalone music-core producer
-
-`packages/music-core` owns the versioned C ABI, Python/Rust/WASM transports, operation schema,
-instrument knowledge, compatibility data, pinned source acquisition, and contract/parity corpus.
-`node scripts/build-music-core.mjs --target wasm` produces a source-bound manifest and portable
-payload. The CI image bakes that verified WASM plus notices and source/toolchain provenance.
-Application adapters and packaging retain their existing behavior until a separate integration.

@@ -63,6 +63,14 @@ function run(command, args, { cwd = repoRoot, env = process.env, label } = {}) {
 }
 function executable(candidate) { try { fs.accessSync(candidate, fs.constants.X_OK); return true; } catch { return false; } }
 function directory(candidate) { try { return fs.statSync(candidate).isDirectory(); } catch { return false; } }
+export function stageMusicCoreNotices(baseDir = androidDir) {
+  const destination = path.join(baseDir, "app/src/main/assets/music-core/licenses");
+  fs.mkdirSync(destination, { recursive: true });
+  for (const [source, name] of [["licenses/Gingo-LICENSE", "Gingo-MIT.txt"], ["licenses/Unicode-LICENSE", "Unicode-LICENSE.txt"]]) {
+    fs.copyFileSync(path.join(repoRoot, "packages/music-core", source), path.join(destination, name));
+  }
+  return destination;
+}
 export function parseMode(argv) {
   if (argv.length === 0) return "local-release";
   if (argv.length === 1 && argv[0] === "--prepare") return "prepare";
@@ -477,7 +485,8 @@ function prepareNativeProject({ env, ffmpegRoot, soxrRoot, sourceEnv = process.e
   { env, label: "Android FFmpeg runtime validation" });
   const state = generatedState();
   if (state.state === "partial") throw new Error(`Generated Android project is partial: ${state.missing.join(", ")}`);
-  if (state.state === "absent") run("bash", [androidEnv, tauriCli, "android", "init", "--ci", "--skip-targets-install"],
+  // Preserve package-manager metadata so Gradle receives a runnable pnpm callback.
+  if (state.state === "absent") run("bash", [androidEnv, "pnpm", "exec", "tauri", "android", "init", "--ci", "--skip-targets-install"],
     { cwd: desktopDir, env, label: "Tauri Android init" });
   if (generatedState().state !== "complete") throw new Error("Generated Android project initialization failed.");
   configureAndroidToolchainFromEnv(androidDir, env);
@@ -907,6 +916,11 @@ export function main(argv = process.argv.slice(2)) {
       console.log("[android package] completion (prepare)");
       return;
     }
+    run(process.execPath, [path.join(scriptDir, "build-music-core.mjs"), "--target", "wasm"],
+      { env: cleanEnv, label: "Music-core WASM build" });
+    run(process.execPath, [path.join(scriptDir, "build-music-core.mjs"), "--target", "wasm", "--check"],
+      { env: cleanEnv, label: "Music-core WASM verification" });
+    stageMusicCoreNotices();
     const buildFile = path.join(androidDir, "app/build.gradle.kts");
     if (modelBundle) run(process.execPath, [prepareModelAssets], { env, label: "Android model bundle preparation" });
     else fs.rmSync(path.join(androidDir, "app/src/main/assets/models"), { recursive: true, force: true });

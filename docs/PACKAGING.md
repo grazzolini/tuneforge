@@ -4,6 +4,78 @@ TuneForge packaging creates local unsigned desktop builds. Packaged builds launc
 
 See [Third-party notices](../THIRD_PARTY_NOTICES.md) for the dependency and model-weight distribution policy.
 
+## Music Core Artifacts
+
+The standalone `packages/music-core` package is version `0.1.0`, with API/ABI/schema/corpus
+version `1`. Its pinned Gingo sources, owned policy patch, resources, schemas, build-tool
+lock, and binding sources are build inputs. The committed Unicode 16 table and complete
+Unicode License V3 notice travel with the source and binary distributions; the Unicode
+generator is maintenance-only. No application source, account, audio, model,
+or runtime download is needed. Generated output stays under the ignored
+`packages/music-core/build/` directory.
+
+```sh
+pnpm music-core:build -- --fetch-sources
+pnpm music-core:build -- --fetch-sources --offline
+pnpm music-core:build -- --target sdist
+pnpm music-core:build -- --target native
+pnpm music-core:build -- --target wasm
+pnpm music-core:build -- --target python --python 3.14
+pnpm music-core:build -- --target python --python 3.11
+pnpm music-core:build -- --target wasm --check
+pnpm music-core:build -- --target python --python 3.14 --check
+```
+
+The producer acquires the pinned Gingo archive before considering cached artifacts, under
+`build/cache/gingo/<archive-sha256>/gingo.tar.gz`, verifies it, then extracts exactly the locked
+regular files atomically into ignored `vendor/gingo-src`. `--fetch-sources --offline` verifies a
+cached archive or verified standalone source tree and otherwise fails without downloading.
+CMake, Rust `build.rs`, Python PEP 517 builds, and runtime bindings never acquire sources; before a
+raw `uv sync`, `cargo check`, or CMake build, run the explicit acquisition command above.
+Build helpers acquire before recreating a backend environment.
+
+`--target sdist` uses the existing scikit-build-core backend with CMake validation enabled and
+includes verified generated sources. The resulting standalone archive can build wheels offline
+for both Python 3.14 and 3.11 with the pinned build dependencies preinstalled. It does not need the
+checkout or archive cache. Build output and `PKG-INFO` are excluded from canonical fingerprints.
+
+`--check` needs no source cache, Python interpreter, SDK, or network. It performs no download or
+rebuild: it rejects missing, stale, incompatible, or changed artifacts using the checked-out
+sources, toolchain lock, and manifest hashes. WASM lives in `build/artifacts/wasm/`;
+standalone wheels live in `build/artifacts/python/cp314/` and `cp311/`. Keep each manifest
+with its outputs. CI installs WASM from the selected immutable CI image after strict image
+and source verification, then frontend, E2E, and release-media consumers use the same run's exact
+WASM artifact ID. Pages requires the published digest to match the current producer fingerprint
+and fails closed during a promotion gap. Consumers do not independently compile or fetch a runtime module.
+
+macOS packaging builds and verifies the CPython 3.14 wheel, installs it non-editably into
+staged site-packages, and checks that both Python and `_native` imports originate inside
+that stage. The Gingo notice is read from that verified wheel and checked against the source
+lock, so staging requires no source cache. Flatpak source generation acquires and verifies the
+exact generated source inventory before including core source/data/licenses, verified WASM,
+and checksum-pinned Python build dependencies. The sandbox builds the Python package
+offline with `--no-index --no-deps --no-build-isolation`; frontend verification requires
+neither Emscripten nor network inside the sandbox.
+
+Manual Linux x86_64 validation, from the checkout root:
+
+```sh
+uv python install
+pnpm install --frozen-lockfile
+pnpm music-core:build -- --target wasm
+pnpm music-core:build -- --target wasm --check
+pnpm music-core:build -- --target python --python 3.14
+pnpm music-core:build -- --target python --python 3.14 --check
+pnpm package:linux:flatpak -- --test --cpu --no-bundle
+```
+
+The final command is a manual package-build gate; automated source/snapshot checks do
+not prove a Flatpak build or installation. After the build, the user owns installation
+and launch of the test package. Record the installed `_native` origin, packaged version,
+offline frontend/core startup, and synthetic voicing/normalization checks in the packaged
+WebView. CPython 3.11 and 3.14 wheel tests, host Rust checks, browser WASM tests, Android
+static compilation, APK linking, and physical-device behavior each need their own evidence.
+
 ## Release Artifact Truth
 
 - macOS packaging creates a local `.app` bundle and DMG. The app is unsigned and not notarized.
@@ -616,15 +688,5 @@ fails at 2 GiB or more and meets the issue target only at 1.9 GiB or less; a 1.9
 buildable but leaves that target incomplete. `--no-bundle` records installed-size evidence with the
 compressed bundle unavailable and makes no bundle-compliance claim.
 
-### Standalone music-core artifacts
-
-The standalone producer in `packages/music-core` supports native archives, Python 3.14/3.11
-wheels, source distributions, and portable WASM through `scripts/build-music-core.mjs`.
-Every target verifies pinned sources/toolchains, contract versions, payload hashes and the complete
-package source fingerprint. Acquire sources explicitly with `--fetch-sources`; compilation and
-runtime bindings never acquire them. `--check` verifies existing artifacts without rebuilding.
-
-The Linux CI image includes the verified WASM, manifest, required notices, source/toolchain locks,
-and build evidence for standalone validation. It does not yet supply application release payloads.
-Image publication and verified digest promotion remain separate delivery steps; see
+CI image publication and verified digest promotion remain separate delivery steps; see
 [the CI image delivery guidance](../.github/ci/README.md#refresh-and-promotion).

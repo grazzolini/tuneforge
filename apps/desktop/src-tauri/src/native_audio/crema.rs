@@ -554,7 +554,7 @@ mod tests {
             "minmaj7", "sus2", "sus4",
         ];
         let mut labels = vec!["N".to_string(), "X".to_string()];
-        for pitch in SHARP_PITCH_NAMES {
+        for pitch in *SHARP_PITCH_NAMES {
             for quality in qualities {
                 labels.push(format!("{pitch}:{quality}"));
             }
@@ -643,20 +643,23 @@ mod tests {
             ("dim7", "dim7", "dim7"),
             ("hdim7", "hdim7", "m7b5"),
             ("maj", "major", ""),
-            ("maj6", "major", ""),
+            ("maj6", "maj6", "6"),
             ("maj7", "maj7", "maj7"),
             ("min", "minor", "m"),
-            ("min6", "minor", "m"),
+            ("min6", "min6", "m6"),
             ("min7", "m7", "m7"),
-            ("minmaj7", "minor", "m"),
+            ("minmaj7", "minmaj7", "mMaj7"),
             ("sus2", "sus2", "sus2"),
             ("sus4", "sus4", "sus4"),
         ];
-        for root in SHARP_PITCH_NAMES {
+        for root in *SHARP_PITCH_NAMES {
             for (raw_quality, quality, suffix) in expected {
                 let raw = format!("{root}:{raw_quality}");
                 let segment = chord_segment(&raw, 0.0, 1.0, 0.5);
                 assert_eq!(segment["raw_label"], raw);
+                assert_eq!(segment["start_seconds"], 0.0);
+                assert_eq!(segment["end_seconds"], 1.0);
+                assert_eq!(segment["confidence"], 0.5);
                 assert_eq!(segment["quality"], quality);
                 assert_eq!(segment["label"], format!("{root}{suffix}"));
             }
@@ -671,14 +674,25 @@ mod tests {
         assert!(unknown["root_pitch_class"].is_null());
 
         let inversion = chord_segment("C:minmaj7/3", 0.0, 1.0, 0.5);
-        assert_eq!(inversion["label"], "Cm/E");
-        assert_eq!(inversion["quality"], "minor");
+        assert_eq!(inversion["label"], "CmMaj7/E");
+        assert_eq!(inversion["quality"], "minmaj7");
         assert_eq!(inversion["bass_degree"], "3");
         assert_eq!(inversion["bass_pitch_class"], 4);
 
-        let merged = merge_adjacent(vec![
+        let distinct = merge_adjacent(vec![
             chord_segment("C:maj", 0.0, 1.0, 0.2),
             chord_segment("C:maj6", 1.0, 3.0, 0.8),
+        ]);
+        assert_eq!(distinct.len(), 2);
+        assert_eq!(distinct[0]["quality"], "major");
+        assert_eq!(distinct[1]["quality"], "maj6");
+        assert_eq!(distinct[1]["raw_label"], "C:maj6");
+        assert_eq!(distinct[1]["start_seconds"], 1.0);
+        assert_eq!(distinct[1]["end_seconds"], 3.0);
+
+        let merged = merge_adjacent(vec![
+            chord_segment("C:maj", 0.0, 1.0, 0.2),
+            chord_segment("C:major", 1.0, 3.0, 0.8),
         ]);
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0]["end_seconds"], 3.0);
@@ -688,13 +702,13 @@ mod tests {
 
         let merged_with_missing_confidence = merge_adjacent(vec![
             chord_segment("C:maj", 0.0, 1.0, 0.2),
-            chord_segment("C:maj6", 1.0, 3.0, 0.8),
+            chord_segment("C:major", 1.0, 3.0, 0.8),
         ]);
         let mut first_missing = merged_with_missing_confidence;
         first_missing[0]["confidence"] = Value::Null;
         let merged = merge_adjacent(vec![
             first_missing.remove(0),
-            chord_segment("C:maj6", 3.0, 4.0, 0.8),
+            chord_segment("C:major", 3.0, 4.0, 0.8),
         ]);
         assert_eq!(merged[0]["confidence"], 0.8);
     }

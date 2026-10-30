@@ -162,7 +162,7 @@ type AccordionLeftHandCandidateView = {
   detail: string;
   fingering: string | null;
   id: string;
-  isExact: boolean;
+  kind: "standard" | "complete" | "approx";
   label: string;
   missingTones: readonly string[];
   rank: number;
@@ -687,7 +687,7 @@ function formatAccordionButtonDescription({
   voicingCount: number;
 }) {
   const degreeLabel = button.degree ? ` degree ${button.degree}` : "";
-  const candidateLabel = selectedCandidate ? ` ${selectedCandidate.label}.` : "";
+  const candidateLabel = selectedCandidate?.buttonIds.includes(button.id) ? ` ${selectedCandidate.label}.` : "";
   return `${activeChord} ${ACCORDION_STANDARD_PROFILE.label}, ${voicing.label} voicing ${voicingIndex + 1} of ${voicingCount}.${candidateLabel} ${button.pitchLabel}${degreeLabel}, ${button.side} ${button.surface}, ${button.rowLabel} row, column ${button.sourceColumn + 1}.`;
 }
 
@@ -992,7 +992,6 @@ function DictionarySurface({
     : null;
   const displayedNote = previewNote ?? selectedNote;
   const activeTooltipNoteId = previewNote?.id ?? selectedNote?.id ?? null;
-  const selectedVoicing = guitarVoicings.find((voicing) => voicing.id === selectedShape?.id) ?? null;
   const accordionVoicings = useMemo(
     () =>
       chordSpelling
@@ -1042,6 +1041,7 @@ function DictionarySurface({
     accordionVoicingViews[0]?.selectedCandidateId ??
     accordionVoicingViews[0]?.leftHandCandidates[0]?.id ??
     null;
+  const firstAccordionCandidateIds = JSON.stringify(accordionVoicingViews[0]?.leftHandCandidates.map((candidate) => candidate.id) ?? []);
   const firstAccordionPointId =
     accordionVoicingViews[0]?.rightHandNotes[0]?.id ??
     accordionVoicingViews[0]?.buttons.find((button) =>
@@ -1052,16 +1052,18 @@ function DictionarySurface({
     writeGlobalChordDictionaryPreferredShape(accordionPreferenceContext, voicing.id);
     bumpPreferenceRevision();
     setActiveAccordionVoicing(voicing.id);
-    setActiveAccordionCandidate(voicing.selectedCandidateId ?? voicing.leftHandCandidates[0]?.id ?? null);
+    setActiveAccordionCandidate((previous) => voicing.leftHandCandidates.some((candidate) => candidate.id === previous)
+      ? previous : voicing.selectedCandidateId ?? voicing.leftHandCandidates[0]?.id ?? null);
     setPreviewAccordionPointId(null);
     setSelectedAccordionPointId(voicing.rightHandNotes[0]?.id ?? null);
   };
   useEffect(() => {
     setActiveAccordionVoicing(firstAccordionVoicingId);
-    setActiveAccordionCandidate(firstAccordionCandidateId);
+    setActiveAccordionCandidate((previous) => previous && (JSON.parse(firstAccordionCandidateIds) as string[]).includes(previous)
+      ? previous : firstAccordionCandidateId);
     setPreviewAccordionPointId(null);
     setSelectedAccordionPointId(firstAccordionPointId);
-  }, [accordionResultKey, firstAccordionCandidateId, firstAccordionPointId, firstAccordionVoicingId]);
+  }, [accordionResultKey, firstAccordionCandidateId, firstAccordionCandidateIds, firstAccordionPointId, firstAccordionVoicingId]);
   const selectedAccordionVoicing =
     accordionVoicingViews.find((voicing) => voicing.id === activeAccordionVoicing) ??
     accordionVoicingViews[0] ??
@@ -1283,7 +1285,7 @@ function DictionarySurface({
         <ContextChip icon="transpose" label={transposeLabel} />
         <ContextChip icon="capo" label={capoLabel} />
         <ContextChip icon="sound" label={chordSpelling?.label ?? "No supported chord"} />
-        {selectedVoicing?.shapeFamily ? <ContextChip icon="shape" label={`${selectedVoicing.shapeFamily} shape`} /> : null}
+
       </div>
 
       <div className="chord-tool-grid">
@@ -1520,7 +1522,7 @@ function DictionarySurface({
           <div className="chord-accordion-list">
             <div className="chord-accordion-row chord-accordion-row--static">
               <span>
-                <strong>{formatCount(guitarVoicings.filter((voicing) => voicing.source === "common").length, "common shape")}</strong>
+                <strong>{formatCount(guitarVoicings.length, "voicing")}</strong>
                 <small>{chordSpelling?.label ?? "No supported chord"}</small>
               </span>
             </div>
@@ -2281,10 +2283,10 @@ function AccordionVoicingPanel({
             <span
               className={classNames(
                 "accordion-match-badge",
-                selectedCandidate.isExact && "accordion-match-badge--exact",
+                selectedCandidate.kind !== "approx" && "accordion-match-badge--exact",
               )}
             >
-              {selectedCandidate.isExact ? "Exact" : "Approx"}
+              {formatTitleCase(selectedCandidate.kind)}
             </span>
           ) : null}
         </div>
@@ -2652,8 +2654,8 @@ export function AccordionCandidateList({
 
   const primaryCandidate =
     candidates.find((candidate) => candidate.id === selectedCandidateId) ?? candidates[0] ?? null;
-  const missingToneSummary = primaryCandidate?.missingTones ?? [];
-  const addedToneSummary = primaryCandidate?.addedTones ?? [];
+  const missingToneSummary = primaryCandidate?.kind === "approx" ? primaryCandidate.missingTones : [];
+  const addedToneSummary = primaryCandidate?.kind === "approx" ? primaryCandidate.addedTones : [];
 
   return (
     <section className="accordion-candidate-panel" aria-label="Accordion left-hand candidates">
@@ -2682,15 +2684,15 @@ export function AccordionCandidateList({
                 <span
                   className={classNames(
                     "accordion-match-badge",
-                    candidate.isExact && "accordion-match-badge--exact",
+                    candidate.kind !== "approx" && "accordion-match-badge--exact",
                   )}
                 >
-                  {candidate.isExact ? "Exact" : "Approx"}
+                  {formatTitleCase(candidate.kind)}
                 </span>
               </span>
               <span>{candidate.detail}</span>
               {candidate.fingering ? <span>Fingering {candidate.fingering}</span> : null}
-              {candidate.missingTones.length > 0 || candidate.addedTones.length > 0 ? (
+              {candidate.kind === "approx" && (candidate.missingTones.length > 0 || candidate.addedTones.length > 0) ? (
                 <span className="accordion-candidate-card__diff">
                   {candidate.missingTones.length > 0 ? (
                     <small>Missing: {candidate.missingTones.join(", ")}</small>
@@ -2701,7 +2703,7 @@ export function AccordionCandidateList({
                 </span>
               ) : null}
               <span className="sr-only" id={descriptionId}>
-                {`Accordion left-hand candidate ${candidate.rank + 1}: ${candidate.label}. ${candidate.detail}. ${candidate.isExact ? "Exact match" : "Approximate match"}.`}
+                {`Accordion left-hand candidate ${candidate.rank + 1}: ${candidate.label}. ${candidate.detail}. ${formatTitleCase(candidate.kind)} left hand.`}
               </span>
             </button>
           );
@@ -2768,7 +2770,6 @@ function toGuitarShape(voicing: GuitarVoicing, profile: typeof GUITAR_STANDARD_P
   const strings = getGuitarStringViews(profile);
   const displayStringByString = new Map(strings.map((string) => [string.string, string.displayString]));
   const fretWindow = getGuitarFretWindow(voicing.notes);
-  const sourceLabel = voicing.source === "common" ? "Common" : "Generated";
   const mutedLabel = voicing.mutedStrings.length > 0 ? ` · ${formatCount(voicing.mutedStrings.length, "muted string")}` : "";
   const notes = voicing.notes.map((note) => {
     const shapePitch =
@@ -2794,7 +2795,7 @@ function toGuitarShape(voicing: GuitarVoicing, profile: typeof GUITAR_STANDARD_P
     fretWindow,
     id: voicing.id,
     label: voicing.label,
-    meta: `${sourceLabel} · ${formatCount(voicing.notes.length, "note")} · ${frettedLabel}${mutedLabel}`,
+    meta: `${formatCount(voicing.notes.length, "note")} · ${frettedLabel}${mutedLabel}`,
     mutedStrings,
     notes,
     stringMarkers: getGuitarStringMarkers(strings, notes, mutedStringSet),
@@ -2888,7 +2889,7 @@ function toAccordionVoicingViews(voicings: readonly AccordionVoicing[]): readonl
     const rightHandNotes = readArray(record, ["rightHandNotes", "notes"]).flatMap((note, noteIndex) =>
       toAccordionKeyboardNoteView(note, id, noteIndex),
     );
-    const rawLeftHandCandidates = readArray(record, ["leftHandCandidates", "candidates"]).flatMap(
+    const rawLeftHandCandidates = voicing.leftHandCandidates.flatMap(
       (candidate, candidateIndex) => toAccordionCandidateView(candidate, id, candidateIndex),
     );
     const leftHandCandidates = dedupeAccordionCandidateViews(rawLeftHandCandidates);
@@ -2961,7 +2962,7 @@ function toAccordionKeyboardNoteView(
 }
 
 function toAccordionCandidateView(
-  value: unknown,
+  value: AccordionVoicing["leftHandCandidates"][number],
   voicingId: string,
   candidateIndex: number,
 ): AccordionLeftHandCandidateView[] {
@@ -2974,11 +2975,7 @@ function toAccordionCandidateView(
   const addedTones = readStringArray(record, ["addedTones", "added", "addedNotes", "extraTones"]);
   const buttonIds = collectAccordionCandidateButtonIds(record);
   const buttons = collectAccordionCandidateButtonViews(record, voicingId, candidateIndex, id);
-  const matchText = readString(record, ["match", "matchKind", "quality", "status"]);
-  const explicitExact = readBoolean(record, ["isExact", "exact"]);
-  const isExact =
-    explicitExact ??
-    (matchText ? matchText.toLowerCase().includes("exact") : missingTones.length === 0 && addedTones.length === 0);
+  const kind = value.kind;
   const label =
     readString(record, ["label"]) ??
     formatAccordionCandidateLabel(record, buttonIds) ??
@@ -2996,7 +2993,7 @@ function toAccordionCandidateView(
       detail,
       fingering: formatOptionalFinger(record.fingering ?? record.fingers),
       id,
-      isExact,
+      kind,
       label,
       missingTones,
       rank: readNumber(record, ["rank"]) ?? candidateIndex,
@@ -3023,7 +3020,7 @@ function getAccordionCandidateVisibleKey(candidate: AccordionLeftHandCandidateVi
     candidate.label,
     candidate.detail,
     candidate.fingering ?? "",
-    candidate.isExact ? "exact" : "approx",
+    candidate.kind,
     candidate.missingTones.join(","),
     candidate.addedTones.join(","),
   ].join("\u0000");
@@ -3405,7 +3402,7 @@ function findAccordionInspectorPoint(
     label: button.noteLabel,
     pitchLabel: button.pitchLabel,
     side: button.side,
-    source: selectedCandidate?.label ?? "Left-hand button",
+    source: candidateButtonIds.has(button.id) ? selectedCandidate?.label ?? button.label : button.label,
     surface: button.surface,
   };
 }
@@ -4296,7 +4293,6 @@ function LiveFollowPianoActiveState({
             {
               activeKey: project?.displayedKey ?? null,
               currentChordRoot: currentChord?.displayLabel ?? null,
-              regionKey: project?.displayedKey ?? null,
             },
             project?.displayedKey ? { activeKey: project.displayedKey } : {},
           )
@@ -4743,7 +4739,6 @@ function LiveFollowActiveState({
     : null;
   const displayedNote = previewNote ?? selectedNote;
   const activeTooltipNoteId = previewNote?.id ?? selectedNote?.id ?? null;
-  const selectedVoicing = guitarVoicings.find((voicing) => voicing.id === selectedShape?.id) ?? null;
   const capoFret = displayContext.capoFret ?? 0;
 
   return (
@@ -4766,9 +4761,6 @@ function LiveFollowActiveState({
         />
         <ContextChip icon="capo" label={capoFret > 0 ? `Capo ${capoFret}` : "No capo"} />
         <ContextChip icon="sound" label={chordSpelling.label} />
-        {selectedVoicing?.shapeFamily ? (
-          <ContextChip icon="shape" label={`${selectedVoicing.shapeFamily} shape`} />
-        ) : null}
       </div>
 
       <div className="live-follow-grid">
@@ -4986,7 +4978,7 @@ function LiveFollowAccordionActiveState({
             chordSpelling,
             {
               currentChordRoot: currentChord?.displayLabel ?? null,
-              regionKey: project?.displayedKey ?? null,
+              activeKey: project?.displayedKey ?? null,
             },
             { activeKey: project?.displayedKey ?? undefined },
           )
@@ -5039,6 +5031,7 @@ function LiveFollowAccordionActiveState({
   const firstVoicingId = voicingViews[0]?.id ?? null;
   const firstCandidateId =
     voicingViews[0]?.selectedCandidateId ?? voicingViews[0]?.leftHandCandidates[0]?.id ?? null;
+  const firstCandidateIds = JSON.stringify(voicingViews[0]?.leftHandCandidates.map((candidate) => candidate.id) ?? []);
   const firstPointId =
     voicingViews[0]?.rightHandNotes[0]?.id ??
     voicingViews[0]?.buttons.find((button) =>
@@ -5050,17 +5043,19 @@ function LiveFollowAccordionActiveState({
     writeProjectChordDictionaryPreferredShape(preferenceContext, voicing.id);
     bumpPreferenceRevision();
     setActiveVoicing(voicing.id);
-    setActiveCandidate(voicing.selectedCandidateId ?? voicing.leftHandCandidates[0]?.id ?? null);
+    setActiveCandidate((previous) => voicing.leftHandCandidates.some((candidate) => candidate.id === previous)
+      ? previous : voicing.selectedCandidateId ?? voicing.leftHandCandidates[0]?.id ?? null);
     setPreviewPointId(null);
     setSelectedPointId(voicing.rightHandNotes[0]?.id ?? null);
   };
 
   useEffect(() => {
     setActiveVoicing(firstVoicingId);
-    setActiveCandidate(firstCandidateId);
+    setActiveCandidate((previous) => previous && (JSON.parse(firstCandidateIds) as string[]).includes(previous)
+      ? previous : firstCandidateId);
     setPreviewPointId(null);
     setSelectedPointId(firstPointId);
-  }, [currentChord?.displayLabel, firstCandidateId, firstPointId, firstVoicingId, resultKey]);
+  }, [currentChord?.displayLabel, firstCandidateId, firstCandidateIds, firstPointId, firstVoicingId, resultKey]);
 
   if (!currentChord || !project) {
     return (

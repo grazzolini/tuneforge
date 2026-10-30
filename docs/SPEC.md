@@ -96,6 +96,17 @@ Analysis is local and project-scoped:
 - Keep built-in chord generation available when the desktop-only ONNX Advanced Chords stack is unavailable, unsupported, explicitly excluded, or disabled by the mobile runtime platform.
 - Store generated chord segments with timing, labels, confidence, pitch-class metadata, source kind, and user-edit state.
 - Preserve user-edited chord timelines unless overwrite is explicitly requested.
+- Provide a chord dictionary for six-string guitar, 88-key piano, and 41-key accordion with
+  120-bass Stradella accompaniment, including lookup and live follow of the displayed project chord.
+- Place piano and accordion treble suggestions near the displayed song-key tonic, or the chord
+  root when no song key is available. Use close inversions within the instrument's range; the
+  song key independently informs note spelling.
+- Distinguish accordion left-hand realizations as Standard conventional button combinations,
+  Complete alternatives, or partial options marked Approx. Conventional seventh and diminished
+  seventh omissions remain Standard. A bass-only option stays partial when treble completes the
+  harmony.
+- Keep accordion treble inversions and left-hand combinations independently selectable, and
+  honor the requested bass in slash chords.
 - Future harmony work includes bar-based chord display, better beat/downbeat alignment, and tab-assisted correction.
 
 Capo-relative display is a harmonic presentation feature. It should not alter audio pitch, tuning, or playback speed.

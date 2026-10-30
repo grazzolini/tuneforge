@@ -56,7 +56,7 @@ const playwrightNoblePackages = [
   "libxrandr2",
 ];
 
-const ciImageConsumers = ["backend", "e2e", "desktop_tauri"];
+const ciImageConsumers = ["backend", "e2e", "desktop_tauri", "music-core-wasm"];
 function read(root, relativePath) {
   return fs.readFileSync(path.join(root, relativePath), "utf8");
 }
@@ -132,6 +132,23 @@ function workflowJobBlock(workflow, name) {
 
 function verifierCallIndexes(block) {
   return [...block.matchAll(/^(?: {8}run:| {6}- run:) bash scripts\/verify-ci-image\.sh$/gm)].map((match) => match.index);
+}
+
+function lockedCmakeInstallStep(name) {
+  const condition = name === "e2e" ? [] : ["        if: " + (name === "backend"
+    ? "needs.ci-scope.outputs.backend_static == 'true' || needs.ci-scope.outputs.backend_ffmpeg == 'true'"
+    : `needs.ci-scope.outputs.${name === "desktop_frontend" ? "desktop" : "desktop_tauri"} == 'true'`)];
+  return [
+    "      - name: Install locked music-core CMake in hosted Python prefix",
+    ...condition,
+    "        shell: bash",
+    "        run: |",
+    "          set -euo pipefail",
+    '          cmake_wheel="$(node scripts/build-music-core.mjs --download-tool cmake --platform linux-x64)"',
+    '          python -m pip install --no-index --no-deps "$cmake_wheel"',
+    "          cmake --version",
+    "",
+  ].join("\n");
 }
 
 function yamlScalar(value) {
@@ -409,10 +426,38 @@ export function validateCiImagePolicy(root) {
       imageVerifier.includes("Publish and promote a current tuneforge-ci image"),
     "CI image verifier must fail closed for missing, corrupt, or stale SoXR payloads",
   );
-  check(
-    !pagesWorkflow.includes("ghcr.io/grazzolini/tuneforge-ci"),
-    "Pages/release media workflow must not consume the CI image",
-  );
+  const pagesCore = workflowJobBlock(pagesWorkflow, "music-core-wasm");
+  check(pagesCore.includes("    runs-on: ubuntu-24.04") &&
+    pagesCore.includes("    permissions:\n      contents: read") &&
+    pagesCore.includes("ref: ${{ github.sha }}\n          persist-credentials: false") &&
+    pagesCore.includes('record="$(GITHUB_OUTPUT=/dev/stdout bash scripts/ci-image-run.sh select)"') &&
+    pagesCore.includes("grep -qx 'selection=promoted' <<< \"$record\"") &&
+    pagesCore.includes("CI_SCOPE_RESULT: success") &&
+    pagesCore.includes("CI_IMAGE_SELECTION=promoted") &&
+    pagesCore.includes('run: bash scripts/ci-image-run.sh load "$RUNNER_TEMP/ci-image"') &&
+    pagesCore.includes("shell: bash ${{ github.workspace }}/scripts/ci-image-run.sh script {0}") &&
+    !/continue-on-error|docker pull|docker build|secrets\./.test(pagesCore) && !/^\s+credentials:/m.test(pagesCore) &&
+    !jobGrantsPackagesWrite(pagesCore),
+    "Pages must acquire only the source-matched published digest through the shared image selector");
+  for (const workflow of [mainWorkflow, pagesWorkflow]) {
+    const acquisition = workflowJobBlock(workflow, "music-core-wasm");
+    const load = acquisition.indexOf('run: bash scripts/ci-image-run.sh load "$RUNNER_TEMP/ci-image"');
+    const verify = acquisition.indexOf("run: bash scripts/verify-ci-image.sh");
+    const install = acquisition.indexOf("run: node scripts/ci-music-core.mjs install");
+    const upload = acquisition.indexOf("uses: actions/upload-artifact@");
+    check(load >= 0 && load < verify && verifierCallIndexes(acquisition).length === 1 && verify < install && install < upload &&
+      acquisition.includes("artifact_id: ${{ steps.artifact.outputs.artifact-id }}") &&
+      acquisition.includes("path: packages/music-core/build/artifacts/wasm/") &&
+      acquisition.includes("if-no-files-found: error") &&
+      !/build-music-core\.mjs --target wasm(?:\n|\s*\|)/.test(acquisition),
+      "WASM acquisition must verify the selected image, install checked payload, then export exact artifact ID without rebuilding");
+    for (const index of [verify, install, upload]) {
+      const step = acquisition.slice(acquisition.lastIndexOf("\n      - ", index), acquisition.indexOf("\n      - ", index));
+      check(!/^\s+(?:if|continue-on-error):/m.test(step) && !step.includes("shell:"),
+        "WASM acquisition must not skip or bypass image/payload verification and export");
+    }
+  }
+
   check(
     mainWorkflow.includes(
       ".github/ci/*|.github/workflows/ci-image.yml|.github/workflows/ci.yml|packaging/soxr/*)",
@@ -461,12 +506,13 @@ export function validateCiImagePolicy(root) {
     const block = workflowJobBlock(mainWorkflow, name);
     check(block.includes("    runs-on: ubuntu-24.04"), name + " must use ubuntu-24.04");
     check(block.includes("shell: bash ${{ github.workspace }}/scripts/ci-image-run.sh script {0}"), name + " must route native run steps through the absolute shared Docker shell");
-    const scheduling = name === "e2e" ? "${{ always() }}" : "${{ always() && (needs.ci-image-candidate.result == 'failure' || needs.ci-image-candidate.result == 'cancelled' || needs.ci-scope.result != 'success' || " +
+    const scheduling = ["e2e", "music-core-wasm"].includes(name) ? "${{ always() }}" : "${{ always() && (needs.ci-image-candidate.result == 'failure' || needs.ci-image-candidate.result == 'cancelled' || needs.ci-scope.result != 'success' || " +
       (name === "backend" ? "needs.ci-scope.outputs.backend_static == 'true' || needs.ci-scope.outputs.backend_ffmpeg == 'true'" : "needs.ci-scope.outputs.desktop_tauri == 'true'") + ") }}";
     check(block.match(/^    if: (.*)$/m)?.[1] === scheduling, name + " must retain fail-closed required-job scheduling");
     const checkout = block.indexOf("uses: actions/checkout@"), require = block.indexOf("run: bash scripts/ci-image-run.sh require"),
       download = block.indexOf("uses: actions/download-artifact@"), load = block.indexOf('run: bash scripts/ci-image-run.sh load "$RUNNER_TEMP/ci-image"'), verify = verifierCallIndexes(block);
-    check(block.includes("    needs: [ci-scope, ci-image-candidate]") &&
+    const requiredDependencies = name === "e2e" ? "[ci-scope, ci-image-candidate, music-core-wasm]" : "[ci-scope, ci-image-candidate]";
+    check(block.match(/^    needs: (.*)$/m)?.[1] === requiredDependencies &&
       block.includes("CI_SCOPE_RESULT: ${{ needs.ci-scope.result }}") && block.includes("CI_IMAGE_SELECTION: ${{ needs.ci-scope.outputs.image_selection }}") &&
       block.includes("CI_IMAGE_CANDIDATE_RESULT: ${{ needs.ci-image-candidate.result }}") && block.includes("CI_IMAGE_ARTIFACT_ID: ${{ needs.ci-image-candidate.outputs.artifact_id }}") &&
       block.includes("ref: ${{ github.sha }}\n          persist-credentials: false") &&
@@ -493,7 +539,14 @@ export function validateCiImagePolicy(root) {
   check(tauriBlock.includes("uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659") &&
     tauriBlock.includes("toolchain: ${{ env.RUST_VERSION }}") && tauriBlock.includes("          cache: false\n") && tauriBlock.includes('rustflags: ""'), "desktop_tauri must bootstrap pinned Rust without action-managed caching or rustflags");
   check((tauriBlock.match(/uses: actions\/cache@/g) ?? []).length === 1 && tauriBlock.includes("key: cargo-v2-${{ steps.image.outputs.identity }}-") &&
-    tauriBlock.includes('soxr_root="${TUNEFORGE_SOXR_ROOT:?}"') && !tauriBlock.includes("node scripts/build-soxr.mjs") && !tauriBlock.includes("python -m pip install"), "desktop_tauri must use one image-keyed Cargo cache and the prebuilt SoXR payload");
+    tauriBlock.includes('soxr_root="${TUNEFORGE_SOXR_ROOT:?}"') && !tauriBlock.includes("node scripts/build-soxr.mjs"), "desktop_tauri must use one image-keyed Cargo cache and the prebuilt SoXR payload");
+  for (const name of ["backend", "e2e", "desktop_tauri", "desktop_frontend"]) {
+    const block = workflowJobBlock(mainWorkflow, name);
+    const install = lockedCmakeInstallStep(name);
+    const remaining = block.replace(install, "");
+    check(block.split(install).length === 2 && !/\bpip(?:3)?\s+install\b/.test(remaining),
+      name + " may install only the lock-verified CMake wheel on the host in the setup-python prefix");
+  }
   check(imageVerifier.includes('sha256sum --check --strict --status "$image_manifest"') && imageVerifier.includes('!= "$CI_IMAGE_FINGERPRINT"'), "CI image verifier must reject missing, corrupt or stale whole-recipe manifests");
   const publishInputs = imageWorkflow.match(/uses: docker\/build-push-action@[^\n]+\n        with:\n([\s\S]*?)(?=\n      -)/)?.[1];
   check(publishInputs && [...publishInputs.matchAll(/^          ([\w-]+):/gm)].every((m) => ["context", "file", "platforms", "pull", "no-cache", "push", "tags", "labels", "provenance", "sbom"].includes(m[1])), "Publisher recipe options require explicit compatibility review; build arguments, targets and additional contexts are unsupported");

@@ -46,8 +46,7 @@ This file is the source of truth for dependency and model-weight distribution po
   `sources.lock.json` records the immutable source tree, archive checksum, and every imported file hash.
   The upstream MIT license remains at `packages/music-core/licenses/Gingo-LICENSE`.
   An owned build-time patch adds only slash-tone enumeration without modifying acquired source bytes or upstream playability pruning.
-  This producer package supplies Python, Rust, and portable WASM bindings for later application
-  integration. Standalone wheels and source distributions retain its schema, instrument data,
+  Python, Rust, and locally bundled WASM consume this canonical core. Standalone wheels and source distributions retain its schema, instrument data,
   sources, and notices. No upstream Python
   runtime, CLI, assets, or audio are imported.
 
@@ -57,7 +56,8 @@ This file is the source of truth for dependency and model-weight distribution po
 - **Source:** <https://github.com/pybind/pybind11/tree/97bf890db679505a14dfe547a5e77bb2bd05dc90>
 - **Notes:** Header-only binding dependency for the compiled `tuneforge_music_core._native`
   extension. Exact wheel/source hashes live in the core build-tool lock. It adds no Python
-  runtime dependency. The standalone distribution retains the pybind11 notice.
+  runtime dependency. The standalone distribution retains the pybind11 notice; Flatpak
+  acquires the pinned wheel before its offline build phase.
 
 ### Unicode 16.0.0 (music-core compatibility data)
 
@@ -69,7 +69,7 @@ This file is the source of truth for dependency and model-weight distribution po
   the exact UnicodeData, DerivedCoreProperties, and SpecialCasing source hashes plus
   the generator and license hashes. `tools/generate_unicode.py` is a maintenance tool;
   builds use the committed table without downloading Unicode data. Standalone wheels,
-  source distributions, and CI image payloads retain the complete Unicode notice.
+  source distributions, packaged applications, and CI image payloads retain the complete Unicode notice.
 
 
 ### demucs-infer 4.2.2

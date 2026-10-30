@@ -2388,6 +2388,8 @@ async function readyChordDictionary({ page, timeoutMs }) {
   await page.getByRole("heading", { name: "Tools" }).waitFor({ timeout: timeoutMs });
   await page.getByRole("heading", { name: "Chord Dictionary" }).waitFor({ timeout: timeoutMs });
   await page.getByRole("tab", { name: "Chord Dictionary" }).waitFor({ timeout: timeoutMs });
+  await page.getByRole("button", { name: "C voicing 1", exact: true }).first().waitFor({ timeout: timeoutMs });
+  await page.getByRole("button", { name: /string \d fret \d/ }).first().waitFor({ timeout: timeoutMs });
 }
 
 async function readyJobs({ page, timeoutMs }) {

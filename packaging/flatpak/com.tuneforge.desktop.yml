@@ -299,6 +299,7 @@ modules:
         dest-filename: frontend-version.json
     build-commands:
       - node seed-pnpm-store.mjs /app/share/tuneforge/node-sources /run/tuneforge-cache/@@FLATPAK_CACHE_NAMESPACE@@/pnpm/store /run/tuneforge-cache/@@FLATPAK_CACHE_NAMESPACE@@/pnpm/cache /app/bin/pnpm /run/tuneforge-cache/@@FLATPAK_CACHE_NAMESPACE@@/pnpm-report.json
+      - node scripts/build-music-core.mjs --target wasm --check
       - /app/bin/pnpm --filter @tuneforge/desktop build
       - install -dm755 /app/share/tuneforge/build/frontend-dist
       - cp -a apps/desktop/dist/. /app/share/tuneforge/build/frontend-dist/
@@ -334,14 +335,28 @@ modules:
     buildsystem: simple
     build-options:
       env:
+        CMAKE_GENERATOR: Unix Makefiles
         LD_LIBRARY_PATH: /app/lib/tuneforge/backend/python/lib:/app/lib
         PYTHONPATH: /app/lib/tuneforge/backend/site-packages
+        TMPDIR: /run/build/tuneforge-backend/.pip-tmp
     sources:
       - type: archive
         path: generated/backend-snapshot.tar
         archive-type: tar
         strip-components: 0
+      - generated/music-core-build-sources.json
+      - type: file
+        path: generated/music-core-build-requirements.txt
     build-commands:
+      - install -dm755 /run/build/tuneforge-backend/music-core-build-tools
+      - install -dm700 /run/build/tuneforge-backend/.pip-tmp
+      - /app/lib/tuneforge/backend/python/bin/python3.14 -m pip install --no-index --no-deps --find-links=music-core-build-sources --target=/run/build/tuneforge-backend/music-core-build-tools -r music-core-build-requirements.txt
+      - PATH=/run/build/tuneforge-backend/music-core-build-tools/bin:$PATH PYTHONPATH=/run/build/tuneforge-backend/music-core-build-tools:/app/lib/tuneforge/backend/site-packages /app/lib/tuneforge/backend/python/bin/python3.14 -m pip install --no-index --no-deps --no-build-isolation --target=/app/lib/tuneforge/backend/site-packages ./packages/music-core
+      - /app/lib/tuneforge/backend/python/bin/python3.14 -c "from pathlib import Path; import tuneforge_music_core, tuneforge_music_core._native as native; root=Path('/app/lib/tuneforge/backend/site-packages'); assert all(Path(module.__file__).resolve().is_relative_to(root) for module in (tuneforge_music_core, native))"
+      - install -Dm644 packages/music-core/licenses/Gingo-LICENSE /app/share/doc/tuneforge/LICENSES/Gingo-MIT.txt
+      - install -Dm644 packages/music-core/licenses/pybind11-LICENSE /app/share/doc/tuneforge/LICENSES/pybind11-BSD-3-Clause.txt
+      - install -Dm644 packages/music-core/licenses/Unicode-LICENSE /app/share/doc/tuneforge/LICENSES/Unicode-LICENSE.txt
+      - rm -rf /run/build/tuneforge-backend/music-core-build-tools /run/build/tuneforge-backend/.pip-tmp
       - install -Dm755 ffmpeg /app/bin/ffmpeg
       - install -Dm755 ffprobe /app/bin/ffprobe
       - /app/bin/ffmpeg -version

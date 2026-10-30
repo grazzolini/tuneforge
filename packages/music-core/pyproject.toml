@@ -1,0 +1,44 @@
+[build-system]
+requires = [
+  "scikit-build-core==0.11.6",
+  "pybind11==3.1.0",
+  "packaging==25.0",
+  "pathspec==0.12.1",
+  "cmake==3.31.6",
+]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "tuneforge-music-core"
+version = "0.1.0"
+description = "The local TuneForge notation and instrument core"
+requires-python = ">=3.11"
+license = "MIT"
+
+[tool.scikit-build]
+cmake.version = "==3.31.6"
+cmake.build-type = "Release"
+build-dir = "build/python/{wheel_tag}"
+cmake.define.TUNEFORGE_BUILD_PYTHON = "ON"
+build.targets = ["_native"]
+wheel.packages = ["bindings/python/tuneforge_music_core"]
+wheel.license-files = ["LICENSE", "licenses/Gingo-LICENSE", "licenses/pybind11-LICENSE", "licenses/Unicode-LICENSE"]
+sdist.cmake = true
+sdist.include = ["vendor/gingo-src/**"]
+sdist.exclude = ["build/**", "node_modules/**", ".venv/**", "__pycache__/**"]
+ninja.make-fallback = true
+
+[tool.uv]
+cache-keys = [
+  { file = "pyproject.toml" },
+  { file = "CMakeLists.txt" },
+  { file = "sources.lock.json" },
+  { file = "toolchains.lock.json" },
+  { file = "src/**" },
+  { file = "include/**" },
+  { file = "resources/**" },
+  { file = "schema/**" },
+  { file = "patches/**" },
+  { file = "tools/**" },
+  { file = "bindings/python/**" },
+]

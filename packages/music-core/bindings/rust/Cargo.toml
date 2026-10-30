@@ -1,0 +1,14 @@
+[package]
+name = "tuneforge-music-core"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+links = "tuneforge_music_core"
+build = "build.rs"
+
+[dependencies]
+serde_json = { version = "=1.0.151", features = ["raw_value"] }
+
+[[bin]]
+name = "music-core-contract"
+path = "src/main.rs"

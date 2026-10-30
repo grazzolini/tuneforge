@@ -1,0 +1,60 @@
+--- a/cpp/include/gingo/fretboard.hpp
++++ b/cpp/include/gingo/fretboard.hpp
+@@ -192,7 +192,7 @@
+     /// Multiple fingerings ranked by playability.
+     /// @param max_results  Maximum number of fingerings to return.
+     std::vector<Fingering> fingerings(const Chord& chord,
+-                                       int max_results = 5) const;
++                                       int max_results = 5, int additional_pitch_class = -1) const;
+ 
+     // --- Reverse: positions → theory ---------------------------------------
+ 
+@@ -231,7 +231,8 @@
+ 
+     /// Generate candidate fingerings within a fret window.
+     std::vector<Fingering> generate_fingerings(
+-        const Chord& chord, int base_pos, int max_span = 4) const;
++        const Chord& chord, int base_pos, int max_span = 4,
++        int additional_pitch_class = -1) const;
+ };
+ 
+ } // namespace gingo
+--- a/cpp/src/fretboard.cpp
++++ b/cpp/src/fretboard.cpp
+@@ -345,7 +345,8 @@
+ }
+ 
+ std::vector<Fingering> Fretboard::generate_fingerings(
+-        const Chord& chord, int base_pos, int max_span) const {
++        const Chord& chord, int base_pos, int max_span,
++        int additional_pitch_class) const {
+     auto chord_notes = chord.notes();
+     if (chord_notes.empty()) return {};
+ 
+@@ -355,6 +356,8 @@
+     // Collect target pitch classes.
+     std::set<int> target_pcs;
+     for (const auto& n : chord_notes) target_pcs.insert(n.semitone());
++    if (additional_pitch_class >= 0)
++        target_pcs.insert(((additional_pitch_class % 12) + 12) % 12);
+ 
+     // For each string, find valid frets within the window [base_pos, base_pos+max_span].
+     // Also consider open strings (fret 0) and muted.
+@@ -620,7 +623,7 @@
+ }
+ 
+ std::vector<Fingering> Fretboard::fingerings(const Chord& chord,
+-                                               int max_results) const {
++                                               int max_results, int additional_pitch_class) const {
+     auto chord_notes = chord.notes();
+     int root_pc = chord_notes.empty() ? -1 : chord_notes[0].semitone();
+ 
+@@ -628,7 +631,7 @@
+ 
+     // Scan positions along the fretboard.
+     for (int p = 0; p <= tuning_.num_frets - 3; p++) {
+-        auto batch = generate_fingerings(chord, p);
++        auto batch = generate_fingerings(chord, p, 4, additional_pitch_class);
+         for (auto& f : batch) all.push_back(std::move(f));
+     }
+ 

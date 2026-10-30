@@ -38,6 +38,40 @@ This file is the source of truth for dependency and model-weight distribution po
 
 ## Runtime Dependencies (bundled or required)
 
+### Gingo (owned music-core source)
+
+- **License:** MIT
+- **Source:** <https://github.com/sauloverissimo/gingopy/tree/eec410e6f5b09ad89a2b9d987b63e4048d9a738c>
+- **Notes:** The standalone `packages/music-core` package explicitly acquires only locked upstream `cpp/` and `LICENSE` from its checksum-pinned archive. Generated sources are ignored; upstream source files are not tracked.
+  `sources.lock.json` records the immutable source tree, archive checksum, and every imported file hash.
+  The upstream MIT license remains at `packages/music-core/licenses/Gingo-LICENSE`.
+  An owned build-time patch adds only slash-tone enumeration without modifying acquired source bytes or upstream playability pruning.
+  This producer package supplies Python, Rust, and portable WASM bindings for later application
+  integration. Standalone wheels and source distributions retain its schema, instrument data,
+  sources, and notices. No upstream Python
+  runtime, CLI, assets, or audio are imported.
+
+### pybind11 3.1.0 (music-core binding build dependency)
+
+- **License:** BSD-3-Clause
+- **Source:** <https://github.com/pybind/pybind11/tree/97bf890db679505a14dfe547a5e77bb2bd05dc90>
+- **Notes:** Header-only binding dependency for the compiled `tuneforge_music_core._native`
+  extension. Exact wheel/source hashes live in the core build-tool lock. It adds no Python
+  runtime dependency. The standalone distribution retains the pybind11 notice.
+
+### Unicode 16.0.0 (music-core compatibility data)
+
+- **License:** Unicode License V3 (`Unicode-3.0`)
+- **Source:** <https://www.unicode.org/Public/16.0.0/ucd/>
+- **Notice:** `packages/music-core/licenses/Unicode-LICENSE`
+- **Notes:** The generated `resources/unicode-v16.hpp` remains versioned compatibility source data;
+  musical parsing uses shared canonical helpers rather than per-language emulation. Its header records
+  the exact UnicodeData, DerivedCoreProperties, and SpecialCasing source hashes plus
+  the generator and license hashes. `tools/generate_unicode.py` is a maintenance tool;
+  builds use the committed table without downloading Unicode data. Standalone wheels,
+  source distributions, and CI image payloads retain the complete Unicode notice.
+
+
 ### demucs-infer 4.2.2
 
 - **License:** MIT

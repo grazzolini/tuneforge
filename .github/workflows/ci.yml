@@ -96,6 +96,9 @@ jobs:
                   site=true
                   release_media=true
                   ;;
+                packages/music-core/*)
+                  full_gate=true
+                  ;;
                 packages/shared-types/*)
                   desktop=true
                   ;;
@@ -293,7 +296,12 @@ jobs:
           /tmp/tuneforge-zlib-probe
 
       - name: Test deterministic Node scripts
-        run: node --test scripts/build-info.test.mjs scripts/package-options.test.mjs scripts/flatpak-options.test.mjs scripts/flatpak-pnpm.test.mjs scripts/desktop-e2e.test.mjs scripts/sync-validation.test.mjs scripts/release-license-inventory.test.mjs scripts/capture-release-media.test.mjs scripts/ci-image-policy.test.mjs scripts/verify-ci-image.test.mjs scripts/ci-scope-policy.test.mjs scripts/ci-image-impact.test.mjs scripts/ci-image-run.test.mjs scripts/validate-android-release-jni.test.mjs scripts/package-dmg.test.mjs scripts/package-profile.test.mjs scripts/dev.test.mjs scripts/android-prepare-generated.test.mjs
+        run: node --test scripts/build-info.test.mjs scripts/package-options.test.mjs scripts/flatpak-options.test.mjs scripts/flatpak-pnpm.test.mjs scripts/desktop-e2e.test.mjs scripts/sync-validation.test.mjs scripts/release-license-inventory.test.mjs scripts/capture-release-media.test.mjs scripts/ci-image-policy.test.mjs scripts/ci-music-core.test.mjs scripts/verify-ci-image.test.mjs scripts/ci-scope-policy.test.mjs scripts/ci-image-impact.test.mjs scripts/ci-image-run.test.mjs scripts/validate-android-release-jni.test.mjs scripts/package-dmg.test.mjs scripts/package-profile.test.mjs scripts/dev.test.mjs scripts/android-prepare-generated.test.mjs
+
+      - name: Check standalone music-core generated contracts and metadata
+        run: |
+          pnpm --filter @tuneforge/music-core types:check
+          node packages/music-core/test/artifact-metadata.mjs
 
       - name: Test Android packaging helpers
         run: node --test --test-reporter=spec scripts/package-android.test.mjs

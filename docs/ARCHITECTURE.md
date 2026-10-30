@@ -306,3 +306,11 @@ Validation failures return `INVALID_REQUEST` with serialized validation details.
 - Keep mobile additions aligned with the existing project/job/artifact model.
 - Treat practice views as consumers of project artifacts, not as separate sources of analysis truth.
 - Keep display-only harmonic features such as capo-relative chords separate from audio transforms.
+
+### Standalone music-core producer
+
+`packages/music-core` owns the versioned C ABI, Python/Rust/WASM transports, operation schema,
+instrument knowledge, compatibility data, pinned source acquisition, and contract/parity corpus.
+`node scripts/build-music-core.mjs --target wasm` produces a source-bound manifest and portable
+payload. The CI image bakes that verified WASM plus notices and source/toolchain provenance.
+Application adapters and packaging retain their existing behavior until a separate integration.

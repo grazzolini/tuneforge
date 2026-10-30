@@ -82,3 +82,11 @@ test("producer inputs retain real gates and promotion gaps force all image consu
   assert.match(candidate, /needs: ci-scope/);
   assert.match(candidate, /always\(\).*needs\.ci-scope\.result != 'success'/);
 });
+
+test("standalone music-core changes force producer gates and script contract checks", () => {
+  assert.match(caseArm(String.raw`packages/music-core/\*\)`), /full_gate=true/);
+  assert.match(workflow, /pnpm --filter @tuneforge\/music-core types:check/);
+  assert.match(workflow, /node packages\/music-core\/test\/artifact-metadata\.mjs/);
+  assert.match(workflow, /scripts\/ci-music-core\.test\.mjs/);
+  assert.doesNotMatch(workflow, /build-music-core\.mjs --target wasm/);
+});

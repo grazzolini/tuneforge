@@ -41,7 +41,9 @@
     "test": "bash scripts/run-tests.sh",
     "typecheck": "pnpm --filter @tuneforge/desktop typecheck",
     "commitlint": "commitlint --edit",
-    "prepare": "husky"
+    "prepare": "husky",
+    "music-core:test": "node packages/music-core/test/structural.mjs",
+    "music-core:build": "node scripts/build-music-core.mjs"
   },
   "devDependencies": {
     "@commitlint/cli": "^21.2.2",

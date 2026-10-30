@@ -1,0 +1,6196 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:tuneforge:music-core:operations:1",
+  "title": "TuneForge music-core API 1 / schema 1",
+  "description": "Named operation DTOs. Integer-token provenance and exact signed64-bit access are preserved for Python/Rust compatibility; frontend operations retain JavaScript Number serialization. Numeric conversion must remain finite. UTF-8 scalar strings, nesting<=64, no duplicate object keys or trailing data. Legacy segment/context and normalizer inputs intentionally accept unknown data for the shared original type guards.",
+  "$defs": {
+    "Degree": {
+      "enum": [
+        "1",
+        "b2",
+        "#1",
+        "2",
+        "#2",
+        "b3",
+        "3",
+        "4",
+        "#4",
+        "b5",
+        "5",
+        "#5",
+        "b6",
+        "6",
+        "#6",
+        "bb7",
+        "b7",
+        "7"
+      ]
+    },
+    "Quality": {
+      "enum": [
+        "major",
+        "minor",
+        "7",
+        "7b5",
+        "maj7",
+        "m7",
+        "sus2",
+        "sus4",
+        "dim",
+        "aug",
+        "dim7",
+        "hdim7",
+        "maj6",
+        "min6",
+        "minmaj7"
+      ]
+    },
+    "Key": {
+      "type": "object",
+      "properties": {
+        "pitchClass": {
+          "type": "integer"
+        },
+        "mode": {
+          "enum": [
+            "major",
+            "minor"
+          ]
+        }
+      },
+      "required": [
+        "pitchClass",
+        "mode"
+      ],
+      "additionalProperties": true
+    },
+    "Pitch": {
+      "type": "object",
+      "properties": {
+        "pitchClass": {
+          "type": "integer"
+        },
+        "octave": {
+          "type": "integer"
+        },
+        "midi": {
+          "type": "integer"
+        },
+        "noteName": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "pitchClass",
+        "octave",
+        "midi",
+        "noteName",
+        "label"
+      ],
+      "additionalProperties": false
+    },
+    "PitchOptions": {
+      "type": "object",
+      "properties": {
+        "activeKey": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Key"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "mode": {
+          "enum": [
+            "auto",
+            "sharps",
+            "flats",
+            "neutral",
+            "dual"
+          ]
+        }
+      },
+      "required": [],
+      "additionalProperties": true
+    },
+    "ParsedChord": {
+      "type": "object",
+      "properties": {
+        "rawLabel": {
+          "type": "string"
+        },
+        "root": {
+          "type": "string"
+        },
+        "rootPitchClass": {
+          "type": "integer"
+        },
+        "quality": {
+          "$ref": "#/$defs/Quality"
+        },
+        "bass": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "bassPitchClass": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "bassDegree": {
+          "$ref": "#/$defs/Degree"
+        }
+      },
+      "required": [
+        "root",
+        "rootPitchClass",
+        "quality",
+        "bass",
+        "bassPitchClass"
+      ],
+      "additionalProperties": true
+    },
+    "ChordInput": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "$ref": "#/$defs/ParsedChord"
+        }
+      ]
+    },
+    "ChordSpelling": {
+      "type": "object",
+      "properties": {
+        "rawLabel": {
+          "type": "string"
+        },
+        "root": {
+          "type": "string"
+        },
+        "rootPitchClass": {
+          "type": "integer"
+        },
+        "quality": {
+          "$ref": "#/$defs/Quality"
+        },
+        "bass": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "bassPitchClass": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "bassDegree": {
+          "$ref": "#/$defs/Degree"
+        },
+        "label": {
+          "type": "string"
+        },
+        "tones": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "degree": {
+                "$ref": "#/$defs/Degree"
+              },
+              "interval": {
+                "type": "integer"
+              },
+              "pitchClass": {
+                "type": "integer"
+              },
+              "noteName": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "degree",
+              "interval",
+              "pitchClass",
+              "noteName"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "bassNoteName": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "root",
+        "rootPitchClass",
+        "quality",
+        "bass",
+        "bassPitchClass",
+        "label",
+        "tones",
+        "notes",
+        "bassNoteName"
+      ],
+      "additionalProperties": false
+    },
+    "Context": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/Key"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "activeKey": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Key"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "currentChordRoot": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ChordInput"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "preferredTrebleRegion": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "centerMidi": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "centerMidi"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "GuitarContext": {
+      "type": "object",
+      "properties": {
+        "sourceKey": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Key"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "transposeSemitones": {
+          "type": "integer"
+        },
+        "capoFret": {
+          "type": "number"
+        },
+        "useCapoShapes": {
+          "type": "boolean"
+        },
+        "canCapo": {
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "GuitarProfile": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "const": "guitar"
+        },
+        "label": {
+          "type": "string"
+        },
+        "tuning": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "string": {
+                "type": "integer"
+              },
+              "openPitch": {
+                "$ref": "#/$defs/Pitch"
+              }
+            },
+            "required": [
+              "string",
+              "openPitch"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "frets": {
+          "type": "integer"
+        },
+        "canCapo": {
+          "type": "boolean"
+        },
+        "canRetune": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "tuning",
+        "frets",
+        "canCapo",
+        "canRetune"
+      ],
+      "additionalProperties": true
+    },
+    "GuitarNote": {
+      "type": "object",
+      "properties": {
+        "string": {
+          "type": "integer"
+        },
+        "fret": {
+          "type": "integer"
+        },
+        "soundingFret": {
+          "type": "integer"
+        },
+        "degree": {
+          "$ref": "#/$defs/Degree"
+        },
+        "note": {
+          "type": "string"
+        },
+        "pitch": {
+          "$ref": "#/$defs/Pitch"
+        },
+        "finger": {
+          "enum": [
+            1,
+            2,
+            3,
+            4
+          ]
+        }
+      },
+      "required": [
+        "string",
+        "fret",
+        "soundingFret",
+        "degree",
+        "note",
+        "pitch"
+      ],
+      "additionalProperties": false
+    },
+    "GuitarVoicing": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "chordLabel": {
+          "type": "string"
+        },
+        "shapeChordLabel": {
+          "type": "string"
+        },
+        "shapeFamily": {
+          "enum": [
+            "C",
+            "A",
+            "G",
+            "E",
+            "D"
+          ]
+        },
+        "source": {
+          "enum": [
+            "common",
+            "generated"
+          ]
+        },
+        "rank": {
+          "type": "integer"
+        },
+        "capoFret": {
+          "type": "integer"
+        },
+        "mutedStrings": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/GuitarNote"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "chordLabel",
+        "shapeChordLabel",
+        "source",
+        "rank",
+        "capoFret",
+        "mutedStrings",
+        "notes"
+      ],
+      "additionalProperties": false
+    },
+    "KeyboardProfile": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "enum": [
+            "piano",
+            "accordion"
+          ]
+        },
+        "label": {
+          "type": "string"
+        },
+        "family": {
+          "type": "string"
+        },
+        "keyboard": {
+          "type": "object",
+          "properties": {
+            "keyCount": {
+              "type": "integer"
+            },
+            "lowestPitch": {
+              "$ref": "#/$defs/Pitch"
+            },
+            "highestPitch": {
+              "$ref": "#/$defs/Pitch"
+            },
+            "canTranspose": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "keyCount",
+            "lowestPitch",
+            "highestPitch",
+            "canTranspose"
+          ],
+          "additionalProperties": false
+        },
+        "buttonBoard": {
+          "$ref": "#/$defs/ButtonBoardProfile"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "family",
+        "keyboard"
+      ],
+      "additionalProperties": false
+    },
+    "RegionRoot": {
+      "type": "object",
+      "properties": {
+        "pitchClass": {
+          "type": "integer"
+        },
+        "note": {
+          "type": "string"
+        },
+        "centerMidi": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "pitchClass",
+        "note",
+        "centerMidi"
+      ],
+      "additionalProperties": false
+    },
+    "PianoVoicing": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "chordLabel": {
+          "type": "string"
+        },
+        "rank": {
+          "type": "integer"
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "pitch": {
+                "$ref": "#/$defs/Pitch"
+              },
+              "note": {
+                "type": "string"
+              },
+              "degree": {
+                "$ref": "#/$defs/Degree"
+              },
+              "handHint": {
+                "enum": [
+                  "left",
+                  "right"
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "pitch",
+              "note",
+              "degree",
+              "handHint"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "inversion": {
+          "type": "object",
+          "properties": {
+            "index": {
+              "type": "integer"
+            },
+            "label": {
+              "type": "string"
+            },
+            "bassDegree": {
+              "$ref": "#/$defs/Degree"
+            },
+            "isRootPosition": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "index",
+            "label",
+            "bassDegree",
+            "isRootPosition"
+          ],
+          "additionalProperties": false
+        },
+        "regionRoot": {
+          "$ref": "#/$defs/RegionRoot"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "chordLabel",
+        "rank",
+        "notes",
+        "inversion",
+        "regionRoot"
+      ],
+      "additionalProperties": false
+    },
+    "Button": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "side": {
+          "const": "bass"
+        },
+        "rowId": {
+          "enum": [
+            "counterbass",
+            "bass",
+            "major",
+            "minor",
+            "seventh",
+            "diminished"
+          ]
+        },
+        "rowLabel": {
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "bass",
+            "chord"
+          ]
+        },
+        "label": {
+          "type": "string"
+        },
+        "root": {
+          "type": "string"
+        },
+        "pitchClass": {
+          "type": "integer"
+        },
+        "pitchClasses": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
+        },
+        "column": {
+          "type": "integer"
+        },
+        "row": {
+          "type": "integer"
+        },
+        "visualColumn": {
+          "type": "number"
+        },
+        "visualOrder": {
+          "type": "number"
+        },
+        "visualColumnOffset": {
+          "type": "number"
+        },
+        "visualYOffset": {
+          "type": "number"
+        },
+        "visualYStep": {
+          "type": "number"
+        },
+        "visualX": {
+          "type": "number"
+        },
+        "visualY": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "side",
+        "rowId",
+        "rowLabel",
+        "kind",
+        "label",
+        "root",
+        "pitchClass",
+        "pitchClasses",
+        "column",
+        "row",
+        "visualColumn",
+        "visualOrder",
+        "visualColumnOffset",
+        "visualYOffset",
+        "visualYStep",
+        "visualX",
+        "visualY"
+      ],
+      "additionalProperties": false
+    },
+    "LeftHandCandidate": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "bassButton": {
+          "$ref": "#/$defs/Button"
+        },
+        "chordButton": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Button"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "fingering": {
+          "type": "object",
+          "properties": {
+            "bass": {
+              "enum": [
+                2,
+                3,
+                4
+              ]
+            },
+            "chord": {
+              "anyOf": [
+                {
+                  "enum": [
+                    2,
+                    3,
+                    4
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "label": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "bass",
+            "chord",
+            "label"
+          ],
+          "additionalProperties": false
+        },
+        "missingTones": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "addedTones": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "rank": {
+          "type": "integer"
+        },
+        "kind": {
+          "enum": [
+            "standard",
+            "complete",
+            "approx"
+          ]
+        },
+        "soundingPitchClasses": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
+        },
+        "requestedBassMatches": {
+          "type": "boolean"
+        },
+        "coverageComplete": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "bassButton",
+        "chordButton",
+        "fingering",
+        "missingTones",
+        "addedTones",
+        "rank",
+        "kind",
+        "soundingPitchClasses",
+        "requestedBassMatches",
+        "coverageComplete"
+      ],
+      "additionalProperties": false
+    },
+    "AccordionVoicing": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "chordLabel": {
+          "type": "string"
+        },
+        "rank": {
+          "type": "integer"
+        },
+        "rightHandNotes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "pitch": {
+                "$ref": "#/$defs/Pitch"
+              },
+              "note": {
+                "type": "string"
+              },
+              "degree": {
+                "$ref": "#/$defs/Degree"
+              },
+              "hand": {
+                "const": "right"
+              },
+              "side": {
+                "const": "treble"
+              },
+              "finger": {
+                "enum": [
+                  1,
+                  2,
+                  3,
+                  4,
+                  5
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "pitch",
+              "note",
+              "degree",
+              "hand",
+              "side"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "leftHandCandidates": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/LeftHandCandidate"
+          }
+        },
+        "selectedLeftHandCandidate": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LeftHandCandidate"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "visibleStradellaButtons": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Button"
+          }
+        },
+        "regionRoot": {
+          "$ref": "#/$defs/RegionRoot"
+        },
+        "inversion": {
+          "type": "object",
+          "properties": {
+            "index": {
+              "type": "integer"
+            },
+            "label": {
+              "type": "string"
+            },
+            "bassDegree": {
+              "$ref": "#/$defs/Degree"
+            },
+            "isRootPosition": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "index",
+            "label",
+            "bassDegree",
+            "isRootPosition"
+          ],
+          "additionalProperties": false
+        },
+        "combinedCoverage": {
+          "type": "object",
+          "properties": {
+            "complete": {
+              "type": "boolean"
+            },
+            "missingTones": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "complete",
+            "missingTones"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "chordLabel",
+        "rank",
+        "rightHandNotes",
+        "leftHandCandidates",
+        "selectedLeftHandCandidate",
+        "visibleStradellaButtons",
+        "regionRoot",
+        "inversion",
+        "combinedCoverage"
+      ],
+      "additionalProperties": false
+    },
+    "GuitarSeedNote": {
+      "type": "object",
+      "properties": {
+        "string": {
+          "type": "integer"
+        },
+        "fret": {
+          "type": "integer"
+        },
+        "finger": {
+          "enum": [
+            1,
+            2,
+            3,
+            4
+          ]
+        }
+      },
+      "required": [
+        "string",
+        "fret"
+      ],
+      "additionalProperties": false
+    },
+    "GuitarSeed": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "instrumentId": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "chordLabel": {
+          "type": "string"
+        },
+        "rank": {
+          "type": "number"
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "shapeFamily": {
+          "enum": [
+            "C",
+            "A",
+            "G",
+            "E",
+            "D"
+          ]
+        },
+        "source": {
+          "enum": [
+            "first-party",
+            "observed-gzip"
+          ]
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/GuitarSeedNote"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "instrumentId",
+        "label",
+        "chordLabel",
+        "rank",
+        "source",
+        "notes"
+      ],
+      "additionalProperties": false
+    },
+    "Template": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "shapeChordLabel": {
+          "type": "string"
+        },
+        "shapeFamily": {
+          "enum": [
+            "C",
+            "A",
+            "G",
+            "E",
+            "D"
+          ]
+        },
+        "rank": {
+          "type": "integer"
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/GuitarSeedNote"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "shapeChordLabel",
+        "shapeFamily",
+        "rank",
+        "notes"
+      ],
+      "additionalProperties": false
+    },
+    "ButtonBoardProfile": {
+      "type": "object",
+      "properties": {
+        "layout": {
+          "type": "string"
+        },
+        "buttons": {
+          "type": "integer"
+        },
+        "rows": {
+          "type": "integer"
+        },
+        "columns": {
+          "type": "integer"
+        },
+        "canTranspose": {
+          "type": "boolean"
+        },
+        "stradella": {
+          "type": "object",
+          "properties": {
+            "rootAxis": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "root": {
+                    "type": "string"
+                  },
+                  "pitchClass": {
+                    "type": "integer"
+                  },
+                  "column": {
+                    "type": "integer"
+                  },
+                  "visualColumn": {
+                    "type": "number"
+                  },
+                  "visualOrder": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "root",
+                  "pitchClass",
+                  "column",
+                  "visualColumn",
+                  "visualOrder"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "rows": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "enum": [
+                      "counterbass",
+                      "bass",
+                      "major",
+                      "minor",
+                      "seventh",
+                      "diminished"
+                    ]
+                  },
+                  "label": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "enum": [
+                      "bass",
+                      "chord"
+                    ]
+                  },
+                  "visualOrder": {
+                    "type": "number"
+                  },
+                  "visualColumnOffset": {
+                    "type": "number"
+                  },
+                  "visualYOffset": {
+                    "type": "number"
+                  },
+                  "visualYStep": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "id",
+                  "label",
+                  "kind",
+                  "visualOrder",
+                  "visualColumnOffset",
+                  "visualYOffset",
+                  "visualYStep"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "rootAxis",
+            "rows"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "layout",
+        "buttons",
+        "canTranspose"
+      ],
+      "additionalProperties": false
+    },
+    "RawInstrumentProfile": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "family": {
+          "type": "string"
+        },
+        "executionLayer": {
+          "type": "string"
+        },
+        "tuning": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "string": {
+                "type": "integer"
+              },
+              "openPitch": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "string",
+              "openPitch"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "fretboard": {
+          "type": "object",
+          "properties": {
+            "frets": {
+              "type": "integer"
+            },
+            "stringOrder": {
+              "type": "array",
+              "items": {
+                "type": "integer"
+              }
+            },
+            "canCapo": {
+              "type": "boolean"
+            },
+            "canRetune": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "frets",
+            "stringOrder",
+            "canCapo",
+            "canRetune"
+          ],
+          "additionalProperties": false
+        },
+        "keyboard": {
+          "type": "object",
+          "properties": {
+            "keyCount": {
+              "type": "integer"
+            },
+            "lowestPitch": {
+              "type": "string"
+            },
+            "highestPitch": {
+              "type": "string"
+            },
+            "canTranspose": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "keyCount",
+            "lowestPitch",
+            "highestPitch",
+            "canTranspose"
+          ],
+          "additionalProperties": false
+        },
+        "buttonBoard": {
+          "$ref": "#/$defs/ButtonBoardProfile"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "family",
+        "executionLayer"
+      ],
+      "additionalProperties": false
+    },
+    "LayeredSeed": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "instrumentId": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "chordLabel": {
+          "type": "string"
+        },
+        "rank": {
+          "type": "integer"
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "executionLayer": {
+          "type": "string"
+        },
+        "positions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "pitch": {
+                "type": "string"
+              },
+              "note": {
+                "type": "string"
+              },
+              "hand": {
+                "enum": [
+                  "left",
+                  "right"
+                ]
+              },
+              "finger": {
+                "enum": [
+                  1,
+                  2,
+                  3,
+                  4,
+                  5
+                ]
+              },
+              "side": {
+                "type": "string"
+              },
+              "row": {
+                "type": "integer"
+              },
+              "column": {
+                "type": "integer"
+              },
+              "button": {
+                "type": "string"
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "id",
+        "instrumentId",
+        "label",
+        "chordLabel",
+        "rank",
+        "executionLayer",
+        "positions"
+      ],
+      "additionalProperties": false
+    },
+    "MoveableSeed": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "instrumentId": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "shapeFamily": {
+          "enum": [
+            "C",
+            "A",
+            "G",
+            "E",
+            "D"
+          ]
+        },
+        "quality": {
+          "type": "string"
+        },
+        "baseFrets": {
+          "type": "array",
+          "items": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "rank": {
+          "type": "integer"
+        },
+        "roots": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "label": {
+                "type": "string"
+              },
+              "offset": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "label",
+              "offset"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "id",
+        "instrumentId",
+        "label",
+        "shapeFamily",
+        "quality",
+        "baseFrets",
+        "rank",
+        "roots"
+      ],
+      "additionalProperties": false
+    },
+    "Bundle": {
+      "type": "object",
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "bundleId": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "harmonicDefinitions": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "suffix": {
+                "type": "string"
+              },
+              "aliases": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "tones": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "degree": {
+                      "$ref": "#/$defs/Degree"
+                    },
+                    "interval": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "degree",
+                    "interval"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "required": [
+              "id",
+              "label",
+              "suffix",
+              "aliases",
+              "tones"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "instrumentProfiles": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/RawInstrumentProfile"
+          }
+        },
+        "voicingSeeds": {
+          "type": "object",
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "common": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/$defs/GuitarSeed"
+                    }
+                  },
+                  "moveableDefinitions": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/$defs/MoveableSeed"
+                    }
+                  }
+                },
+                "required": [
+                  "common",
+                  "moveableDefinitions"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "executionLayer": {
+                    "type": "string"
+                  },
+                  "seeds": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/$defs/LayeredSeed"
+                    }
+                  }
+                },
+                "required": [
+                  "executionLayer",
+                  "seeds"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          }
+        },
+        "importAdapters": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "schemaVersion": {
+                "const": 1
+              },
+              "description": {
+                "type": "string"
+              },
+              "stringOrder": {
+                "type": "array",
+                "items": {
+                  "type": "integer"
+                }
+              }
+            },
+            "required": [
+              "schemaVersion"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "bundleId",
+        "version",
+        "harmonicDefinitions",
+        "instrumentProfiles",
+        "voicingSeeds",
+        "importAdapters"
+      ],
+      "additionalProperties": false
+    },
+    "PitchLike": {
+      "type": "object",
+      "properties": {
+        "pitchClass": {
+          "type": "integer"
+        },
+        "octave": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "pitchClass",
+        "octave"
+      ],
+      "additionalProperties": true
+    },
+    "CapoProfile": {
+      "type": "object",
+      "properties": {
+        "canCapo": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "canCapo"
+      ],
+      "additionalProperties": true
+    },
+    "MusicalLabelPart": {
+      "type": "object",
+      "properties": {
+        "root": {
+          "type": "string"
+        },
+        "suffix": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "root",
+        "suffix"
+      ],
+      "additionalProperties": false
+    },
+    "MusicalLabel": {
+      "type": "object",
+      "properties": {
+        "ariaLabel": {
+          "type": "string"
+        },
+        "primary": {
+          "$ref": "#/$defs/MusicalLabelPart"
+        },
+        "secondary": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MusicalLabelPart"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "ariaLabel",
+        "primary",
+        "secondary"
+      ],
+      "additionalProperties": false
+    },
+    "DisplayContext": {
+      "type": "object",
+      "properties": {
+        "sourceKey": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Key"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "transposeSemitones": {
+          "type": "integer"
+        },
+        "capoFret": {
+          "type": "number"
+        },
+        "useCapoShapes": {
+          "type": "boolean"
+        },
+        "canCapo": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "sourceKey",
+        "transposeSemitones",
+        "capoFret",
+        "useCapoShapes",
+        "canCapo"
+      ],
+      "additionalProperties": false
+    },
+    "LegacyKey": {
+      "type": "object",
+      "properties": {
+        "pitch_class": {
+          "type": "integer"
+        },
+        "mode": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "pitch_class",
+        "mode"
+      ],
+      "additionalProperties": false
+    },
+    "LegacyParsedChord": {
+      "type": "object",
+      "properties": {
+        "raw_label": {
+          "type": "string"
+        },
+        "root_pitch_class": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "quality": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "bass_pitch_class": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "bass_degree": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "display_label": {
+          "type": "string"
+        },
+        "is_no_chord": {
+          "type": "boolean"
+        },
+        "is_unknown": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "raw_label",
+        "root_pitch_class",
+        "quality",
+        "bass_pitch_class",
+        "bass_degree",
+        "display_label",
+        "is_no_chord",
+        "is_unknown"
+      ],
+      "additionalProperties": false
+    },
+    "LegacySegment": {
+      "type": "object",
+      "description": "The existing backend segment record intentionally retains unknown fields; shared legacy policy applies original field type guards.",
+      "additionalProperties": true
+    },
+    "LegacyContextInput": {
+      "type": "object",
+      "description": "Existing context metadata with original per-operation numeric-kind and mode guards.",
+      "properties": {
+        "transpose_semitones": {},
+        "active_key": {},
+        "display_mode": {}
+      },
+      "additionalProperties": true
+    },
+    "LegacyContext": {
+      "type": "object",
+      "properties": {
+        "transpose_semitones": {
+          "type": "integer"
+        },
+        "active_key": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LegacyKey"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "display_mode": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "transpose_semitones",
+        "active_key",
+        "display_mode"
+      ],
+      "additionalProperties": false
+    },
+    "NativeParsedChord": {
+      "type": "object",
+      "properties": {
+        "root_pitch_class": {
+          "type": "integer"
+        },
+        "quality": {
+          "type": "string"
+        },
+        "bass_pitch_class": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "root_pitch_class",
+        "quality",
+        "bass_pitch_class"
+      ],
+      "additionalProperties": false
+    },
+    "NativeCrema": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "enum": [
+                "no_chord",
+                "unknown"
+              ]
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "chord"
+            },
+            "root_pitch_class": {
+              "type": "integer"
+            },
+            "quality": {
+              "type": "string"
+            },
+            "suffix": {
+              "type": "string"
+            },
+            "bass_degree": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "bass_pitch_class": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "raw_quality_range": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "integer"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "bass_degree_range": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "integer"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "root_pitch_class",
+            "quality",
+            "suffix",
+            "bass_degree",
+            "bass_pitch_class",
+            "raw_quality_range",
+            "bass_degree_range"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    }
+  },
+  "oneOf": [
+    {
+      "title": "Request",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "profiles"
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "seeds"
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "spell"
+            },
+            "input": {
+              "$ref": "#/$defs/ChordInput"
+            },
+            "options": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/PitchOptions"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "input"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "guitar"
+            },
+            "input": {
+              "$ref": "#/$defs/ChordInput"
+            },
+            "context": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/GuitarContext"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "options": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/PitchOptions"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "profile": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/GuitarProfile"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "input"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "piano"
+            },
+            "input": {
+              "$ref": "#/$defs/ChordInput"
+            },
+            "context": {
+              "$ref": "#/$defs/Context"
+            },
+            "options": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/PitchOptions"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "input"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "accordion"
+            },
+            "input": {
+              "$ref": "#/$defs/ChordInput"
+            },
+            "context": {
+              "$ref": "#/$defs/Context"
+            },
+            "options": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/PitchOptions"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "input"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "normalizeBundle"
+            },
+            "input": {}
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "input"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "normalizeObserved"
+            },
+            "input": {},
+            "options": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "instrumentId": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "sourceId": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "rankStart": {
+                      "anyOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "input"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "parseKey"
+            },
+            "input": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "parseStoredKey"
+            },
+            "input": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "deserializeKey"
+            },
+            "input": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "input"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "serializeKey"
+            },
+            "input": {
+              "$ref": "#/$defs/Key"
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "input"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "formatKey"
+            },
+            "input": {
+              "$ref": "#/$defs/Key"
+            },
+            "format": {
+              "enum": [
+                "short",
+                "long"
+              ]
+            },
+            "options": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/PitchOptions"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "input"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "formatAlternateKey"
+            },
+            "input": {
+              "$ref": "#/$defs/Key"
+            },
+            "format": {
+              "enum": [
+                "short",
+                "long"
+              ]
+            },
+            "options": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/PitchOptions"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "input"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "formatKeyDisplay"
+            },
+            "input": {
+              "$ref": "#/$defs/Key"
+            },
+            "options": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/PitchOptions"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "input"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "getEnharmonicContext"
+            },
+            "input": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Key"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "mode": {
+              "enum": [
+                "auto",
+                "sharps",
+                "flats",
+                "neutral",
+                "dual"
+              ]
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "formatPitchClass"
+            },
+            "input": {
+              "type": "integer"
+            },
+            "options": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/PitchOptions"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "input"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "formatAlternatePitchClass"
+            },
+            "input": {
+              "type": "integer"
+            },
+            "options": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/PitchOptions"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "input"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "formatChordRoot"
+            },
+            "input": {
+              "type": "integer"
+            },
+            "options": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/PitchOptions"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "input"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "formatChordLabel"
+            },
+            "input": {
+              "type": "integer"
+            },
+            "quality": {
+              "$ref": "#/$defs/Quality"
+            },
+            "bassPitchClass": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "options": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/PitchOptions"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "input",
+            "quality"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "formatChordDisplay"
+            },
+            "input": {
+              "type": "integer"
+            },
+            "quality": {
+              "$ref": "#/$defs/Quality"
+            },
+            "bassPitchClass": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "options": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/PitchOptions"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "input",
+            "quality"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "formatAlternateChordLabel"
+            },
+            "input": {
+              "type": "integer"
+            },
+            "quality": {
+              "$ref": "#/$defs/Quality"
+            },
+            "bassPitchClass": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "options": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/PitchOptions"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "input",
+            "quality"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "isSupportedChordQuality"
+            },
+            "input": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "isChordSpellingQuality"
+            },
+            "input": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "formatRawMusicalLabel"
+            },
+            "input": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "input"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "transposePitchClass"
+            },
+            "input": {
+              "type": "integer"
+            },
+            "semitones": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "input",
+            "semitones"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "transposeKey"
+            },
+            "input": {
+              "$ref": "#/$defs/Key"
+            },
+            "semitones": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "input",
+            "semitones"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "semitoneDelta"
+            },
+            "input": {
+              "$ref": "#/$defs/Key"
+            },
+            "target": {
+              "$ref": "#/$defs/Key"
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "input",
+            "target"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "parsePitch"
+            },
+            "input": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "formatPitch"
+            },
+            "input": {
+              "$ref": "#/$defs/PitchLike"
+            },
+            "options": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/PitchOptions"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "input"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "pitchToMidi"
+            },
+            "input": {
+              "$ref": "#/$defs/PitchLike"
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "input"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "midiToPitch"
+            },
+            "input": {
+              "type": "number"
+            },
+            "options": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/PitchOptions"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "input"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "parseChordLabel"
+            },
+            "input": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "formatParsedChordLabel"
+            },
+            "input": {
+              "$ref": "#/$defs/ParsedChord"
+            },
+            "options": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/PitchOptions"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "input"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "transposeChord"
+            },
+            "input": {
+              "$ref": "#/$defs/ChordInput"
+            },
+            "semitones": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "input",
+            "semitones"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "transposeChordLabel"
+            },
+            "input": {
+              "$ref": "#/$defs/ChordInput"
+            },
+            "semitones": {
+              "type": "integer"
+            },
+            "options": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/PitchOptions"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "input",
+            "semitones"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "resolveChordDisplayContext"
+            },
+            "context": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/GuitarContext"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "profile": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/CapoProfile"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "getCapoShapeSemitones"
+            },
+            "context": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/GuitarContext"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "profile": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/CapoProfile"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "getCapoShapeChord"
+            },
+            "input": {
+              "$ref": "#/$defs/ChordInput"
+            },
+            "context": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/GuitarContext"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "profile": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/CapoProfile"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "input"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "constants"
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "backendParseChord"
+            },
+            "input": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "input"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "backendNormalizeQuality"
+            },
+            "input": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "backendFormatChord"
+            },
+            "root": {
+              "anyOf": [
+                {
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "boolean"
+                    }
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "quality": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "bass": {
+              "anyOf": [
+                {
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "boolean"
+                    }
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "root",
+            "quality",
+            "bass"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "backendChordSegment"
+            },
+            "input": {
+              "type": "string"
+            },
+            "start_seconds": {
+              "type": "number"
+            },
+            "end_seconds": {
+              "type": "number"
+            },
+            "confidence": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "input",
+            "start_seconds",
+            "end_seconds",
+            "confidence"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "enum": [
+                "backendParseKey",
+                "nativeParseKey"
+              ]
+            },
+            "input": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "shortestSemitoneDelta"
+            },
+            "source": {
+              "type": "integer"
+            },
+            "target": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "source",
+            "target"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "enum": [
+                "backendDocumentContext",
+                "nativeDocumentContext"
+              ]
+            },
+            "detected_key": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "override_key": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "audio_set": {},
+            "display_mode": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "backendDisplayChordSegment"
+            },
+            "segment": {
+              "$ref": "#/$defs/LegacySegment"
+            },
+            "context": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/LegacyContextInput"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "segment"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "nativeDisplayChordLabel"
+            },
+            "segment": {
+              "$ref": "#/$defs/LegacySegment"
+            },
+            "context": {
+              "$ref": "#/$defs/LegacyContextInput"
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "segment",
+            "context"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "enum": [
+                "nativeNotePitchClass",
+                "nativeSharpPitchClass"
+              ]
+            },
+            "input": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "input"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "nativePitchClassName"
+            },
+            "pitch_class": {
+              "type": "integer"
+            },
+            "spelling": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "pitch_class",
+            "spelling"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "nativeFormatKey"
+            },
+            "pitch_class": {
+              "type": "integer"
+            },
+            "mode": {
+              "type": "string"
+            },
+            "spelling": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "pitch_class",
+            "mode",
+            "spelling"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "enum": [
+                "nativeQualitySuffix",
+                "nativeQualityFromSuffix"
+              ]
+            },
+            "input": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "input"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "nativeQualityIntervals"
+            },
+            "input": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "input"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "nativeDegreeName"
+            },
+            "input": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "input"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "nativeDegreePitchClass"
+            },
+            "root": {
+              "type": "integer"
+            },
+            "degree": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "root",
+            "degree"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "nativeCremaContains"
+            },
+            "input": {
+              "type": "string"
+            },
+            "relative": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "input",
+            "relative"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "nativeParseCrema"
+            },
+            "input": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "input"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "nativeParseChord"
+            },
+            "input": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "input"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "nativeFormatChord"
+            },
+            "root": {
+              "type": "integer"
+            },
+            "quality": {
+              "type": "string"
+            },
+            "bass": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "spelling": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "root",
+            "quality",
+            "spelling"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "nativeFormatChordSuffix"
+            },
+            "root": {
+              "type": "integer"
+            },
+            "suffix": {
+              "type": "string"
+            },
+            "bass": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "spelling": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "root",
+            "suffix",
+            "spelling"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "nativeRound3"
+            },
+            "input": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "input"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "nativeConstants"
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "nativeAutomaticPitchSpelling"
+            },
+            "input": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/LegacyKey"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "input"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    {
+      "title": "Response",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "profiles"
+            },
+            "result": {
+              "type": "object",
+              "properties": {
+                "guitar": {
+                  "$ref": "#/$defs/GuitarProfile"
+                },
+                "piano": {
+                  "$ref": "#/$defs/KeyboardProfile"
+                },
+                "accordion": {
+                  "$ref": "#/$defs/KeyboardProfile"
+                }
+              },
+              "required": [
+                "guitar",
+                "piano",
+                "accordion"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "seeds"
+            },
+            "result": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Template"
+              }
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "spell"
+            },
+            "result": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ChordSpelling"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "guitar"
+            },
+            "result": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/GuitarVoicing"
+              }
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "piano"
+            },
+            "result": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/PianoVoicing"
+              }
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "accordion"
+            },
+            "result": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/AccordionVoicing"
+              }
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "normalizeBundle"
+            },
+            "result": {
+              "$ref": "#/$defs/Bundle"
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "normalizeObserved"
+            },
+            "result": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/GuitarSeed"
+              }
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "error": {
+              "type": "object",
+              "properties": {
+                "code": {
+                  "enum": [
+                    "invalid-argument",
+                    "invalid-json",
+                    "invalid-music-operation",
+                    "out-of-memory"
+                  ]
+                }
+              },
+              "required": [
+                "code"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "error"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "parseKey"
+            },
+            "result": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Key"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "parseStoredKey"
+            },
+            "result": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Key"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "deserializeKey"
+            },
+            "result": {
+              "$ref": "#/$defs/Key"
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "serializeKey"
+            },
+            "result": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "formatKey"
+            },
+            "result": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "formatAlternateKey"
+            },
+            "result": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "formatKeyDisplay"
+            },
+            "result": {
+              "$ref": "#/$defs/MusicalLabel"
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "getEnharmonicContext"
+            },
+            "result": {
+              "type": "object",
+              "properties": {
+                "mode": {
+                  "enum": [
+                    "auto",
+                    "sharps",
+                    "flats",
+                    "neutral",
+                    "dual"
+                  ]
+                },
+                "family": {
+                  "enum": [
+                    "sharp",
+                    "flat",
+                    "neutral"
+                  ]
+                }
+              },
+              "required": [
+                "mode",
+                "family"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "formatPitchClass"
+            },
+            "result": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "formatAlternatePitchClass"
+            },
+            "result": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "formatChordRoot"
+            },
+            "result": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "formatChordLabel"
+            },
+            "result": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "formatChordDisplay"
+            },
+            "result": {
+              "$ref": "#/$defs/MusicalLabel"
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "formatAlternateChordLabel"
+            },
+            "result": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "isSupportedChordQuality"
+            },
+            "result": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "isChordSpellingQuality"
+            },
+            "result": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "formatRawMusicalLabel"
+            },
+            "result": {
+              "$ref": "#/$defs/MusicalLabel"
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "transposePitchClass"
+            },
+            "result": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "transposeKey"
+            },
+            "result": {
+              "$ref": "#/$defs/Key"
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "semitoneDelta"
+            },
+            "result": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "parsePitch"
+            },
+            "result": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Pitch"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "formatPitch"
+            },
+            "result": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "pitchToMidi"
+            },
+            "result": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "midiToPitch"
+            },
+            "result": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Pitch"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "parseChordLabel"
+            },
+            "result": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ParsedChord"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "formatParsedChordLabel"
+            },
+            "result": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "transposeChord"
+            },
+            "result": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ParsedChord"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "transposeChordLabel"
+            },
+            "result": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "resolveChordDisplayContext"
+            },
+            "result": {
+              "$ref": "#/$defs/DisplayContext"
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "getCapoShapeSemitones"
+            },
+            "result": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "getCapoShapeChord"
+            },
+            "result": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ParsedChord"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "constants"
+            },
+            "result": {
+              "type": "object",
+              "properties": {
+                "CHORD_QUALITY_DEFINITIONS": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "object",
+                    "properties": {
+                      "label": {
+                        "type": "string"
+                      },
+                      "suffix": {
+                        "type": "string"
+                      },
+                      "tones": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "degree": {
+                              "$ref": "#/$defs/Degree"
+                            },
+                            "interval": {
+                              "type": "integer"
+                            }
+                          },
+                          "required": [
+                            "degree",
+                            "interval"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "dictionarySupported": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "label",
+                      "suffix",
+                      "tones",
+                      "dictionarySupported"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "DEFAULT_KEY": {
+                  "$ref": "#/$defs/Key"
+                },
+                "MUSICAL_KEYS": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "pitchClass": {
+                        "type": "integer"
+                      },
+                      "mode": {
+                        "enum": [
+                          "major",
+                          "minor"
+                        ]
+                      },
+                      "value": {
+                        "type": "string"
+                      },
+                      "label": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "pitchClass",
+                      "mode",
+                      "value",
+                      "label"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "DEFAULT_CHORD_DISPLAY_CONTEXT": {
+                  "$ref": "#/$defs/DisplayContext"
+                },
+                "INSTRUMENT_KNOWLEDGE_BUNDLE_V1": {
+                  "$ref": "#/$defs/Bundle"
+                }
+              },
+              "required": [
+                "CHORD_QUALITY_DEFINITIONS",
+                "DEFAULT_KEY",
+                "MUSICAL_KEYS",
+                "DEFAULT_CHORD_DISPLAY_CONTEXT",
+                "INSTRUMENT_KNOWLEDGE_BUNDLE_V1"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "backendParseChord"
+            },
+            "result": {
+              "$ref": "#/$defs/LegacyParsedChord"
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "backendNormalizeQuality"
+            },
+            "result": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "backendFormatChord"
+            },
+            "result": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "backendChordSegment"
+            },
+            "result": {
+              "type": "object",
+              "properties": {
+                "start_seconds": {
+                  "type": "number"
+                },
+                "end_seconds": {
+                  "type": "number"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "display_label": {
+                  "type": "string"
+                },
+                "raw_label": {
+                  "type": "string"
+                },
+                "confidence": {
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "pitch_class": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "root_pitch_class": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "quality": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "bass_pitch_class": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "bass_degree": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "start_seconds",
+                "end_seconds",
+                "label",
+                "display_label",
+                "raw_label",
+                "confidence",
+                "pitch_class",
+                "root_pitch_class",
+                "quality",
+                "bass_pitch_class",
+                "bass_degree"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "enum": [
+                "backendParseKey",
+                "nativeParseKey"
+              ]
+            },
+            "result": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/LegacyKey"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "shortestSemitoneDelta"
+            },
+            "result": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "enum": [
+                "backendDocumentContext",
+                "nativeDocumentContext"
+              ]
+            },
+            "result": {
+              "$ref": "#/$defs/LegacyContext"
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "backendDisplayChordSegment"
+            },
+            "result": {
+              "$ref": "#/$defs/LegacySegment"
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "nativeDisplayChordLabel"
+            },
+            "result": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "enum": [
+                "nativeNotePitchClass",
+                "nativeSharpPitchClass"
+              ]
+            },
+            "result": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "nativePitchClassName"
+            },
+            "result": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "nativeFormatKey"
+            },
+            "result": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "enum": [
+                "nativeQualitySuffix",
+                "nativeQualityFromSuffix"
+              ]
+            },
+            "result": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "nativeQualityIntervals"
+            },
+            "result": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "integer"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "nativeDegreeName"
+            },
+            "result": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "nativeDegreePitchClass"
+            },
+            "result": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "nativeCremaContains"
+            },
+            "result": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "nativeParseCrema"
+            },
+            "result": {
+              "$ref": "#/$defs/NativeCrema"
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "nativeParseChord"
+            },
+            "result": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/NativeParsedChord"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "nativeFormatChord"
+            },
+            "result": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "nativeFormatChordSuffix"
+            },
+            "result": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "nativeRound3"
+            },
+            "result": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "nativeConstants"
+            },
+            "result": {
+              "type": "object",
+              "properties": {
+                "sharp_pitch_names": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "flat_pitch_names": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "neutral_pitch_names": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "dual_pitch_names": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "scale_degrees": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "quality_suffixes": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  }
+                },
+                "quality_intervals": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "array",
+                    "items": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              },
+              "required": [
+                "sharp_pitch_names",
+                "flat_pitch_names",
+                "neutral_pitch_names",
+                "dual_pitch_names",
+                "scale_degrees",
+                "quality_suffixes",
+                "quality_intervals"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "nativeAutomaticPitchSpelling"
+            },
+            "result": {
+              "enum": [
+                "sharps",
+                "flats",
+                "neutral"
+              ]
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "result"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    }
+  ]
+}

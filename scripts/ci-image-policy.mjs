@@ -269,10 +269,11 @@ export function validateCiImagePolicy(root) {
     /^FROM (\S+)(?: AS (\S+))?$/gm,
   )].map((match) => ({ image: match[1], stage: match[2] }));
   check(
-    baseImages.length === 2 &&
+    baseImages.length === 3 &&
       baseImages[0].stage === "soxr-builder" &&
-      baseImages[1].stage === undefined &&
-      baseImages[0].image === baseImages[1].image &&
+      baseImages[1].stage === "music-core-builder" &&
+      baseImages[2].stage === undefined &&
+      baseImages.every(base => base.image === baseImages[0].image) &&
       !dockerfile.includes("FROM --platform="),
     "CI image must use the same pinned Ubuntu base without constant FROM platform flags",
   );
@@ -291,6 +292,24 @@ export function validateCiImagePolicy(root) {
       dockerfile.includes("> payload.sha256"),
     "CI image must verify SoXR AMD64 linkage, PFFFT, resampling, tools, inputs, and payload hashes",
   );
+  check(
+    dockerfile.includes("COPY --from=music-core-builder /opt/tuneforge-ci/music-core /opt/tuneforge-ci/music-core") &&
+      dockerfile.includes("node scripts/build-music-core.mjs --target wasm --summary") &&
+      dockerfile.includes("node scripts/ci-music-core.mjs stage /opt/tuneforge-ci/music-core") &&
+      dockerfile.includes("cd /opt/tuneforge-ci/music-core && sha256sum --check --strict payload.sha256"),
+    "CI image must build, verify and copy the standalone music-core WASM payload",
+  );
+  for (const tool of ["NODE", "UV", "PYTHON"]) {
+    check(Boolean(dockerArg(dockerfile, "MUSIC_" + tool + "_VERSION")) &&
+      /^https:\/\//.test(dockerArg(dockerfile, "MUSIC_" + tool + "_URL")) &&
+      /^[a-f0-9]{64}$/.test(dockerArg(dockerfile, "MUSIC_" + tool + "_SHA256")) &&
+      dockerfile.includes('"${MUSIC_' + tool + '_SHA256}" /tmp/' + tool.toLowerCase() + (tool === "NODE" ? '.tar.xz' : tool === "UV" ? '.whl' : '.tar.gz') + ' | sha256sum -c -'),
+      "Music-core builder must checksum-pin " + tool + " bootstrap artifacts");
+  }
+  const finalStage = dockerfile.slice(dockerfile.lastIndexOf("FROM "));
+  check(!/COPY --from=music-core-builder (?!\/opt\/tuneforge-ci\/music-core |\/tmp\/producer-inputs.sha256 )/.test(finalStage) &&
+    !/apt-get install[^;]*(?:nodejs|python3|emscripten)/.test(finalStage),
+    "Music-core build tools and checkout must remain outside final image");
   const soxrBuildInputManifest = [
     "    sha256sum \\",
     "      scripts/build-soxr-runtime.mjs \\",
@@ -316,10 +335,15 @@ export function validateCiImagePolicy(root) {
     ),
     "Publish job must scope contents: read and packages: write",
   );
+  const inventory = imageInventory(root);
+  const publicationPaths = [...new Set(inventory.inputs.map(input => {
+    const tree = inventory.sourceTrees?.find(tree => input.startsWith(tree.root + "/"));
+    return tree ? tree.root + "/**" : input;
+  })), paths.imageWorkflow].sort();
   check(
     imageWorkflow.includes("push:\n    branches:\n      - main\n    paths:\n") &&
       JSON.stringify([...imageWorkflow.slice(0, imageWorkflow.indexOf("  workflow_dispatch:")).matchAll(/^      - (.+)$/gm)].map((m) => m[1]).filter((v) => v !== "main").sort()) ===
-        JSON.stringify([...imageInventory(root).inputs, paths.imageWorkflow].sort()) &&
+        JSON.stringify(publicationPaths) &&
       workflowJobBlock(imageWorkflow, "publish").includes("    if: github.ref == 'refs/heads/main'"),
     "CI image workflow must publish only for trusted main image inputs or manual dispatch",
   );

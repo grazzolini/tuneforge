@@ -20,13 +20,7 @@ RUN set -eux; \
 WORKDIR /workspace
 
 COPY scripts/build-soxr-runtime.mjs scripts/deterministic-source-snapshot.mjs scripts/
-COPY packaging/soxr/sources.lock.json packaging/soxr/sources.lock.json
-COPY packaging/soxr/patches/android-unversioned-soname.patch packaging/soxr/patches/android-unversioned-soname.patch
-COPY .github/ci/Dockerfile .github/ci/Dockerfile.dockerignore .github/ci/image-inputs.json .github/ci/README.md .github/ci/
-COPY scripts/ci-image-impact.mjs scripts/
-
-RUN node scripts/ci-image-impact.mjs --manifest > /tmp/producer-inputs.sha256
-
+COPY packaging/soxr/ packaging/soxr/
 RUN set -eux; \
     node scripts/build-soxr-runtime.mjs \
       --target host-test \
@@ -67,6 +61,56 @@ RUN set -eux; \
       | xargs -0 sha256sum \
       > payload.sha256
 
+FROM ubuntu:24.04@sha256:1e0a86e57d247923571b75e0aaf48a1449cf8c543d51fb3e07a4a7d7bfa79316 AS music-core-builder
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+ARG MUSIC_NODE_VERSION=26.13.0
+ARG MUSIC_NODE_URL=https://nodejs.org/dist/v26.13.0/node-v26.13.0-linux-x64.tar.xz
+ARG MUSIC_NODE_SHA256=d28a96af6c38596f6d9d97c0ee531c13d238d757742387d1928de822d959e997
+ARG MUSIC_UV_VERSION=0.13.6
+ARG MUSIC_UV_URL=https://files.pythonhosted.org/packages/5c/43/0688ff5142934238f2812e348f4a24e09b57d48bfb38dd8f850325a0d9de/uv-0.13.6-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+ARG MUSIC_UV_SHA256=22759b8895e1103578de6fb4cd27e94b4399d021023378d29f01333717751fba
+ARG MUSIC_PYTHON_VERSION=3.14.7
+ARG MUSIC_PYTHON_URL=https://github.com/astral-sh/python-build-standalone/releases/download/20260929/cpython-3.14.7%2B20260929-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz
+ARG MUSIC_PYTHON_SHA256=da5357f47b1d9c8d4c439004d463d893ef688a44c27438a62b47073d26d1377e
+
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends build-essential ca-certificates curl unzip xz-utils; \
+    curl --proto '=https' --tlsv1.2 --fail --location --retry 5 --output /tmp/node.tar.xz "${MUSIC_NODE_URL}"; \
+    printf '%s  %s\n' "${MUSIC_NODE_SHA256}" /tmp/node.tar.xz | sha256sum -c -; \
+    mkdir -p /opt/music-tools/node; \
+    tar -xf /tmp/node.tar.xz --strip-components=1 -C /opt/music-tools/node; \
+    curl --proto '=https' --tlsv1.2 --fail --location --retry 5 --output /tmp/uv.whl "${MUSIC_UV_URL}"; \
+    printf '%s  %s\n' "${MUSIC_UV_SHA256}" /tmp/uv.whl | sha256sum -c -; \
+    unzip -p /tmp/uv.whl "uv-${MUSIC_UV_VERSION}.data/scripts/uv" > /usr/local/bin/uv; \
+    chmod 0755 /usr/local/bin/uv; \
+    test "$(/opt/music-tools/node/bin/node --version)" = "v${MUSIC_NODE_VERSION}"; \
+    uv --version | grep -F "uv ${MUSIC_UV_VERSION}"; \
+    curl --proto '=https' --tlsv1.2 --fail --location --retry 5 --output /tmp/python.tar.gz "${MUSIC_PYTHON_URL}"; \
+    printf '%s  %s\n' "${MUSIC_PYTHON_SHA256}" /tmp/python.tar.gz | sha256sum -c -; \
+    mkdir -p /opt/music-tools/python; \
+    tar -xf /tmp/python.tar.gz --strip-components=1 -C /opt/music-tools/python; \
+    test "$(/opt/music-tools/python/bin/python3.14 -c 'import platform; print(platform.python_version())')" = "${MUSIC_PYTHON_VERSION}"; \
+    rm -rf /var/lib/apt/lists/* /tmp/node.tar.xz /tmp/uv.whl /tmp/python.tar.gz
+
+ENV PATH="/opt/music-tools/node/bin:/opt/music-tools/python/bin:${PATH}"
+ENV UV_PYTHON_DOWNLOADS=never
+WORKDIR /workspace
+
+COPY .github/ci/ .github/ci/
+COPY packages/music-core/ packages/music-core/
+COPY packaging/soxr/ packaging/soxr/
+COPY scripts/ scripts/
+
+RUN node scripts/ci-image-impact.mjs --manifest > /tmp/producer-inputs.sha256
+RUN node scripts/build-music-core.mjs --target wasm --summary \
+    && node packages/music-core/test/artifact-metadata.mjs \
+    && node packages/music-core/test/wasm-boundary.mjs \
+    && node packages/music-core/test/runtime-parity.mjs \
+    && node scripts/ci-music-core.mjs stage /opt/tuneforge-ci/music-core
+
 FROM ubuntu:24.04@sha256:1e0a86e57d247923571b75e0aaf48a1449cf8c543d51fb3e07a4a7d7bfa79316
 
 ARG FFMPEG_VERSION=7:6.1.1-3ubuntu5
@@ -91,9 +135,11 @@ LABEL org.opencontainers.image.source="https://github.com/grazzolini/tuneforge" 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 COPY --from=soxr-builder /opt/tuneforge-ci/soxr /opt/tuneforge-ci/soxr
-COPY --from=soxr-builder /tmp/producer-inputs.sha256 /usr/share/tuneforge-ci/producer-inputs.sha256
+COPY --from=music-core-builder /opt/tuneforge-ci/music-core /opt/tuneforge-ci/music-core
+COPY --from=music-core-builder /tmp/producer-inputs.sha256 /usr/share/tuneforge-ci/producer-inputs.sha256
 
 RUN set -eux; \
+    (cd /opt/tuneforge-ci/music-core && sha256sum --check --strict payload.sha256); \
     chmod 0755 /opt/tuneforge-ci/soxr/host-test; \
     export DEBIAN_FRONTEND=noninteractive; \
     apt-get update; \

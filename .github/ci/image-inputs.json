@@ -42,18 +42,137 @@
       "license": "installed Ubuntu copyright files",
       "probes": ["cargo check", "cargo test", "setup-tool executable compatibility"],
       "consumers": ["backend", "desktop_tauri", "e2e"]
+    },
+    {
+      "name": "Music core portable WASM",
+      "inputs": [
+        "packages/music-core/CMakeLists.txt",
+        "packages/music-core/LICENSE",
+        "packages/music-core/bindings/python/native.cpp",
+        "packages/music-core/bindings/python/tuneforge_music_core/__init__.py",
+        "packages/music-core/bindings/python/tuneforge_music_core/py.typed",
+        "packages/music-core/bindings/rust/Cargo.lock",
+        "packages/music-core/bindings/rust/Cargo.toml",
+        "packages/music-core/bindings/rust/build.rs",
+        "packages/music-core/bindings/rust/src/lib.rs",
+        "packages/music-core/bindings/rust/src/main.rs",
+        "packages/music-core/bindings/typescript/contracts.ts",
+        "packages/music-core/bindings/wasm/index.d.mts",
+        "packages/music-core/bindings/wasm/index.mjs",
+        "packages/music-core/include/tuneforge/music_core.h",
+        "packages/music-core/licenses/Gingo-LICENSE",
+        "packages/music-core/licenses/Unicode-LICENSE",
+        "packages/music-core/licenses/pybind11-LICENSE",
+        "packages/music-core/package.json",
+        "packages/music-core/patches/fretboard-search-policy.patch",
+        "packages/music-core/pyproject.toml",
+        "packages/music-core/resources/instruments-v1.json",
+        "packages/music-core/resources/unicode-v16.hpp",
+        "packages/music-core/schema/operations-v1.json",
+        "packages/music-core/sources.lock.json",
+        "packages/music-core/src/abi.cpp",
+        "packages/music-core/src/core.cpp",
+        "packages/music-core/src/core.hpp",
+        "packages/music-core/src/guitar.cpp",
+        "packages/music-core/src/json.hpp",
+        "packages/music-core/src/keyboard.cpp",
+        "packages/music-core/src/legacy_policies.cpp",
+        "packages/music-core/src/legacy_policies.hpp",
+        "packages/music-core/src/normalization.cpp",
+        "packages/music-core/src/normalization.hpp",
+        "packages/music-core/src/profiles.cpp",
+        "packages/music-core/src/schema.hpp",
+        "packages/music-core/src/stradella.cpp",
+        "packages/music-core/src/value.hpp",
+        "packages/music-core/test/abi-boundary.cpp",
+        "packages/music-core/test/abi-header.c",
+        "packages/music-core/test/abi.cpp",
+        "packages/music-core/test/artifact-metadata.mjs",
+        "packages/music-core/test/fixtures/crema-labels-v1.json",
+        "packages/music-core/test/json-protocol.hpp",
+        "packages/music-core/test/legacy-policies.cpp",
+        "packages/music-core/test/legacy-policies.mjs",
+        "packages/music-core/test/normalization.cpp",
+        "packages/music-core/test/normalization.mjs",
+        "packages/music-core/test/parity.mjs",
+        "packages/music-core/test/policy.cpp",
+        "packages/music-core/test/runtime-driver.mjs",
+        "packages/music-core/test/runtime-driver.py",
+        "packages/music-core/test/runtime-parity.mjs",
+        "packages/music-core/test/source-acquisition.py",
+        "packages/music-core/test/structural.cpp",
+        "packages/music-core/test/structural.mjs",
+        "packages/music-core/test/wasm-boundary.mjs",
+        "packages/music-core/test/wasm-test.mjs",
+        "packages/music-core/toolchains.lock.json",
+        "packages/music-core/tools/build.mjs",
+        "packages/music-core/tools/generate_data.py",
+        "packages/music-core/tools/generate_types.mjs",
+        "packages/music-core/tools/generate_unicode.py",
+        "packages/music-core/tools/prepare_sources.py",
+        "scripts/build-music-core.mjs",
+        "scripts/ci-music-core.mjs"
+      ],
+      "source": "Gingo archive/revision/file hashes in sources.lock.json; checksummed Emscripten and Python build dependencies in toolchains.lock.json; Node/uv/Python bootstrap pins in Dockerfile",
+      "license": "MIT owned core and Gingo; Unicode-3.0 compatibility data; build tools remain in disposable stage",
+      "probes": ["canonical artifact sourceFingerprint/metadata/payload verification", "portable WASM boundary/parity", "native ABI and Python/Rust transport parity", "payload.sha256 and build-tools.txt"],
+      "consumers": ["backend", "desktop_tauri", "e2e"]
     }
   ],
   "registeredReads": {
     "scripts/build-soxr-runtime.mjs": ["packaging/soxr/sources.lock.json", "packaging/soxr/patches/android-unversioned-soname.patch", "scripts/build-soxr-runtime.mjs", "scripts/deterministic-source-snapshot.mjs"],
     "scripts/deterministic-source-snapshot.mjs": "caller-supplied snapshot inputs restricted by build-soxr-runtime host-test registration",
-    "scripts/ci-image-impact.mjs": "inventory-declared inputs only; git diff for reports"
+    "scripts/ci-image-impact.mjs": "inventory-declared input reads and generated context write only; git diff for reports; reject symlink ancestors",
+    "scripts/build-music-core.mjs": ["packages/music-core/tools/build.mjs"],
+    "scripts/ci-music-core.mjs": "fixed artifact/notices matrix under packages/music-core; caller-supplied isolated payload directory; canonical build verification",
+    "packages/music-core/tools/build.mjs": "all sourceTree package bytes excluding build/vendor/cache/tool outputs; locked downloaded archives; generated artifacts; source/toolchain/license pins; explicit prepare_sources.py producer",
+    "packages/music-core/test/artifact-metadata.mjs": ["packages/music-core/toolchains.lock.json", "packages/music-core/sources.lock.json", "packages/music-core/tools/build.mjs"],
+    "packages/music-core/test/wasm-boundary.mjs": ["packages/music-core/bindings/wasm/index.mjs", "packages/music-core/build/artifacts/wasm/music-core.mjs"],
+    "packages/music-core/test/runtime-parity.mjs": ["packages/music-core/test/parity.mjs", "packages/music-core/test/normalization.mjs", "packages/music-core/test/runtime-driver.mjs"],
+    "packages/music-core/test/parity.mjs": ["packages/music-core/test/fixtures/crema-labels-v1.json"],
+    "packages/music-core/test/normalization.mjs": "caller-supplied producer runtime-driver subprocess only; default native binary is not selected by producer runtime-parity",
+    "packages/music-core/test/runtime-driver.mjs": ["packages/music-core/bindings/wasm/index.mjs"],
+    "packages/music-core/bindings/wasm/index.mjs": "generated module import through moduleUrl.href; default verified WASM module only in producer probes; generated module resolves sibling music-core.wasm"
   },
   "readAuditSha256": {
     "scripts/build-soxr-runtime.mjs": "73fab469d93332840ed2f95cc0e6bcad662a357e9c90df6fdeb41efa21b32d6a",
     "scripts/deterministic-source-snapshot.mjs": "e60747fbc6a3559dcb6a64cf9815942a26b7386c632aae1903b1602e6763ece2",
-    "scripts/ci-image-impact.mjs": "3fc4a2bfb682060c084e08b3ce6d157a60592635382d79ff8621087a1f3874a5"
+    "scripts/ci-image-impact.mjs": "d717f534ab1564cbe061cac38ec11e889e75c5c0574648943f63eb6fbf8d9aef",
+    "scripts/build-music-core.mjs": "b965123b97c495b64d08a149465e69a987ad245628825a5083268e2faf966e42",
+    "scripts/ci-music-core.mjs": "985a9c58c87c052c1d3a4012e157815850697279f5b5e5372130e9caab8c0201",
+    "packages/music-core/tools/build.mjs": "17e9acdc6b96df26fcf70ece1e063268138995371b3ea7d9b17b6ba2fa361733",
+    "packages/music-core/test/artifact-metadata.mjs": "943bf0b18e38af2ec74d7104aa1479d7e648564b90f5a2b317ad0cc768d64392",
+    "packages/music-core/test/wasm-boundary.mjs": "7f65cd23ffea9d5a0bc87ec08e21c2c791536f91bb1043d15f6b6472ab39ae80",
+    "packages/music-core/test/runtime-parity.mjs": "0b0efa9766e6ea6752abba56e38e71976a610af288a4a14c90a61c64d10e5596",
+    "packages/music-core/test/parity.mjs": "5b20f2f268cc2d4c2e6757c817859443fd76c3f07ebbec26f34338ba1e98212d",
+    "packages/music-core/test/normalization.mjs": "f1985f4fa13de105e31b9854c387a1fb1216b6849ffdf8eb764531377d1874c6",
+    "packages/music-core/test/runtime-driver.mjs": "652585fe183e71c23d3dd05f3b2baee535ce2959e8daea56439a7c9ed5b290ef",
+    "packages/music-core/bindings/wasm/index.mjs": "b5ea9985ff2dfc6b29384ace6a2a9cc1ad39e6758f992553b30978ad0070864d"
   },
   "processInputs": [".github/workflows/ci-image.yml", "scripts/ci-image-policy.mjs"],
-  "compatibilityInputs": [".github/workflows/ci.yml", "scripts/verify-ci-image.sh", "scripts/ci-image-run.sh", ".github/ci/promoted-image.json", ".python-version", "apps/desktop/package.json", "pnpm-lock.yaml", "package.json", "apps/backend/pyproject.toml", "apps/backend/uv.lock"]
+  "compatibilityInputs": [".github/workflows/ci.yml", "scripts/verify-ci-image.sh", "scripts/ci-image-run.sh", ".github/ci/promoted-image.json", ".python-version", "apps/desktop/package.json", "pnpm-lock.yaml", "package.json", "apps/backend/pyproject.toml", "apps/backend/uv.lock"],
+  "sourceTrees": [
+    {
+      "root": "packages/music-core",
+      "excludeNames": ["build", "node_modules", ".venv", "__pycache__", "target", "vendor", "cache", "PKG-INFO"],
+      "excludeSuffixes": [".pyc"]
+    }
+  ],
+  "snapshotOnlyInputs": ["packages/music-core/test/legacy-policies.mjs", "packages/music-core/test/structural.mjs", "packages/music-core/test/wasm-test.mjs", "packages/music-core/tools/generate_types.mjs"],
+  "generatedModules": {
+    "packages/music-core/build/artifacts/wasm/music-core.mjs": {
+      "producer": "packages/music-core/tools/build.mjs",
+      "verification": "canonical sourceFingerprint, metadata and payload hashes verified before producer probes/staging"
+    }
+  },
+  "generatedImports": {
+    "packages/music-core/test/wasm-boundary.mjs": ["../build/artifacts/wasm/music-core.mjs"]
+  },
+  "dynamicImports": {
+    "packages/music-core/bindings/wasm/index.mjs": {
+      "expression": "moduleUrl.href",
+      "targets": ["packages/music-core/build/artifacts/wasm/music-core.mjs"],
+      "audit": "producer boundary/client probes never configure an alternate URL; runtime driver initializes the default canonical generated module"
+    }
+  }
 }

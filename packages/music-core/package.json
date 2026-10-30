@@ -1,0 +1,28 @@
+{
+  "name": "@tuneforge/music-core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "tuneforge": {
+    "apiVersion": 1,
+    "abiVersion": 1,
+    "schemaVersion": 1,
+    "corpusVersion": 1
+  },
+  "scripts": {
+    "test": "node test/wasm-test.mjs",
+    "test:native": "node test/structural.mjs",
+    "types:generate": "node tools/generate_types.mjs",
+    "types:check": "node tools/generate_types.mjs --check"
+  },
+  "exports": {
+    ".": {
+      "types": "./bindings/wasm/index.d.mts",
+      "import": "./bindings/wasm/index.mjs"
+    },
+    "./contracts": "./bindings/typescript/contracts.ts",
+    "./wasm-module": "./build/artifacts/wasm/music-core.mjs",
+    "./wasm-binary": "./build/artifacts/wasm/music-core.wasm"
+  }
+}

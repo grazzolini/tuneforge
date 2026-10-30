@@ -5,6 +5,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { imageInventory } from "./ci-image-impact.mjs";
 import { createDeterministicSourceSnapshot } from "./deterministic-source-snapshot.mjs";
 import { createFlatpakSourceSnapshot } from "./flatpak-source-snapshots.mjs";
 import { buildSoxr, createSoxrCorrespondingSources, soxrCorrespondingSourcesFileName,
@@ -174,8 +175,7 @@ test("producer identity and publication include genuine inputs and exclude Flatp
   const allowlist = fs.readFileSync(path.join(root, ".github/ci/Dockerfile.dockerignore"), "utf8")
     .split("\n").filter((line) => line.startsWith("!") && !line.endsWith("/"))
     .map((line) => line.slice(1));
-  assert.deepEqual(allowlist.sort(), [...producerInputs, ".github/ci/README.md", ".github/ci/Dockerfile",
-    ".github/ci/Dockerfile.dockerignore", ".github/ci/image-inputs.json", "scripts/ci-image-impact.mjs"].sort());
+  assert.deepEqual(allowlist.sort(), imageInventory(root).inputs);
   for (const relative of producerInputs) {
     const destination = path.join(directory, relative);
     const originalBytes = fs.readFileSync(destination);

@@ -1,0 +1,437 @@
+{
+  "schemaVersion": 1,
+  "name": "Gingo",
+  "repository": "https://github.com/sauloverissimo/gingopy",
+  "revision": "eec410e6f5b09ad89a2b9d987b63e4048d9a738c",
+  "sourceTree": "64c467b4617cec0731009355c3987bf740f77222",
+  "archive": {
+    "url": "https://codeload.github.com/sauloverissimo/gingopy/tar.gz/eec410e6f5b09ad89a2b9d987b63e4048d9a738c",
+    "sha256": "9c12469c55aed297d6d9eb906636a97c023ca1f7cd750364f744592ac8dac372"
+  },
+  "license": "MIT",
+  "fileCount": 62,
+  "bytes": 469711,
+  "files": [
+    {
+      "path": "LICENSE",
+      "bytes": 1077,
+      "gitBlob": "9ac4c4355b9871448fe5249e7e05e482a9f6a5f9",
+      "sha256": "42c33e1ab7ba9b8375f7026a2201b7173ab9fffd32f4e351eeff0e4c8932ca44"
+    },
+    {
+      "path": "cpp/include/gingo/chord.hpp",
+      "bytes": 5541,
+      "gitBlob": "a3f3fc36c07e989badfd24ea66605c2dd019c278",
+      "sha256": "3172eb026d44825142bbae3d4368993f2d890648851da517aa7df30cbbf9bfb1"
+    },
+    {
+      "path": "cpp/include/gingo/duration.hpp",
+      "bytes": 3711,
+      "gitBlob": "e8400cf07e7502f8af36bebbfb6a1e04dc7caacf",
+      "sha256": "b94659d2618133be837763eb5cc2e6b1678f181dae3e071721be13c95a37f746"
+    },
+    {
+      "path": "cpp/include/gingo/event.hpp",
+      "bytes": 3262,
+      "gitBlob": "f80d593d3010389b99ea58ea472a35b00f97c5e9",
+      "sha256": "fa4a8a250c1033c4ed6ec0b7db8ae8e2abbfb6e29873e0fce66e520c46e8c3f6"
+    },
+    {
+      "path": "cpp/include/gingo/expression_state.hpp",
+      "bytes": 4173,
+      "gitBlob": "d67f9fbf22380a2829b9a54558eba61d59e427b3",
+      "sha256": "cdb235b6fa39cdbfa2d480bd48577f2a1de4407eec985ef2d95ec965f69d78e3"
+    },
+    {
+      "path": "cpp/include/gingo/field.hpp",
+      "bytes": 9044,
+      "gitBlob": "1d72c0dc8460978bc12a309e0cfed8c0fccbcc18",
+      "sha256": "84c56629df44bdea1d0683b1f381e033231925a7c8ba0a0a2623ebbb61e5ffb4"
+    },
+    {
+      "path": "cpp/include/gingo/fretboard.hpp",
+      "bytes": 9200,
+      "gitBlob": "344ce0d44d1355547f75e67541a267450b1c4731",
+      "sha256": "e02a5c3635925fde3ff615633c0748faf642b3fa5607681204b3fc0e08ef5d8a"
+    },
+    {
+      "path": "cpp/include/gingo/fretboard_svg.hpp",
+      "bytes": 8784,
+      "gitBlob": "a832b66abcd45318a8378b57f5f58923d29e0398",
+      "sha256": "ea31ee7952159feed4b3aa7b25088e36b43b87716a07663444e9137864878db8"
+    },
+    {
+      "path": "cpp/include/gingo/gingo.hpp",
+      "bytes": 826,
+      "gitBlob": "bf4436683c67572ceb0a7e277022f88eb9011eb2",
+      "sha256": "f0a51d64ae17587cb52eb156fbf7caa9c2933d99bbd4bf1226cb6afc8ac2f427"
+    },
+    {
+      "path": "cpp/include/gingo/harmonic_function.hpp",
+      "bytes": 824,
+      "gitBlob": "b2b2f66ca7871071234cd101fa35bb71e935309b",
+      "sha256": "8e705a6e23cedb42998b7a30f1726911bb03474c4565b18d01655a2f6b2db731"
+    },
+    {
+      "path": "cpp/include/gingo/internal/data_ops.hpp",
+      "bytes": 1288,
+      "gitBlob": "3342f87905796010ad04660da1309005cfb8ad82",
+      "sha256": "eb693348f167051c8d73b9a8b9bb9c7905b8175d8b4486cf24713fa78452e414"
+    },
+    {
+      "path": "cpp/include/gingo/internal/lookup_data.hpp",
+      "bytes": 1339,
+      "gitBlob": "8150112192374e909b7f6850af5a61216545cd27",
+      "sha256": "1190e460700cfa14103df09815fb74ab81e9d93eda0008829cb57762ab8d0baf"
+    },
+    {
+      "path": "cpp/include/gingo/internal/lookup_progression.hpp",
+      "bytes": 2034,
+      "gitBlob": "7fa588622f12a9be47884cfed452a349623adf41",
+      "sha256": "2c4042402f291f454ae5d74b3178f49448a6c04f36684d91a332255609b6c890"
+    },
+    {
+      "path": "cpp/include/gingo/internal/midi_format.hpp",
+      "bytes": 1149,
+      "gitBlob": "b3aa0ec64fda02db3d06ee14e6985c9ff67728f0",
+      "sha256": "7d94418f55bed46dff466b6cba417010a71f3c8f3d26f6b6464d3894426b0590"
+    },
+    {
+      "path": "cpp/include/gingo/internal/mode_data.hpp",
+      "bytes": 1006,
+      "gitBlob": "3c23412bfe813f4af6832a6c60000a983a2d3e60",
+      "sha256": "785916a77d05c068747bacd179756fecdcac785520c6d7ff3046112f1895302e"
+    },
+    {
+      "path": "cpp/include/gingo/internal/notation_utils.hpp",
+      "bytes": 2396,
+      "gitBlob": "8b4869e1bb4b8d2fddae817e16583a38844dd389",
+      "sha256": "a5348a1bf36dbda276f871620eabf3729db43db081f4791bb5d69a7628433424"
+    },
+    {
+      "path": "cpp/include/gingo/internal/table.hpp",
+      "bytes": 3494,
+      "gitBlob": "937c95a065460267be4415578313560d086ec90a",
+      "sha256": "a363261e5742018f2c479e28edfaf7c3ba15ba61b99646f0b3c356b834039a80"
+    },
+    {
+      "path": "cpp/include/gingo/internal/types.hpp",
+      "bytes": 1726,
+      "gitBlob": "0650e32b2606e230899b3bcb6f053bae5f5b7164",
+      "sha256": "f7fae8d3bd79c24b54c5b505c9c9bdf405c96e3dce8eaa4b0ca4870d3413a17c"
+    },
+    {
+      "path": "cpp/include/gingo/interval.hpp",
+      "bytes": 3574,
+      "gitBlob": "2e6fb43f2d0a57af5841257450339c0680e93a2d",
+      "sha256": "249dacae0b2e39594e8588c176279d139c9d7911dc2317cbd583b1f42087c998"
+    },
+    {
+      "path": "cpp/include/gingo/midi1.hpp",
+      "bytes": 4827,
+      "gitBlob": "ea567770272f578a3c708f8769be87c7fb07d849",
+      "sha256": "70788c02d518dbf190d2dd772a20693c8ceab2fd387941f69988deecc6d869dd"
+    },
+    {
+      "path": "cpp/include/gingo/midi2.hpp",
+      "bytes": 14107,
+      "gitBlob": "4626c44a2008a73d91ea8cc290ab8722fc7a157e",
+      "sha256": "64e54df0bfade8ef004314413d1630016f53d0360273790b35d8fb5561021f18"
+    },
+    {
+      "path": "cpp/include/gingo/midici_handler.hpp",
+      "bytes": 5090,
+      "gitBlob": "86db39d16da63a8fe1af4e19c8b9ab8b80e13816",
+      "sha256": "58ff6c82438a5422ff7783cc72c047cb8e083f3c23622593bf08494241d7ebc1"
+    },
+    {
+      "path": "cpp/include/gingo/monitor.hpp",
+      "bytes": 9027,
+      "gitBlob": "f320af4a6bedc4d01470c4d5b03cc9be28465ead",
+      "sha256": "89d45f5518f2b8a85678db28c417cf425b64d8cc739cc34969adbba8a5e3d7e7"
+    },
+    {
+      "path": "cpp/include/gingo/musicxml.hpp",
+      "bytes": 3542,
+      "gitBlob": "3254a5f60fc3804422cf447dd7b2e8533149367a",
+      "sha256": "67fc2103fc08f964b4369c47f93ca801cf2992a5f9c1ceb17ba74fd2e70728db"
+    },
+    {
+      "path": "cpp/include/gingo/note.hpp",
+      "bytes": 3378,
+      "gitBlob": "ef99ba6fc87c95b39cbf66b9e5eee6d2b1cdc871",
+      "sha256": "b7f6cfab34550c4df9c365693fc9a7f027e7e76abbecd3b3a2a464f7d6ec85ef"
+    },
+    {
+      "path": "cpp/include/gingo/note_context.hpp",
+      "bytes": 1820,
+      "gitBlob": "b79b7b8f789741189b244fc1cf8419f6268fba61",
+      "sha256": "3b3054f930986f14bd04af93e1d1ea96eede37badfad9555d9a050cbc4fef136"
+    },
+    {
+      "path": "cpp/include/gingo/piano.hpp",
+      "bytes": 6525,
+      "gitBlob": "d9e7035993dc51f18790344c0292f77770ff0acf",
+      "sha256": "65a36058f3386807d38f82d8c7603b7b60ace54f0ff3ae8eecc0fe2e3fd010d6"
+    },
+    {
+      "path": "cpp/include/gingo/piano_svg.hpp",
+      "bytes": 7919,
+      "gitBlob": "b94bf7307f894546803c1341031ebb9b845693b5",
+      "sha256": "5cd7a1b24dc7ac3622375add4012f1e016c4baf6faea392bd4dad3f4ff560d87"
+    },
+    {
+      "path": "cpp/include/gingo/progression.hpp",
+      "bytes": 2841,
+      "gitBlob": "86d784bd855341a47213083a895b1bdaaa3eb00d",
+      "sha256": "bbe6b5309a8d7bc2bc1a15e544a0cbf4fd4c23e1284a1576c83fe53f4fa16f0f"
+    },
+    {
+      "path": "cpp/include/gingo/scale.hpp",
+      "bytes": 7051,
+      "gitBlob": "b5ca3624cbc6486bacce6f85fe97e865dd187788",
+      "sha256": "64cd8b8a0253feff7ee04d5e236646f4ac43b93b221acf0610ddb54b063fa7ef"
+    },
+    {
+      "path": "cpp/include/gingo/sequence.hpp",
+      "bytes": 3892,
+      "gitBlob": "8bfab3f175d0c9e983600bd9ac26a2c8abe998e7",
+      "sha256": "96aa7a80f468413f85fea9889d1d1d7d5fd3fb8cac99f86a6f4b3b6ad51f8256"
+    },
+    {
+      "path": "cpp/include/gingo/tempo.hpp",
+      "bytes": 2185,
+      "gitBlob": "e7365bcd35c9a346b91884b965eaadccfb3c78c1",
+      "sha256": "e044e8bf4e78e1316fa49409082a34d6bb49d8b2fb129b9b09ada3a8d060349c"
+    },
+    {
+      "path": "cpp/include/gingo/time_signature.hpp",
+      "bytes": 1845,
+      "gitBlob": "5bae6009e72eee20cefe9ebcd5efd9c52792317f",
+      "sha256": "1412d9edab5656bfccf120f6f485fdf920d1e7c607d3fb797291b9b77267e521"
+    },
+    {
+      "path": "cpp/include/gingo/tree.hpp",
+      "bytes": 3379,
+      "gitBlob": "93f34cadf6fc529939304eb22accac520aed42b2",
+      "sha256": "f3ce3045d687c03ec43e920a5cba80a93c368fce6c3954845deb1dfb34812352"
+    },
+    {
+      "path": "cpp/src/chord.cpp",
+      "bytes": 18570,
+      "gitBlob": "2033083057ccee2e57470edce8611dc9a182dfad",
+      "sha256": "60bb0c32eb893c1532ddaf036fbededcaeaf514b0026e1c546e9fe75426e063b"
+    },
+    {
+      "path": "cpp/src/duration.cpp",
+      "bytes": 8052,
+      "gitBlob": "fff6d5e5f84151c18787f609b9070720df07f388",
+      "sha256": "649950ac143cb7aef30fe861bcb36a3cee0b69b3df10bb55582811bcab847859"
+    },
+    {
+      "path": "cpp/src/event.cpp",
+      "bytes": 1751,
+      "gitBlob": "566d2028b6eb8f59a8c193507018dd0b21acc3cf",
+      "sha256": "8e91afd6a2059ae722f41e90f1254506ea3d438e726f411819cf464b16083d1d"
+    },
+    {
+      "path": "cpp/src/field.cpp",
+      "bytes": 25598,
+      "gitBlob": "5194aeb626992bd06afc187c33ca17e423af9e29",
+      "sha256": "ca722b803b5db2c473e849a1b0a6242bb7b65af01917a7ea34fd94b8969f565a"
+    },
+    {
+      "path": "cpp/src/fretboard.cpp",
+      "bytes": 27733,
+      "gitBlob": "042b9e7b95fb3b55f8c9961af59cb7795aae587e",
+      "sha256": "f15666b21dc7914499818b63f127fded1d928c024e6f1d6d4b91b28091e07e50"
+    },
+    {
+      "path": "cpp/src/fretboard_svg.cpp",
+      "bytes": 34062,
+      "gitBlob": "ccd3c4f879f7104573e4198875f4c9364e852705",
+      "sha256": "2fd07fc726a95890cb4044695e29130cadf6246a3da6eb62a87a33118079141a"
+    },
+    {
+      "path": "cpp/src/internal/data_ops.cpp",
+      "bytes": 1561,
+      "gitBlob": "e5e3d798e2110277e937f81b930a0ff25123e651",
+      "sha256": "ea0f939ea5441b8c20a66a760c6b0032d0622939453ab983a1659c319458aedc"
+    },
+    {
+      "path": "cpp/src/internal/lookup_data.cpp",
+      "bytes": 13387,
+      "gitBlob": "13057baed7b57895160d9072297b1368f5b7076c",
+      "sha256": "6daffa914ab8629d8fd91693cffdab11dee2a59a17728be8841713f988284fdb"
+    },
+    {
+      "path": "cpp/src/internal/lookup_progression.cpp",
+      "bytes": 21576,
+      "gitBlob": "438a0cc6824f35b5f1b552816d37ff8c0ed055ce",
+      "sha256": "ec2776fa0227245847a96432ccf6c9390e141da0231ef3649250e101905f3c5d"
+    },
+    {
+      "path": "cpp/src/internal/mode_data.cpp",
+      "bytes": 8302,
+      "gitBlob": "a812747100bca1ee1846e4e3f0f5681e1e36f383",
+      "sha256": "7cc6e4821016bb508dfa48a99b199af1ef825d1dc53b4c7b3960853c73ffc944"
+    },
+    {
+      "path": "cpp/src/internal/notation_utils.cpp",
+      "bytes": 7101,
+      "gitBlob": "79ffc16a6624edc596d3b6a63e267ff966efeb68",
+      "sha256": "a3a22957bb36022f4a303c8676df6dacd7f04e0d7bfdf1c320224f2bb5f4f86b"
+    },
+    {
+      "path": "cpp/src/interval.cpp",
+      "bytes": 7699,
+      "gitBlob": "95b3b89f93726ea893081a372de733b1468eeed5",
+      "sha256": "20563f9b5af437f34f49ff75952cc79d7102eccc019cccab4140fcaeca88757f"
+    },
+    {
+      "path": "cpp/src/midi1.cpp",
+      "bytes": 3159,
+      "gitBlob": "f5327449c717f8f08cb45e9f60577135176f9e79",
+      "sha256": "e43b5d9324751fbc6340a6c5213500847e13b7069d3b09b5be034405049b4edb"
+    },
+    {
+      "path": "cpp/src/midi2.cpp",
+      "bytes": 7234,
+      "gitBlob": "4ae98336c395a76591ed057ba55bfb675072b8bc",
+      "sha256": "94ae08fffe72e40c4710eeab3084da67f14bffca966822a17298cb21744c2b5f"
+    },
+    {
+      "path": "cpp/src/midi_format.cpp",
+      "bytes": 2753,
+      "gitBlob": "bf80dd6857c2c81d611a5f21317e5ed9a8f210e4",
+      "sha256": "4ac4db15409f5c1f299b13d8971be217794f9909ef9416be8f018ac05ac894ac"
+    },
+    {
+      "path": "cpp/src/midici_handler.cpp",
+      "bytes": 6281,
+      "gitBlob": "5673836519fce1bbdfd1a6524b8b988575891f08",
+      "sha256": "2f04d5f042919273047b0608f55c29d2e072f7c94b5a9b3a8732e06106e3cbfe"
+    },
+    {
+      "path": "cpp/src/monitor.cpp",
+      "bytes": 7744,
+      "gitBlob": "1684ac7f50ca63d733d4a8fd5b96e7b8dae1baf7",
+      "sha256": "a3c529d532326729a3020577349e7202cce70eb6b328c6436d09f28b3dc8f3da"
+    },
+    {
+      "path": "cpp/src/musicxml.cpp",
+      "bytes": 13224,
+      "gitBlob": "16b449abbd2a18f164cf50a44f855a406a2c769b",
+      "sha256": "90698d1086773ad7b721b5aa843873cce3ce5980de686fc59a7d103d695dcf70"
+    },
+    {
+      "path": "cpp/src/note.cpp",
+      "bytes": 6902,
+      "gitBlob": "0d167924f201a6068a9ab2771fd45e566c33b119",
+      "sha256": "a42e6d4945cc06d26653a0b55fe1cb2507e6fd326eb14aeb6cd5400ac3a5c0c4"
+    },
+    {
+      "path": "cpp/src/piano.cpp",
+      "bytes": 10167,
+      "gitBlob": "4ecd44c1398e9fdd99c87c111b500a1adcc11fc0",
+      "sha256": "55dfa56d696c6a42da309ad4aa1ecf7b8e8f65be6b00fd40a88c425027444311"
+    },
+    {
+      "path": "cpp/src/piano_svg.cpp",
+      "bytes": 26322,
+      "gitBlob": "2eb328ef8b1a1439a873b4b8c37a2d301bf2a372",
+      "sha256": "7199e944dceec52e8c41b3542def036ccd15517a809be9ae6d0c9aa39e70eea5"
+    },
+    {
+      "path": "cpp/src/progression.cpp",
+      "bytes": 2014,
+      "gitBlob": "0cbc623a076255d279e817f18e3a5ea2b0974f60",
+      "sha256": "df04333c9541b9671b55885735efe8571ba0ad34f1292069b6ca996f24aded61"
+    },
+    {
+      "path": "cpp/src/scale.cpp",
+      "bytes": 21691,
+      "gitBlob": "7f93fd3a92cd13df702f18bc8b6d5e0db110368c",
+      "sha256": "15828f30b0bd095d18be4fa8c282a435a83bb3ea36317cb32ed0ec10546ac332"
+    },
+    {
+      "path": "cpp/src/sequence.cpp",
+      "bytes": 4148,
+      "gitBlob": "1a5b0a5fc7293336fcca7fa9015d40e95f4d6b88",
+      "sha256": "11989a77ff5900ac04eabf3260c6d2a2778fe042bc754c8cfc9464aeb4d95245"
+    },
+    {
+      "path": "cpp/src/sequence_midi.cpp",
+      "bytes": 13717,
+      "gitBlob": "51e55579f5e629201844b5d413c3530f396e4f78",
+      "sha256": "86ae12e40b2cb4f2bd6688d7906c239298526beddb148cfea6f78c53d1ee1410"
+    },
+    {
+      "path": "cpp/src/tempo.cpp",
+      "bytes": 2948,
+      "gitBlob": "adf5328badbe9ba17969e5b1f7c8241fbd85862f",
+      "sha256": "08ff10423a82588541872536c5ac22dbfde709dbd301dc6ba1bbe6733f323993"
+    },
+    {
+      "path": "cpp/src/time_signature.cpp",
+      "bytes": 1816,
+      "gitBlob": "34035337c6cba55d962659999f1ca46dc05192a2",
+      "sha256": "07f2c97f5802e1e6717b6445baf61c75233e7613cd93cd1fdfe241f18c1b17bf"
+    },
+    {
+      "path": "cpp/src/tree.cpp",
+      "bytes": 22323,
+      "gitBlob": "83afa0e47134b895e400716879094bd9383304a7",
+      "sha256": "6b9001d9e23666bc80b748f3767ce0f70b2308c2b2e5e3a87c300d565581b0f2"
+    }
+  ],
+  "patches": [
+    {
+      "path": "patches/fretboard-search-policy.patch",
+      "sha256": "de07860f05001a9799142eea88009d3448a8d6d28a936c386b8667cfe5b4b097",
+      "purpose": "Expose finger-count cutoff and optional bass pitch class; preserve Gingo DFS, coverage, sorting, deduplication and default behavior.",
+      "outputs": [
+        {
+          "path": "cpp/include/gingo/fretboard.hpp",
+          "sha256": "bae0bff9f21f03c03e658748b5c3ff6b5c4f56b41a4fc596572e1c10482396a1"
+        },
+        {
+          "path": "cpp/src/fretboard.cpp",
+          "sha256": "b2a21985df67b8cbbf75bba311a2ac1e85e56c56093ce3d10a47cb00e839ea96"
+        }
+      ]
+    }
+  ],
+  "unicode": {
+    "version": "16.0.0",
+    "license": "Unicode-3.0",
+    "sources": [
+      {
+        "url": "https://www.unicode.org/Public/16.0.0/ucd/UnicodeData.txt",
+        "sha256": "ff58e5823bd095166564a006e47d111130813dcf8bf234ef79fa51a870edb48f"
+      },
+      {
+        "url": "https://www.unicode.org/Public/16.0.0/ucd/DerivedCoreProperties.txt",
+        "sha256": "39d35161f2954497f69e08bdb9e701493f476a3d30222de20028feda36c1dabd"
+      },
+      {
+        "url": "https://www.unicode.org/Public/16.0.0/ucd/SpecialCasing.txt",
+        "sha256": "8d5de354eef79f2395a54c9c7dcebbaf3d30fc962d0f85611ea97aa973a0c451"
+      }
+    ],
+    "files": [
+      {
+        "path": "resources/unicode-v16.hpp",
+        "sha256": "0ae907c265a8c031b28e95ace86cde26914d924cd0fff280edfea4b85bbee627"
+      },
+      {
+        "path": "tools/generate_unicode.py",
+        "sha256": "67517beb68b4fb2677cc73ad6fc4598e4d6fe52ee7a817a31be6f583d13c0978"
+      },
+      {
+        "path": "licenses/Unicode-LICENSE",
+        "sha256": "e7a93b009565cfce55919a381437ac4db883e9da2126fa28b91d12732bc53d96"
+      }
+    ]
+  }
+}

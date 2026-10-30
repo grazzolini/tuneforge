@@ -7,13 +7,16 @@ on:
     paths:
       - .github/ci/Dockerfile
       - .github/ci/Dockerfile.dockerignore
-      - .github/ci/image-inputs.json
       - .github/ci/README.md
-      - scripts/ci-image-impact.mjs
+      - .github/ci/image-inputs.json
       - .github/workflows/ci-image.yml
-      - packaging/soxr/sources.lock.json
+      - packages/music-core/**
       - packaging/soxr/patches/android-unversioned-soname.patch
+      - packaging/soxr/sources.lock.json
+      - scripts/build-music-core.mjs
       - scripts/build-soxr-runtime.mjs
+      - scripts/ci-image-impact.mjs
+      - scripts/ci-music-core.mjs
       - scripts/deterministic-source-snapshot.mjs
   workflow_dispatch:
 
@@ -125,6 +128,8 @@ jobs:
             echo "- SoXR runtime: \`${soxr_runtime}\` (\`${soxr_revision}\`)"
             echo "- SoXR payload: \`/opt/tuneforge-ci/soxr/host-test\`"
             echo "- SoXR build evidence: \`/opt/tuneforge-ci/soxr/{build-tools.txt,build-inputs.sha256,payload.sha256}\`"
+            echo "- Music core WASM, manifest, notices and pins: \`/opt/tuneforge-ci/music-core\`"
+            echo "- Music core evidence: \`/opt/tuneforge-ci/music-core/{payload.sha256,build-tools.txt}\`"
             echo "- BuildKit SBOM: attached by the successful build"
             echo "- BuildKit provenance: attached with \`mode=max\`"
             echo "- Image inventory: \`/usr/share/tuneforge-ci/packages.txt\`"

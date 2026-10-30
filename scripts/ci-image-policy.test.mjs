@@ -9,6 +9,7 @@ import "./build-soxr-runtime.test.mjs";
 import "./ci-image-impact.test.mjs";
 import "./ci-image-run.test.mjs";
 
+import { imageInventory } from "./ci-image-impact.mjs";
 import { validateCiImagePolicy } from "./ci-image-policy.mjs";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -36,7 +37,7 @@ const fixtureFiles = [
 
 function fixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "tuneforge-ci-image-policy-"));
-  for (const relativePath of fixtureFiles) {
+  for (const relativePath of new Set([...fixtureFiles, ...imageInventory(repositoryRoot).inputs])) {
     const destination = path.join(root, relativePath);
     fs.mkdirSync(path.dirname(destination), { recursive: true });
     fs.copyFileSync(path.join(repositoryRoot, relativePath), destination);
@@ -106,7 +107,7 @@ test("SoXR image context rejects additional checkout files", (context) => {
   context.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const target = path.join(root, ".github/ci/Dockerfile.dockerignore");
   fs.appendFileSync(target, "!package.json\n");
-  assert.throws(() => validateCiImagePolicy(root), /Unregistered Docker context/);
+  assert.throws(() => validateCiImagePolicy(root), /Generated Docker context allowlist.*--write-context/);
 });
 
 test("SoXR build-input manifest requires every reviewed input", () =>
@@ -368,3 +369,17 @@ test("promotion cannot trigger publisher and branch dispatch cannot publish", ()
 test("publisher rejects unreviewed build arguments, targets, platforms and contexts", () =>
   assertMutationsFail(".github/workflows/ci-image.yml", [["          platforms: linux/amd64", "          platforms: linux/arm64"],
     ...["build-args: EXTRA=1", "target: soxr-builder", "build-contexts: extra=./apps"].map((option) => ["          no-cache: true", "          no-cache: true\n          " + option])], /only linux|explicit compatibility review/));
+
+test("music-core builder rejects missing payload verification and unpinned bootstrap", () => {
+  assertMutationsFail(".github/ci/Dockerfile", [["node scripts/ci-music-core.mjs stage /opt/tuneforge-ci/music-core", "true"], ["cd /opt/tuneforge-ci/music-core && sha256sum --check --strict payload.sha256", "true"]], /standalone music-core WASM payload/);
+  assertMutationsFail(".github/ci/Dockerfile", [["MUSIC_NODE_SHA256}", "UNPINNED_SHA256}"], ["MUSIC_UV_SHA256}", "UNPINNED_SHA256}"], ["MUSIC_PYTHON_SHA256}", "UNPINNED_SHA256}"]], /checksum-pin.*bootstrap/);
+});
+
+test("publisher source-tree trigger coverage remains exact", () =>
+  assertMutationsFail(".github/workflows/ci-image.yml", [
+    ["      - packages/music-core/**\n", ""],
+    ["      - packages/music-core/**", "      - packages/**"],
+    ["      - packages/music-core/**", "      - packages/music-core/*"],
+    ["      - packages/music-core/**", "      - packages/music-core/**\n      - .github/ci/promoted-image.json"],
+    ["      - packages/music-core/**", "      - packages/music-core/**\n      - packages/music-core/LICENSE"],
+  ], /must publish only for trusted main image inputs/));

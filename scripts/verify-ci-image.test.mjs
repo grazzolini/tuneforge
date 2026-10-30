@@ -6,6 +6,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { payloadFixture } from "./ci-music-core.test.mjs";
 import { imageInventory, producerIdentity } from "./ci-image-impact.mjs";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -62,11 +63,12 @@ function fixture(inputs = buildInputs) {
     fs.writeFileSync(executable, `#!/usr/bin/env bash\necho '${name} test version'\n`);
     fs.chmodSync(executable, 0o755);
   }
+  const music = payloadFixture(path.join(root, "music-core"), workspace);
   const summary = path.join(root, "summary.md");
   const imageManifest = path.join(root, "producer-inputs.sha256");
   const identity = producerIdentity(workspace);
   fs.writeFileSync(imageManifest, identity.manifest);
-  return { root, workspace, soxr, runtime, bin, summary, imageManifest, fingerprint: identity.fingerprint };
+  return { root, workspace, soxr, runtime, bin, summary, imageManifest, music, fingerprint: identity.fingerprint };
 }
 
 function run(value) {
@@ -76,6 +78,7 @@ function run(value) {
     encoding: "utf8",
     env: {
       ...process.env,
+      TUNEFORGE_CI_MUSIC_CORE_ROOT: value.music,
       PATH: `${value.bin}:${process.env.PATH}`,
       CI_IMAGE_REFERENCE: "ghcr.io/grazzolini/tuneforge-ci@sha256:test",
       CI_IMAGE_FINGERPRINT: value.fingerprint,
@@ -175,4 +178,17 @@ test("new producer manifest survives Flatpak source-list, epoch, and cache confi
   }
   const result = run(value);
   assert.equal(result.status, 0, result.stderr);
+});
+
+test("CI verifier rejects missing/corrupt music-core payload", () => {
+  for (const remove of [false, true]) {
+    const value = fixture(producerInputs);
+    try {
+      const file = path.join(value.music, "wasm/music-core.wasm");
+      if (remove) fs.unlinkSync(file); else fs.appendFileSync(file, "tampered");
+      const result = run(value);
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /music-core payload is missing or corrupt/);
+    } finally { fs.rmSync(value.root, { recursive: true, force: true }); }
+  }
 });

@@ -615,3 +615,16 @@ known-byte sum is never a total. A normal bundle
 fails at 2 GiB or more and meets the issue target only at 1.9 GiB or less; a 1.9–2 GiB bundle is
 buildable but leaves that target incomplete. `--no-bundle` records installed-size evidence with the
 compressed bundle unavailable and makes no bundle-compliance claim.
+
+### Standalone music-core artifacts
+
+The standalone producer in `packages/music-core` supports native archives, Python 3.14/3.11
+wheels, source distributions, and portable WASM through `scripts/build-music-core.mjs`.
+Every target verifies pinned sources/toolchains, contract versions, payload hashes and the complete
+package source fingerprint. Acquire sources explicitly with `--fetch-sources`; compilation and
+runtime bindings never acquire them. `--check` verifies existing artifacts without rebuilding.
+
+The Linux CI image includes the verified WASM, manifest, required notices, source/toolchain locks,
+and build evidence for standalone validation. It does not yet supply application release payloads.
+Image publication and verified digest promotion remain separate delivery steps; see
+[the CI image delivery guidance](../.github/ci/README.md#refresh-and-promotion).

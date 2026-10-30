@@ -43,6 +43,14 @@ if ! (cd "${GITHUB_WORKSPACE}" &&
   exit 1
 fi
 
+music_root="${TUNEFORGE_CI_MUSIC_CORE_ROOT:-/opt/tuneforge-ci/music-core}"
+if [[ ! -f "${music_root}/payload.sha256" ]] ||
+  ! (cd "${music_root}" && sha256sum --check --strict --status payload.sha256); then
+  echo "CI image music-core payload is missing or corrupt; build a current full final candidate." >&2
+  exit 1
+fi
+node "${GITHUB_WORKSPACE}/scripts/ci-music-core.mjs" verify "${music_root}"
+
 ffmpeg_path="$(command -v ffmpeg)"
 ffprobe_path="$(command -v ffprobe)"
 test "${ffmpeg_path}" = "${TUNEFORGE_CI_EXPECTED_FFMPEG_PATH:-/usr/bin/ffmpeg}"
@@ -54,4 +62,5 @@ test "${ffprobe_path}" = "${TUNEFORGE_CI_EXPECTED_FFPROBE_PATH:-/usr/bin/ffprobe
   printf -- '- FFmpeg: `%s` — `%s`\n' "${ffmpeg_path}" "$("${ffmpeg_path}" -version | sed -n '1p')"
   printf -- '- FFprobe: `%s` — `%s`\n' "${ffprobe_path}" "$("${ffprobe_path}" -version | sed -n '1p')"
   printf -- '- SoXR: `%s` — verified payload and build inputs\n' "${soxr_runtime_root}"
+  printf -- '- Music core: `%s` — verified WASM, manifest, notices and pins\n' "${music_root}"
 } >> "${GITHUB_STEP_SUMMARY}"

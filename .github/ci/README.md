@@ -24,8 +24,24 @@ imports, lock references and patch checksums are checked against it. Dynamic
 filesystem reads and snapshot lists require a reviewed source checksum in
 `readAuditSha256`; changed producer code fails with an actionable registration
 request. This is an explicit code review boundary, not static proof of arbitrary
-JavaScript behavior. New components must register transitive dependencies and
-consider host-installed tools shadowing image binaries/libraries.
+JavaScript behavior. The music-core source tree is registered in full because its
+artifact fingerprint reads every package source byte. Executed producer probes and
+their JavaScript import closure retain read/checksum audits. The generated WASM module
+and its one dynamic adapter import have explicit, audited declarations. Remaining
+snapshot-only JavaScript is fingerprinted without execution by this producer. Docker
+context uses directory COPY with a generated, exact-file allowlist, excluding downloaded
+sources, caches, environments and build products. `image-inputs.json` is the only
+hand-maintained file inventory; parent directories need no allow rules. After adding
+or removing inputs, regenerate and check before building:
+
+```sh
+pnpm ci:image:impact --write-context
+node scripts/ci-image-impact.mjs --check
+```
+
+Checks and fingerprints reject missing or stale generated context. Source-tree publisher
+triggers cover the registered tree; policy checks their exact coverage. New components must register transitive dependencies and consider
+host-installed tools shadowing image binaries/libraries.
 
 Reports distinguish producer, publishing-process, consumer-compatibility, and
 no known image impact. Flatpak source/cache policy and the application-owned
@@ -64,6 +80,15 @@ manifest digest and Docker config image ID retain their distinct meanings.
 - SoXR: the repository-pinned Linux AMD64 `host-test` runtime under
   `/opt/tuneforge-ci/soxr/host-test`, built with PFFFT in a disposable stage.
   Node, CMake, and the SoXR compiler toolchain stay outside the final image.
+- Music core: verified portable WASM JavaScript/binary and its canonical manifest under
+  `/opt/tuneforge-ci/music-core/wasm`, plus MIT/Unicode notices, source/toolchain pins,
+  `build-tools.txt`, and `payload.sha256`. Its disposable builder checksum-pins Node
+  26.13.0, uv 0.13.6, and Python 3.14.7; the package locks pin Emscripten and build wheels.
+  The builder verifies canonical source/metadata identity and runs WASM boundary and parity
+  probes before staging. Only the finished payload and evidence enter the final image;
+  selected-image consumers verify its integrity and notices. CI script-tests check generated
+  contracts and metadata. Native ABI, Python 3.14/3.11 wheel and Rust transport checks remain
+  local validation in this producer change. Existing applications do not consume it yet.
 - CI utilities: only tools needed by setup actions and native builds. No
   repository checkout, dependency directory, model, user data, or credential is
   included; SoXR corresponding sources are the documented exception.
@@ -175,7 +200,7 @@ authorize registry publication, digest promotion or anonymous-pull approval.
    package evidence paths, SBOM, and provenance status in the job summary.
 6. Verify the immutable digest and review build logs, inventory, licenses, codec
    evidence, SoXR payload and build-input manifests, corresponding sources,
-   synthetic resampling, SBOM, and `mode=max` provenance. GHCR visibility changes
+   synthetic resampling, music-core manifest/notices/pins/payload and bootstrap provenance, SBOM, and `mode=max` provenance. GHCR visibility changes
    remain a separate authorized GitHub operation.
 7. Verify repository linkage and an anonymous Linux AMD64 pull by digest.
 8. After those checks pass, promote the exact verified digest in a separate

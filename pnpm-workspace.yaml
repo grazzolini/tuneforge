@@ -2,6 +2,7 @@ packages:
   - apps/desktop
   - apps/site
   - packages/shared-types
+  - packages/music-core
 
 overrides:
   'concurrently@10.0.5>shell-quote': 1.11.0

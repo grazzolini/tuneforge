@@ -5,11 +5,11 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { execFileSync, spawnSync } from "node:child_process";
-import { checkImageInputs, imageInventory, imageImpact, producerIdentity } from "./ci-image-impact.mjs";
+import { checkImageInputs, imageInventory, imageImpact, producerIdentity, writeImageContext } from "./ci-image-impact.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 function fixture(context) {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "ci-image-impact-"));
+  const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ci-image-impact-")));
   context.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   for (const input of imageInventory(root).inputs) {
     fs.mkdirSync(path.dirname(path.join(directory, input)), { recursive: true });
@@ -65,7 +65,7 @@ for (const [label, file, content, expected] of [
   ["lowercase ADD", ".github/ci/Dockerfile", "\nadd https://example.invalid/payload /tmp/\n", /Unregistered Docker ADD/],
   ["RUN context bind", ".github/ci/Dockerfile", "\nrun --mount=type=bind,source=secret.txt,target=/tmp/secret cat /tmp/secret\n", /Unsupported Docker RUN --mount/],
   ["RUN default bind", ".github/ci/Dockerfile", "\nRUN --network=none --mount=source=secret.txt,target=/tmp/secret cat /tmp/secret\n", /Unsupported Docker RUN --mount/],
-  ["Docker context", ".github/ci/Dockerfile.dockerignore", "!package.json\n", /Unregistered Docker context/],
+  ["Docker context", ".github/ci/Dockerfile.dockerignore", "!package.json\n", /Generated Docker context allowlist.*--write-context/],
   ["local import", "scripts/build-soxr-runtime.mjs", '\nimport "./new-dependency.mjs";\n', /Unregistered local\/external import/],
   ["dynamic import", "scripts/build-soxr-runtime.mjs", '\nimport(variable);\n', /Unsupported dynamic import/],
   ["dynamic read", "scripts/build-soxr-runtime.mjs", '\nfs.readFileSync(variable);\n', /Read dependency audit required/],
@@ -153,4 +153,149 @@ test("working-tree mode includes committed, staged, unstaged and untracked paths
   assert.deepEqual(impacts.map(({ path: input, classification }) => [input, classification]).sort(), [
     [".github/ci/Dockerfile", "producer"], [".github/ci/README.md", "producer"], ["new-input.txt", "no known image impact"],
   ]);
+});
+
+test("music-core complete source snapshot rejects unregistered files while excluding build caches", context => {
+  const directory = fixture(context);
+  const core = path.join(directory, "packages/music-core");
+  for (const ignored of ["build/generated.mjs", "vendor/gingo-src/download.cpp", "cache/tool.whl"]) {
+    fs.mkdirSync(path.dirname(path.join(core, ignored)), { recursive: true });
+    fs.writeFileSync(path.join(core, ignored), "ignored");
+  }
+  const before = producerIdentity(directory).fingerprint;
+  fs.writeFileSync(path.join(core, "new-source.cpp"), "new source");
+  assert.throws(() => checkImageInputs(directory), /Unregistered source snapshot input/);
+  fs.unlinkSync(path.join(core, "new-source.cpp"));
+  assert.equal(producerIdentity(directory).fingerprint, before);
+  const data = path.join(core, "resources/instruments-v1.json");
+  fs.appendFileSync(data, " ");
+  assert.notEqual(producerIdentity(directory).fingerprint, before);
+});
+
+const producerProbeScripts = [
+  "packages/music-core/test/artifact-metadata.mjs", "packages/music-core/test/wasm-boundary.mjs",
+  "packages/music-core/test/runtime-parity.mjs", "packages/music-core/test/parity.mjs",
+  "packages/music-core/test/normalization.mjs", "packages/music-core/test/runtime-driver.mjs",
+  "packages/music-core/bindings/wasm/index.mjs",
+];
+test("executed music-core probe closure retains read/checksum audits", () => {
+  const inventory = imageInventory(root);
+  for (const input of producerProbeScripts) {
+    assert.ok(!inventory.snapshotOnlyInputs.includes(input), input);
+    assert.ok(inventory.registeredReads[input], input);
+    assert.match(inventory.readAuditSha256[input], /^[a-f0-9]{64}$/, input);
+  }
+});
+for (const [label, mutate, expected] of [
+  ["missing generated import", inventory => delete inventory.generatedImports["packages/music-core/test/wasm-boundary.mjs"], /Unregistered local.external import/],
+  ["missing dynamic import", inventory => delete inventory.dynamicImports["packages/music-core/bindings/wasm/index.mjs"], /Unsupported dynamic import/],
+  ["unknown generated target", inventory => inventory.generatedImports["packages/music-core/test/wasm-boundary.mjs"].push("../build/unregistered.mjs"), /Unregistered generated import target/],
+  ["unknown dynamic target", inventory => inventory.dynamicImports["packages/music-core/bindings/wasm/index.mjs"].targets.push("packages/music-core/build/unregistered.mjs"), /Unregistered dynamic import target/],
+  ["unknown generated producer", inventory => Object.values(inventory.generatedModules)[0].producer = "scripts/unregistered.mjs", /Invalid generated module declaration/],
+  ["snapshot-masked executable", inventory => inventory.snapshotOnlyInputs.push("packages/music-core/test/runtime-driver.mjs"), /Invalid snapshot-only JavaScript input/],
+]) test("music-core audit rejects " + label, context => {
+  const directory = fixture(context);
+  const file = path.join(directory, ".github/ci/image-inputs.json");
+  const inventory = JSON.parse(fs.readFileSync(file));
+  mutate(inventory);
+  fs.writeFileSync(file, JSON.stringify(inventory));
+  assert.throws(() => checkImageInputs(directory), expected);
+});
+for (const [label, input, addition, expected] of [
+  ["extra dynamic expression", "packages/music-core/bindings/wasm/index.mjs", "\nimport(unregistered);\n", /Unsupported dynamic import/],
+  ["unregistered generated import", "packages/music-core/test/wasm-boundary.mjs", '\nimport "../build/unregistered.mjs";\n', /Unregistered local.external import/],
+  ["changed audited probe read", "packages/music-core/test/runtime-driver.mjs", "\nfs.readFileSync(variable);\n", /Read dependency audit required/],
+]) test("music-core probe code rejects " + label, context => {
+  const directory = fixture(context);
+  fs.appendFileSync(path.join(directory, input), addition);
+  assert.throws(() => checkImageInputs(directory), expected);
+});
+
+for (const mutation of ["missing", "extra file", "parent directory", "removed file", "reordered"]) {
+  test("generated context rejects " + mutation + " and regeneration repairs it", context => {
+    const directory = fixture(context);
+    const file = path.join(directory, ".github/ci/Dockerfile.dockerignore");
+    const before = fs.readFileSync(file, "utf8");
+    if (mutation === "missing") fs.unlinkSync(file);
+    else if (mutation === "extra file") fs.appendFileSync(file, "!unregistered.txt\n");
+    else if (mutation === "parent directory") fs.appendFileSync(file, "!packages/\n");
+    else if (mutation === "removed file") fs.writeFileSync(file, before.replace("!packages/music-core/LICENSE\n", ""));
+    else fs.writeFileSync(file, before.split("\n").reverse().join("\n"));
+    for (const check of [checkImageInputs, producerIdentity]) assert.throws(() => check(directory),
+      /Generated Docker context allowlist.*pnpm ci:image:impact --write-context/);
+    const script = path.join(directory, "scripts/ci-image-impact.mjs");
+    for (const mode of ["--check", "--fingerprint", "--manifest"]) {
+      const result = spawnSync(process.execPath, [script, mode], { encoding: "utf8" });
+      assert.notEqual(result.status, 0, mode);
+      assert.match(result.stderr, /pnpm ci:image:impact --write-context/);
+    }
+    const result = spawnSync(process.execPath, [script, "--write-context"], { encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(fs.readFileSync(file, "utf8"), before);
+    assert.equal(writeImageContext(directory), before);
+    assert.doesNotThrow(() => checkImageInputs(directory));
+  });
+}
+
+test("context generation derives sorted exact files from the canonical inventory", context => {
+  const directory = fixture(context);
+  const file = path.join(directory, ".github/ci/image-inputs.json");
+  const inventory = JSON.parse(fs.readFileSync(file));
+  inventory.components[0].inputs.push("scripts/new-input.txt");
+  fs.writeFileSync(file, JSON.stringify(inventory));
+  fs.writeFileSync(path.join(directory, "scripts/new-input.txt"), "new registered bytes");
+  assert.throws(() => checkImageInputs(directory), /Generated Docker context allowlist/);
+  const generated = writeImageContext(directory);
+  assert.deepEqual(generated.trimEnd().split("\n").slice(2), imageInventory(directory).inputs.map(input => "!" + input));
+  assert.ok(!generated.split("\n").some(line => line.endsWith("/")));
+  assert.doesNotThrow(() => checkImageInputs(directory));
+  assert.deepEqual(producerIdentity(directory).manifest.trimEnd().split("\n").map(line => line.slice(66)),
+    imageInventory(directory).inputs);
+});
+
+test("directory COPY accepts registered descendants and filters unrelated directory files", context => {
+  const directory = fixture(context);
+  fs.writeFileSync(path.join(directory, "scripts/unregistered.txt"), "excluded by exact allowlist");
+  fs.appendFileSync(path.join(directory, ".github/ci/Dockerfile"), "\nCOPY scripts/ /payload/\nCOPY packages/music-core /core/\n");
+  assert.doesNotThrow(() => checkImageInputs(directory));
+  assert.ok(!writeImageContext(directory).includes("!scripts/unregistered.txt"));
+});
+
+for (const [source, expected] of [
+  ["unknown/", /Unregistered Docker COPY/], [".", /Unregistered Docker COPY/],
+  ["./", /Unregistered Docker COPY/], ["/", /Unregistered Docker COPY/],
+  ["scripts/../scripts/", /Unregistered Docker COPY/], ["./scripts/", /Unregistered Docker COPY/],
+  ["scripts//", /Unregistered Docker COPY/], ["scripts/*", /Unregistered Docker COPY/],
+  ["--chown=1000 scripts/", /Unsupported Docker COPY form/],
+  ['["scripts/",', /Unsupported Docker COPY form/],
+  ["--from=music-core-builder --chown=1000", /Unsupported Docker COPY stage form/],
+]) test("unsupported COPY source/form fails: " + source, context => {
+  const directory = fixture(context);
+  fs.appendFileSync(path.join(directory, ".github/ci/Dockerfile"), "\nCOPY " + source + " /payload/\n");
+  assert.throws(() => checkImageInputs(directory), expected);
+});
+
+test("registered input with a symlink ancestor fails even when its bytes are unchanged", context => {
+  const directory = fixture(context);
+  fs.renameSync(path.join(directory, "scripts"), path.join(directory, "actual-scripts"));
+  fs.symlinkSync("actual-scripts", path.join(directory, "scripts"));
+  assert.throws(() => checkImageInputs(directory), /without symlinks/);
+});
+
+test("context generation cannot bless a changed producer read audit", context => {
+  const directory = fixture(context);
+  const inventoryFile = path.join(directory, ".github/ci/image-inputs.json");
+  const before = fs.readFileSync(inventoryFile, "utf8");
+  fs.appendFileSync(path.join(directory, "scripts/build-soxr-runtime.mjs"), "\nfs.readFileSync(variable);\n");
+  fs.unlinkSync(path.join(directory, ".github/ci/Dockerfile.dockerignore"));
+  assert.doesNotThrow(() => writeImageContext(directory));
+  assert.equal(fs.readFileSync(inventoryFile, "utf8"), before);
+  assert.throws(() => checkImageInputs(directory), /Read dependency audit required/);
+});
+
+test("internal stage COPY rejects traversal", context => {
+  const directory = fixture(context);
+  fs.appendFileSync(path.join(directory, ".github/ci/Dockerfile"),
+    "\nCOPY --from=music-core-builder /payload/../elsewhere /payload\n");
+  assert.throws(() => checkImageInputs(directory), /Unsupported Docker COPY stage form/);
 });

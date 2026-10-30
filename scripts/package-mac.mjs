@@ -58,6 +58,8 @@ function main() {
       ?? path.join("packaging", "ffmpeg", "generated", "macos-arm64"),
   ]);
 
+  run(process.execPath, ["scripts/build-music-core.mjs", "--target", "wasm"]);
+  run(process.execPath, ["scripts/build-music-core.mjs", "--target", "python", "--python", "3.14"]);
   run("uv", backendSyncArgs(options), { cwd: backendRoot });
   const configArgs = options.testPackage
     ? ["--config", writeTestTauriOverlay(tauriRoot)] : [];

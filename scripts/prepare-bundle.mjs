@@ -164,6 +164,10 @@ function parsePythonHome(venvConfigPath) {
   return homeLine.replace("home = ", "").trim();
 }
 
+export function isMusicCoreSitePackageEntry(relativePath) {
+  return relativePath.split(path.sep)[0].includes("tuneforge_music_core");
+}
+
 function shouldIncludeBundledSitePackage(sourcePath) {
   const relativePath = path.relative(sitePackagesRootForFilter, sourcePath);
   if (!relativePath || relativePath === "") {
@@ -171,6 +175,9 @@ function shouldIncludeBundledSitePackage(sourcePath) {
   }
 
   const segments = relativePath.split(path.sep);
+  if (isMusicCoreSitePackageEntry(relativePath)) {
+    return false;
+  }
   // Keep runtime package submodules intact. Torch imports from torch/testing at runtime,
   // so filtering generic names like "test" or "testing" breaks packaged builds.
   if (segments.includes("__pycache__")) {
@@ -195,6 +202,42 @@ function run(command, args, options = {}) {
   if (result.status !== 0) {
     throw new Error(`${command} exited with status ${result.status}`);
   }
+}
+
+export function verifiedMusicCoreWheel(root = workspaceRoot) {
+  const artifactRoot = path.join(root, "packages/music-core/build/artifacts/python/cp314");
+  const wheels = readdirSync(artifactRoot).filter((name) =>
+    /^tuneforge_music_core-0\.1\.0-cp314-cp314-.*\.whl$/.test(name));
+  if (wheels.length !== 1) throw new Error("Expected exactly one CPython 3.14 music-core wheel.");
+  return path.join(artifactRoot, wheels[0]);
+}
+
+export function stageMusicCoreWheel({ outputRoot = stagedBackendRoot,
+  interpreter = path.join(stagedPythonRoot, "bin/python3.14") } = {}) {
+  const sitePackages = path.join(outputRoot, "site-packages");
+  mkdirSync(path.join(outputRoot, "licenses"), { recursive: true });
+  run(process.execPath, ["scripts/build-music-core.mjs", "--target", "python", "--python", "3.14", "--check"]);
+  run("uv", ["pip", "install", "--python", interpreter,
+    "--no-deps", "--no-index", "--target", sitePackages, verifiedMusicCoreWheel()]);
+  const sourceLock = JSON.parse(readFileSync(path.join(workspaceRoot, "packages/music-core/sources.lock.json"), "utf8"));
+  const licenseHash = sourceLock.files.find((file) => file.path === "LICENSE").sha256;
+  run(interpreter, ["-c", [
+    "import hashlib, pathlib, sys, zipfile",
+    "wheel, target, expected = sys.argv[1:]",
+    "with zipfile.ZipFile(wheel) as archive:",
+    "    names = [name for name in archive.namelist() if name.endswith('/licenses/Gingo-LICENSE')]",
+    "    assert len(names) == 1, 'Expected one Gingo notice in verified wheel'",
+    "    notice = archive.read(names[0])",
+    "assert hashlib.sha256(notice).hexdigest() == expected, 'Wheel Gingo notice differs from source lock'",
+    "pathlib.Path(target).write_bytes(notice)",
+  ].join("\n"), verifiedMusicCoreWheel(), path.join(outputRoot, "licenses/Gingo-MIT.txt"), licenseHash]);
+  copyInto(path.join(workspaceRoot, "packages/music-core/licenses/pybind11-LICENSE"),
+    path.join(outputRoot, "licenses/pybind11-BSD-3-Clause.txt"));
+  copyInto(path.join(workspaceRoot, "packages/music-core/licenses/Unicode-LICENSE"),
+    path.join(outputRoot, "licenses/Unicode-LICENSE.txt"));
+  copyInto(path.join(workspaceRoot, "packages/music-core/build/artifacts/python/cp314/manifest.json"),
+    path.join(outputRoot, "music-core-manifest.json"));
+  return sitePackages;
 }
 
 function prepareModelBundle(options) {
@@ -320,6 +363,13 @@ function verifyStagedPython(options) {
         "require_inside(sys.base_prefix, 'sys.base_prefix')",
         "require_inside(sys.executable, 'sys.executable')",
         "require_inside(encodings.__file__, 'encodings')",
+        "import importlib.metadata, tuneforge_music_core, tuneforge_music_core._native as music_native",
+        "package_root = Path(os.environ['TUNEFORGE_STAGED_SITE_PACKAGES']).resolve()",
+        "for module in (tuneforge_music_core, music_native):",
+        "    assert Path(module.__file__).resolve().is_relative_to(package_root), module.__file__",
+        "assert importlib.metadata.version('tuneforge-music-core') == '0.1.0'",
+        "direct_url = importlib.metadata.distribution('tuneforge-music-core').read_text('direct_url.json')",
+        "assert not direct_url or not __import__('json').loads(direct_url).get('dir_info', {}).get('editable')",
         ...(options.lvChordia ? [
           "from app.engines.lv_chordia import lv_chordia_dependency_status",
           "available, reason = lv_chordia_dependency_status()",
@@ -333,6 +383,8 @@ function verifyStagedPython(options) {
         LD_LIBRARY_PATH: [...new Set(libraryPaths)].join(path.delimiter),
         PYTHONHOME: stagedPythonRoot,
         PYTHONPATH: `${stagedSitePackagesRoot}${path.delimiter}${stagedBackendSourceRoot}`,
+        PYTHONNOUSERSITE: "1",
+        TUNEFORGE_STAGED_SITE_PACKAGES: stagedSitePackagesRoot,
       },
     },
   );
@@ -367,6 +419,7 @@ async function main() {
   copyInto(pythonInstallRoot, stagedPythonRoot, { dereference: true });
   assertBundledPythonLayout(stagedPythonRoot);
   copyInto(sitePackagesRoot, stagedSitePackagesRoot, { filter: shouldIncludeBundledSitePackage });
+  stageMusicCoreWheel();
   stageLvChordiaAssets(packageOptions);
   const ownedFfmpeg = stageOwnedFfmpegRuntime();
   verifyStagedPython(packageOptions);

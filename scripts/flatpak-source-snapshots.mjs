@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { createDeterministicSourceSnapshot } from "./deterministic-source-snapshot.mjs";
 import { profilesFromConfig, testTauriOverlay } from "./package-profile.mjs";
 export { compareUtf8 } from "./deterministic-source-snapshot.mjs";
@@ -17,8 +18,26 @@ export function resolveSourceDateEpoch({ override = process.env.SOURCE_DATE_EPOC
 }
 
 export function createFlatpakSourceSnapshot({ root, outputPath, inputs, sourceDateEpoch = resolveSourceDateEpoch() }) {
+  if (inputs.some((input) => input.source === "packages/music-core/vendor/gingo-src")) {
+    const lock = JSON.parse(readFileSync(path.join(root, "packages/music-core/sources.lock.json"), "utf8"));
+    for (const file of lock.files) {
+      const bytes = readFileSync(path.join(root, "packages/music-core/vendor/gingo-src", file.path));
+      if (bytes.length !== file.bytes || createHash("sha256").update(bytes).digest("hex") !== file.sha256)
+        throw new Error(`Flatpak core source differs from lock: ${file.path}`);
+    }
+  }
   return createDeterministicSourceSnapshot({ root, outputPath, inputs, epoch: validatedSourceDateEpoch(sourceDateEpoch) });
 }
+
+export const musicCoreSourceSnapshotInputs = Object.freeze([
+  "packages/music-core/CMakeLists.txt", "packages/music-core/package.json",
+  "packages/music-core/pyproject.toml", "packages/music-core/sources.lock.json",
+  "packages/music-core/toolchains.lock.json", "packages/music-core/bindings",
+  "packages/music-core/LICENSE", "packages/music-core/licenses",
+  "packages/music-core/include", "packages/music-core/patches", "packages/music-core/resources",
+  "packages/music-core/schema", "packages/music-core/src", "packages/music-core/test",
+  "packages/music-core/tools", "packages/music-core/vendor/gingo-src",
+]);
 
 export const flatpakSourceSnapshotInputs = {
   frontend: [
@@ -27,6 +46,8 @@ export const flatpakSourceSnapshotInputs = {
     "apps/desktop/package.json", "apps/desktop/index.html", "apps/desktop/tsconfig.json",
     "apps/desktop/tsconfig.node.json", "apps/desktop/vite.config.ts", "apps/desktop/src",
     "packages/shared-types/package.json", "packages/shared-types/src",
+    ...musicCoreSourceSnapshotInputs, "scripts/build-music-core.mjs",
+    "packages/music-core/build/artifacts/wasm",
   ],
   desktop: [
     "apps/desktop/src-tauri/Cargo.lock", "apps/desktop/src-tauri/Cargo.toml",
@@ -34,6 +55,7 @@ export const flatpakSourceSnapshotInputs = {
     "apps/desktop/src-tauri/capabilities", "apps/desktop/src-tauri/icons",
     "apps/desktop/src-tauri/resources", "apps/desktop/src-tauri/src",
     "apps/backend/app/storage-profile.json", "apps/desktop/src-tauri/native/whisper-rs-sys",
+    ...musicCoreSourceSnapshotInputs,
   ],
   backend: [
     "README.md", "LICENSE", "THIRD_PARTY_NOTICES.md", "LICENSES/crema-0.2.0-BSD-2-Clause.txt",
@@ -46,6 +68,7 @@ export const flatpakSourceSnapshotInputs = {
     { source: "apps/desktop/src-tauri/icons/32x32.png", destination: "icons/32x32.png" },
     { source: "apps/desktop/src-tauri/icons/128x128.png", destination: "icons/128x128.png" },
     { source: "apps/desktop/src-tauri/icons/512x512.png", destination: "icons/512x512.png" },
+    ...musicCoreSourceSnapshotInputs,
   ],
 };
 

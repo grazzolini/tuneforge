@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import { generateGuitarVoicings } from "./lib/music";
+const generatedId = (label: string, index: number) => generateGuitarVoicings(label)[index]!.id;
 import {
   type ChordSegmentSchema,
   DICTIONARY_SHAPE_GROUP_NAME,
@@ -13,10 +15,10 @@ import {
   expectPianoInstrumentSelected,
   expectSelectedOrHighlighted,
   fSharpTimeline,
+  fireEvent,
   getDictionaryInstrumentSelector,
   getPianoActiveKeyboardMidi,
   getPianoKeyboard,
-  getPianoKeyByMidi,
   getSelectedAccordionButton,
   getShapeCard,
   getStoredChordDictionaryPreferences,
@@ -53,21 +55,21 @@ describe("Desktop app tools chord dictionary live follow", () => {
     ).not.toBeInTheDocument();
 
     const shapeChoices = within(screen.getByRole("group", { name: DICTIONARY_SHAPE_GROUP_NAME }));
-    await user.click(shapeChoices.getByRole("button", { name: "C E-shape barre" }));
+    await user.click(shapeChoices.getByRole("button", { name: "C voicing 2" }));
 
-    await waitFor(() => expectFirstShapeChoice(DICTIONARY_SHAPE_GROUP_NAME, "C E-shape barre"));
+    await waitFor(() => expectFirstShapeChoice(DICTIONARY_SHAPE_GROUP_NAME, "C voicing 2"));
     expect(
       screen.getByRole("button", { name: "Clear this chord/instrument global preference" }),
     ).toBeInTheDocument();
-    expectFirstShapeCard("C E-shape barre");
-    expect(getStoredChordDictionaryPreferences()).toContain("c-e-shape-barre");
+    expectFirstShapeCard("C voicing 2");
+    expect(getStoredChordDictionaryPreferences()).toContain(generatedId("C", 1));
 
     view.unmount();
     const reopenedView = renderChordDictionaryView();
     await reopenedView.findHeading();
 
-    await waitFor(() => expectFirstShapeChoice(DICTIONARY_SHAPE_GROUP_NAME, "C E-shape barre"));
-    expectFirstShapeCard("C E-shape barre");
+    await waitFor(() => expectFirstShapeChoice(DICTIONARY_SHAPE_GROUP_NAME, "C voicing 2"));
+    expectFirstShapeCard("C voicing 2");
   });
 
   it("hides dictionary reset when the saved global shape is unavailable", async () => {
@@ -78,8 +80,8 @@ describe("Desktop app tools chord dictionary live follow", () => {
 
     await renderChordDictionary();
 
-    await waitFor(() => expectFirstShapeChoice(DICTIONARY_SHAPE_GROUP_NAME, "C open"));
-    expectFirstShapeCard("C open");
+    await waitFor(() => expectFirstShapeChoice(DICTIONARY_SHAPE_GROUP_NAME, "C voicing 1"));
+    expectFirstShapeCard("C voicing 1");
     expect(
       screen.queryByRole("button", { name: "Clear this chord/instrument global preference" }),
     ).not.toBeInTheDocument();
@@ -91,19 +93,19 @@ describe("Desktop app tools chord dictionary live follow", () => {
     await renderChordDictionary();
 
     const shapeChoices = within(screen.getByRole("group", { name: DICTIONARY_SHAPE_GROUP_NAME }));
-    await user.click(shapeChoices.getByRole("button", { name: "C E-shape barre" }));
-    await waitFor(() => expectFirstShapeChoice(DICTIONARY_SHAPE_GROUP_NAME, "C E-shape barre"));
+    await user.click(shapeChoices.getByRole("button", { name: "C voicing 2" }));
+    await waitFor(() => expectFirstShapeChoice(DICTIONARY_SHAPE_GROUP_NAME, "C voicing 2"));
 
     await user.click(
       screen.getByRole("button", { name: "Clear this chord/instrument global preference" }),
     );
 
-    await waitFor(() => expectFirstShapeChoice(DICTIONARY_SHAPE_GROUP_NAME, "C open"));
-    expectFirstShapeCard("C open");
+    await waitFor(() => expectFirstShapeChoice(DICTIONARY_SHAPE_GROUP_NAME, "C voicing 1"));
+    expectFirstShapeCard("C voicing 1");
     expect(
       screen.queryByRole("button", { name: "Clear this chord/instrument global preference" }),
     ).not.toBeInTheDocument();
-    expect(getStoredChordDictionaryPreferences()).not.toContain("c-e-shape-barre");
+    expect(getStoredChordDictionaryPreferences()).not.toContain(generatedId("C", 1));
   });
 
   it("opens live follow from query params and renders the active project chord", async () => {
@@ -132,9 +134,9 @@ describe("Desktop app tools chord dictionary live follow", () => {
     expect(currentChord).not.toHaveTextContent("art_source");
 
     expect(screen.getByRole("heading", { name: "A guitar shapes" })).toBeInTheDocument();
-    expect(screen.getAllByRole("button", { name: "A open" }).length).toBeGreaterThan(0);
+    expect(screen.getAllByRole("button", { name: "A voicing 1" }).length).toBeGreaterThan(0);
     expect(screen.getByLabelText("Next chord")).toHaveTextContent(/E/);
-    expectInspectorToShow([/A2/, /String\s*5/, /Fret\s*0/, /Degree\s*1/]);
+    expectInspectorMatchesGuitarNote(within(getShapeCard("A voicing 1")).getAllByRole("button", { name: /string \d fret \d/ })[0]!);
     expect(screen.queryByRole("heading", { name: "C guitar shapes" })).not.toBeInTheDocument();
   });
 
@@ -195,17 +197,58 @@ describe("Desktop app tools chord dictionary live follow", () => {
     expect(screen.getByText("Region A")).toBeInTheDocument();
 
     const keyboard = getPianoKeyboard();
-    expect(getPianoActiveKeyboardMidi(keyboard)).toEqual(["57", "61", "64"]);
-    expect(getPianoKeyByMidi(keyboard, 57, "white")).toHaveTextContent("A3");
-    expect(getPianoKeyByMidi(keyboard, 61, "black")).toHaveTextContent("C#4");
-    expect(getPianoKeyByMidi(keyboard, 64, "white")).toHaveTextContent("E4");
-    expectInspectorToShow([/A3/, /Degree\s*1/, /Left hand area/, /not fingering/i]);
+    const midis = getPianoActiveKeyboardMidi(keyboard).map(Number);
+    expect(new Set(midis.map(midi => midi % 12))).toEqual(new Set([9, 1, 4]));
+    expect(Math.max(...midis) - Math.min(...midis)).toBeLessThan(12);
+    expectInspectorToShow([/Degree\s*[135]/, /hand area/, /not fingering/i]);
     expect(screen.queryByRole("heading", { name: "A guitar shapes" })).not.toBeInTheDocument();
     expect(screen.queryByRole("group", { name: /Left hand/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("group", { name: /Right hand/i })).not.toBeInTheDocument();
     expect(document.querySelector(".guitar-fretboard")).not.toBeInTheDocument();
     expect(document.querySelector(".accordion-keyboard")).not.toBeInTheDocument();
     expect(document.querySelector(".accordion-stradella")).not.toBeInTheDocument();
+  });
+
+  it("preserves accordion inspector selection and hover across sustained-chord ticks", async () => {
+    const user = userEvent.setup();
+    const project = makeFollowProject({ authoritativeSourceTimeline: cTimeline, displayedTimeline: cTimeline,
+      displayedKey: { pitchClass: 0, mode: "major" }, sourceKey: { pitchClass: 0, mode: "major" }, totalDisplayTransposeSemitones: 0 });
+    const view = renderChordDictionaryPlaybackHarness({ playback: makePlaybackValue({ project, playbackTimeSeconds: 1 }) });
+    await view.findHeading();
+    await user.click(within(getDictionaryInstrumentSelector()).getByRole("button", { name: "Accordion" }));
+    const keys = within(screen.getByRole("group", { name: /Right hand/i })).getAllByRole("button");
+    await user.click(keys[1]!);
+    const inspector = screen.getByLabelText("Note inspector");
+    const selected = inspector.textContent;
+    expect(inspector).not.toHaveTextContent(/Finger/);
+    view.rerenderWithPlayback(makePlaybackValue({ project, playbackTimeSeconds: 2 }));
+    expect(inspector.textContent).toBe(selected);
+    fireEvent.pointerEnter(keys[2]!);
+    const hovered = inspector.textContent;
+    expect(hovered).not.toBe(selected);
+    view.rerenderWithPlayback(makePlaybackValue({ project, playbackTimeSeconds: 3 }));
+    expect(inspector.textContent).toBe(hovered);
+    fireEvent.pointerLeave(keys[2]!);
+    expect(inspector.textContent).toBe(selected);
+  });
+
+  it("identifies an inspected unselected physical button without false accompaniment membership", async () => {
+    const user = userEvent.setup();
+    const timeline: ChordSegmentSchema[] = [{ label: "F", pitch_class: 5, quality: "major", start_seconds: 0, end_seconds: 16, confidence: 1 }];
+    await renderChordDictionaryWithPlayback({ playback: makePlaybackValue({ project: makeFollowProject({
+      authoritativeSourceTimeline: timeline, displayedTimeline: timeline, displayedKey: { pitchClass: 5, mode: "major" },
+      sourceKey: { pitchClass: 5, mode: "major" }, totalDisplayTransposeSemitones: 0,
+    }) }) });
+    await user.click(within(getDictionaryInstrumentSelector()).getByRole("button", { name: "Accordion" }));
+    const selected = within(screen.getByLabelText("Accordion left-hand candidates")).getAllByRole("button").find(button => button.getAttribute("aria-pressed") === "true")!;
+    expect(selected).toHaveTextContent(/F bass \+ FM/);
+    const left = screen.getByRole("group", { name: /Left hand/i });
+    const unselected = left.querySelector<HTMLButtonElement>('button[data-row="major"][data-label="GM"][data-selected="false"]')!;
+    expect(unselected).not.toBeNull();
+    await user.click(unselected);
+    expect(screen.getByLabelText("Note inspector")).toHaveTextContent(/Source\s*GM/);
+    expect(unselected).not.toHaveAccessibleDescription(/F bass \+ FM/);
+    expect(selected).toHaveAttribute("aria-pressed", "true");
   });
 
   it("renders out-of-window accordion roots in Live Follow without moving the key region", async () => {
@@ -242,7 +285,7 @@ describe("Desktop app tools chord dictionary live follow", () => {
   it("uses a Dictionary global C shape preference for Live Follow when the project has no pick", async () => {
     writeGlobalChordDictionaryPreferredShape(
       makeDictionaryShapePreferenceContext({ chordLabel: "C" }),
-      "c-e-shape-barre",
+      generatedId("C", 1),
     );
 
     await renderChordDictionaryWithPlayback({
@@ -257,7 +300,7 @@ describe("Desktop app tools chord dictionary live follow", () => {
       }),
     });
 
-    await waitFor(() => expectFirstShapeChoice(LIVE_SHAPE_GROUP_NAME, "C E-shape barre"));
+    await waitFor(() => expectFirstShapeChoice(LIVE_SHAPE_GROUP_NAME, "C voicing 2"));
     expect(
       screen.getByText(
         "Saves locally for this project chord and instrument; clear uses global/default.",
@@ -268,14 +311,14 @@ describe("Desktop app tools chord dictionary live follow", () => {
         name: "Clear this project override and fall back to global or default",
       }),
     ).not.toBeInTheDocument();
-    expectFirstShapeCard("C E-shape barre");
-    expectInspectorToShow([/C3/, /String\s*6/, /Fret\s*8/, /Degree\s*1/]);
+    expectFirstShapeCard("C voicing 2");
+    expectInspectorMatchesGuitarNote(within(getShapeCard("C voicing 2")).getAllByRole("button", { name: /string \d fret \d/ })[0]!);
   });
 
   it("keeps transposed displayed D separate from a global C shape preference", async () => {
     writeGlobalChordDictionaryPreferredShape(
       makeDictionaryShapePreferenceContext({ chordLabel: "C" }),
-      "c-e-shape-barre",
+      generatedId("C", 1),
     );
 
     const dProject = makeFollowProject({
@@ -290,21 +333,21 @@ describe("Desktop app tools chord dictionary live follow", () => {
     });
     await view.findHeading();
 
-    await waitFor(() => expectFirstShapeChoice(LIVE_SHAPE_GROUP_NAME, "D open"));
-    expectFirstShapeCard("D open");
+    await waitFor(() => expectFirstShapeChoice(LIVE_SHAPE_GROUP_NAME, "D voicing 1"));
+    expectFirstShapeCard("D voicing 1");
 
     view.unmount();
     writeGlobalChordDictionaryPreferredShape(
       makeDictionaryShapePreferenceContext({ chordLabel: "D" }),
-      "d-a-shape-barre",
+      generatedId("D", 1),
     );
 
     await renderChordDictionaryWithPlayback({
       playback: makePlaybackValue({ project: dProject }),
     });
 
-    await waitFor(() => expectFirstShapeChoice(LIVE_SHAPE_GROUP_NAME, "D A-shape barre"));
-    expectFirstShapeCard("D A-shape barre");
+    await waitFor(() => expectFirstShapeChoice(LIVE_SHAPE_GROUP_NAME, "D voicing 2"));
+    expectFirstShapeCard("D voicing 2");
   });
 
   it("hides Live Follow reset when the saved project shape is unavailable", async () => {
@@ -315,8 +358,8 @@ describe("Desktop app tools chord dictionary live follow", () => {
 
     await renderChordDictionaryWithPlayback();
 
-    await waitFor(() => expectFirstShapeChoice(LIVE_SHAPE_GROUP_NAME, "A open"));
-    expectFirstShapeCard("A open");
+    await waitFor(() => expectFirstShapeChoice(LIVE_SHAPE_GROUP_NAME, "A voicing 1"));
+    expectFirstShapeCard("A voicing 1");
     expect(
       screen.queryByRole("button", {
         name: "Clear this project override and fall back to global or default",
@@ -331,26 +374,26 @@ describe("Desktop app tools chord dictionary live follow", () => {
     await view.findHeading();
 
     const shapeChoices = within(screen.getByRole("group", { name: LIVE_SHAPE_GROUP_NAME }));
-    await user.click(shapeChoices.getByRole("button", { name: "A D-shape barre" }));
+    await user.click(shapeChoices.getByRole("button", { name: "A voicing 2" }));
 
-    await waitFor(() => expectFirstShapeChoice(LIVE_SHAPE_GROUP_NAME, "A D-shape barre"));
+    await waitFor(() => expectFirstShapeChoice(LIVE_SHAPE_GROUP_NAME, "A voicing 2"));
     expect(
       screen.getByRole("button", {
         name: "Clear this project override and fall back to global or default",
       }),
     ).toBeInTheDocument();
-    expectFirstShapeCard("A D-shape barre");
+    expectFirstShapeCard("A voicing 2");
     expect(getStoredChordDictionaryPreferences()).toContain("proj_123");
-    expect(getStoredChordDictionaryPreferences()).toContain("a-d-shape-barre");
+    expect(getStoredChordDictionaryPreferences()).toContain(generatedId("A", 1));
 
     view.rerenderWithPlayback(makePlaybackValue({ playbackTimeSeconds: 6 }));
-    await waitFor(() => expectFirstShapeChoice(LIVE_SHAPE_GROUP_NAME, "A D-shape barre"));
+    await waitFor(() => expectFirstShapeChoice(LIVE_SHAPE_GROUP_NAME, "A voicing 2"));
 
     view.unmount();
     await renderChordDictionaryWithPlayback();
 
-    await waitFor(() => expectFirstShapeChoice(LIVE_SHAPE_GROUP_NAME, "A D-shape barre"));
-    expectFirstShapeCard("A D-shape barre");
+    await waitFor(() => expectFirstShapeChoice(LIVE_SHAPE_GROUP_NAME, "A voicing 2"));
+    expectFirstShapeCard("A voicing 2");
   });
 
   it("activates the owning Live Follow guitar shape when keyboard-selecting an inactive-card note", async () => {
@@ -359,9 +402,9 @@ describe("Desktop app tools chord dictionary live follow", () => {
 
     const shapeGroup = screen.getByRole("group", { name: LIVE_SHAPE_GROUP_NAME });
     const inactiveShapeButton = within(shapeGroup).getByRole("button", {
-      name: "A D-shape barre",
+      name: "A voicing 2",
     });
-    const inactiveShapeCard = getShapeCard("A D-shape barre");
+    const inactiveShapeCard = getShapeCard("A voicing 2");
     const noteButton = within(inactiveShapeCard).getAllByRole("button", {
       name: /string \d fret \d/i,
     })[0] as HTMLElement | undefined;
@@ -385,16 +428,16 @@ describe("Desktop app tools chord dictionary live follow", () => {
     const user = userEvent.setup();
     writeGlobalChordDictionaryPreferredShape(
       makeDictionaryShapePreferenceContext({ chordLabel: "E" }),
-      "e-a-shape-barre",
+      generatedId("E", 1),
     );
     await renderChordDictionaryWithPlayback({
       playback: makePlaybackValue({ playbackTimeSeconds: 20 }),
     });
 
     const shapeChoices = within(screen.getByRole("group", { name: LIVE_SHAPE_GROUP_NAME }));
-    await waitFor(() => expectFirstShapeChoice(LIVE_SHAPE_GROUP_NAME, "E A-shape barre"));
-    await user.click(shapeChoices.getByRole("button", { name: "E D-shape barre" }));
-    await waitFor(() => expectFirstShapeChoice(LIVE_SHAPE_GROUP_NAME, "E D-shape barre"));
+    await waitFor(() => expectFirstShapeChoice(LIVE_SHAPE_GROUP_NAME, "E voicing 2"));
+    await user.click(shapeChoices.getByRole("button", { name: "E voicing 3" }));
+    await waitFor(() => expectFirstShapeChoice(LIVE_SHAPE_GROUP_NAME, "E voicing 3"));
 
     await user.click(
       screen.getByRole("button", {
@@ -402,15 +445,15 @@ describe("Desktop app tools chord dictionary live follow", () => {
       }),
     );
 
-    await waitFor(() => expectFirstShapeChoice(LIVE_SHAPE_GROUP_NAME, "E A-shape barre"));
-    expectFirstShapeCard("E A-shape barre");
+    await waitFor(() => expectFirstShapeChoice(LIVE_SHAPE_GROUP_NAME, "E voicing 2"));
+    expectFirstShapeCard("E voicing 2");
     expect(
       screen.queryByRole("button", {
         name: "Clear this project override and fall back to global or default",
       }),
     ).not.toBeInTheDocument();
-    expect(getStoredChordDictionaryPreferences()).toContain("e-a-shape-barre");
-    expect(getStoredChordDictionaryPreferences()).not.toContain("e-d-shape-barre");
+    expect(getStoredChordDictionaryPreferences()).toContain(generatedId("E", 1));
+    expect(getStoredChordDictionaryPreferences()).not.toContain(generatedId("E", 2));
   });
 
   it("uses an honest generic playback source label without a project display name", async () => {
@@ -489,7 +532,7 @@ describe("Desktop app tools chord dictionary live follow", () => {
     expect(screen.queryByLabelText("Current chord")).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "A guitar shapes" })).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "C guitar shapes" })).toBeInTheDocument();
-    expectInspectorToShow([/C3/, /Degree\s*1/]);
+    expectInspectorMatchesGuitarNote(within(getShapeCard("C voicing 1")).getAllByRole("button", { name: /string \d fret \d/ })[0]!);
   });
 
   it("keeps unsupported followed chords honest without guitar voicings", async () => {

@@ -1011,6 +1011,26 @@ test("all Android package modes share one native preparation path", () => {
   assert.doesNotMatch(tracked, new RegExp(privateSourceTerms.join("|"), "i"));
 });
 
+test("direct Android initialization records package-manager context for the Gradle callback", (t) => {
+  const source = fs.readFileSync(new URL("./package-android.mjs", import.meta.url), "utf8");
+  assert.match(source, /run\("bash", \[androidEnv, "pnpm", "exec", "tauri", "android", "init", "--ci", "--skip-targets-install"\]/);
+  const env = Object.fromEntries(Object.entries(sanitizedEnv(process.env))
+    .filter(([name]) => !name.startsWith("npm_") && !name.startsWith("PNPM_")));
+  const desktop = path.resolve("apps/desktop");
+  const metadata = spawnSync("pnpm", ["exec", "node", "-e",
+    "console.log(JSON.stringify({name:process.env.PNPM_PACKAGE_NAME,agent:process.env.npm_config_user_agent}))"],
+  { cwd: desktop, env, encoding: "utf8" });
+  assert.equal(metadata.status, 0, metadata.stderr);
+  const selected = JSON.parse(metadata.stdout);
+  assert.equal(selected.name, "@tuneforge/desktop");
+  assert.match(selected.agent, /^pnpm\//);
+  const callback = spawnSync("pnpm", ["tauri", "android", "android-studio-script", "--help"],
+    { cwd: path.join(desktop, "src-tauri"), env: { ...env, LIBCLANG_PATH: temp(t) }, encoding: "utf8" });
+  assert.equal(callback.status, 0, callback.stderr);
+  assert.match(callback.stdout, /android-studio-script/);
+  assert.doesNotMatch(callback.stderr, /MODULE_NOT_FOUND|Cannot find module/);
+});
+
 
 test("CLI credential-preflight failure excludes synthetic signing secrets", (t) => {
   const root = temp(t);

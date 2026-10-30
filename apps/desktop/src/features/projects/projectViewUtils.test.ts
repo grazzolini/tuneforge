@@ -303,8 +303,8 @@ describe("transposeChordSegment", () => {
 
   it.each<[string, LabelOverride]>([
     ["label", { label: "D:maj/3" }],
-    ["display label", { display_label: "D:maj/3", label: "C6" }],
-    ["raw label", { label: "C6", raw_label: "D:maj/3" }],
+    ["display label", { display_label: "D:maj/3", label: "C13" }],
+    ["raw label", { label: "C13", raw_label: "D:maj/3" }],
   ])("parses %s fallbacks before transposing", (_source, overrides) => {
     const segment: ChordSegmentSchema = {
       confidence: 0.9,
@@ -312,7 +312,7 @@ describe("transposeChordSegment", () => {
       end_seconds: 4,
       label: overrides.label,
       pitch_class: null,
-      quality: "6",
+      quality: "13",
       ...(overrides.raw_label ? { raw_label: overrides.raw_label } : {}),
       start_seconds: 0,
     };
@@ -360,9 +360,9 @@ describe("transposeChordSegment", () => {
     const segment: ChordSegmentSchema = {
       confidence: 0.9,
       end_seconds: 4,
-      label: "C6",
+      label: "C13",
       pitch_class: 0,
-      quality: "6",
+      quality: "13",
       start_seconds: 0,
     };
 
@@ -372,6 +372,16 @@ describe("transposeChordSegment", () => {
         mode: "auto",
       }),
     ).toBe(segment);
+  });
+
+  it("transposes supported major sixth semantics from a saved analysis label", () => {
+    const segment: ChordSegmentSchema = {
+      confidence: 0.9, end_seconds: 4, label: "C6", raw_label: "C:maj6",
+      pitch_class: 0, quality: "maj6", start_seconds: 0,
+    };
+    expect(transposeChordSegment(segment, 2, { activeKey: null, mode: "sharps" })).toMatchObject({
+      label: "D6", quality: "maj6", pitch_class: 2, raw_label: "C:maj6",
+    });
   });
 });
 

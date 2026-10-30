@@ -44,6 +44,9 @@ importers:
       '@tauri-apps/plugin-dialog':
         specifier: ^2.7.2
         version: 2.7.2
+      '@tuneforge/music-core':
+        specifier: workspace:*
+        version: link:../../packages/music-core
       '@tuneforge/shared-types':
         specifier: workspace:*
         version: link:../../packages/shared-types

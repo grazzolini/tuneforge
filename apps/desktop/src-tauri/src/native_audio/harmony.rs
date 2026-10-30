@@ -52,326 +52,267 @@ pub(crate) enum CremaModelLabel<'a> {
     Chord(CremaChord<'a>),
 }
 
-pub(crate) const SHARP_PITCH_NAMES: [&str; 12] = [
-    "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
-];
+use serde_json::{json, Value};
+use std::collections::HashMap;
+use std::sync::{LazyLock, OnceLock};
 
-const FLAT_PITCH_NAMES: [&str; 12] = [
-    "C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B",
-];
-const NEUTRAL_PITCH_NAMES: [&str; 12] = [
-    "C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B",
-];
-const DUAL_PITCH_NAMES: [&str; 12] = [
-    "C", "C#/Db", "D", "D#/Eb", "E", "F", "F#/Gb", "G", "G#/Ab", "A", "A#/Bb", "B",
-];
-const SCALE_DEGREES: [&str; 12] = [
-    "1", "b2", "2", "b3", "3", "4", "b5", "5", "b6", "6", "b7", "7",
-];
-
-const MAJOR_INTERVALS: &[usize] = &[0, 4, 7];
-const MINOR_INTERVALS: &[usize] = &[0, 3, 7];
-const DOMINANT_SEVENTH_INTERVALS: &[usize] = &[0, 4, 7, 10];
-const FLAT_FIVE_SEVENTH_INTERVALS: &[usize] = &[0, 4, 6, 10];
-const MAJOR_SEVENTH_INTERVALS: &[usize] = &[0, 4, 7, 11];
-const MINOR_SEVENTH_INTERVALS: &[usize] = &[0, 3, 7, 10];
-const MAJOR_SIXTH_INTERVALS: &[usize] = &[0, 4, 7, 9];
-const MINOR_SIXTH_INTERVALS: &[usize] = &[0, 3, 7, 9];
-const MINOR_MAJOR_SEVENTH_INTERVALS: &[usize] = &[0, 3, 7, 11];
-const SUSPENDED_SECOND_INTERVALS: &[usize] = &[0, 2, 7];
-const SUSPENDED_FOURTH_INTERVALS: &[usize] = &[0, 5, 7];
-const DIMINISHED_INTERVALS: &[usize] = &[0, 3, 6];
-const DIMINISHED_SEVENTH_INTERVALS: &[usize] = &[0, 3, 6, 9];
-const HALF_DIMINISHED_SEVENTH_INTERVALS: &[usize] = &[0, 3, 6, 10];
-const AUGMENTED_INTERVALS: &[usize] = &[0, 4, 8];
-
+pub(crate) fn call_core(mut request: Value) -> Result<Value, String> {
+    let operation = request["operation"].clone();
+    let object = request
+        .as_object_mut()
+        .ok_or("core request must be an object")?;
+    object.insert("apiVersion".into(), 1.into());
+    object.insert("schemaVersion".into(), 1.into());
+    let text =
+        tuneforge_music_core::call_json(&request.to_string()).map_err(|error| error.to_string())?;
+    let response: Value = serde_json::from_str(&text).map_err(|error| error.to_string())?;
+    if response["apiVersion"] != 1
+        || response["schemaVersion"] != 1
+        || response["operation"] != operation
+    {
+        return Err("incompatible music core response".into());
+    }
+    response
+        .get("result")
+        .cloned()
+        .ok_or("missing music core result".into())
+}
+fn core(request: Value) -> Value {
+    call_core(request).expect("bundled music core operation")
+}
+impl PitchSpelling {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Sharps => "sharps",
+            Self::Flats => "flats",
+            Self::Neutral => "neutral",
+            Self::Dual => "dual",
+        }
+    }
+}
+struct Constants {
+    values: Value,
+    intervals: HashMap<String, Vec<usize>>,
+}
+fn constants() -> &'static Constants {
+    static CONSTANTS: OnceLock<Constants> = OnceLock::new();
+    CONSTANTS.get_or_init(|| {
+        let values = core(json!({"operation": "nativeConstants"}));
+        let intervals = values["quality_intervals"]
+            .as_object()
+            .expect("core intervals")
+            .iter()
+            .map(|(quality, values)| {
+                (
+                    quality.clone(),
+                    values
+                        .as_array()
+                        .expect("interval array")
+                        .iter()
+                        .map(|value| value.as_u64().expect("interval integer") as usize)
+                        .collect(),
+                )
+            })
+            .collect();
+        Constants { values, intervals }
+    })
+}
+fn static_text(value: &str) -> Option<&'static str> {
+    let data = &constants().values;
+    for field in [
+        "sharp_pitch_names",
+        "flat_pitch_names",
+        "neutral_pitch_names",
+        "dual_pitch_names",
+        "scale_degrees",
+    ] {
+        if let Some(found) = data[field]
+            .as_array()?
+            .iter()
+            .filter_map(Value::as_str)
+            .find(|text| *text == value)
+        {
+            return Some(found);
+        }
+    }
+    for (quality, suffix) in data["quality_suffixes"].as_object()? {
+        if quality == value {
+            return Some(quality.as_str());
+        }
+        if suffix.as_str() == Some(value) {
+            return suffix.as_str();
+        }
+    }
+    None
+}
+pub(crate) static SHARP_PITCH_NAMES: LazyLock<[&'static str; 12]> = LazyLock::new(|| {
+    std::array::from_fn(|index| {
+        constants().values["sharp_pitch_names"][index]
+            .as_str()
+            .expect("core pitch name")
+    })
+});
 pub(crate) fn pitch_class_name(pitch_class: i64, spelling: PitchSpelling) -> &'static str {
-    let index = pitch_class.rem_euclid(12) as usize;
-    match spelling {
-        PitchSpelling::Sharps => SHARP_PITCH_NAMES[index],
-        PitchSpelling::Flats => FLAT_PITCH_NAMES[index],
-        PitchSpelling::Neutral => NEUTRAL_PITCH_NAMES[index],
-        PitchSpelling::Dual => DUAL_PITCH_NAMES[index],
-    }
+    let value = core(
+        json!({"operation":"nativePitchClassName", "pitch_class":pitch_class, "spelling":spelling.as_str()}),
+    );
+    static_text(value.as_str().expect("core pitch name")).expect("immutable core pitch name")
 }
-
 pub(crate) fn sharp_pitch_class(note: &str) -> Option<usize> {
-    SHARP_PITCH_NAMES.iter().position(|value| *value == note)
+    core(json!({"operation":"nativeSharpPitchClass", "input":note}))
+        .as_u64()
+        .map(|value| value as usize)
 }
-
 pub(crate) fn note_pitch_class(note: &str) -> Option<i64> {
-    match note.to_ascii_uppercase().as_str() {
-        "C" | "B#" => Some(0),
-        "C#" | "DB" => Some(1),
-        "D" => Some(2),
-        "D#" | "EB" => Some(3),
-        "E" | "FB" => Some(4),
-        "F" | "E#" => Some(5),
-        "F#" | "GB" => Some(6),
-        "G" => Some(7),
-        "G#" | "AB" => Some(8),
-        "A" => Some(9),
-        "A#" | "BB" => Some(10),
-        "B" | "CB" => Some(11),
-        _ => None,
-    }
+    core(json!({"operation":"nativeNotePitchClass", "input":note})).as_i64()
 }
-
 pub(crate) fn parse_key(value: &str) -> Option<KeySignature> {
-    let normalized = value.trim();
-    if let Some((pitch, mode)) = normalized.split_once(':') {
-        let pitch_class = pitch.parse::<i64>().ok()?;
-        let mode = match mode.to_ascii_lowercase().as_str() {
+    key_from_value(&core(json!({"operation":"nativeParseKey", "input":value})))
+}
+pub(crate) fn key_from_value(value: &Value) -> Option<KeySignature> {
+    Some(KeySignature {
+        pitch_class: value["pitch_class"].as_i64()?,
+        mode: match value["mode"].as_str()? {
             "major" => KeyMode::Major,
             "minor" => KeyMode::Minor,
             _ => return None,
-        };
-        return (0..=11)
-            .contains(&pitch_class)
-            .then_some(KeySignature { pitch_class, mode });
-    }
-    let mut parts = normalized.split_whitespace();
-    let pitch_class = note_pitch_class(parts.next()?)?;
-    let mode = match parts
-        .next()
-        .unwrap_or("major")
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "minor" | "m" => KeyMode::Minor,
-        _ => KeyMode::Major,
-    };
-    Some(KeySignature { pitch_class, mode })
+        },
+    })
 }
-
-pub(crate) fn format_key(pitch_class: i64, mode: KeyMode, spelling: PitchSpelling) -> String {
-    format!(
-        "{} {}",
-        pitch_class_name(pitch_class, spelling),
-        mode.as_str()
+pub(crate) fn key_value(key: Option<KeySignature>) -> Value {
+    key.map_or(
+        Value::Null,
+        |key| json!({"pitch_class": key.pitch_class, "mode": key.mode.as_str()}),
     )
 }
-
+pub(crate) fn format_key(pitch_class: i64, mode: KeyMode, spelling: PitchSpelling) -> String {
+    core(json!({"operation":"nativeFormatKey", "pitch_class":pitch_class,"mode":mode.as_str(),"spelling":spelling.as_str()})).as_str().expect("core key label").to_owned()
+}
 pub(crate) fn shortest_semitone_delta(source: i64, target: i64) -> i64 {
-    let upward = (target - source).rem_euclid(12);
-    if upward <= 6 {
-        upward
-    } else {
-        upward - 12
-    }
+    core(json!({"operation":"shortestSemitoneDelta", "source":source,"target":target}))
+        .as_i64()
+        .expect("core semitone delta")
 }
-
 pub(crate) fn automatic_pitch_spelling(key: Option<KeySignature>) -> PitchSpelling {
-    const MAJOR: [PitchSpelling; 12] = [
-        PitchSpelling::Neutral,
-        PitchSpelling::Flats,
-        PitchSpelling::Sharps,
-        PitchSpelling::Flats,
-        PitchSpelling::Sharps,
-        PitchSpelling::Flats,
-        PitchSpelling::Sharps,
-        PitchSpelling::Sharps,
-        PitchSpelling::Flats,
-        PitchSpelling::Sharps,
-        PitchSpelling::Flats,
-        PitchSpelling::Sharps,
-    ];
-    const MINOR: [PitchSpelling; 12] = [
-        PitchSpelling::Flats,
-        PitchSpelling::Sharps,
-        PitchSpelling::Flats,
-        PitchSpelling::Flats,
-        PitchSpelling::Sharps,
-        PitchSpelling::Flats,
-        PitchSpelling::Sharps,
-        PitchSpelling::Flats,
-        PitchSpelling::Sharps,
-        PitchSpelling::Neutral,
-        PitchSpelling::Flats,
-        PitchSpelling::Sharps,
-    ];
-    key.map_or(PitchSpelling::Neutral, |key| {
-        if key.mode == KeyMode::Minor {
-            MINOR[key.pitch_class.rem_euclid(12) as usize]
-        } else {
-            MAJOR[key.pitch_class.rem_euclid(12) as usize]
-        }
-    })
+    match core(json!({"operation":"nativeAutomaticPitchSpelling", "input":key_value(key)}))
+        .as_str()
+        .expect("core spelling")
+    {
+        "sharps" => PitchSpelling::Sharps,
+        "flats" => PitchSpelling::Flats,
+        "neutral" => PitchSpelling::Neutral,
+        _ => panic!("invalid core spelling"),
+    }
 }
-
 pub(crate) fn quality_suffix(quality: &str) -> Option<&'static str> {
-    match quality {
-        "major" => Some(""),
-        "minor" => Some("m"),
-        "7" => Some("7"),
-        "7b5" => Some("7b5"),
-        "maj7" => Some("maj7"),
-        "m7" => Some("m7"),
-        "sus2" => Some("sus2"),
-        "sus4" => Some("sus4"),
-        "dim" => Some("dim"),
-        "aug" => Some("aug"),
-        "dim7" => Some("dim7"),
-        "hdim7" => Some("m7b5"),
-        _ => None,
-    }
+    constants().values["quality_suffixes"]
+        .get(quality)?
+        .as_str()
 }
-
 pub(crate) fn quality_from_display_suffix(suffix: &str) -> Option<&'static str> {
-    match suffix {
-        "" => Some("major"),
-        "m" => Some("minor"),
-        "7" => Some("7"),
-        "7b5" => Some("7b5"),
-        "maj7" => Some("maj7"),
-        "m7" => Some("m7"),
-        "sus2" => Some("sus2"),
-        "sus4" => Some("sus4"),
-        "dim" => Some("dim"),
-        "aug" => Some("aug"),
-        "dim7" => Some("dim7"),
-        "m7b5" => Some("hdim7"),
-        _ => None,
-    }
+    let value = core(json!({"operation":"nativeQualityFromSuffix", "input":suffix}));
+    static_text(value.as_str()?)
 }
-
 pub(crate) fn quality_intervals(quality: &str) -> Option<&'static [usize]> {
-    match quality {
-        "major" | "maj" => Some(MAJOR_INTERVALS),
-        "minor" | "min" => Some(MINOR_INTERVALS),
-        "7" => Some(DOMINANT_SEVENTH_INTERVALS),
-        "7b5" => Some(FLAT_FIVE_SEVENTH_INTERVALS),
-        "maj7" => Some(MAJOR_SEVENTH_INTERVALS),
-        "m7" | "min7" => Some(MINOR_SEVENTH_INTERVALS),
-        "maj6" => Some(MAJOR_SIXTH_INTERVALS),
-        "min6" => Some(MINOR_SIXTH_INTERVALS),
-        "minmaj7" => Some(MINOR_MAJOR_SEVENTH_INTERVALS),
-        "sus2" => Some(SUSPENDED_SECOND_INTERVALS),
-        "sus4" => Some(SUSPENDED_FOURTH_INTERVALS),
-        "dim" => Some(DIMINISHED_INTERVALS),
-        "dim7" => Some(DIMINISHED_SEVENTH_INTERVALS),
-        "hdim7" => Some(HALF_DIMINISHED_SEVENTH_INTERVALS),
-        "aug" => Some(AUGMENTED_INTERVALS),
-        _ => None,
-    }
+    constants().intervals.get(quality).map(Vec::as_slice)
 }
-
 pub(crate) fn degree_name(relative_pitch_class: usize) -> Option<&'static str> {
-    SCALE_DEGREES.get(relative_pitch_class).copied()
+    constants().values["scale_degrees"]
+        .get(relative_pitch_class)?
+        .as_str()
 }
-
 pub(crate) fn degree_pitch_class(root_pitch_class: usize, degree: &str) -> Option<usize> {
-    SCALE_DEGREES
-        .iter()
-        .position(|value| *value == degree)
-        .map(|relative| (root_pitch_class + relative) % 12)
+    core(json!({"operation":"nativeDegreePitchClass", "root":root_pitch_class,"degree":degree}))
+        .as_u64()
+        .map(|value| value as usize)
 }
-
 pub(crate) fn crema_quality_contains(label: &str, relative_pitch_class: usize) -> bool {
-    quality_intervals(label.split(':').nth(1).unwrap_or("maj"))
-        .is_some_and(|intervals| intervals.contains(&relative_pitch_class))
+    core(json!({"operation":"nativeCremaContains", "input":label,"relative":relative_pitch_class}))
+        .as_bool()
+        .expect("core chord membership")
 }
-
-fn normalize_crema_quality(raw_quality: &str) -> (&str, &str) {
-    let quality = match raw_quality {
-        "maj" | "maj6" => "major",
-        "min" | "min6" | "minmaj7" => "minor",
-        "min7" => "m7",
-        "hdim7" => "hdim7",
-        other => other,
-    };
-    (quality, quality_suffix(quality).unwrap_or(quality))
+fn source_slice<'a>(raw: &'a str, range: &Value) -> Option<&'a str> {
+    if range.is_null() {
+        return None;
+    }
+    let start = range[0].as_u64().expect("core UTF-8 start") as usize;
+    let end = range[1].as_u64().expect("core UTF-8 end") as usize;
+    Some(raw.get(start..end).expect("core UTF-8 source range"))
 }
-
 pub(crate) fn parse_crema_model_label(raw: &str) -> CremaModelLabel<'_> {
-    if raw == "N" {
-        return CremaModelLabel::NoChord;
-    }
-    if raw == "X" {
-        return CremaModelLabel::Unknown;
-    }
-    let (body, bass_degree) = raw
-        .split_once('/')
-        .map_or((raw, None), |(body, bass)| (body, Some(bass)));
-    let (root, raw_quality) = body.split_once(':').unwrap_or((body, "maj"));
-    let root_pitch_class = sharp_pitch_class(root).unwrap_or(0);
-    let (quality, suffix) = normalize_crema_quality(raw_quality);
-    CremaModelLabel::Chord(CremaChord {
-        root_pitch_class,
-        quality,
-        suffix,
-        bass_degree,
-        bass_pitch_class: bass_degree
-            .and_then(|degree| degree_pitch_class(root_pitch_class, degree)),
-    })
-}
-
-pub(crate) fn parse_display_chord(label: &str) -> Option<ParsedChord> {
-    let trimmed = label.trim();
-    if trimmed.eq_ignore_ascii_case("N.C.") || trimmed.eq_ignore_ascii_case("N.C") {
-        return None;
-    }
-    let (main, bass) = trimmed
-        .split_once('/')
-        .map_or((trimmed, None), |(main, bass)| (main, Some(bass)));
-    let mut chars = main.char_indices();
-    let (_, root) = chars.next()?;
-    if !(('A'..='G').contains(&root.to_ascii_uppercase())) {
-        return None;
-    }
-    let mut root_end = root.len_utf8();
-    if let Some((index, accidental)) = chars.next() {
-        if accidental == '#' || accidental == 'b' {
-            root_end = index + accidental.len_utf8();
+    let value = core(json!({"operation":"nativeParseCrema", "input":raw}));
+    match value["kind"].as_str().expect("core label kind") {
+        "no_chord" => CremaModelLabel::NoChord,
+        "unknown" => CremaModelLabel::Unknown,
+        "chord" => {
+            let raw_quality = source_slice(raw, &value["raw_quality_range"]);
+            let borrowed = |field| {
+                let text = value[field].as_str().expect("core chord string");
+                static_text(text)
+                    .or_else(|| raw_quality.filter(|raw| *raw == text))
+                    .expect("core borrowed quality range")
+            };
+            CremaModelLabel::Chord(CremaChord {
+                root_pitch_class: value["root_pitch_class"].as_u64().expect("core root") as usize,
+                quality: borrowed("quality"),
+                suffix: borrowed("suffix"),
+                bass_degree: source_slice(raw, &value["bass_degree_range"]),
+                bass_pitch_class: value["bass_pitch_class"]
+                    .as_u64()
+                    .map(|value| value as usize),
+            })
         }
+        _ => panic!("invalid core label kind"),
     }
-    let root_pitch_class = note_pitch_class(&main[..root_end])?;
-    let quality = quality_from_display_suffix(&main[root_end..])?;
-    let bass_pitch_class = bass.and_then(note_pitch_class);
-    if bass.is_some() && bass_pitch_class.is_none() {
-        return None;
-    }
+}
+pub(crate) fn parse_display_chord(label: &str) -> Option<ParsedChord> {
+    let value = core(json!({"operation":"nativeParseChord", "input":label}));
     Some(ParsedChord {
-        root_pitch_class,
-        quality,
-        bass_pitch_class,
+        root_pitch_class: value["root_pitch_class"].as_i64()?,
+        quality: static_text(value["quality"].as_str()?)?,
+        bass_pitch_class: value["bass_pitch_class"].as_i64(),
     })
 }
-
 pub(crate) fn format_chord_with_suffix(
     root_pitch_class: i64,
     suffix: &str,
     bass_pitch_class: Option<i64>,
     spelling: PitchSpelling,
 ) -> String {
-    let root = root_pitch_class.rem_euclid(12);
-    let bass = bass_pitch_class.map(|pitch| pitch.rem_euclid(12));
-    let bass_label = bass
-        .filter(|pitch| *pitch != root)
-        .map(|pitch| format!("/{}", pitch_class_name(pitch, spelling)))
-        .unwrap_or_default();
-    format!(
-        "{}{}{}",
-        pitch_class_name(root, spelling),
-        suffix,
-        bass_label
-    )
+    core(json!({"operation":"nativeFormatChordSuffix", "root":root_pitch_class,"suffix":suffix,"bass":bass_pitch_class,"spelling":spelling.as_str()})).as_str().expect("core chord label").to_owned()
 }
-
 pub(crate) fn format_chord(
     root_pitch_class: i64,
     quality: &str,
     bass_pitch_class: Option<i64>,
     spelling: PitchSpelling,
 ) -> Option<String> {
-    Some(format_chord_with_suffix(
-        root_pitch_class,
-        quality_suffix(quality)?,
-        bass_pitch_class,
-        spelling,
-    ))
+    core(json!({"operation":"nativeFormatChord", "root":root_pitch_class,"quality":quality,"bass":bass_pitch_class,"spelling":spelling.as_str()})).as_str().map(str::to_owned)
 }
-
 pub(crate) fn round3(value: f64) -> f64 {
-    (value * 1_000.0).round() / 1_000.0
+    core(json!({"operation":"nativeRound3", "input":value}))
+        .as_f64()
+        .expect("core rounded number")
+}
+#[cfg(test)]
+mod transport_tests {
+    use super::*;
+    #[test]
+    fn unsupported_crema_labels_remain_unknown() {
+        for index in 0..1000 {
+            let source = format!("C:unknown-{index}-é/bass-{index}");
+            assert!(matches!(parse_crema_model_label(&source), CremaModelLabel::Unknown));
+        }
+    }
+    #[test]
+    fn crema_aliases_keep_semantic_sixths_and_borrow_the_bass_degree() {
+        let source = String::from("C:min6/b3");
+        let CremaModelLabel::Chord(chord) = parse_crema_model_label(&source) else {
+            panic!("chord")
+        };
+        assert_eq!(chord.quality, "min6");
+        assert_eq!(chord.suffix, "m6");
+        assert_eq!(chord.bass_pitch_class, Some(3));
+        assert!(std::ptr::eq(chord.bass_degree.unwrap().as_ptr(), source[7..].as_ptr()));
+    }
 }

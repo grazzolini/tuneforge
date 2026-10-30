@@ -5,6 +5,7 @@ description = "Local API and processing backend for TuneForge."
 readme = "README.md"
 requires-python = ">=3.14,<3.15"
 dependencies = [
+  "tuneforge-music-core==0.1.0",
   "alembic>=1.19.1,<2.0.0",
   "audioop-lts>=0.2.2; python_version >= '3.13'",
   "cryptography>=50.0.1,<51.0.0",
@@ -83,3 +84,6 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["app"]
+
+[tool.uv.sources]
+tuneforge-music-core = { path = "../../packages/music-core" }

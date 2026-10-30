@@ -73,6 +73,8 @@ done
 
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 backend_dir="${repo_root}/apps/backend"
+# Acquire before removing an existing environment; raw builds never fetch.
+node "${repo_root}/scripts/build-music-core.mjs" --fetch-sources
 marker_file="${backend_dir}/.venv/.tuneforge-legacy-nvidia"
 cd "${backend_dir}"
 backend_sync_args=(sync --all-groups)

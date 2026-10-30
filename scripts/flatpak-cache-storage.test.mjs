@@ -12,6 +12,8 @@ import { generateFlatpakSourceSnapshots as generatorSnapshots } from "./generate
 import { flatpakBuildEvent, flatpakBuildPhases, resolveFrontendGitRef, renderFlatpakManifest } from "./package-flatpak.mjs";
 import { parsePackageOptions } from "./package-options.mjs";
 
+import { populateFlatpakSnapshotFixture } from "./music-core-test-fixture.mjs";
+
 const root = fileURLToPath(new URL("../", import.meta.url));
 const hasOstree = spawnSync("ostree", ["--version"], { stdio: "ignore" }).status === 0;
 function temporary(context) {
@@ -227,8 +229,10 @@ test("packaging-only commit preserves scoped frontend inputs and stable snapshot
 
 test("both snapshot producers share complete canonical desktop and backend JSON policy", (context) => {
   const directory = temporary(context);
-  generateFlatpakSourceSnapshots({ root, generatedRoot: path.join(directory, "canonical"), sourceDateEpoch: "1" });
-  generatorSnapshots({ root, generatedRoot: path.join(directory, "generator"), sourceDateEpoch: "1" });
+  const fixture = path.join(directory, "fixture");
+  populateFlatpakSnapshotFixture(fixture);
+  generateFlatpakSourceSnapshots({ root: fixture, generatedRoot: path.join(directory, "canonical"), sourceDateEpoch: "1" });
+  generatorSnapshots({ root: fixture, generatedRoot: path.join(directory, "generator"), sourceDateEpoch: "1" });
   for (const name of ["frontend", "desktop", "backend"]) assert.deepEqual(readFileSync(path.join(directory, "canonical", `${name}-snapshot.tar`)), readFileSync(path.join(directory, "generator", `${name}-snapshot.tar`)));
   assert.equal(flatpakSourceSnapshotInputs.desktop.filter((entry) => entry === "apps/backend/app/storage-profile.json").length, 1);
   assert.equal(flatpakSourceSnapshotInputs.desktop.filter((entry) => entry === "apps/desktop/src-tauri/native/whisper-rs-sys").length, 1);

@@ -1624,8 +1624,12 @@ async function main() {
     printModelBundleWarning();
   }
 
-  const plan = packagingPreflight(packageOptions);
+  let plan = packagingPreflight(packageOptions);
   if (!plan.preflight.disk.sufficient) throw new Error("Insufficient disk space for the selected Flatpak workload; inspect --preflight.");
+  run(process.execPath, ["scripts/build-music-core.mjs", "--target", "wasm"]);
+  run(process.execPath, ["scripts/build-music-core.mjs", "--target", "wasm", "--check"]);
+  // The core build can create or replace frontend inputs after read-only preflight.
+  plan = packagingPreflight(packageOptions);
   const { namespace, sourceDateEpoch, storage, historyDir, modules, frontendGitRef } = plan;
   if (packageOptions.testPackage) assertTestFlatpakOutputIsolation();
   const diskBefore = flatpakDiskSpace(storage.stateDir);

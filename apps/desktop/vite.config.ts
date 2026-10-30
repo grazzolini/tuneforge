@@ -65,7 +65,6 @@ export default defineConfig(() => {
           codeSplitting: {
             groups: [
               { name: "vendor", test: /node_modules/, priority: 2 },
-              { name: "tools", test: /src[\\/]features[\\/]tools/, priority: 1 },
             ],
           },
         },
@@ -79,7 +78,7 @@ export default defineConfig(() => {
         NODE_ENV: "test",
       },
       globals: true,
-      setupFiles: "./src/setupTests.ts",
+      setupFiles: ["./test/setupMusicCore.mjs", "./src/setupTests.ts"],
     },
   };
 });

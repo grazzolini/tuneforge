@@ -16,7 +16,74 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  music-core-wasm:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash ${{ github.workspace }}/scripts/ci-image-run.sh script {0}
+    env:
+      CI_SCOPE_RESULT: success
+    outputs:
+      artifact_id: ${{ steps.artifact.outputs.artifact-id }}
+    steps:
+      - name: Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "26"
+          package-manager-cache: false
+
+      - name: Require published image for the current producer sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          record="$(GITHUB_OUTPUT=/dev/stdout bash scripts/ci-image-run.sh select)"
+          grep -qx 'selection=promoted' <<< "$record"
+          printf 'CI_IMAGE_SELECTION=promoted\n' >> "$GITHUB_ENV"
+
+      - name: Load and validate selected CI image
+        id: image
+        shell: bash
+        run: bash scripts/ci-image-run.sh load "$RUNNER_TEMP/ci-image"
+
+      - name: Verify CI image
+        run: bash scripts/verify-ci-image.sh
+
+      - name: Install verified music-core WASM from selected image
+        run: node scripts/ci-music-core.mjs install
+
+      - name: Verify canonical music-core WASM corpus parity
+        run: node packages/music-core/test/runtime-parity.mjs
+
+      - name: Verify music-core WASM boundary behavior
+        run: node packages/music-core/test/wasm-boundary.mjs
+
+      - name: Verify music-core artifact metadata boundaries
+        run: node packages/music-core/test/artifact-metadata.mjs
+
+      - name: Upload verified music-core WASM
+        id: artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: music-core-wasm-${{ github.run_id }}-${{ github.run_attempt }}
+          path: packages/music-core/build/artifacts/wasm/
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Clean selected image
+        if: always() && steps.image.outputs.identity != ''
+        shell: bash
+        run: bash scripts/ci-image-run.sh cleanup
+
   build:
+    needs: music-core-wasm
     runs-on: ubuntu-latest
     steps:
       - name: Check out code
@@ -42,6 +109,21 @@ jobs:
 
       - name: Install capture browser
         run: pnpm --filter @tuneforge/desktop exec playwright install --with-deps chromium
+
+      - name: Require successful music-core WASM producer
+        env:
+          MUSIC_CORE_ARTIFACT_ID: ${{ needs.music-core-wasm.outputs.artifact_id }}
+        run: test -n "$MUSIC_CORE_ARTIFACT_ID" && test '${{ needs.music-core-wasm.result }}' = success
+
+      - name: Download exact same-run music-core WASM
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.music-core-wasm.outputs.artifact_id }}
+          path: packages/music-core/build/artifacts/wasm
+          digest-mismatch: error
+
+      - name: Verify music-core WASM before release media
+        run: node scripts/build-music-core.mjs --target wasm --check
 
       - name: Capture release media
         run: node scripts/capture-release-media.mjs --run

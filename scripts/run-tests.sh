@@ -9,7 +9,7 @@ printf '\n[tests] Starting build info tests\n\n'
 build_info_start=${SECONDS}
 (
   cd "${repo_root}"
-  node --test scripts/build-info.test.mjs
+  node --test scripts/build-info.test.mjs scripts/desktop-startup.test.mjs
 )
 build_info_elapsed=$((SECONDS - build_info_start))
 printf '\n[tests] Build info tests finished in %ss\n' "${build_info_elapsed}"
@@ -72,6 +72,8 @@ printf '\n[tests] Starting packaging helper tests\n\n'
 android_package_start=${SECONDS}
 (
   cd "${repo_root}"
+  node --test scripts/music-core-packaging.test.mjs
+  uv run --python 3.14 --no-project python packages/music-core/test/source-acquisition.py
   node --test scripts/package-android.test.mjs
   node --test scripts/build-ffmpeg.test.mjs
   if [[ "$(uname -s)" == "Linux" ]]; then
@@ -124,6 +126,7 @@ tauri_start=${SECONDS}
   export TUNEFORGE_SOXR_ROOT="${repo_root}/packaging/soxr/generated/host-test"
   export DYLD_LIBRARY_PATH="${TUNEFORGE_SOXR_ROOT}/lib${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}"
   export LD_LIBRARY_PATH="${TUNEFORGE_SOXR_ROOT}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+  node "${repo_root}/scripts/build-music-core.mjs" --fetch-sources
   cargo test
 )
 tauri_elapsed=$((SECONDS - tauri_start))

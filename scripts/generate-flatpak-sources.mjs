@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
 import { parsePnpmLock } from "../packaging/flatpak/seed-pnpm-store.mjs";
 import { buildModelBundlePlan } from "./model-bundle-metadata.mjs";
 import { parsePackageOptions } from "./package-options.mjs";
@@ -70,6 +71,33 @@ const selectedPythonExtras = [
   ...(packageOptions.lvChordia ? ["lv-chordia"] : []),
 ];
 export const flatpakPythonBuildRequirementNames = Object.freeze(["setuptools", "wheel", "hatchling"]);
+
+export function musicCoreBuildSources({ root = workspaceRoot, platform = "linux-x64" } = {}) {
+  const lock = JSON.parse(readFileSync(path.join(root, "packages/music-core/toolchains.lock.json"), "utf8"));
+  if (lock.schemaVersion !== 1 || !Array.isArray(lock.pythonBuildDependencies)) {
+    throw new Error("Unsupported music-core build-tool lock.");
+  }
+  return lock.pythonBuildDependencies.map((name) => {
+    const tool = lock.tools[name];
+    const artifact = tool?.artifacts?.[platform] ?? tool?.artifacts?.any;
+    if (!tool?.buildOnly || !artifact || !/^[a-f0-9]{64}$/.test(artifact.sha256)
+      || typeof artifact.filename !== "string" || !/^[A-Za-z0-9_.+-]+\.whl$/.test(artifact.filename)
+      || !/^https:\/\//.test(artifact.url)) {
+      throw new Error(`Missing pinned music-core build artifact: ${name} ${platform}`);
+    }
+    return {
+      name, version: tool.version, license: tool.license,
+      source: { type: "file", url: artifact.url, sha256: artifact.sha256,
+        dest: "music-core-build-sources", "dest-filename": artifact.filename },
+    };
+  });
+}
+
+function generateMusicCoreBuildSources() {
+  const build = musicCoreBuildSources();
+  writeGeneratedJson("music-core-build-sources.json", build.map(({ source }) => source));
+  writeGeneratedFile("music-core-build-requirements.txt", `${build.map(({ name, version }) => `${name}==${version}`).join("\n")}\n`);
+}
 
 function readRequiredFile(filePath) {
   return readFileSync(filePath, "utf8");
@@ -344,6 +372,7 @@ export function parseUvLock(contents) {
       wheels,
       sdist,
       editable: /source = \{ editable = "\." \}/.test(block),
+      localSource: block.match(/^source = \{ (?:editable|directory) = "([^"]+)" \}$/m)?.[1],
     });
   }
 
@@ -490,6 +519,13 @@ export function resolvePythonRuntimePackages(packages, { extras = [] } = {}) {
     const pkg = findLockedPackage(packages, dependency);
     const identity = packageIdentity(pkg);
     if (resolved.has(identity)) {
+      continue;
+    }
+
+    if (pkg.name === "tuneforge-music-core") {
+      if (pkg.version !== "0.1.0" || pkg.localSource !== "../../packages/music-core" || pkg.dependencies.length !== 0) {
+        throw new Error("Flatpak music-core must use the reviewed standalone local source with no runtime dependencies.");
+      }
       continue;
     }
 
@@ -877,6 +913,14 @@ export function cremaOnlyModelBundlePlan(plan) {
 }
 
 function main() {
+  const acquired = spawnSync(process.execPath, [path.join(scriptDir, "build-music-core.mjs"),
+    "--fetch-sources"], { cwd: workspaceRoot, stdio: "inherit" });
+  if (acquired.error) throw acquired.error;
+  if (acquired.status !== 0) throw new Error("Acquire verified music-core sources before Flatpak source generation.");
+  const verified = spawnSync(process.execPath, [path.join(scriptDir, "build-music-core.mjs"),
+    "--target", "wasm", "--check"], { cwd: workspaceRoot, stdio: "inherit" });
+  if (verified.error) throw verified.error;
+  if (verified.status !== 0) throw new Error("Build and verify music-core WASM before Flatpak source generation.");
   removeObsoleteTorchExtensionOutputs();
   removeUnselectedTorchExtensionOutputs(packageOptions.flatpakProfiles);
   writeGeneratedJson("flatpak-profile-selection.json", {
@@ -885,6 +929,7 @@ function main() {
   const cargoCount = generateCargoSources();
   const nodeCount = generateNodeSources();
   const pythonCount = generatePythonSources();
+  generateMusicCoreBuildSources();
   const modelBundleCount = generateModelBundleSources();
   const snapshots = generateFlatpakSourceSnapshots({
     root: workspaceRoot,

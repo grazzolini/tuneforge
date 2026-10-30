@@ -52,6 +52,24 @@ elif [[ "$1" != "pip" || "${2:-}" != "install" ]]; then
 fi
 EOF
 
+cat > "${fixture}/bin/node" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ "${1:-}" == "${BASH_SOURCE[0]%/bin/node}/scripts/build-music-core.mjs" ]] || exit 1
+if [[ "${2:-}" == "--fetch-sources" ]]; then
+  # Acquisition must happen while an existing environment is still available.
+  [[ -d "${BASH_SOURCE[0]%/bin/node}/apps/backend/.venv" ]] || exit 1
+  exit 0
+fi
+[[ "${2:-}" == "--target" && "${3:-}" == "wasm" && "${4:-}" == "--summary" ]] || exit 1
+if [[ "${SETUP_DEV_TEST_BUILD_FAIL:-}" == "1" ]]; then
+  echo "synthetic music-core build failure" >&2
+  exit 23
+fi
+printf '%s\n' 'Music core wasm: reused' 'Manifest: fixture/manifest.json'
+EOF
+chmod +x "${fixture}/bin/node"
+
 cat > "${fixture}/bin/uname" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -167,6 +185,17 @@ PYTHON
     'Expected torchaudio 2.11.0+cu126 for the legacy NVIDIA profile, found 2.6.0+cu126.' \
     "${output_file}" > /dev/null
 }
+
+failure_output="${fixture}/setup-output-build-failure"
+if PATH="${fixture}/bin:${PATH}" SETUP_DEV_TEST_BUILD_FAIL=1 \
+  /bin/bash "${fixture}/scripts/setup-dev.sh" \
+    --skip-contracts --skip-playwright-browsers --skip-pnpm-install > "${failure_output}" 2>&1; then
+  echo "expected music-core build failure to stop setup" >&2
+  exit 1
+else
+  [[ "$?" == "23" ]] || exit 1
+fi
+grep -F 'synthetic music-core build failure' "${failure_output}" > /dev/null
 
 run_setup_dev "default"
 assert_python_args "default" \

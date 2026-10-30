@@ -202,6 +202,81 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
+  music-core-wasm:
+    needs: [ci-scope, ci-image-candidate]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash ${{ github.workspace }}/scripts/ci-image-run.sh script {0}
+    env:
+      CI_SCOPE_RESULT: ${{ needs.ci-scope.result }}
+      CI_IMAGE_SELECTION: ${{ needs.ci-scope.outputs.image_selection }}
+      CI_IMAGE_CANDIDATE_RESULT: ${{ needs.ci-image-candidate.result }}
+      CI_IMAGE_ARTIFACT_ID: ${{ needs.ci-image-candidate.outputs.artifact_id }}
+    outputs:
+      artifact_id: ${{ steps.artifact.outputs.artifact-id }}
+    steps:
+      - name: Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Require selected CI image
+        shell: bash
+        run: bash scripts/ci-image-run.sh require
+
+      - name: Download exact candidate image
+        if: needs.ci-scope.outputs.image_selection == 'candidate'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.ci-image-candidate.outputs.artifact_id }}
+          path: ${{ runner.temp }}/ci-image
+          digest-mismatch: error
+
+      - name: Load and validate selected CI image
+        id: image
+        shell: bash
+        run: bash scripts/ci-image-run.sh load "$RUNNER_TEMP/ci-image"
+
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "26"
+          package-manager-cache: false
+
+      - name: Verify CI image
+        run: bash scripts/verify-ci-image.sh
+
+      - name: Install verified music-core WASM from selected image
+        run: node scripts/ci-music-core.mjs install
+
+      - name: Verify canonical music-core WASM corpus parity
+        run: node packages/music-core/test/runtime-parity.mjs
+
+      - name: Verify music-core WASM boundary behavior
+        run: node packages/music-core/test/wasm-boundary.mjs
+
+      - name: Verify music-core artifact metadata boundaries
+        run: node packages/music-core/test/artifact-metadata.mjs
+
+      - name: Upload verified music-core WASM
+        id: artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: music-core-wasm-${{ github.run_id }}-${{ github.run_attempt }}
+          path: packages/music-core/build/artifacts/wasm/
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Clean selected image
+        if: always() && steps.image.outputs.identity != ''
+        shell: bash
+        run: bash scripts/ci-image-run.sh cleanup
+
   commitlint:
     runs-on: ubuntu-latest
     permissions:
@@ -306,6 +381,9 @@ jobs:
       - name: Test Android packaging helpers
         run: node --test --test-reporter=spec scripts/package-android.test.mjs
 
+      - name: Test music-core package consumers
+        run: node --test scripts/music-core-packaging.test.mjs
+
       - name: Test Android Studio shim
         run: >-
           node --test --test-reporter=spec
@@ -331,7 +409,7 @@ jobs:
         run: bash scripts/android-arm64-env.test.sh
 
   e2e:
-    needs: [ci-scope, ci-image-candidate]
+    needs: [ci-scope, ci-image-candidate, music-core-wasm]
     if: ${{ always() }}
     runs-on: ubuntu-24.04
     defaults:
@@ -357,6 +435,12 @@ jobs:
             echo "E2E_TMPDIR=${e2e_tmpdir}"
             echo "E2E_ARTIFACT_DIR=${e2e_artifact_dir}"
           } >> "${GITHUB_ENV}"
+
+      - name: Require successful music-core WASM producer
+        shell: bash
+        env:
+          MUSIC_CORE_ARTIFACT_ID: ${{ needs.music-core-wasm.outputs.artifact_id }}
+        run: test -n "$MUSIC_CORE_ARTIFACT_ID" && test '${{ needs.music-core-wasm.result }}' = success
 
       - name: Check out code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -413,11 +497,22 @@ jobs:
           CI_PNPM_BIN: ${{ steps.pnpm.outputs.bin-dest }}
         run: printf 'CI_PNPM_ROOT=%s\nCI_PNPM_BIN=%s\n' "$CI_PNPM_ROOT" "$CI_PNPM_BIN" >> "$GITHUB_ENV"
 
+      - name: Install locked music-core CMake in hosted Python prefix
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake_wheel="$(node scripts/build-music-core.mjs --download-tool cmake --platform linux-x64)"
+          python -m pip install --no-index --no-deps "$cmake_wheel"
+          cmake --version
+
       - name: Verify CI image
         run: bash scripts/verify-ci-image.sh
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Acquire verified music-core sources
+        run: node scripts/build-music-core.mjs --fetch-sources
 
       - name: Sync backend dependencies
         working-directory: apps/backend
@@ -425,6 +520,16 @@ jobs:
 
       - name: Install Playwright Chromium
         run: pnpm --filter @tuneforge/desktop exec playwright install chromium
+
+      - name: Download exact same-run music-core WASM
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.music-core-wasm.outputs.artifact_id }}
+          path: packages/music-core/build/artifacts/wasm
+          digest-mismatch: error
+
+      - name: Verify music-core WASM before E2E
+        run: node scripts/build-music-core.mjs --target wasm --check
 
       - name: Run desktop E2E suite
         run: |
@@ -516,7 +621,7 @@ jobs:
         run: bash scripts/ci-image-run.sh cleanup
 
   site:
-    needs: ci-scope
+    needs: [ci-scope, music-core-wasm]
     if: ${{ always() && (needs.ci-scope.result != 'success' || needs.ci-scope.outputs.site == 'true') }}
     runs-on: ubuntu-latest
     steps:
@@ -574,6 +679,24 @@ jobs:
       - name: Install Chromium for release media
         if: needs.ci-scope.outputs.release_media == 'true'
         run: pnpm --filter @tuneforge/desktop exec playwright install --with-deps chromium
+
+      - name: Require successful music-core WASM producer
+        if: needs.ci-scope.outputs.release_media == 'true'
+        env:
+          MUSIC_CORE_ARTIFACT_ID: ${{ needs.music-core-wasm.outputs.artifact_id }}
+        run: test -n "$MUSIC_CORE_ARTIFACT_ID" && test '${{ needs.music-core-wasm.result }}' = success
+
+      - name: Download exact same-run music-core WASM
+        if: needs.ci-scope.outputs.release_media == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.music-core-wasm.outputs.artifact_id }}
+          path: packages/music-core/build/artifacts/wasm
+          digest-mismatch: error
+
+      - name: Verify music-core WASM before release media
+        if: needs.ci-scope.outputs.release_media == 'true'
+        run: node scripts/build-music-core.mjs --target wasm --check
 
       - name: Capture release media
         if: needs.ci-scope.outputs.release_media == 'true'
@@ -652,6 +775,19 @@ jobs:
       - name: Verify CI image
         run: bash scripts/verify-ci-image.sh
 
+      - name: Install locked music-core CMake in hosted Python prefix
+        if: needs.ci-scope.outputs.backend_static == 'true' || needs.ci-scope.outputs.backend_ffmpeg == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake_wheel="$(node scripts/build-music-core.mjs --download-tool cmake --platform linux-x64)"
+          python -m pip install --no-index --no-deps "$cmake_wheel"
+          cmake --version
+
+      - name: Acquire verified music-core sources
+        if: needs.ci-scope.outputs.backend_static == 'true' || needs.ci-scope.outputs.backend_ffmpeg == 'true'
+        run: node scripts/build-music-core.mjs --fetch-sources
+
       - name: Sync backend dependencies
         if: needs.ci-scope.outputs.backend_static == 'true' || needs.ci-scope.outputs.backend_ffmpeg == 'true'
         working-directory: apps/backend
@@ -678,8 +814,8 @@ jobs:
         run: bash scripts/ci-image-run.sh cleanup
 
   desktop_frontend:
-    needs: ci-scope
-    if: ${{ always() && (needs.ci-scope.result != 'success' || needs.ci-scope.outputs.desktop == 'true') }}
+    needs: [ci-scope, music-core-wasm]
+    if: ${{ always() && (needs.ci-scope.result != 'success' || needs.ci-scope.outputs.desktop == 'true' || needs.music-core-wasm.result != 'success') }}
     runs-on: ubuntu-latest
     steps:
       - name: Require CI scope
@@ -690,6 +826,11 @@ jobs:
 
       - name: Check out code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Require successful music-core WASM producer
+        env:
+          MUSIC_CORE_ARTIFACT_ID: ${{ needs.music-core-wasm.outputs.artifact_id }}
+        run: test -n "$MUSIC_CORE_ARTIFACT_ID" && test '${{ needs.music-core-wasm.result }}' = success
 
       - name: Set up pnpm
         if: needs.ci-scope.outputs.desktop == 'true'
@@ -730,6 +871,31 @@ jobs:
             echo "Expected @tuneforge/desktop tsc to report Version 7.x; got: ${version}" >&2
             exit 1
           fi
+
+      - name: Download exact same-run music-core WASM
+        if: needs.ci-scope.outputs.desktop == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.music-core-wasm.outputs.artifact_id }}
+          path: packages/music-core/build/artifacts/wasm
+          digest-mismatch: error
+
+      - name: Verify music-core WASM before frontend checks
+        if: needs.ci-scope.outputs.desktop == 'true'
+        run: node scripts/build-music-core.mjs --target wasm --check
+
+      - name: Install locked music-core CMake in hosted Python prefix
+        if: needs.ci-scope.outputs.desktop == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake_wheel="$(node scripts/build-music-core.mjs --download-tool cmake --platform linux-x64)"
+          python -m pip install --no-index --no-deps "$cmake_wheel"
+          cmake --version
+
+      - name: Acquire verified music-core sources
+        if: needs.ci-scope.outputs.desktop == 'true'
+        run: node scripts/build-music-core.mjs --fetch-sources
 
       - name: Sync backend dependencies for OpenAPI generation
         if: needs.ci-scope.outputs.desktop == 'true'
@@ -805,6 +971,21 @@ jobs:
           node-version: "26"
           package-manager-cache: false
 
+      - name: Set up Python for music-core source generation
+        if: needs.ci-scope.outputs.desktop_tauri == 'true'
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version-file: .python-version
+
+      - name: Install locked music-core CMake in hosted Python prefix
+        if: needs.ci-scope.outputs.desktop_tauri == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake_wheel="$(node scripts/build-music-core.mjs --download-tool cmake --platform linux-x64)"
+          python -m pip install --no-index --no-deps "$cmake_wheel"
+          cmake --version
+
       - name: Set up Rust
         if: needs.ci-scope.outputs.desktop_tauri == 'true'
         uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
@@ -836,6 +1017,10 @@ jobs:
           {
             echo "TUNEFORGE_SOXR_ROOT=${soxr_root}"
           } >> "${GITHUB_ENV}"
+
+      - name: Acquire verified music-core sources
+        if: needs.ci-scope.outputs.desktop_tauri == 'true'
+        run: node scripts/build-music-core.mjs --fetch-sources
 
       - name: Check Tauri shell
         if: needs.ci-scope.outputs.desktop_tauri == 'true'

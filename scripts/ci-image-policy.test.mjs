@@ -315,13 +315,15 @@ test("Tauri uses one image-keyed Cargo cache and prebuilt SoXR", () =>
     ['soxr_root="${TUNEFORGE_SOXR_ROOT:?}"', 'node scripts/build-soxr.mjs --target host-test\n          soxr_root="packaging/soxr/generated/host-test"'],
   ], /one image-keyed Cargo cache and the prebuilt SoXR payload/));
 
-test("release-facing workflow stays separate from CI image", (context) => {
-  const root = fixture();
-  context.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  const target = path.join(root, ".github/workflows/pages.yml");
-  fs.appendFileSync(target, "\n# ghcr.io/grazzolini/tuneforge-ci\n");
-
-  assert.throws(() => validateCiImagePolicy(root), /Pages\/release media workflow/);
+test("Pages rejects stale producer sources, unverified payloads and publication authority", () => {
+  assertMutationsFail(".github/workflows/pages.yml", [
+    ["grep -qx 'selection=promoted'", "grep -qx 'selection=candidate'"],
+    ["GITHUB_OUTPUT=/dev/stdout bash scripts/ci-image-run.sh select", "echo selection=promoted"],
+    ['run: bash scripts/ci-image-run.sh load "$RUNNER_TEMP/ci-image"', "run: docker pull moving-tag"],
+    ["      contents: read", "      contents: read\n      packages: write"],
+    ["run: bash scripts/verify-ci-image.sh", "run: true"],
+    ["run: node scripts/ci-music-core.mjs install", "run: node scripts/build-music-core.mjs --target wasm"],
+  ], /Pages must acquire|WASM acquisition/);
 });
 
 test("neutral serializer rejects Flatpak policy coupling", () => {
@@ -383,3 +385,11 @@ test("publisher source-tree trigger coverage remains exact", () =>
     ["      - packages/music-core/**", "      - packages/music-core/**\n      - .github/ci/promoted-image.json"],
     ["      - packages/music-core/**", "      - packages/music-core/**\n      - packages/music-core/LICENSE"],
   ], /must publish only for trusted main image inputs/));
+
+test("native consumers permit only the exact locked CMake installation step", () => {
+  assertMutationsFail(".github/workflows/ci.yml", [
+    ["python -m pip install --no-index --no-deps", "python -m pip install"],
+    ["cmake --platform linux-x64", "cmake --platform unreviewed-platform"],
+    ["cmake --version", "cmake --version\n          pip install arbitrary"],
+  ], /only the lock-verified CMake/);
+});

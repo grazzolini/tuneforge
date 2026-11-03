@@ -45,8 +45,10 @@ std::string slug(const std::string &input);
 std::string inversion_name(int inversion, bool accordion = false);
 int anchor(int pitch, int low = 48, int high = 72);
 J guitar(const J &input, const J &context, const J &options = {},
-         const J &profile = {});
-J keyboard(const J &input, const J &context, const J &options, bool accordion);
+         const J &profile = {}, const J &preferred = {});
+J keyboard(const J &input, const J &context, const J &options, bool accordion,
+           const J &preferred = {});
+J retain_preferred(const J::Array &all, J::Array result, const J &preferred);
 J stradella(const Chord &chord, const J &options);
 J visible_board(const Chord &chord, int region, int current, const J &selected,
                 const J &options);

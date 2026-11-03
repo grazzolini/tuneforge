@@ -2138,6 +2138,13 @@
                   "type": "null"
                 }
               ]
+            },
+            "preferredVoicingIds": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "At most two saved IDs. Matching valid generated voicings outside the normal shortlist are appended; duplicate and unavailable IDs add nothing."
             }
           },
           "required": [
@@ -2175,6 +2182,13 @@
                   "type": "null"
                 }
               ]
+            },
+            "preferredVoicingIds": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "At most two saved IDs. Matching valid generated voicings outside the normal shortlist are appended; duplicate and unavailable IDs add nothing."
             }
           },
           "required": [
@@ -2212,6 +2226,13 @@
                   "type": "null"
                 }
               ]
+            },
+            "preferredVoicingIds": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "At most two saved IDs. Matching valid generated voicings outside the normal shortlist are appended; duplicate and unavailable IDs add nothing."
             }
           },
           "required": [

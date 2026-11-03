@@ -1,60 +1,59 @@
 --- a/cpp/include/gingo/fretboard.hpp
 +++ b/cpp/include/gingo/fretboard.hpp
-@@ -192,7 +192,7 @@
-     /// Multiple fingerings ranked by playability.
-     /// @param max_results  Maximum number of fingerings to return.
-     std::vector<Fingering> fingerings(const Chord& chord,
+@@ -195 +195,3 @@
 -                                       int max_results = 5) const;
-+                                       int max_results = 5, int additional_pitch_class = -1) const;
- 
-     // --- Reverse: positions → theory ---------------------------------------
- 
-@@ -231,7 +231,8 @@
- 
-     /// Generate candidate fingerings within a fret window.
-     std::vector<Fingering> generate_fingerings(
++                                       int max_results = 5, int additional_pitch_class = -1,
++                                       const std::vector<int>& required_pitch_classes = {},
++                                       double non_root_bass_penalty = 20.0) const;
+@@ -230 +232,2 @@
+-    static double score_fingering(const Fingering& f, int root_pc = -1);
++    static double score_fingering(const Fingering& f, int root_pc = -1,
++                                  double non_root_bass_penalty = 20.0);
+@@ -234 +237,3 @@
 -        const Chord& chord, int base_pos, int max_span = 4) const;
 +        const Chord& chord, int base_pos, int max_span = 4,
-+        int additional_pitch_class = -1) const;
- };
- 
- } // namespace gingo
++        int additional_pitch_class = -1,
++        const std::vector<int>& required_pitch_classes = {}) const;
 --- a/cpp/src/fretboard.cpp
 +++ b/cpp/src/fretboard.cpp
-@@ -345,7 +345,8 @@
- }
- 
- std::vector<Fingering> Fretboard::generate_fingerings(
+@@ -184 +184,2 @@
+-double Fretboard::score_fingering(const Fingering& f, int root_pc) {
++double Fretboard::score_fingering(const Fingering& f, int root_pc,
++                                  double non_root_bass_penalty) {
+@@ -340 +341 @@
+-            score += 20.0;  // Non-root bass sounds weak/inverted.
++            score += non_root_bass_penalty;  // Non-root bass sounds weak/inverted.
+@@ -348 +349,2 @@
 -        const Chord& chord, int base_pos, int max_span) const {
 +        const Chord& chord, int base_pos, int max_span,
-+        int additional_pitch_class) const {
-     auto chord_notes = chord.notes();
-     if (chord_notes.empty()) return {};
- 
-@@ -355,6 +356,8 @@
-     // Collect target pitch classes.
-     std::set<int> target_pcs;
++        int additional_pitch_class, const std::vector<int>& required_pitch_classes) const {
+@@ -357 +359,6 @@
      for (const auto& n : chord_notes) target_pcs.insert(n.semitone());
 +    if (additional_pitch_class >= 0)
 +        target_pcs.insert(((additional_pitch_class % 12) + 12) % 12);
- 
-     // For each string, find valid frets within the window [base_pos, base_pos+max_span].
-     // Also consider open strings (fret 0) and muted.
-@@ -620,7 +623,7 @@
- }
- 
- std::vector<Fingering> Fretboard::fingerings(const Chord& chord,
++    const std::set<int> required_pcs = required_pitch_classes.empty()
++        ? target_pcs
++        : std::set<int>(required_pitch_classes.begin(), required_pitch_classes.end());
+@@ -409 +416,2 @@
+-            if (covered.size() < target_pcs.size()) return;
++            for (int required : required_pcs)
++                if (!covered.count(required)) return;
+@@ -623 +631,3 @@
 -                                               int max_results) const {
-+                                               int max_results, int additional_pitch_class) const {
-     auto chord_notes = chord.notes();
-     int root_pc = chord_notes.empty() ? -1 : chord_notes[0].semitone();
- 
-@@ -628,7 +631,7 @@
- 
-     // Scan positions along the fretboard.
-     for (int p = 0; p <= tuning_.num_frets - 3; p++) {
++                                               int max_results, int additional_pitch_class,
++                                               const std::vector<int>& required_pitch_classes,
++                                               double non_root_bass_penalty) const {
+@@ -631 +641 @@
 -        auto batch = generate_fingerings(chord, p);
-+        auto batch = generate_fingerings(chord, p, 4, additional_pitch_class);
-         for (auto& f : batch) all.push_back(std::move(f));
-     }
- 
++        auto batch = generate_fingerings(chord, p, 4, additional_pitch_class, required_pitch_classes);
+@@ -641,2 +651,8 @@
+-              [root_pc](const Fingering& a, const Fingering& b) {
+-                  return score_fingering(a, root_pc) < score_fingering(b, root_pc);
++              [root_pc, &required_pitch_classes, non_root_bass_penalty](const Fingering& a, const Fingering& b) {
++                  const auto sa = score_fingering(a, root_pc, non_root_bass_penalty);
++                  const auto sb = score_fingering(b, root_pc, non_root_bass_penalty);
++                  if (sa != sb || (required_pitch_classes.empty() && non_root_bass_penalty == 20.0))
++                      return sa < sb;
++                  return std::lexicographical_compare(
++                      a.strings.begin(), a.strings.end(), b.strings.begin(), b.strings.end(),
++                      [](const StringState& x, const StringState& y) { return x.fret < y.fret; });

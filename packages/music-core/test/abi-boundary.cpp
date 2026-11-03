@@ -54,6 +54,18 @@ int main() {
     assert(call(text, buffer) == TF_MUSIC_INVALID_ARGUMENT);
     tf_music_core_buffer_free(&buffer);
   }
+  for (const auto &operation : {"guitar", "piano", "accordion"}) {
+    auto preferred_request = tuneforge::J{{"apiVersion", 1}, {"schemaVersion", 1},
+        {"operation", operation}, {"input", "C"}};
+    for (const auto &ids : {tuneforge::J("bad"), tuneforge::J(tuneforge::J::Array{1}), tuneforge::J()}) {
+      preferred_request["preferredVoicingIds"] = ids;
+      assert(call(preferred_request.dump(), buffer) == TF_MUSIC_INVALID_ARGUMENT);
+      tf_music_core_buffer_free(&buffer);
+    }
+    preferred_request["preferredVoicingIds"] = tuneforge::J(tuneforge::J::Array{"a", "b", "c"});
+    assert(call(preferred_request.dump(), buffer) == TF_MUSIC_OPERATION_FAILED);
+    tf_music_core_buffer_free(&buffer);
+  }
   const std::string invalid_json[]{"",
                                    "{",
                                    "[1,]",

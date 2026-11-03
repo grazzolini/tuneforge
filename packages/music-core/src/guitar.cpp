@@ -17,7 +17,7 @@ static std::string degree(const Chord &chord, int pitch_class) {
   return "";
 }
 J guitar(const J &input, const J &context, const J &requested,
-         const J &custom_profile) {
+         const J &custom_profile, const J &preferred) {
   const auto parsed = parse_input(input);
   if (!parsed || !flag(quality_definition(parsed->quality), "dictionarySupported"))
     return J::array();
@@ -56,11 +56,17 @@ J guitar(const J &input, const J &context, const J &requested,
       throw std::invalid_argument("duplicate-guitar-string");
     tuning[std::size_t(index - 1)] = num(string["openPitch"], "midi");
   }
+  std::set<int> required_pitches;
+  for (const auto &tone : chord.tones)
+    if (!((chord.quality == "7" || chord.quality == "maj7" || chord.quality == "m7") &&
+          tone.interval == 7))
+      required_pitches.insert(tone.pitch);
+  if (chord.bass_pitch >= 0) required_pitches.insert(chord.bass_pitch);
   const auto board =
       gingo::Fretboard("guitar", tuning, num(profile, "frets")).capo(capo);
   auto render = [&](const J::Array &positions) -> J {
     J::Array notes, muted;
-    std::set<std::string> degrees;
+    std::set<int> sounding_pitches;
     std::set<int> played;
     int lowest = 10000, bass = -1;
     for (const auto &position : positions) {
@@ -84,15 +90,15 @@ J guitar(const J &input, const J &context, const J &requested,
       if (!position["finger"].null())
         note["finger"] = position["finger"];
       notes.push_back(note);
-      degrees.insert(d);
+      sounding_pitches.insert(pc(midi));
       played.insert(string);
       if (midi < lowest) {
         lowest = midi;
         bass = pc(midi);
       }
     }
-    for (const auto &tone : chord.tones)
-      if (!degrees.count(tone.degree))
+    for (int required : required_pitches)
+      if (!sounding_pitches.count(required))
         return J();
     if (chord.bass_pitch >= 0 && bass != chord.bass_pitch)
       return J();
@@ -112,27 +118,37 @@ J guitar(const J &input, const J &context, const J &requested,
   try {
     fingerings = board.fingerings(
         gingo::Chord(chord.root + native_suffix(chord.quality)),
-        std::numeric_limits<int>::max(), chord.bass_pitch);
+        std::numeric_limits<int>::max(), chord.bass_pitch,
+        std::vector<int>(required_pitches.begin(), required_pitches.end()), 24.0);
   } catch (const std::invalid_argument &) {
     return J::array();
   }
+  int rank = 0;
   for (const auto &fingering : fingerings) {
-    J::Array positions;
+    if (rank == 8 && (preferred.null() || preferred.a().empty())) break;
+    if (chord.bass_pitch >= 0 && (fingering.midi_notes.empty() ||
+        pc(fingering.midi_notes.front()) != chord.bass_pitch)) continue;
+    ++rank;
     std::string identity;
     for (const auto &position : fingering.strings) {
       identity += "-" + std::to_string(position.string) + ":" + std::to_string(position.fret);
+    }
+    const auto id = "guitar" + identity + "-capo-" + std::to_string(capo);
+    if (rank > 8 && (preferred.null() ||
+        std::find(preferred.a().begin(), preferred.a().end(), J(id)) == preferred.a().end())) continue;
+    J::Array positions;
+    for (const auto &position : fingering.strings)
       if (position.fret >= 0)
         positions.push_back(J{{"string", position.string}, {"fret", position.fret}});
-    }
     auto value = render(positions);
     if (value.null()) continue;
-    value["id"] = "guitar" + identity + "-capo-" + std::to_string(capo);
-    value["label"] = chord.label + " voicing " + std::to_string(result.size() + 1);
+    value["id"] = id;
+    value["label"] = chord.label + " voicing " + std::to_string(rank);
     value["source"] = "generated";
-    value["rank"] = int(result.size() + 1);
+    value["rank"] = rank;
     result.push_back(value);
-    if (result.size() == 8) break;
+
   }
-  return result;
+  return retain_preferred(result, J::Array(result.begin(), result.begin() + std::min(result.size(), std::size_t(8))), preferred);
 }
 } // namespace tuneforge

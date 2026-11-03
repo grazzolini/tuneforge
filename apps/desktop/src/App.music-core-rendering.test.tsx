@@ -52,17 +52,35 @@ it("opens settings while 300 synthetic chords keep receiving raw playback clock 
   let ticks = 0;
   let clickTick: number | null = null;
   let finishObservation: () => void = () => {};
-  const observed = new Promise<void>((resolve) => { finishObservation = resolve; });
+  let failObservation: (error: Error) => void = () => {};
+  let observationTimeout: number | undefined;
+  const observed = new Promise<void>((resolve, reject) => {
+    finishObservation = resolve;
+    failObservation = reject;
+  });
   const clock = window.setInterval(() => {
     audio.currentTime += 0.04;
     audio.dispatchEvent(new Event("timeupdate"));
     ticks++;
-    if (clickTick !== null && ticks >= clickTick + 3) finishObservation();
+    if (
+      clickTick !== null && ticks >= clickTick + 3 &&
+      document.querySelector("h1")?.textContent === "Control Room"
+    ) finishObservation();
   }, 40);
   try {
     await new Promise((resolve) => window.setTimeout(resolve, 100));
     expect(ticks).toBeGreaterThan(0);
-    clickTick = ticks;
+    const ticksAtClick = ticks;
+    clickTick = ticksAtClick;
+    // This bounds the test observation; it is not a product navigation latency target.
+    const observationBudgetMs = 1_500;
+    observationTimeout = window.setTimeout(() => {
+      failObservation(new Error(
+        `Settings did not become ready within ${observationBudgetMs} ms ` +
+        `(${ticks - ticksAtClick} post-click playback ticks; ` +
+        `heading: ${document.querySelector("h1")?.textContent ?? "missing"}).`,
+      ));
+    }, observationBudgetMs);
     screen.getByRole("link", { name: "Settings" }).dispatchEvent(
       new MouseEvent("click", { bubbles: true, cancelable: true, button: 0 }),
     );
@@ -72,5 +90,6 @@ it("opens settings while 300 synthetic chords keep receiving raw playback clock 
     expect(screen.getByRole("button", { name: "Pause background playback" })).toBeInTheDocument();
   } finally {
     window.clearInterval(clock);
+    window.clearTimeout(observationTimeout);
   }
 });

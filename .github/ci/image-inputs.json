@@ -142,9 +142,9 @@
     "scripts/ci-music-core.mjs": "985a9c58c87c052c1d3a4012e157815850697279f5b5e5372130e9caab8c0201",
     "packages/music-core/tools/build.mjs": "17e9acdc6b96df26fcf70ece1e063268138995371b3ea7d9b17b6ba2fa361733",
     "packages/music-core/test/artifact-metadata.mjs": "943bf0b18e38af2ec74d7104aa1479d7e648564b90f5a2b317ad0cc768d64392",
-    "packages/music-core/test/wasm-boundary.mjs": "7f65cd23ffea9d5a0bc87ec08e21c2c791536f91bb1043d15f6b6472ab39ae80",
+    "packages/music-core/test/wasm-boundary.mjs": "c2f8e52613fc7fddf683b49e61696f13d5512b6dff4ec7350bde9a6a7079220c",
     "packages/music-core/test/runtime-parity.mjs": "0b0efa9766e6ea6752abba56e38e71976a610af288a4a14c90a61c64d10e5596",
-    "packages/music-core/test/parity.mjs": "5b20f2f268cc2d4c2e6757c817859443fd76c3f07ebbec26f34338ba1e98212d",
+    "packages/music-core/test/parity.mjs": "a600fa2ddc7d5893bb15d3747113fbc0b1dda706f4ab4510d78412eff3b6a44f",
     "packages/music-core/test/normalization.mjs": "f1985f4fa13de105e31b9854c387a1fb1216b6849ffdf8eb764531377d1874c6",
     "packages/music-core/test/runtime-driver.mjs": "652585fe183e71c23d3dd05f3b2baee535ce2959e8daea56439a7c9ed5b290ef",
     "packages/music-core/bindings/wasm/index.mjs": "b5ea9985ff2dfc6b29384ace6a2a9cc1ad39e6758f992553b30978ad0070864d"

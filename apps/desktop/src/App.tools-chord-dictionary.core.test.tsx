@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import { generateGuitarVoicings, GUITAR_STANDARD_PROFILE } from "./lib/music";
 import {
   AccordionCandidateList, changeChordSearch, getDictionaryInstrumentSelector,
+  makeDictionaryShapePreferenceContext, writeGlobalChordDictionaryPreferredShape, getStoredChordDictionaryPreferences,
   render, renderChordDictionary, resetAppTestHarness, screen, selectAccordionDictionary,
   selectPianoDictionary, userEvent, vi, within,
 } from "./test/chordDictionaryTestHarness";
@@ -18,6 +20,32 @@ describe("Desktop chord dictionary canonical voicings", () => {
     expect(notes.length).toBeGreaterThan(0);
     await userEvent.click(notes[0]!);
     expect(screen.getByLabelText("Note inspector")).toHaveTextContent(/String|Fret/);
+  });
+
+  it("restores a valid guitar preference beyond the normal shortlist", async () => {
+    const saved = "guitar-1:3-2:1-3:3-4:2-5:1-6:3-capo-0";
+    writeGlobalChordDictionaryPreferredShape(makeDictionaryShapePreferenceContext({ chordLabel: "C7" }), saved);
+    expect(generateGuitarVoicings("C7").some(v => v.id === saved)).toBe(false);
+    const label = generateGuitarVoicings("C7", GUITAR_STANDARD_PROFILE, {}, {}, [saved]).find(v => v.id === saved)!.label;
+    await renderChordDictionary();
+    changeChordSearch("C7");
+    const choices = within(screen.getByRole("group", { name: "Global guitar shape preference choices" })).getAllByRole("button");
+    expect(choices[0]).toHaveAccessibleName(label);
+    expect(choices[0]).toHaveAttribute("aria-pressed", "true");
+    expect(getStoredChordDictionaryPreferences()).toContain(saved);
+  });
+
+  it.each([
+    ["piano", "piano-c-first-inversion-64-67-72"],
+    ["accordion", "accordion-c-rh-second-inversion-octave-3-79-84-88"],
+  ])("restores a valid saved %s inversion beyond the normal shortlist", async (instrumentId, saved) => {
+    writeGlobalChordDictionaryPreferredShape(makeDictionaryShapePreferenceContext({ instrumentId }), saved);
+    if (instrumentId === "piano") await selectPianoDictionary(); else await selectAccordionDictionary();
+    const group = screen.getByRole("group", { name: instrumentId === "piano" ? "Global piano voicing preference choices" : "Global accordion right-hand preference choices" });
+    const choices = within(group).getAllByRole("button");
+    expect(choices[0]).toHaveAttribute("aria-pressed", "true");
+    expect(choices[0]).toHaveTextContent(instrumentId === "piano" ? /First inversion/i : /3rd octave.*Second inversion/i);
+    expect(getStoredChordDictionaryPreferences()).toContain(saved);
   });
 
   it("clears unsupported harmony without stale guitar notes", async () => {

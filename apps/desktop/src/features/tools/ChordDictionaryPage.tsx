@@ -48,6 +48,8 @@ import { useChordDictionaryFollowArm } from "./chordDictionaryFollowArm-context"
 import {
   hasGlobalChordDictionaryPreferredShape,
   hasProjectChordDictionaryPreferredShape,
+  readGlobalChordDictionaryPreferredShapeId,
+  readProjectChordDictionaryPreferredShapeId,
   resetGlobalChordDictionaryPreferredShape,
   resetProjectChordDictionaryPreferredShape,
   resolveChordDictionaryPreferredShapeId,
@@ -733,6 +735,15 @@ function buildShapePreferenceContext({
   };
 }
 
+function usePreferredVoicingIds(context: ChordDictionaryPreferenceContext | null) {
+  const projectId = readProjectChordDictionaryPreferredShapeId(context);
+  const globalId = readGlobalChordDictionaryPreferredShapeId(context);
+  return useMemo(
+    () => [...new Set([projectId, globalId].filter((id): id is string => id !== null))],
+    [projectId, globalId],
+  );
+}
+
 function promoteShapeToFirst<T extends { id: string }>(
   shapes: readonly T[],
   preferredShapeId: string | null,
@@ -928,18 +939,6 @@ function DictionarySurface({
       }),
     [displayContext],
   );
-  const guitarVoicings = useMemo(
-    () => (chordSpelling ? generateGuitarVoicings(chordSpelling, GUITAR_STANDARD_PROFILE, displayContext) : []),
-    [chordSpelling, displayContext],
-  );
-  const generatedGuitarShapes = useMemo(
-    () => guitarVoicings.map((voicing) => toGuitarShape(voicing, GUITAR_STANDARD_PROFILE)),
-    [guitarVoicings],
-  );
-  const generatedShapeIds = useMemo(
-    () => generatedGuitarShapes.map((shape) => shape.id),
-    [generatedGuitarShapes],
-  );
   const preferenceContext = useMemo(
     () =>
       chordSpelling
@@ -955,6 +954,20 @@ function DictionarySurface({
           })
         : null,
     [chordSpelling, displayContext],
+  );
+
+  const guitarPreferredIds = usePreferredVoicingIds(preferenceContext);
+  const guitarVoicings = useMemo(
+    () => (chordSpelling ? generateGuitarVoicings(chordSpelling, GUITAR_STANDARD_PROFILE, displayContext, {}, guitarPreferredIds) : []),
+    [chordSpelling, displayContext, guitarPreferredIds],
+  );
+  const generatedGuitarShapes = useMemo(
+    () => guitarVoicings.map((voicing) => toGuitarShape(voicing, GUITAR_STANDARD_PROFILE)),
+    [guitarVoicings],
+  );
+  const generatedShapeIds = useMemo(
+    () => generatedGuitarShapes.map((shape) => shape.id),
+    [generatedGuitarShapes],
   );
   const preferredShapeId = resolveChordDictionaryPreferredShapeId(
     preferenceContext,
@@ -992,21 +1005,6 @@ function DictionarySurface({
     : null;
   const displayedNote = previewNote ?? selectedNote;
   const activeTooltipNoteId = previewNote?.id ?? selectedNote?.id ?? null;
-  const accordionVoicings = useMemo(
-    () =>
-      chordSpelling
-        ? generateAccordionVoicings(chordSpelling, null)
-        : [],
-    [chordSpelling],
-  );
-  const generatedAccordionVoicingViews = useMemo(
-    () => toAccordionVoicingViews(accordionVoicings),
-    [accordionVoicings],
-  );
-  const generatedAccordionVoicingIds = useMemo(
-    () => generatedAccordionVoicingViews.map((voicing) => voicing.id),
-    [generatedAccordionVoicingViews],
-  );
   const accordionPreferenceContext = useMemo(
     () =>
       chordSpelling
@@ -1022,6 +1020,23 @@ function DictionarySurface({
           })
         : null,
     [chordSpelling],
+  );
+
+  const accordionPreferredIds = usePreferredVoicingIds(accordionPreferenceContext);
+  const accordionVoicings = useMemo(
+    () =>
+      chordSpelling
+        ? generateAccordionVoicings(chordSpelling, null, {}, accordionPreferredIds)
+        : [],
+    [chordSpelling, accordionPreferredIds],
+  );
+  const generatedAccordionVoicingViews = useMemo(
+    () => toAccordionVoicingViews(accordionVoicings),
+    [accordionVoicings],
+  );
+  const generatedAccordionVoicingIds = useMemo(
+    () => generatedAccordionVoicingViews.map((voicing) => voicing.id),
+    [generatedAccordionVoicingViews],
   );
   const preferredAccordionVoicingId = resolveChordDictionaryPreferredShapeId(
     accordionPreferenceContext,
@@ -1093,18 +1108,6 @@ function DictionarySurface({
     : null;
   const displayedAccordionPoint = previewAccordionPoint ?? selectedAccordionPoint;
   const activeAccordionPointId = previewAccordionPoint?.id ?? selectedAccordionPoint?.id ?? null;
-  const pianoVoicings = useMemo(
-    () => (chordSpelling ? generatePianoVoicings(chordSpelling) : []),
-    [chordSpelling],
-  );
-  const generatedPianoVoicingViews = useMemo(
-    () => toPianoVoicingViews(pianoVoicings),
-    [pianoVoicings],
-  );
-  const generatedPianoVoicingIds = useMemo(
-    () => generatedPianoVoicingViews.map((voicing) => voicing.id),
-    [generatedPianoVoicingViews],
-  );
   const pianoPreferenceContext = useMemo(
     () =>
       chordSpelling
@@ -1120,6 +1123,20 @@ function DictionarySurface({
           })
         : null,
     [chordSpelling],
+  );
+
+  const pianoPreferredIds = usePreferredVoicingIds(pianoPreferenceContext);
+  const pianoVoicings = useMemo(
+    () => (chordSpelling ? generatePianoVoicings(chordSpelling, null, {}, pianoPreferredIds) : []),
+    [chordSpelling, pianoPreferredIds],
+  );
+  const generatedPianoVoicingViews = useMemo(
+    () => toPianoVoicingViews(pianoVoicings),
+    [pianoVoicings],
+  );
+  const generatedPianoVoicingIds = useMemo(
+    () => generatedPianoVoicingViews.map((voicing) => voicing.id),
+    [generatedPianoVoicingViews],
   );
   const preferredPianoVoicingId = resolveChordDictionaryPreferredShapeId(
     pianoPreferenceContext,
@@ -4270,6 +4287,7 @@ function LiveFollowPianoActiveState({
   onInstrumentChange: (instrumentId: ChordDictionaryInstrumentId) => void;
 }) {
   const currentChord = context.currentChord;
+  const chordLabel = currentChord?.displayLabel;
   const project = context.project;
   const [activeVoicing, setActiveVoicing] = useState<string | null>(null);
   const [previewNoteId, setPreviewNoteId] = useState<string | null>(null);
@@ -4278,34 +4296,12 @@ function LiveFollowPianoActiveState({
   const voicingTabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const chordSpelling = useMemo(
     () =>
-      currentChord
-        ? spellChord(currentChord.displayLabel, {
+      chordLabel
+        ? spellChord(chordLabel, {
             activeKey: project?.displayedKey ?? undefined,
           })
         : null,
-    [currentChord, project?.displayedKey],
-  );
-  const pianoVoicings = useMemo(
-    () =>
-      chordSpelling
-        ? generatePianoVoicings(
-            chordSpelling,
-            {
-              activeKey: project?.displayedKey ?? null,
-              currentChordRoot: currentChord?.displayLabel ?? null,
-            },
-            project?.displayedKey ? { activeKey: project.displayedKey } : {},
-          )
-        : [],
-    [chordSpelling, currentChord?.displayLabel, project?.displayedKey],
-  );
-  const generatedVoicingViews = useMemo(
-    () => toPianoVoicingViews(pianoVoicings),
-    [pianoVoicings],
-  );
-  const generatedVoicingIds = useMemo(
-    () => generatedVoicingViews.map((voicing) => voicing.id),
-    [generatedVoicingViews],
+    [chordLabel, project?.displayedKey],
   );
   const preferenceContext = useMemo(
     () =>
@@ -4328,6 +4324,31 @@ function LiveFollowPianoActiveState({
       project?.sourceKey,
       project?.totalDisplayTransposeSemitones,
     ],
+  );
+
+  const preferredVoicingIds = usePreferredVoicingIds(preferenceContext);
+  const pianoVoicings = useMemo(
+    () =>
+      chordSpelling
+        ? generatePianoVoicings(
+            chordSpelling,
+            {
+              activeKey: project?.displayedKey ?? null,
+              currentChordRoot: currentChord?.displayLabel ?? null,
+            },
+            project?.displayedKey ? { activeKey: project.displayedKey } : {},
+            preferredVoicingIds,
+          )
+        : [],
+    [chordSpelling, currentChord?.displayLabel, project?.displayedKey, preferredVoicingIds],
+  );
+  const generatedVoicingViews = useMemo(
+    () => toPianoVoicingViews(pianoVoicings),
+    [pianoVoicings],
+  );
+  const generatedVoicingIds = useMemo(
+    () => generatedVoicingViews.map((voicing) => voicing.id),
+    [generatedVoicingViews],
   );
   const preferredVoicingId = resolveChordDictionaryPreferredShapeId(
     preferenceContext,
@@ -4590,6 +4611,7 @@ function LiveFollowActiveState({
   onInstrumentChange: (instrumentId: ChordDictionaryInstrumentId) => void;
 }) {
   const currentChord = context.currentChord;
+  const chordLabel = currentChord?.displayLabel;
   const project = context.project;
   const [activeShape, setActiveShape] = useState<string | null>(null);
   const [previewNoteId, setPreviewNoteId] = useState<string | null>(null);
@@ -4608,32 +4630,12 @@ function LiveFollowActiveState({
   );
   const chordSpelling = useMemo(
     () =>
-      currentChord
-        ? spellChord(currentChord.displayLabel, {
+      chordLabel
+        ? spellChord(chordLabel, {
             activeKey: project?.displayedKey ?? undefined,
           })
         : null,
-    [currentChord, project?.displayedKey],
-  );
-  const guitarVoicings = useMemo(
-    () =>
-      chordSpelling
-        ? generateGuitarVoicings(
-            chordSpelling,
-            GUITAR_STANDARD_PROFILE,
-            displayContext,
-            project?.displayedKey ? { activeKey: project.displayedKey } : {},
-          )
-        : [],
-    [chordSpelling, displayContext, project?.displayedKey],
-  );
-  const generatedGuitarShapes = useMemo(
-    () => guitarVoicings.map((voicing) => toGuitarShape(voicing, GUITAR_STANDARD_PROFILE)),
-    [guitarVoicings],
-  );
-  const generatedShapeIds = useMemo(
-    () => generatedGuitarShapes.map((shape) => shape.id),
-    [generatedGuitarShapes],
+    [chordLabel, project?.displayedKey],
   );
   const preferenceContext = useMemo(
     () =>
@@ -4658,6 +4660,29 @@ function LiveFollowActiveState({
       project?.sourceKey,
       project?.totalDisplayTransposeSemitones,
     ],
+  );
+
+  const preferredVoicingIds = usePreferredVoicingIds(preferenceContext);
+  const guitarVoicings = useMemo(
+    () =>
+      chordSpelling
+        ? generateGuitarVoicings(
+            chordSpelling,
+            GUITAR_STANDARD_PROFILE,
+            displayContext,
+            project?.displayedKey ? { activeKey: project.displayedKey } : {},
+            preferredVoicingIds,
+          )
+        : [],
+    [chordSpelling, displayContext, project?.displayedKey, preferredVoicingIds],
+  );
+  const generatedGuitarShapes = useMemo(
+    () => guitarVoicings.map((voicing) => toGuitarShape(voicing, GUITAR_STANDARD_PROFILE)),
+    [guitarVoicings],
+  );
+  const generatedShapeIds = useMemo(
+    () => generatedGuitarShapes.map((shape) => shape.id),
+    [generatedGuitarShapes],
   );
   const preferredShapeId = resolveChordDictionaryPreferredShapeId(
     preferenceContext,
@@ -4955,6 +4980,7 @@ function LiveFollowAccordionActiveState({
   onInstrumentChange: (instrumentId: ChordDictionaryInstrumentId) => void;
 }) {
   const currentChord = context.currentChord;
+  const chordLabel = currentChord?.displayLabel;
   const project = context.project;
   const [activeVoicing, setActiveVoicing] = useState<string | null>(null);
   const [activeCandidate, setActiveCandidate] = useState<string | null>(null);
@@ -4964,34 +4990,12 @@ function LiveFollowAccordionActiveState({
   const voicingTabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const chordSpelling = useMemo(
     () =>
-      currentChord
-        ? spellChord(currentChord.displayLabel, {
+      chordLabel
+        ? spellChord(chordLabel, {
             activeKey: project?.displayedKey ?? undefined,
           })
         : null,
-    [currentChord, project?.displayedKey],
-  );
-  const accordionVoicings = useMemo(
-    () =>
-      chordSpelling
-        ? generateAccordionVoicings(
-            chordSpelling,
-            {
-              currentChordRoot: currentChord?.displayLabel ?? null,
-              activeKey: project?.displayedKey ?? null,
-            },
-            { activeKey: project?.displayedKey ?? undefined },
-          )
-        : [],
-    [chordSpelling, currentChord?.displayLabel, project?.displayedKey],
-  );
-  const generatedVoicingViews = useMemo(
-    () => toAccordionVoicingViews(accordionVoicings),
-    [accordionVoicings],
-  );
-  const generatedVoicingIds = useMemo(
-    () => generatedVoicingViews.map((voicing) => voicing.id),
-    [generatedVoicingViews],
+    [chordLabel, project?.displayedKey],
   );
   const preferenceContext = useMemo(
     () =>
@@ -5014,6 +5018,31 @@ function LiveFollowAccordionActiveState({
       project?.sourceKey,
       project?.totalDisplayTransposeSemitones,
     ],
+  );
+
+  const preferredVoicingIds = usePreferredVoicingIds(preferenceContext);
+  const accordionVoicings = useMemo(
+    () =>
+      chordSpelling
+        ? generateAccordionVoicings(
+            chordSpelling,
+            {
+              currentChordRoot: currentChord?.displayLabel ?? null,
+              activeKey: project?.displayedKey ?? null,
+            },
+            { activeKey: project?.displayedKey ?? undefined },
+            preferredVoicingIds,
+          )
+        : [],
+    [chordSpelling, currentChord?.displayLabel, project?.displayedKey, preferredVoicingIds],
+  );
+  const generatedVoicingViews = useMemo(
+    () => toAccordionVoicingViews(accordionVoicings),
+    [accordionVoicings],
+  );
+  const generatedVoicingIds = useMemo(
+    () => generatedVoicingViews.map((voicing) => voicing.id),
+    [generatedVoicingViews],
   );
   const preferredVoicingId = resolveChordDictionaryPreferredShapeId(
     preferenceContext,

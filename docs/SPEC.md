@@ -100,7 +100,13 @@ Analysis is local and project-scoped:
   120-bass Stradella accompaniment, including lookup and live follow of the displayed project chord.
 - Place piano and accordion treble suggestions near the displayed song-key tonic, or the chord
   root when no song key is available. Use close inversions within the instrument's range; the
-  song key independently informs note spelling.
+  song key independently informs note spelling. Default to the nearest root position; an explicit
+  piano slash bass takes precedence. Keep accordion treble and left-hand bass independent.
+- Allow the natural fifth to be omitted from guitar dominant, major, and minor sevenths, while
+  retaining root, third, seventh, and any explicit slash bass. Other qualities keep full coverage.
+- Restore valid saved project choices before global choices, then use the generated default.
+  Keep valid saved choices available beyond the normal shortlist; unavailable IDs remain stored
+  and fall back without changing the generated default.
 - Distinguish accordion left-hand realizations as Standard conventional button combinations,
   Complete alternatives, or partial options marked Approx. Conventional seventh and diminished
   seventh omissions remain Standard. A bass-only option stays partial when treble completes the

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  ACCORDION_STANDARD_PROFILE, PIANO_STANDARD_PROFILE, CHORD_QUALITY_DEFINITIONS,
+  GUITAR_STANDARD_PROFILE, ACCORDION_STANDARD_PROFILE, PIANO_STANDARD_PROFILE, CHORD_QUALITY_DEFINITIONS,
   formatChordDisplay, formatKey, formatPitchClass, generateAccordionVoicings,
   generateGuitarVoicings, generatePianoVoicings, getCapoShapeChord,
   isSupportedChordQuality, parseChordLabel, parsePitch, pitchToMidi, formatPitch, spellChord, transposeChordLabel,
@@ -66,7 +66,8 @@ describe("instrument constraints", () => {
     expect(voicings.length).toBeGreaterThan(1);
     expect(new Set(voicings.map(v => v.id)).size).toBe(voicings.length);
     expect(voicings.every(v => !v.shapeFamily && v.source === "generated")).toBe(true);
-    expect(voicings[0]?.notes.filter(n => n.fret > 0).length).toBeLessThan(voicings[voicings.length - 1]?.notes.filter(n => n.fret > 0).length ?? 0);
+    expect(voicings.some(v => v.id === "guitar-1:0-2:1-3:3-4:2-5:3-6:-1-capo-0")).toBe(true);
+    expect(voicings.slice(0, 3).some(v => v.id === "guitar-1:3-2:5-3:3-4:5-5:3-6:-1-capo-0")).toBe(true);
   });
   it("enforces the lowest guitar slash bass before truncating", () => {
     const voicings = generateGuitarVoicings("C7/E");
@@ -109,4 +110,29 @@ describe("instrument constraints", () => {
     expect(voicing.combinedCoverage).toMatchObject({ complete: true });
     expect(new Set(voicing.rightHandNotes.map(n => n.pitch.pitchClass))).toEqual(new Set([0,4,8]));
   });
+  it("forwards preferred IDs separately from spelling and preserves the generated prefix", () => {
+    const saved = "guitar-1:3-2:1-3:3-4:2-5:1-6:3-capo-0";
+    const normal = generateGuitarVoicings("C7");
+    expect(normal.some(v => v.id === saved)).toBe(false);
+    const retained = generateGuitarVoicings("C7", GUITAR_STANDARD_PROFILE, {}, { mode: "flats" }, [saved, saved]);
+    expect(retained.slice(0, normal.length)).toEqual(normal);
+    expect(retained[retained.length - 1]?.id).toBe(saved);
+    expect(retained).toHaveLength(normal.length + 1);
+    expect(generateGuitarVoicings("C7", GUITAR_STANDARD_PROFILE, {}, {}, ["c-open"])).toEqual(normal);
+  });
+  it("defaults keyboards to nearby root position while preserving saved inversions", () => {
+    const pianoId = "piano-c-first-inversion-64-67-72";
+    const accordionId = "accordion-c-rh-second-inversion-octave-3-79-84-88";
+    expect(generatePianoVoicings("C")[0]?.inversion.isRootPosition).toBe(true);
+    expect(generateAccordionVoicings("C")[0]?.inversion.isRootPosition).toBe(true);
+    expect(generatePianoVoicings("C", null, {}, [pianoId]).find(v => v.id === pianoId)?.id).toBe(pianoId);
+    expect(generateAccordionVoicings("C", null, {}, [accordionId]).find(v => v.id === accordionId)?.id).toBe(accordionId);
+    expect(generatePianoVoicings("C7/E")[0]?.notes[0]?.pitch.pitchClass).toBe(4);
+  });
+  it.each(["guitar", "piano", "accordion"] as const)("rejects oversized %s saved requests", instrument => {
+    const ids = ["one", "two", "three"];
+    expect(() => instrument === "guitar" ? generateGuitarVoicings("C", GUITAR_STANDARD_PROFILE, {}, {}, ids)
+      : instrument === "piano" ? generatePianoVoicings("C", null, {}, ids) : generateAccordionVoicings("C", null, {}, ids)).toThrow();
+  });
+
 });

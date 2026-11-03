@@ -469,22 +469,25 @@ export function generateGuitarVoicings(
   profile: GuitarProfile = GUITAR_STANDARD_PROFILE,
   context: Partial<ChordDisplayContext> = {},
   options: PitchFormatOptions = {},
+  preferredVoicingIds?: Core.Request<"guitar">["preferredVoicingIds"],
 ): readonly GuitarVoicing[] {
-  return callMusicCore({ operation: "guitar", input: chord, profile, context, options });
+  return callMusicCore({ operation: "guitar", input: chord, profile, context, options, preferredVoicingIds });
 }
 
 export function generatePianoVoicings(
   chord: ChordInput,
   context: PianoVoicingContext | null = null,
   options: PitchFormatOptions = {},
+  preferredVoicingIds?: Core.Request<"piano">["preferredVoicingIds"],
 ): readonly PianoVoicing[] {
-  return callMusicCore({ operation: "piano", input: chord, context, options });
+  return callMusicCore({ operation: "piano", input: chord, context, options, preferredVoicingIds });
 }
 
 export function generateAccordionVoicings(
   chord: ChordInput,
   context: AccordionVoicingContext | null = null,
   options: PitchFormatOptions = {},
+  preferredVoicingIds?: Core.Request<"accordion">["preferredVoicingIds"],
 ): readonly AccordionVoicing[] {
-  return callMusicCore({ operation: "accordion", input: chord, context, options });
+  return callMusicCore({ operation: "accordion", input: chord, context, options, preferredVoicingIds });
 }

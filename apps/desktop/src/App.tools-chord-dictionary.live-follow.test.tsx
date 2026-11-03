@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import * as music from "./lib/music";
 import { generateGuitarVoicings } from "./lib/music";
 const generatedId = (label: string, index: number) => generateGuitarVoicings(label)[index]!.id;
 import {
@@ -70,6 +71,46 @@ describe("Desktop app tools chord dictionary live follow", () => {
 
     await waitFor(() => expectFirstShapeChoice(DICTIONARY_SHAPE_GROUP_NAME, "C voicing 2"));
     expectFirstShapeCard("C voicing 2");
+  });
+
+  it.each([true, false])("resolves project then global saved grips outside the shortlist (valid project: %s)", async validProject => {
+    const saved = "guitar-1:3-2:1-3:3-4:2-5:1-6:3-capo-0";
+    const timeline: ChordSegmentSchema[] = [{ label: "C7", pitch_class: 0, quality: "7", start_seconds: 0, end_seconds: 16, confidence: 1 }];
+    const context = makeLiveShapePreferenceContext({ projectId: "proj_123", chordLabel: "C7" });
+    const normal = generateGuitarVoicings("C7");
+    writeGlobalChordDictionaryPreferredShape(context, validProject ? normal[1]!.id : saved);
+    writeProjectChordDictionaryPreferredShape(context, validProject ? saved : "c-open");
+    const label = music.generateGuitarVoicings("C7", music.GUITAR_STANDARD_PROFILE, {}, {}, [saved]).find(v => v.id === saved)!.label;
+    await renderChordDictionaryWithPlayback({ playback: makePlaybackValue({ project: makeFollowProject({ authoritativeSourceTimeline: timeline, displayedTimeline: timeline, displayedKey: { pitchClass: 0, mode: "major" }, sourceKey: { pitchClass: 0, mode: "major" }, totalDisplayTransposeSemitones: 0 }), playbackTimeSeconds: 1 }) });
+    expectFirstShapeChoice(LIVE_SHAPE_GROUP_NAME, label);
+    expectFirstShapeCard(label);
+    expect(getStoredChordDictionaryPreferences()).toContain(validProject ? saved : "c-open");
+  });
+
+  it.each([
+    ["Guitar", "generateGuitarVoicings"], ["Piano", "generatePianoVoicings"], ["Accordion", "generateAccordionVoicings"],
+  ] as const)("does not regenerate %s voicings on unchanged playback ticks", async (instrument, generator) => {
+    const spy = vi.spyOn(music, generator);
+    try {
+      const project = makeFollowProject({ authoritativeSourceTimeline: cTimeline, displayedTimeline: cTimeline, displayedKey: { pitchClass: 0, mode: "major" }, sourceKey: { pitchClass: 0, mode: "major" }, totalDisplayTransposeSemitones: 0 });
+      const view = renderChordDictionaryPlaybackHarness({ playback: makePlaybackValue({ project, playbackTimeSeconds: 1 }) });
+      await view.findHeading();
+      if (instrument !== "Guitar") await userEvent.click(within(getDictionaryInstrumentSelector()).getByRole("button", { name: instrument }));
+      const count = spy.mock.calls.length;
+      expect(count).toBeGreaterThan(0);
+      view.rerenderWithPlayback(makePlaybackValue({ project, playbackTimeSeconds: 2 }));
+      view.rerenderWithPlayback(makePlaybackValue({ project, playbackTimeSeconds: 3 }));
+      expect(spy).toHaveBeenCalledTimes(count);
+      const changedKey = { ...project, displayedKey: { pitchClass: 1, mode: "major" as const } };
+      view.rerenderWithPlayback(makePlaybackValue({ project: changedKey, playbackTimeSeconds: 3 }));
+      expect(spy).toHaveBeenCalledTimes(count + 1);
+      const changedChord = { ...changedKey, authoritativeSourceTimeline: dTimeline, displayedTimeline: dTimeline };
+      view.rerenderWithPlayback(makePlaybackValue({ project: changedChord, playbackTimeSeconds: 3 }));
+      expect(spy).toHaveBeenCalledTimes(count + 2);
+      expect(spy.mock.calls[spy.mock.calls.length - 1]?.[0]).toMatchObject({ label: "D" });
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it("hides dictionary reset when the saved global shape is unavailable", async () => {

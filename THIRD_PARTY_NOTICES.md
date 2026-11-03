@@ -45,7 +45,9 @@ This file is the source of truth for dependency and model-weight distribution po
 - **Notes:** The standalone `packages/music-core` package explicitly acquires only locked upstream `cpp/` and `LICENSE` from its checksum-pinned archive. Generated sources are ignored; upstream source files are not tracked.
   `sources.lock.json` records the immutable source tree, archive checksum, and every imported file hash.
   The upstream MIT license remains at `packages/music-core/licenses/Gingo-LICENSE`.
-  An owned build-time patch adds only slash-tone enumeration without modifying acquired source bytes or upstream playability pruning.
+  An owned build-time patch adds slash-tone enumeration, optional required pitch classes, a configurable
+  non-root-bass penalty, and deterministic policy tie-breaking without modifying acquired source bytes
+  or upstream playability pruning. Upstream calls retain their default coverage and scoring.
   Python, Rust, and locally bundled WASM consume this canonical core. Standalone wheels and source distributions retain its schema, instrument data,
   sources, and notices. No upstream Python
   runtime, CLI, assets, or audio are imported.

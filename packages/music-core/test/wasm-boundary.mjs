@@ -18,6 +18,11 @@ for (const input of ["{", '{"apiVersion":1,"schemaVersion":1,"operation":"normal
 const profile = client.call({ operation: "profiles" }).guitar;
 profile.tuning[0].string = 0;
 assert.throws(() => client.call({ operation: "guitar", input: "C", profile }), /invalid-music-operation/);
+for (const operation of ["guitar", "piano", "accordion"]) {
+  for (const preferredVoicingIds of [null, "bad", [1]])
+    assert.throws(() => client.call({ operation, input: "C", preferredVoicingIds }), /invalid-argument/);
+  assert.throws(() => client.call({ operation, input: "C", preferredVoicingIds: ["a", "b", "c"] }), /invalid-music-operation/);
+}
 for (let i = 0; i < 1000; i++) assert.equal(client.call(request), "C#");
 const original = engine._malloc;
 let allocations = 0;

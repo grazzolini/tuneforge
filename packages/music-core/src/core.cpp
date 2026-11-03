@@ -743,6 +743,16 @@ static J constants() {
            {"DEFAULT_CHORD_DISPLAY_CONTEXT", display_context(J(), J())},
            {"INSTRUMENT_KNOWLEDGE_BUNDLE_V1", legacy_instrument_bundle()}};
 }
+J retain_preferred(const J::Array &all, J::Array result, const J &preferred) {
+  if (preferred.null()) return result;
+  for (const auto &id : preferred.a()) {
+    if (std::any_of(result.begin(), result.end(), [&](const J &v) { return v["id"] == id; }))
+      continue;
+    const auto it = std::find_if(all.begin(), all.end(), [&](const J &v) { return v["id"] == id; });
+    if (it != all.end()) result.push_back(*it);
+  }
+  return result;
+}
 static J run_frontend(const J &request) {
   const auto operation = str(request, "operation");
   if (operation == "normalizeBundle")
@@ -760,12 +770,15 @@ static J run_frontend(const J &request) {
     auto chord = parse_input(request["input"]);
     return chord ? spelling(spell(*chord, request["options"])) : J();
   }
+  if ((operation == "guitar" || operation == "piano" || operation == "accordion") &&
+      !request["preferredVoicingIds"].null() && request["preferredVoicingIds"].a().size() > 2)
+    throw std::invalid_argument("too-many-preferred-voicing-ids");
   if (operation == "guitar")
     return guitar(request["input"], request["context"], request["options"],
-                  request["profile"]);
+                  request["profile"], request["preferredVoicingIds"]);
   if (operation == "piano" || operation == "accordion")
     return keyboard(request["input"], request["context"], request["options"],
-                    operation == "accordion");
+                    operation == "accordion", request["preferredVoicingIds"]);
   if (const auto result = notation_operation(request))
     return *result;
   throw std::invalid_argument("unknown-music-operation");

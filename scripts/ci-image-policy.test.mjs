@@ -383,3 +383,30 @@ test("publisher source-tree trigger coverage remains exact", () =>
     ["      - packages/music-core/**", "      - packages/music-core/**\n      - .github/ci/promoted-image.json"],
     ["      - packages/music-core/**", "      - packages/music-core/**\n      - packages/music-core/LICENSE"],
   ], /must publish only for trusted main image inputs/));
+
+
+test("final native compiler installation, defaults, and evidence fail closed", () => {
+  assertMutationsFail(".github/ci/Dockerfile", [
+    ["      clang-18 \\\n", ""],
+    ["      clang-18 \\\n", "      clang-19 \\\n"],
+    ["ENV CC=/usr/bin/clang-18 CXX=/usr/bin/clang++-18", ""],
+    ["ENV CC=/usr/bin/clang-18 CXX=/usr/bin/clang++-18", "ENV CC=/usr/bin/gcc CXX=/usr/bin/g++"],
+    ["/usr/share/tuneforge-ci/native-compiler.txt", "/tmp/compiler.txt"],
+  ], /Final CI image must/);
+  const root = fixture();
+  try {
+    replace(root, ".github/ci/Dockerfile", "ENV CC=/usr/bin/clang-18 CXX=/usr/bin/clang++-18\n", "");
+    replace(root, ".github/ci/Dockerfile", "WORKDIR /workspace", "ENV CC=/usr/bin/clang-18 CXX=/usr/bin/clang++-18\nWORKDIR /workspace");
+    assert.throws(() => validateCiImagePolicy(root), /without changing builder defaults/);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test("native compiler verifier requires identity and independent semantic checks", () =>
+  assertMutationsFail("scripts/verify-ci-image.sh", [
+    ['"${CC:-}" != /usr/bin/clang-18', '"${CC:-}" != /usr/bin/gcc'],
+    ["clang version 18", "clang version 19"],
+    ['cmp -s "$compiler_evidence"', 'test -f "$compiler_evidence"'],
+    ["#ifndef __GLIBCXX__", "#ifndef __clang__"],
+    ['if ! "$CXX" -std=c++17', 'if ! g++ -std=c++17'],
+    ['for optimization in 0 3; do', 'for optimization in 0; do'],
+  ], /verifier must check Clang 18 identities/));

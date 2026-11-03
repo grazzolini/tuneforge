@@ -134,6 +134,8 @@ LABEL org.opencontainers.image.source="https://github.com/grazzolini/tuneforge" 
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
+ENV CC=/usr/bin/clang-18 CXX=/usr/bin/clang++-18
+
 COPY --from=soxr-builder /opt/tuneforge-ci/soxr /opt/tuneforge-ci/soxr
 COPY --from=music-core-builder /opt/tuneforge-ci/music-core /opt/tuneforge-ci/music-core
 COPY --from=music-core-builder /tmp/producer-inputs.sha256 /usr/share/tuneforge-ci/producer-inputs.sha256
@@ -146,6 +148,7 @@ RUN set -eux; \
     apt-get install -y --no-install-recommends \
       build-essential \
       ca-certificates \
+      clang-18 \
       curl \
       file \
       git \
@@ -195,6 +198,12 @@ RUN set -eux; \
       "${FFMPEG_SHA256}" /usr/bin/ffmpeg \
       "${FFPROBE_SHA256}" /usr/bin/ffprobe \
       > /usr/share/tuneforge-ci/ffmpeg.sha256; \
+    { \
+      for compiler in "$CC" "$CXX"; do \
+        printf 'selected: %s\nresolved: %s\n' "$compiler" "$(readlink -f "$compiler")"; \
+        "$compiler" --version; \
+      done; \
+    } > /usr/share/tuneforge-ci/native-compiler.txt; \
     ffmpeg -version > /usr/share/tuneforge-ci/ffmpeg-version.txt; \
     ffmpeg -buildconf > /usr/share/tuneforge-ci/ffmpeg-buildconf.txt; \
     dpkg-query -W -f='${binary:Package}\t${Version}\n' | LC_ALL=C sort \

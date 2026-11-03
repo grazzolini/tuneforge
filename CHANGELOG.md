@@ -18,6 +18,9 @@ download, installation, verification, signature, and publication instructions.
 
 ### Fixed
 
+- Include familiar seventh guitar grips with an optional natural fifth, default piano and accordion
+  treble to nearby root positions, and retain valid saved voicings beyond generated shortlists.
+
 - Keep bundled desktop startup behind music-core initialization.
 
 - Discover processing and export jobs while submission is still pending, share job refreshes across

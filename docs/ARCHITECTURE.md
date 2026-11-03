@@ -72,11 +72,19 @@ voicing rules. Version `0.1.0` exposes API, C ABI, instrument schema, and parity
 version `1`. Gingo is pinned to `eec410e6f5b09ad89a2b9d987b63e4048d9a738c`;
 `sources.lock.json` records the archive hash, exact `cpp/` and license inventory, and owned patch.
 An explicit producer acquires verified sources into ignored `vendor/gingo-src`; no upstream source
-is tracked. CMake verifies the prepared tree and applies only the additive slash-tone hook in its
-build directory. Gingo retains its own enumeration, finger-count pruning, deduplication and ranking.
+is tracked. CMake verifies the prepared tree and applies the owned search-policy patch in its build directory.
+Gingo retains enumeration, finger-count pruning, and deduplication. TuneForge supplies required
+pitch classes, a non-root-bass penalty of 24 (upstream default 20), and a numeric fret-signature
+comparison for score ties. Only the natural fifth of `7`, `maj7`, and `m7` is optional; any explicit
+slash bass remains required. Formal chord intervals and allowed sounding pitches stay unchanged.
 This search does not promise exhaustive difficult-shape coverage.
 Generated guitar positions carry stable position identities; an unavailable saved ID falls back
-without deleting the stored preference. Finger assignments are not verified by this search.
+without deleting the stored preference. Optional top-level `preferredVoicingIds` accepts at most
+two strings for guitar, piano, and accordion requests. Valid matches outside the normal shortlist
+are appended in request order, with duplicates ignored; IDs are never decoded into candidates.
+The response, C ABI, and version remain unchanged. Callers and compiled artifacts must be rebuilt
+together: earlier schemas reject the new request field. Finger assignments are not verified by
+this search.
 
 One registry defines the 12 dictionary qualities and three additional Crema semantic qualities
 (`maj6`, `min6`, `minmaj7`). Aliases normalize to the same IDs across bindings; raw labels remain
@@ -86,7 +94,10 @@ degree onto Gingo's existing nine-semitone interval; it does not alter the inter
 
 Piano and accordion treble use bounded close-position registers and cyclic inversions with a
 stateless nearby-center comparator. `preferredTrebleRegion.centerMidi` overrides the active song
-key tonic nearest middle C, then the chord root. The active key independently governs spelling.
+key tonic nearest middle C, then the chord root. The nearest root-position candidate is promoted
+without reordering other choices; an explicit piano slash bass takes precedence. Accordion IDs
+are assigned in centroid order before promotion and truncation. Piano keeps the nearest candidate
+per inversion; accordion keeps six nearby choices. The active key independently governs spelling.
 There is no region UI or persistence, progression optimizer, or Open/Shell voicing mode.
 
 Stradella candidates distinguish `standard`, `complete`, and `approx` left hands. Conventional

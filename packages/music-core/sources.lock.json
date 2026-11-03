@@ -388,16 +388,16 @@
   "patches": [
     {
       "path": "patches/fretboard-search-policy.patch",
-      "sha256": "de07860f05001a9799142eea88009d3448a8d6d28a936c386b8667cfe5b4b097",
-      "purpose": "Expose finger-count cutoff and optional bass pitch class; preserve Gingo DFS, coverage, sorting, deduplication and default behavior.",
+      "sha256": "c005b1bd1c834257d8330a1e100648b3398f6c724ceaf5f7c8bcf82845f24ee6",
+      "purpose": "Expose optional bass and required pitch classes plus configurable non-root bass penalty; retain upstream defaults, DFS and playability pruning, with deterministic policy tie-breaking.",
       "outputs": [
         {
           "path": "cpp/include/gingo/fretboard.hpp",
-          "sha256": "bae0bff9f21f03c03e658748b5c3ff6b5c4f56b41a4fc596572e1c10482396a1"
+          "sha256": "b054e8e33670997a4c21d7bed964a69fa6658d5336d798dd0ea4f8a95a4101b3"
         },
         {
           "path": "cpp/src/fretboard.cpp",
-          "sha256": "b2a21985df67b8cbbf75bba311a2ac1e85e56c56093ce3d10a47cb00e839ea96"
+          "sha256": "f0b6fa000bf359fd426141dd368223aa044582428d75f01edfaf87e9e6bdc854"
         }
       ]
     }

@@ -115,15 +115,124 @@ export function verifyPolicyParity(binary = fileURLToPath(new URL("../build/musi
       assert.equal(new Set(value.map(v => v.id)).size, value.length);
       for (const v of value) {
         assert.equal(v.source, "generated"); assert.equal(v.shapeFamily, undefined);
-        assert.deepEqual([...new Set(v.notes.map(n => n.pitch.pitchClass))].sort((a,b)=>a-b), pcs);
+        const sounding = new Set(v.notes.map(n => n.pitch.pitchClass));
+        for (const pitch of pcs.filter(pc => input.startsWith("C7") ? pc !== 7 : true)) assert.ok(sounding.has(pitch));
+        assert.ok([...sounding].every(pc => pcs.includes(pc)));
         assert.ok(v.id.includes("-capo-"));
         if (input === "C7/E") assert.equal(v.notes.reduce((a,b)=>a.pitch.midi < b.pitch.midi ? a : b).pitch.pitchClass, 4);
       }
-      if (input === "C7") {
-        const contacts = v => v.notes.filter(n => n.fret > 0).length;
-        assert.ok(contacts(value[0]) < contacts(value.at(-1)), "easier contacts precede the known awkward alternative; no hard four-contact rule");
-      }
+
     });
+  const guitarId = (signature, capo = 0) => "guitar" + [...signature].reverse().map((fret, i) => `-${i + 1}:${fret === "x" ? -1 : fret}`).join("") + `-capo-${capo}`;
+  const shapes = [["C", "x32010"], ["A", "x02220"], ["G", "320003"], ["E", "022100"], ["D", "xx0232"], ["Am", "x02210"], ["Em", "022000"], ["Dm", "xx0231"], ["F", "133211"], ["Bb", "x13331"], ["Bm", "x24432"], ["Dsus2", "xx0230"], ["Dsus4", "xx0233"], ["C7", "x32310"], ["C7", "x35353"]];
+  for (const [input, signature] of shapes)
+    add(`common playable ${input} ${signature}`, { operation: "guitar", input }, value => {
+      const rank = value.findIndex(v => v.id === guitarId(signature));
+      assert.ok(rank >= 0 && rank < 8, `${signature} absent from first eight`);
+      if (signature === "x35353") assert.ok(rank < 3);
+    });
+  const roots = ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"];
+  const dictionaryIntervals = { "": [0,4,7], m: [0,3,7], "7": [0,4,7,10], maj7: [0,4,7,11], m7: [0,3,7,10], sus2: [0,2,7], sus4: [0,5,7], dim: [0,3,6], dim7: [0,3,6,9], hdim7: [0,3,6,10], aug: [0,4,8], "7b5": [0,4,6,10] };
+  for (const [root, pitch] of roots.map((root, pitch) => [root, pitch])) {
+    for (const [suffix, intervals] of Object.entries(dictionaryIntervals)) {
+      const input = root + suffix;
+      const allowed = intervals.map(i => (pitch + i) % 12);
+      const required = intervals.filter(i => !(["7", "maj7", "m7"].includes(suffix) && i === 7)).map(i => (pitch + i) % 12);
+      add(`guitar defining coverage ${input}`, { operation: "guitar", input }, value => {
+        assert.ok(value.length > 0 && value.length <= 8);
+        for (const v of value) {
+          const sounding = new Set(v.notes.map(n => n.pitch.pitchClass));
+          assert.ok(required.every(p => sounding.has(p)));
+          assert.ok([...sounding].every(p => allowed.includes(p)));
+        }
+      });
+      for (const operation of ["piano", "accordion"]) {
+        const low = operation === "piano" ? 21 : 53, high = operation === "piano" ? 108 : 93;
+        for (const center of [low, 60, 72, high]) {
+          add(`${operation} nearest root ${input} ${center}`, { operation, input, context: { preferredTrebleRegion: { centerMidi: center } } }, value => {
+            // Independent close-voicing oracle: choose each possible bass pitch, then stack cyclic chord tones.
+            const candidates = [];
+            for (let inversion = 0; inversion < intervals.length; inversion++) {
+              for (let bass = low; bass <= high; bass++) {
+                if (bass % 12 !== allowed[inversion]) continue;
+                const sourceRoot = bass - intervals[inversion];
+                if (sourceRoot < 21 || sourceRoot + intervals.at(-1) > 108) continue;
+                const midis = intervals.map((_, offset) => bass + (intervals[(inversion + offset) % intervals.length] - intervals[inversion] + 12) % 12);
+                if (midis.at(-1) > high) continue;
+                candidates.push({ inversion, midis, key: midis.join("-"), score: Math.abs(midis.reduce((a,b) => a+b, 0) / midis.length - center) });
+              }
+            }
+            candidates.sort((a,b) => a.score - b.score || a.inversion - b.inversion || a.key.localeCompare(b.key, "en"));
+            const seen = new Set();
+            const normal = operation === "accordion" ? candidates.slice(0,6) : candidates.filter(c => { if (seen.has(c.inversion)) return false; seen.add(c.inversion); return true; });
+            const rootIndex = normal.findIndex(c => c.inversion === 0);
+            assert.ok(rootIndex >= 0);
+            const ordered = [normal[rootIndex], ...normal.slice(0,rootIndex), ...normal.slice(rootIndex+1)];
+            assert.deepEqual(value.map(v => (v.rightHandNotes ?? v.notes).map(n => n.pitch.midi)), ordered.map(c => c.midis));
+            assert.equal(value[0].inversion.isRootPosition, true);
+            // IDs from the centroid ordering survive promotion, including repeated accordion inversions.
+            if (operation === "accordion") for (const v of value) {
+              const midiKey = v.rightHandNotes.map(n => n.pitch.midi).join("-");
+              const sameInversion = candidates.filter(c => c.inversion === v.inversion.index);
+              const occurrence = sameInversion.findIndex(c => c.key === midiKey);
+              assert.ok(v.id.endsWith(`${occurrence ? `-octave-${occurrence + 1}` : ""}-${midiKey}`));
+            }
+          });
+        }
+      }
+    }
+  }
+  for (const [input, signature, required] of [["Cm7", "x3131x", [0,3,10]], ["Cmaj7", "x324xx", [0,4,11]]])
+    add(`useful omitted fifth ${input}`, { operation: "guitar", input, preferredVoicingIds: [guitarId(signature)] }, value => {
+      const v = value.find(v => v.id === guitarId(signature));
+      assert.ok(v); assert.deepEqual([...new Set(v.notes.map(n => n.pitch.pitchClass))].sort((a,b)=>a-b), required);
+    });
+  for (const [operation, id] of [["guitar", guitarId("312313")], ["piano", "piano-c-first-inversion-64-67-72"], ["accordion", "accordion-c-rh-second-inversion-octave-3-79-84-88"]]) {
+    const input = operation === "guitar" ? "C7" : "C";
+    add(`${operation} normal shortlist`, { operation, input }, normal => {
+      assert.ok(!normal.some(v => v.id === id));
+      add(`${operation} retains valid saved choice`, { operation, input, preferredVoicingIds: [id, id] }, retained => {
+        assert.deepEqual(retained.slice(0, normal.length), normal);
+        assert.equal(retained.length, normal.length + 1);
+        assert.equal(retained.at(-1).id, id);
+      });
+      for (const invalid of ["missing-id", "c-open", "guitar-1:0-2:1-3:0-4:2-5:3-6:-1-capo-2", guitarId("xxxx10"), guitarId("x32320")])
+        add(`${operation} ignores unmatched saved choice ${invalid}`, { operation, input, preferredVoicingIds: [invalid] }, retained => assert.deepEqual(retained, normal));
+    });
+  }
+  add("two distinct saved guitar choices retain request order", { operation: "guitar", input: "C7", preferredVoicingIds: [guitarId("312313"), guitarId("312310")] }, value => {
+    assert.equal(value.length, 10);
+    assert.deepEqual(value.slice(8).map(v => v.id), [guitarId("312313"), guitarId("312310")]);
+    assert.deepEqual(value.slice(8).map(v => v.rank), [14, 10]);
+    assert.deepEqual(value.slice(8).map(v => v.label), ["C7 voicing 14", "C7 voicing 10"]);
+  });
+  for (const operation of ["piano", "accordion"])
+    for (const [input, bass] of [["C7/E", 4], ["C7/Bb", 10], ["C7/G", 7]])
+      add(`${operation} slash authority ${input}`, { operation, input }, value => {
+        assert.ok(value.length > 0);
+        if (operation === "piano") assert.ok(value.every(v => v.notes[0].pitch.pitchClass === bass));
+        else { assert.equal(value[0].inversion.index, 0); assert.ok(value.every(v => v.leftHandCandidates.every(c => c.bassButton.pitchClass === bass))); }
+      });
+  add("guitar alternate tuning fixture", { operation: "profiles" }, profiles => {
+    for (const alternate of [false,true]) {
+      const profile = structuredClone(profiles.guitar);
+      if (alternate) profile.tuning.find(s => s.string === 6).openPitch = { midi: 38, pitchClass: 2, noteName: "D", octave: 2, label: "D2" };
+      for (const input of ["C7", "C7/E", "C7/Bb", "C7/G", "C7/Db"])
+        for (const [capoFret, useCapoShapes, canCapo] of [[0,false,true], [2,true,true], [2,false,true], [2,true,false]])
+          add(`guitar tuning/capo/slash ${alternate} ${input} ${capoFret}/${useCapoShapes}/${canCapo}`, { operation: "guitar", input, profile, context: { capoFret, useCapoShapes, canCapo } }, value => {
+            assert.ok(value.length > 0);
+            const bass = input.endsWith("/E") ? 4 : input.endsWith("/Bb") ? 10 : input.endsWith("/G") ? 7 : input.endsWith("/Db") ? 1 : null;
+            const capo = useCapoShapes && canCapo ? capoFret : 0;
+            for (const v of value) {
+              const pcs = new Set(v.notes.map(n => n.pitch.pitchClass));
+              assert.ok([0,4,10].every(p => pcs.has(p)));
+              assert.ok([...pcs].every(p => [0,4,7,10,bass].includes(p)));
+              if (bass !== null) assert.equal(v.notes.reduce((a,b) => a.pitch.midi < b.pitch.midi ? a : b).pitch.pitchClass, bass);
+              for (const n of v.notes) assert.equal(n.pitch.midi, profile.tuning.find(s => s.string === n.string).openPitch.midi + n.fret + capo);
+            }
+          });
+    }
+  });
   // Decoder class labels are independent model metadata, retained verbatim from its pinned source.
   const oracle = JSON.parse(readFileSync(new URL("fixtures/crema-labels-v1.json", import.meta.url), "utf8"));
   assert.equal(oracle.labels.length, 170);

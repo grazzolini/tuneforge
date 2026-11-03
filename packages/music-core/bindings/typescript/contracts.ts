@@ -430,6 +430,7 @@ export type OperationRequest = {
     "context"?: (GuitarContext) | (null);
     "options"?: (PitchOptions) | (null);
     "profile"?: (GuitarProfile) | (null);
+    "preferredVoicingIds"?: ReadonlyArray<string>;
 } | {
     "apiVersion": 1;
     "schemaVersion": 1;
@@ -437,6 +438,7 @@ export type OperationRequest = {
     "input": ChordInput;
     "context"?: Context;
     "options"?: (PitchOptions) | (null);
+    "preferredVoicingIds"?: ReadonlyArray<string>;
 } | {
     "apiVersion": 1;
     "schemaVersion": 1;
@@ -444,6 +446,7 @@ export type OperationRequest = {
     "input": ChordInput;
     "context"?: Context;
     "options"?: (PitchOptions) | (null);
+    "preferredVoicingIds"?: ReadonlyArray<string>;
 } | {
     "apiVersion": 1;
     "schemaVersion": 1;

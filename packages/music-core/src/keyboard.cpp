@@ -19,7 +19,7 @@ static std::string midi_key(const std::vector<int> &midis) {
   return key;
 }
 J keyboard(const J &input, const J &raw_context, const J &requested,
-           bool accordion) {
+           bool accordion, const J &preferred) {
   auto parsed = parse_input(input);
   if (!parsed || !flag(quality_definition(parsed->quality), "dictionarySupported"))
     return J::array();
@@ -73,17 +73,6 @@ J keyboard(const J &input, const J &raw_context, const J &requested,
       midis.push_back(first + 12);
     }
   }
-  if (!accordion) {
-    std::map<int, KeyboardCandidate> best;
-    for (const auto &candidate : candidates) {
-      auto it = best.find(candidate.inversion);
-      if (it == best.end() || candidate.score < it->second.score)
-        best.insert_or_assign(candidate.inversion, candidate);
-    }
-    candidates.clear();
-    for (const auto &entry : best)
-      candidates.push_back(entry.second);
-  }
   std::sort(candidates.begin(), candidates.end(),
             [&](const KeyboardCandidate &a, const KeyboardCandidate &b) {
               if (a.score != b.score)
@@ -91,8 +80,6 @@ J keyboard(const J &input, const J &raw_context, const J &requested,
               if (a.inversion != b.inversion) return a.inversion < b.inversion;
               return a.key < b.key;
             });
-  if (candidates.size() > (accordion ? 6u : 8u))
-    candidates.resize(accordion ? 6u : 8u);
   const auto left = accordion ? stradella(chord, options) : J::array();
   const auto selected = left.a().empty() ? J() : left.a().front();
   const auto visible =
@@ -100,10 +87,20 @@ J keyboard(const J &input, const J &raw_context, const J &requested,
           ? visible_board(chord, region, resolved.current, selected, options)
           : J::array();
   std::map<int, int> occurrences;
-  J::Array result;
+  J::Array result, shortlist;
+  std::set<int> inversions;
   for (const auto &candidate : candidates) {
-    J::Array notes;
     const auto inversion = candidate.inversion;
+    const int occurrence = occurrences[inversion]++;
+    const auto inv = inversion_name(inversion, accordion);
+    const auto id = (accordion
+        ? "accordion-" + slug(chord.label) + "-rh-" + slug(inv) +
+          (occurrence == 0 ? "" : "-octave-" + std::to_string(occurrence + 1))
+        : "piano-" + slug(chord.label) + "-" + slug(inv)) + "-" + candidate.key;
+    const bool normal = accordion ? shortlist.size() < 6 : inversions.insert(inversion).second;
+    if (!normal && (preferred.null() ||
+        std::find(preferred.a().begin(), preferred.a().end(), J(id)) == preferred.a().end())) continue;
+    J::Array notes;
     for (std::size_t i = 0; i < candidate.midis.size(); ++i) {
       const int midi = candidate.midis[i];
       const auto &tone =
@@ -123,18 +120,12 @@ J keyboard(const J &input, const J &raw_context, const J &requested,
     }
     J region_root{{"pitchClass", region}, {"note", format_pc(region, options)}, {"centerMidi", target}};
     if (accordion) {
-      const int occurrence = occurrences[inversion]++;
-      const auto inv = inversion_name(inversion, true);
       const auto register_label =
           occurrence == 0 ? ""
           : occurrence == 1
               ? "octave "
               : std::to_string(occurrence + 1) +
                     (occurrence + 1 == 3 ? "rd octave " : "th octave ");
-      const auto id =
-          "accordion-" + slug(chord.label) + "-rh-" + slug(inv) +
-          (occurrence == 0 ? "" : "-octave-" + std::to_string(occurrence + 1)) +
-          "-" + candidate.key;
       result.push_back(
           J{{"id", id},
             {"label", chord.label + " " + register_label + inv},
@@ -148,13 +139,11 @@ J keyboard(const J &input, const J &raw_context, const J &requested,
             {"visibleStradellaButtons", visible},
             {"regionRoot", region_root}});
     } else {
-      const auto inv = inversion_name(inversion);
       J inv_metadata{{"index", inversion},
                      {"label", inv},
                      {"bassDegree", notes.front()["degree"]},
                      {"isRootPosition", inversion == 0}};
-      result.push_back(J{{"id", "piano-" + slug(chord.label) + "-" + slug(inv) +
-                                    "-" + candidate.key},
+      result.push_back(J{{"id", id},
                          {"label", chord.label + " " + inv},
                          {"chordLabel", chord.label},
                          {"rank", int(result.size() + 1)},
@@ -162,7 +151,18 @@ J keyboard(const J &input, const J &raw_context, const J &requested,
                          {"inversion", inv_metadata},
                          {"regionRoot", region_root}});
     }
+    if (normal) shortlist.push_back(result.back());
   }
-  return result;
+  // Promote only the nearest root position; keep every other distance-ordered choice.
+  if (accordion || bass_inversion < 0) {
+    const auto root = std::find_if(shortlist.begin(), shortlist.end(), [](const J &v) {
+      return num(v["inversion"], "index") == 0;
+    });
+    if (root != shortlist.end()) std::rotate(shortlist.begin(), root, root + 1);
+  }
+  auto retained = retain_preferred(result, shortlist, preferred);
+  for (std::size_t i = 0; i < retained.a().size(); ++i)
+    retained.a()[i]["rank"] = int(i) + (accordion ? num(selected, "rank", 1000) : 1);
+  return retained;
 }
 } // namespace tuneforge

@@ -310,6 +310,27 @@ export function validateCiImagePolicy(root) {
   check(!/COPY --from=music-core-builder (?!\/opt\/tuneforge-ci\/music-core |\/tmp\/producer-inputs.sha256 )/.test(finalStage) &&
     !/apt-get install[^;]*(?:nodejs|python3|emscripten)/.test(finalStage),
     "Music-core build tools and checkout must remain outside final image");
+  const builderStages = dockerfile.slice(0, dockerfile.lastIndexOf("FROM "));
+  check(/apt-get install[^;]*\sclang-18\s/.test(finalStage) &&
+    finalStage.includes("ENV CC=/usr/bin/clang-18 CXX=/usr/bin/clang++-18") &&
+    !/^ENV .*\b(?:CC|CXX)=/m.test(builderStages) &&
+    finalStage.includes("      build-essential \\\n") && finalStage.includes("      libclang-dev \\\n"),
+    "Final CI image must install clang-18, select exact CC/CXX defaults, and retain native libraries without changing builder defaults");
+  check(finalStage.includes('for compiler in "$CC" "$CXX"; do') &&
+    finalStage.includes('$(readlink -f "$compiler")') &&
+    finalStage.includes('"$compiler" --version') &&
+    finalStage.includes("> /usr/share/tuneforge-ci/native-compiler.txt"),
+    "Final CI image must record selected/resolved native compiler paths and identities");
+  check(imageVerifier.includes('"${CC:-}" != /usr/bin/clang-18') &&
+    imageVerifier.includes('"${CXX:-}" != /usr/bin/clang++-18') &&
+    imageVerifier.includes("clang version 18") &&
+    imageVerifier.includes('cmp -s "$compiler_evidence"') &&
+    imageVerifier.includes('#ifndef __GLIBCXX__') &&
+    imageVerifier.includes('(mode() == "minor" ? minor : major)[int(number("pitchClass"))]') &&
+    imageVerifier.includes('for optimization in 0 3; do') &&
+    imageVerifier.includes('if ! "$CXX" -std=c++17') &&
+    imageVerifier.includes('if ! result="$("${validation_dir}/conditional-array")" || [[ "$result" != 2 ]]'),
+    "CI image verifier must check Clang 18 identities and execute the libstdc++ conditional-array regression with selected CXX");
   const soxrBuildInputManifest = [
     "    sha256sum \\",
     "      scripts/build-soxr-runtime.mjs \\",

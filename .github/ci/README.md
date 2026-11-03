@@ -77,9 +77,16 @@ manifest digest and Docker config image ID retain their distinct meanings.
 - Tauri: the GTK, WebKitGTK, ALSA, PipeWire/SPA, AppIndicator, SVG, XDo, and OpenSSL
   development packages needed by native Rust checks, plus
   `libclang-dev` for Rust bindgen.
+- Native compiler: Ubuntu `clang-18`, selected by `CC=/usr/bin/clang-18` and
+  `CXX=/usr/bin/clang++-18` for final-image CMake/Python and Rust native builds.
+  Keep `build-essential`, `libclang-dev`, and libstdc++ available. Ordinary APT
+  resolution remains in effect; `packages.txt` records the resolved versions.
+  The verifier checks selected compiler identities, libstdc++ compatibility, and
+  a C++ conditional-array indexing regression at both `-O0` and `-O3`.
 - SoXR: the repository-pinned Linux AMD64 `host-test` runtime under
   `/opt/tuneforge-ci/soxr/host-test`, built with PFFFT in a disposable stage.
-  Node, CMake, and the SoXR compiler toolchain stay outside the final image.
+  Its Node, CMake, and compiler toolchain belong to the separate builder stage;
+  final-image Clang defaults do not change SoXR or the Emscripten/WASM builder.
 - Music core: verified portable WASM JavaScript/binary and its canonical manifest under
   `/opt/tuneforge-ci/music-core/wasm`, plus MIT/Unicode notices, source/toolchain pins,
   `build-tools.txt`, and `payload.sha256`. Its disposable builder checksum-pins Node
@@ -97,6 +104,7 @@ Each image records evidence under `/usr/share/tuneforge-ci/`:
 
 - `base-image.txt`
 - `packages.txt`
+- `native-compiler.txt` (selected/resolved CC/CXX paths and full compiler identities)
 - `ffmpeg-source.txt`
 - `ffmpeg.sha256`
 - `ffmpeg-version.txt`

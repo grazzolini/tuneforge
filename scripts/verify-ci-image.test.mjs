@@ -63,21 +63,43 @@ function fixture(inputs = buildInputs) {
     fs.writeFileSync(executable, `#!/usr/bin/env bash\necho '${name} test version'\n`);
     fs.chmodSync(executable, 0o755);
   }
+  const cc = path.join(bin, "clang-18");
+  const cxx = path.join(bin, "clang++-18");
+  const compilerScript = `#!/usr/bin/env bash
+if [[ "$1" == --version ]]; then echo 'Ubuntu clang version 18.1.3'; exit 0; fi
+if [[ "\${TF_COMPILER_COMPILE_FAILURE:-}" == 1 ]]; then exit 1; fi
+while [[ "$1" != -o ]]; do shift; done
+printf '#!/usr/bin/env bash\\necho %s\\nexit %s\\n' "\${TF_COMPILER_RESULT:-2}" "\${TF_COMPILER_EXIT:-0}" > "$2"
+chmod +x "$2"
+`;
+  for (const compiler of [cc, cxx]) {
+    fs.writeFileSync(compiler, compilerScript);
+    fs.chmodSync(compiler, 0o755);
+  }
+  const compilerEvidence = path.join(root, "native-compiler.txt");
+  fs.writeFileSync(compilerEvidence, [cc, cxx].map(compiler =>
+    `selected: ${compiler}\nresolved: ${fs.realpathSync(compiler)}\nUbuntu clang version 18.1.3\n`).join(""));
+  const fixtureVerifier = path.join(root, "verify-ci-image.sh");
+  fs.writeFileSync(fixtureVerifier, fs.readFileSync(verifier, "utf8")
+    .replaceAll("/usr/bin/clang++-18", cxx).replaceAll("/usr/bin/clang-18", cc));
   const music = payloadFixture(path.join(root, "music-core"), workspace);
   const summary = path.join(root, "summary.md");
   const imageManifest = path.join(root, "producer-inputs.sha256");
   const identity = producerIdentity(workspace);
   fs.writeFileSync(imageManifest, identity.manifest);
-  return { root, workspace, soxr, runtime, bin, summary, imageManifest, music, fingerprint: identity.fingerprint };
+  return { root, workspace, soxr, runtime, bin, summary, imageManifest, music, cc, cxx, compilerEvidence, fixtureVerifier, fingerprint: identity.fingerprint };
 }
 
-function run(value) {
+function run(value, overrides = {}) {
   const ffmpeg = path.join(value.bin, "ffmpeg");
   const ffprobe = path.join(value.bin, "ffprobe");
-  return spawnSync("bash", [verifier], {
+  return spawnSync("bash", [value.fixtureVerifier], {
     encoding: "utf8",
     env: {
       ...process.env,
+      CC: value.cc,
+      CXX: value.cxx,
+      TUNEFORGE_CI_COMPILER_EVIDENCE: value.compilerEvidence,
       TUNEFORGE_CI_MUSIC_CORE_ROOT: value.music,
       PATH: `${value.bin}:${process.env.PATH}`,
       CI_IMAGE_REFERENCE: "ghcr.io/grazzolini/tuneforge-ci@sha256:test",
@@ -89,6 +111,7 @@ function run(value) {
       TUNEFORGE_CI_SOXR_ROOT: value.soxr,
       TUNEFORGE_CI_EXPECTED_FFMPEG_PATH: ffmpeg,
       TUNEFORGE_CI_EXPECTED_FFPROBE_PATH: ffprobe,
+      ...overrides,
     },
   });
 }
@@ -189,6 +212,40 @@ test("CI verifier rejects missing/corrupt music-core payload", () => {
       const result = run(value);
       assert.notEqual(result.status, 0);
       assert.match(result.stderr, /music-core payload is missing or corrupt/);
+    } finally { fs.rmSync(value.root, { recursive: true, force: true }); }
+  }
+});
+
+
+test("native compiler verifier rejects missing, wrong and stale compiler identity", () => {
+  for (const [mutate, overrides, expected] of [
+    [() => {}, { CXX: "/usr/bin/g++" }, /must select CC=/],
+    [value => fs.unlinkSync(value.cc), {}, /missing or is not Clang 18/],
+    [value => fs.writeFileSync(value.cxx, "#!/usr/bin/env bash\necho 'clang version 19.1.0'\n"), {}, /missing or is not Clang 18/],
+    [value => fs.unlinkSync(value.compilerEvidence), {}, /identities do not match/],
+    [value => fs.appendFileSync(value.compilerEvidence, "changed\n"), {}, /identities do not match/],
+  ]) {
+    const value = fixture(producerInputs);
+    try {
+      mutate(value);
+      const result = run(value, overrides);
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, expected);
+    } finally { fs.rmSync(value.root, { recursive: true, force: true }); }
+  }
+});
+
+test("native compiler verifier rejects compile, execution and semantic failures", () => {
+  for (const [overrides, expected] of [
+    [{ TF_COMPILER_COMPILE_FAILURE: "1" }, /failed to compile at -O0/],
+    [{ TF_COMPILER_EXIT: "1" }, /regression failed at -O0/],
+    [{ TF_COMPILER_RESULT: "0" }, /expected 2, got 0/],
+  ]) {
+    const value = fixture(producerInputs);
+    try {
+      const result = run(value, overrides);
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, expected);
     } finally { fs.rmSync(value.root, { recursive: true, force: true }); }
   }
 });

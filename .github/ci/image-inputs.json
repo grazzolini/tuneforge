@@ -38,9 +38,9 @@
     {
       "name": "Tauri native libraries and CI utilities",
       "inputs": [".github/ci/Dockerfile"],
-      "source": "APT package list in Dockerfile; transitive installed packages recorded in packages.txt",
+      "source": "APT packages from Dockerfile; compiler identity and resolved versions recorded in image",
       "license": "installed Ubuntu copyright files",
-      "probes": ["cargo check", "cargo test", "setup-tool executable compatibility"],
+      "probes": ["native compiler identity and C++ regression verification", "cargo check", "cargo test", "setup-tool executable compatibility"],
       "consumers": ["backend", "desktop_tauri", "e2e"]
     },
     {

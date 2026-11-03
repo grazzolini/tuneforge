@@ -2,7 +2,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { HashRouter } from "react-router-dom";
-import App from "./App";
+import { initializeBundledMusicCore } from "./lib/musicCore";
 import { BootScreen } from "./BootScreen";
 import { initializeApi } from "./lib/api";
 import { queryClient } from "./lib/query-client";
@@ -45,7 +45,9 @@ async function bootstrap() {
   root.render(<BootScreen title="Starting TuneForge" />);
 
   try {
+    await initializeBundledMusicCore();
     await withTimeout(initializeApi(), 8000);
+    const { default: App } = await import("./App");
 
     root.render(
       <React.StrictMode>

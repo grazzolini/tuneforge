@@ -21,6 +21,13 @@ if (!existsSync(versionFilePath)) {
 }
 
 const pnpm = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
+const verifiedCore = spawnSync(process.execPath, [
+  path.join(scriptDir, "build-music-core.mjs"), "--target", "wasm", "--check",
+], { cwd: workspaceRoot, stdio: "inherit" });
+if (verifiedCore.error) throw verifiedCore.error;
+if (verifiedCore.status !== 0) {
+  throw new Error("Verified music-core WASM is required. Run pnpm music-core:build -- --target wasm.");
+}
 const result = spawnSync(pnpm, ["--filter", "@tuneforge/desktop", "build"], {
   cwd: workspaceRoot,
   stdio: "inherit",

@@ -20,6 +20,7 @@ default = []
 custom-protocol = ["tauri/custom-protocol"]
 
 [dependencies]
+tuneforge-music-core = { path = "../../../packages/music-core/bindings/rust" }
 tauri = { version = "2.11.5", features = ["protocol-asset"] }
 tauri-plugin-dialog = "2.7.2"
 tauri-plugin-fs = "2.5.1"

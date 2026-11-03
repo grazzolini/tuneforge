@@ -7,6 +7,10 @@ download, installation, verification, signature, and publication instructions.
 
 ### Changed
 
+- Share canonical chord spelling and instrument semantics across desktop, Android, and Python,
+  with Gingo-ranked guitar positions, nearby keyboard inversions, and truthful Stradella
+  standard, complete, and partial combinations. Preserve raw analysis labels and saved choices.
+
 - Queue Android analysis, chords, and lyrics through full cleanup, preserve newer saved results,
   and continue processing in the background with a separate CPU-only foreground service.
 - Open the mobile library before model checks finish; show model readiness and retry errors while
@@ -14,12 +18,16 @@ download, installation, verification, signature, and publication instructions.
 
 ### Fixed
 
+- Keep bundled desktop startup behind music-core initialization.
+
 - Discover processing and export jobs while submission is still pending, share job refreshes across
   views, and preserve partial results with targeted updates.
 - Persist Android export cancellation summaries atomically and recover older incomplete summaries,
   so cancelled exports retain truthful status and unavailable details remain explicit.
 
 ### Performance
+
+- Reuse unchanged musical labels during playback so navigation remains responsive.
 
 - Reduce repeated desktop sync reads and staging cleanup queries for already synchronized libraries,
   while preserving conflict, deletion, and live file checks.

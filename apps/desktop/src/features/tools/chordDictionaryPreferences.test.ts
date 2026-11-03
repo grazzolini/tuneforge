@@ -241,6 +241,8 @@ describe("chord dictionary preferences", () => {
       "c-open",
     );
     expect(resolveChordDictionaryPreferredShapeId(context, [])).toBeNull();
+    // An unavailable legacy catalog ID remains stored for a future compatible generator.
+    expect(resolveChordDictionaryPreferredShapeId(context, ["c-a-shape"])).toBe("c-a-shape");
   });
 
   it("clears and resets global preferences", () => {

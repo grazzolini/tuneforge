@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "tsc && vite build",
+    "build": "node ../../scripts/build-music-core.mjs --target wasm --check && tsc && vite build",
     "android:prepare": "node ../../scripts/package-android.mjs --prepare",
     "android:icons": "tauri icon --output src-tauri/target/android-icons src-tauri/icons/icon.png",
     "ios:prepare": "node ../../scripts/prepare-ios.mjs",
@@ -13,10 +13,10 @@
     "android:build:debug": "node ../../scripts/package-android.mjs --debug",
     "android:build:release": "node ../../scripts/package-android.mjs --publishable",
     "android:studio": "bash ../../scripts/android-arm64-env.sh --studio tauri android dev --open",
-    "dev": "vite",
+    "dev": "node ../../scripts/build-music-core.mjs --target wasm --summary && vite",
     "lint": "eslint .",
     "tauri": "bash ../../scripts/run-tauri-command.sh",
-    "test": "vitest",
+    "test": "node ../../scripts/build-music-core.mjs --target wasm --check && vitest",
     "test:e2e": "node ../../scripts/desktop-e2e.mjs",
     "typecheck": "tsc --noEmit"
   },
@@ -32,7 +32,8 @@
     "qrcode.react": "^4.2.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
-    "react-router-dom": "^7.18.2"
+    "react-router-dom": "^7.18.2",
+    "@tuneforge/music-core": "workspace:*"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

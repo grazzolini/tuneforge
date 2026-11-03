@@ -73,6 +73,40 @@ function buildAndroidAnalysisPolicy() {
   };
 }
 
+function buildMusicCorePolicy() {
+  const source = JSON.parse(readFileSync(path.join(workspaceRoot, "packages/music-core/sources.lock.json"), "utf8"));
+  const tools = JSON.parse(readFileSync(path.join(workspaceRoot, "packages/music-core/toolchains.lock.json"), "utf8"));
+  const unicodeNotice = source.unicode.files.find(({ path: file }) => file === "licenses/Unicode-LICENSE");
+  return {
+    package: "tuneforge-music-core",
+    version: "0.1.0",
+    apiVersion: 1,
+    abiVersion: 1,
+    schemaVersion: 1,
+    corpusVersion: 1,
+    sourceLock: "packages/music-core/sources.lock.json",
+    toolchainLock: "packages/music-core/toolchains.lock.json",
+    gingo: { revision: source.revision, license: source.license,
+      notice: "packages/music-core/licenses/Gingo-LICENSE", archiveSha256: source.archive.sha256 },
+    pybind11: { version: tools.tools.pybind11.version, license: tools.tools.pybind11.license,
+      revision: "97bf890db679505a14dfe547a5e77bb2bd05dc90", linkage: "Compiled binding headers; no Python runtime dependency." },
+    unicode: { version: source.unicode.version, license: source.unicode.license,
+      notice: `packages/music-core/${unicodeNotice.path}`, sha256: unicodeNotice.sha256,
+      sources: source.unicode.sources,
+      generatedData: "packages/music-core/resources/unicode-v16.hpp",
+      generator: "packages/music-core/tools/generate_unicode.py" },
+    buildDependencies: tools.pythonBuildDependencies.map((name) => ({
+      name, version: tools.tools[name].version, license: tools.tools[name].license,
+      buildOnly: tools.tools[name].buildOnly,
+      artifacts: Object.entries(tools.tools[name].artifacts).map(([platform, artifact]) => ({
+        platform, fileName: artifact.filename, sha256: artifact.sha256,
+      })),
+    })),
+    distribution: "Standalone wheels/sdist retain schemas, instrument/Unicode data, Gingo MIT, pybind11 BSD-3-Clause and Unicode License V3 notices.",
+    acquisition: "Pinned tools are build-only. Runtime artifacts are bundled locally; no runtime download or fallback engine.",
+  };
+}
+
 export const REVIEWED_FLATPAK_PYTHON_LICENSES = Object.freeze({
   alembic: "MIT", "annotated-doc": "MIT", "annotated-types": "MIT", anyio: "MIT",
   "audioop-lts": "PSF-2.0", certifi: "MPL-2.0", cffi: "MIT", "charset-normalizer": "MIT",
@@ -99,6 +133,8 @@ export const REVIEWED_FLATPAK_PYTHON_LICENSES = Object.freeze({
   torchaudio: "BSD-2-Clause", tqdm: "MPL-2.0 AND MIT", "typing-extensions": "PSF-2.0",
   tomlkit: "MIT", "trove-classifiers": "Apache-2.0", "typing-inspection": "MIT",
   urllib3: "MIT", uvicorn: "BSD-3-Clause", wheel: "MIT",
+  "pybind11": "BSD-3-Clause", "scikit-build-core": "Apache-2.0",
+  "tuneforge-music-core": "MIT",
   "cuda-bindings": "Apache-2.0", "cuda-pathfinder": "Apache-2.0", "cuda-toolkit": "Apache-2.0",
   triton: "MIT",
 });
@@ -350,6 +386,7 @@ export function buildReleaseLicenseInventory({
     toolStatuses,
     ownedCodecPolicy: buildOwnedCodecPolicy(),
     androidAnalysisPolicy: buildAndroidAnalysisPolicy(),
+    musicCorePolicy: buildMusicCorePolicy(),
     modelPolicy: {
       defaultPackageOptions: {
         lvChordia: defaultOptions.lvChordia,
@@ -416,6 +453,7 @@ export function buildReleaseLicenseInventory({
       "Advanced Chords packages must include only the exact pinned Crema ONNX model and runtime-state files.",
       "Demucs pretrained-weight redistribution is unclear/restricted upstream.",
       "Owned FFmpeg/LAME release payloads require matching source companion, notice, provenance, architecture, and linkage validation.",
+      "Music-core outputs require matching source/toolchain manifests and retained Gingo/Unicode notices; Python bindings also retain pybind11 notices.",
       "Development remains host-resolved; Flatpak ships zero owned FFmpeg/LAME payload.",
       "Python package license metadata can be incomplete; review missing fields manually.",
       "Do not commit redirected inventory reports or generated package resources.",
@@ -518,6 +556,22 @@ export function formatReleaseLicenseInventory(checklist) {
   lines.push(`- libsoxr source lock: ${android.soxr.sourceLock}`);
   lines.push(`- libsoxr build: ${android.soxr.buildCommand}`);
   lines.push(`- PFFFT ${android.soxr.pffft.revision}: ${android.soxr.pffft.license}`);
+
+  const music = checklist.musicCorePolicy;
+  lines.push("");
+  lines.push("Canonical music-core policy:");
+  lines.push(`- ${music.package} ${music.version}: API/ABI/schema/corpus version 1`);
+  lines.push(`- Gingo ${music.gingo.revision}: ${music.gingo.license}, source SHA-256 ${music.gingo.archiveSha256}`);
+  lines.push(`- Gingo notice: ${music.gingo.notice}`);
+  lines.push(`- pybind11 ${music.pybind11.version}: ${music.pybind11.license}, revision ${music.pybind11.revision}`);
+  lines.push(`- Unicode ${music.unicode.version}: ${music.unicode.license}, notice SHA-256 ${music.unicode.sha256}`);
+  lines.push(`- Unicode notice: ${music.unicode.notice}`);
+  lines.push(`- source lock: ${music.sourceLock}; toolchain lock: ${music.toolchainLock}`);
+  for (const dependency of music.buildDependencies) {
+    lines.push(`- build-only ${dependency.name} ${dependency.version}: ${dependency.license}`);
+  }
+  lines.push(`- distribution: ${music.distribution}`);
+  lines.push(`- acquisition: ${music.acquisition}`);
 
   lines.push("");
   lines.push("Model-weight policy:");

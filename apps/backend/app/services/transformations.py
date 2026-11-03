@@ -13,6 +13,7 @@ from typing import Any, cast
 from fastapi import status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from tuneforge_music_core import call as music_core_call
 
 from app.config import get_settings
 from app.engines.audio_encoding import (
@@ -21,7 +22,6 @@ from app.engines.audio_encoding import (
     require_encoding_available,
     validate_audio_file,
 )
-from app.engines.chord_labels import parse_chord_label
 from app.engines.transform import (
     cents_from_reference,
     probe_export_formats,
@@ -51,25 +51,6 @@ class TransformPlan:
 class ExportBatchResult:
     artifact_ids: list[str]
     export_result: dict[str, Any]
-
-
-_NOTE_TO_PITCH_CLASS = {
-    "C": 0, "B#": 0, "C#": 1, "DB": 1, "D": 2, "D#": 3, "EB": 3,
-    "E": 4, "FB": 4, "F": 5, "E#": 5, "F#": 6, "GB": 6, "G": 7,
-    "G#": 8, "AB": 8, "A": 9, "A#": 10, "BB": 10, "B": 11, "CB": 11,
-}
-_SHARP_PITCH_CLASSES = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
-_FLAT_PITCH_CLASSES = ("C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B")
-_NEUTRAL_PITCH_CLASSES = ("C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B")
-_AUTO_KEY_FAMILIES = {
-    "major": ("neutral", "flat", "sharp", "flat", "sharp", "flat", "sharp", "sharp", "flat", "sharp", "flat", "sharp"),
-    "minor": ("flat", "sharp", "flat", "flat", "sharp", "flat", "sharp", "flat", "sharp", "neutral", "flat", "sharp"),
-}
-_CHORD_QUALITY_SUFFIXES = {
-    "major": "", "minor": "m", "7": "7", "7b5": "7b5", "maj7": "maj7",
-    "m7": "m7", "sus2": "sus2", "sus4": "sus4", "dim": "dim", "aug": "aug",
-    "dim7": "dim7", "hdim7": "m7b5",
-}
 
 
 def _reference_cents(session: Session, project: Project, target_reference_hz: float) -> float:
@@ -208,33 +189,16 @@ def _has_saved_lyrics(lyrics: LyricsTranscript | None) -> bool:
 
 
 def _parse_key(value: str | None) -> tuple[int, str] | None:
-    if not value:
-        return None
-    normalized = value.strip()
-    serialized_match = re.fullmatch(r"(\d+):(major|minor)", normalized, re.IGNORECASE)
-    if serialized_match:
-        pitch_class = int(serialized_match.group(1))
-        return (pitch_class, serialized_match.group(2).lower()) if 0 <= pitch_class <= 11 else None
-    named_match = re.fullmatch(r"([A-Ga-g](?:#|b)?)\s*(major|minor|m)?", normalized)
-    if not named_match:
-        return None
-    named_pitch_class = _NOTE_TO_PITCH_CLASS.get(named_match.group(1).upper())
-    if named_pitch_class is None:
-        return None
-    return named_pitch_class, "minor" if (named_match.group(2) or "").lower() in {"minor", "m"} else "major"
+    parsed = music_core_call({"operation": "backendParseKey", "input": value})
+    return (parsed["pitch_class"], parsed["mode"]) if parsed is not None else None
 
 
 def _semitone_delta(source_pitch_class: int, target_pitch_class: int) -> int:
-    upward_distance = (target_pitch_class - source_pitch_class) % 12
-    return upward_distance if upward_distance <= 6 else upward_distance - 12
-
-
-def _mix_transpose_semitones(artifact: Artifact) -> int:
-    if artifact.type != "preview_mix":
-        return 0
-    transpose = artifact.metadata_json.get("transpose")
-    value = transpose.get("semitones") if isinstance(transpose, dict) else None
-    return int(value) if isinstance(value, int) and not isinstance(value, bool) else 0
+    return cast(int, music_core_call({
+        "operation": "shortestSemitoneDelta",
+        "source": source_pitch_class,
+        "target": target_pitch_class,
+    }))
 
 
 def _resolved_document_chord_context(
@@ -243,25 +207,13 @@ def _resolved_document_chord_context(
     audio_set: Artifact,
     display_mode: str,
 ) -> dict[str, Any]:
-    detected_key = _parse_key(project.analysis.estimated_key if project.analysis is not None else None)
-    override_key = _parse_key(project.source_key_override)
-    source_key_correction = (
-        _semitone_delta(detected_key[0], override_key[0])
-        if detected_key is not None and override_key is not None
-        else 0
-    )
-    mix_transpose = _mix_transpose_semitones(audio_set)
-    spelling_key = override_key or detected_key
-    active_key = (
-        {"pitch_class": (spelling_key[0] + mix_transpose) % 12, "mode": spelling_key[1]}
-        if spelling_key is not None
-        else None
-    )
-    return {
-        "transpose_semitones": source_key_correction + mix_transpose,
-        "active_key": active_key,
+    return cast(dict[str, Any], music_core_call({
+        "operation": "backendDocumentContext",
+        "detected_key": project.analysis.estimated_key if project.analysis is not None else None,
+        "override_key": project.source_key_override,
+        "audio_set": {"type": audio_set.type, "metadata": audio_set.metadata_json},
         "display_mode": display_mode,
-    }
+    }))
 
 
 def prepare_export_job_payload(
@@ -595,106 +547,12 @@ def _chord_label(segment: dict[str, Any]) -> str:
     return label.strip() if isinstance(label, str) else ""
 
 
-def _pitch_class_label(
-    pitch_class: int,
-    *,
-    active_key: dict[str, Any] | None,
-    display_mode: str,
-) -> str:
-    normalized = pitch_class % 12
-    if display_mode == "sharps":
-        labels = _SHARP_PITCH_CLASSES
-    elif display_mode == "flats":
-        labels = _FLAT_PITCH_CLASSES
-    elif display_mode == "auto" and active_key is not None:
-        mode = str(active_key.get("mode", "major"))
-        key_pitch_class = active_key.get("pitch_class")
-        family = (
-            _AUTO_KEY_FAMILIES.get(mode, _AUTO_KEY_FAMILIES["major"])[key_pitch_class % 12]
-            if isinstance(key_pitch_class, int)
-            else "neutral"
-        )
-        labels = _SHARP_PITCH_CLASSES if family == "sharp" else (
-            _FLAT_PITCH_CLASSES if family == "flat" else _NEUTRAL_PITCH_CLASSES
-        )
-    else:
-        labels = _NEUTRAL_PITCH_CLASSES
-    return labels[normalized]
-
-
-def _format_transposed_chord(
-    *,
-    root_pitch_class: int,
-    quality: str,
-    bass_pitch_class: int | None,
-    transpose_semitones: int,
-    active_key: dict[str, Any] | None,
-    display_mode: str,
-) -> str | None:
-    suffix = _CHORD_QUALITY_SUFFIXES.get(quality)
-    if suffix is None:
-        return None
-    root = (root_pitch_class + transpose_semitones) % 12
-    bass = (bass_pitch_class + transpose_semitones) % 12 if bass_pitch_class is not None else None
-    if display_mode == "dual":
-        sharp_root = _SHARP_PITCH_CLASSES[root]
-        flat_root = _FLAT_PITCH_CLASSES[root]
-        sharp_bass = f"/{_SHARP_PITCH_CLASSES[bass]}" if bass is not None and bass != root else ""
-        flat_bass = f"/{_FLAT_PITCH_CLASSES[bass]}" if bass is not None and bass != root else ""
-        primary = f"{sharp_root}{suffix}{sharp_bass}"
-        secondary = f"{flat_root}{suffix}{flat_bass}"
-        return primary if primary == secondary else f"{primary} / {secondary}"
-    root_label = _pitch_class_label(root, active_key=active_key, display_mode=display_mode)
-    bass_label = (
-        f"/{_pitch_class_label(bass, active_key=active_key, display_mode=display_mode)}"
-        if bass is not None and bass != root
-        else ""
-    )
-    return f"{root_label}{suffix}{bass_label}"
-
-
 def _display_chord_segment(segment: dict[str, Any], context: dict[str, Any] | None) -> dict[str, Any]:
-    if context is None:
-        return segment
-    transpose_semitones = context.get("transpose_semitones")
-    display_mode = context.get("display_mode")
-    active_key = context.get("active_key")
-    if not isinstance(transpose_semitones, int) or display_mode not in {
-        "auto", "sharps", "flats", "neutral", "dual",
-    }:
-        return segment
-    root_pitch_class = segment.get("pitch_class")
-    quality = segment.get("quality")
-    bass_pitch_class = segment.get("bass_pitch_class")
-    label = None
-    if isinstance(root_pitch_class, int) and isinstance(quality, str):
-        label = _format_transposed_chord(
-            root_pitch_class=root_pitch_class,
-            quality=quality,
-            bass_pitch_class=bass_pitch_class if isinstance(bass_pitch_class, int) else None,
-            transpose_semitones=transpose_semitones,
-            active_key=active_key if isinstance(active_key, dict) else None,
-            display_mode=display_mode,
-        )
-    if label is None:
-        candidates = (segment.get("label"), segment.get("display_label"), segment.get("raw_label"))
-        for candidate in candidates:
-            if not isinstance(candidate, str) or not candidate.strip():
-                continue
-            parsed = parse_chord_label(candidate)
-            if parsed.is_no_chord or parsed.is_unknown or parsed.root_pitch_class is None or parsed.quality is None:
-                continue
-            label = _format_transposed_chord(
-                root_pitch_class=parsed.root_pitch_class,
-                quality=parsed.quality,
-                bass_pitch_class=parsed.bass_pitch_class,
-                transpose_semitones=transpose_semitones,
-                active_key=active_key if isinstance(active_key, dict) else None,
-                display_mode=display_mode,
-            )
-            if label is not None:
-                break
-    return {**segment, "label": label, "display_label": label} if label is not None else segment
+    return cast(dict[str, Any], music_core_call({
+        "operation": "backendDisplayChordSegment",
+        "segment": segment,
+        "context": context,
+    }))
 
 
 def _word_character_positions(text: str, words: list[object]) -> list[int | None]:

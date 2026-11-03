@@ -1,6 +1,5 @@
 import "@testing-library/jest-dom/vitest";
 import { vi } from "vitest";
-
 type MockAudioBufferSourceNode = AudioBufferSourceNode & {
   start: ReturnType<typeof vi.fn>;
   stop: ReturnType<typeof vi.fn>;

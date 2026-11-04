@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { documentExamples } from "./document-examples.mjs";
 
 // Named musical examples and constraints, never generated from implementation output.
 export function verifyPolicyParity(binary = fileURLToPath(new URL("../build/music_core_policy_contract", import.meta.url))) {
@@ -248,6 +249,11 @@ export function verifyPolicyParity(binary = fileURLToPath(new URL("../build/musi
   }
   for (const [input, expected] of Object.entries(intervals))
     add(`independent factors ${input}`, { operation: "nativeQualityIntervals", input }, value => assert.deepEqual(value, expected));
+  const documents = documentExamples();
+  for (const example of documents.cases)
+    for (const [runtime, request] of Object.entries(example.prepared))
+      add("document " + example.id + " " + runtime, request, value =>
+        assert.equal(value, example.expected.common ?? example.expected[runtime]));
   let count = 0;
   for (let offset = 0; offset < cases.length; offset += 16) {
     const batch = cases.slice(offset, offset + 16);

@@ -1,5 +1,7 @@
 #pragma once
 #include "value.hpp"
+#include <cerrno>
+#include <cstdlib>
 namespace tuneforge {
 inline Value parse_json(const std::string &text) {
   struct Parser {
@@ -184,7 +186,14 @@ inline Value parse_json(const std::string &text) {
         }
       }
       const auto token = text.substr(start, pos - start);
-      auto result = Value(std::stod(token));
+      // strtod has the same locale/conversion semantics as stod, but reports
+      // ERANGE for representable subnormals too. Preserve those finite values;
+      // still reject overflow and underflow that lost every significant bit.
+      errno = 0;
+      const auto number = std::strtod(token.c_str(), nullptr);
+      if (!std::isfinite(number) || (errno == ERANGE && number == 0.0))
+        throw std::out_of_range("json-number-out-of-range");
+      auto result = Value(number);
       result.integer_token_kind =
           token.find_first_of(".eE") == std::string::npos;
       result.preserve_numeric_kind = true;

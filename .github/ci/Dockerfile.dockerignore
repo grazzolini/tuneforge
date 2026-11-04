@@ -46,6 +46,7 @@
 !packages/music-core/test/abi-header.c
 !packages/music-core/test/abi.cpp
 !packages/music-core/test/artifact-metadata.mjs
+!packages/music-core/test/document-examples.mjs
 !packages/music-core/test/fixtures/crema-labels-v1.json
 !packages/music-core/test/json-protocol.hpp
 !packages/music-core/test/legacy-policies.cpp

@@ -2014,6 +2014,153 @@
           "additionalProperties": false
         }
       ]
+    },
+    "DocumentTextWord": {
+      "type": "object",
+      "properties": {
+        "token": {
+          "type": "string"
+        },
+        "cursor_advance": {
+          "type": "integer"
+        },
+        "start_seconds": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "end_seconds": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "token",
+        "cursor_advance",
+        "start_seconds",
+        "end_seconds"
+      ],
+      "additionalProperties": false
+    },
+    "DocumentTextLyric": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string"
+        },
+        "search_text": {
+          "type": "string"
+        },
+        "start_seconds": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "end_seconds": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "words": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DocumentTextWord"
+          }
+        }
+      },
+      "required": [
+        "text",
+        "search_text",
+        "start_seconds",
+        "end_seconds",
+        "words"
+      ],
+      "additionalProperties": false
+    },
+    "DocumentPlainLyric": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string"
+        },
+        "search_text": {
+          "type": "string"
+        },
+        "start_seconds": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "end_seconds": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "words": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DocumentTextWord"
+          }
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "additionalProperties": false
+    },
+    "DocumentTextChord": {
+      "type": "object",
+      "properties": {
+        "label": {
+          "type": "string"
+        },
+        "start_seconds": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "label",
+        "start_seconds"
+      ],
+      "additionalProperties": false
     }
   },
   "oneOf": [
@@ -4167,6 +4314,81 @@
             "input"
           ],
           "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "renderDocumentText"
+            },
+            "document_id": {
+              "const": "lyrics"
+            },
+            "lyrics": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/DocumentPlainLyric"
+              }
+            },
+            "chords": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/DocumentTextChord"
+              }
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "document_id",
+            "lyrics"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "renderDocumentText"
+            },
+            "document_id": {
+              "const": "lyrics_with_chords"
+            },
+            "lyrics": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/DocumentTextLyric"
+              }
+            },
+            "chords": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/DocumentTextChord"
+              }
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "document_id",
+            "lyrics",
+            "chords"
+          ],
+          "additionalProperties": false
         }
       ]
     },
@@ -6201,6 +6423,30 @@
                 "flats",
                 "neutral"
               ]
+            }
+          },
+          "required": [
+            "apiVersion",
+            "schemaVersion",
+            "operation",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "const": 1
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "operation": {
+              "const": "renderDocumentText"
+            },
+            "result": {
+              "type": "string"
             }
           },
           "required": [

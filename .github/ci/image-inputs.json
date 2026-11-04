@@ -89,6 +89,7 @@
         "packages/music-core/test/abi.cpp",
         "packages/music-core/test/artifact-metadata.mjs",
         "packages/music-core/test/fixtures/crema-labels-v1.json",
+        "packages/music-core/test/document-examples.mjs",
         "packages/music-core/test/json-protocol.hpp",
         "packages/music-core/test/legacy-policies.cpp",
         "packages/music-core/test/legacy-policies.mjs",
@@ -130,11 +131,13 @@
     "packages/music-core/test/wasm-boundary.mjs": ["packages/music-core/bindings/wasm/index.mjs", "packages/music-core/build/artifacts/wasm/music-core.mjs"],
     "packages/music-core/test/runtime-parity.mjs": ["packages/music-core/test/parity.mjs", "packages/music-core/test/normalization.mjs", "packages/music-core/test/runtime-driver.mjs"],
     "packages/music-core/test/parity.mjs": ["packages/music-core/test/fixtures/crema-labels-v1.json"],
+    "packages/music-core/test/document-examples.mjs": [],
     "packages/music-core/test/normalization.mjs": "caller-supplied producer runtime-driver subprocess only; default native binary is not selected by producer runtime-parity",
     "packages/music-core/test/runtime-driver.mjs": ["packages/music-core/bindings/wasm/index.mjs"],
     "packages/music-core/bindings/wasm/index.mjs": "generated module import through moduleUrl.href; default verified WASM module only in producer probes; generated module resolves sibling music-core.wasm"
   },
   "readAuditSha256": {
+    "packages/music-core/test/document-examples.mjs": "00924122f73cffedd6c90e1f4bbace267903124a7f0c158fdf8e1a7eb8bd40e6",
     "scripts/build-soxr-runtime.mjs": "73fab469d93332840ed2f95cc0e6bcad662a357e9c90df6fdeb41efa21b32d6a",
     "scripts/deterministic-source-snapshot.mjs": "e60747fbc6a3559dcb6a64cf9815942a26b7386c632aae1903b1602e6763ece2",
     "scripts/ci-image-impact.mjs": "d717f534ab1564cbe061cac38ec11e889e75c5c0574648943f63eb6fbf8d9aef",
@@ -144,7 +147,7 @@
     "packages/music-core/test/artifact-metadata.mjs": "943bf0b18e38af2ec74d7104aa1479d7e648564b90f5a2b317ad0cc768d64392",
     "packages/music-core/test/wasm-boundary.mjs": "c2f8e52613fc7fddf683b49e61696f13d5512b6dff4ec7350bde9a6a7079220c",
     "packages/music-core/test/runtime-parity.mjs": "0b0efa9766e6ea6752abba56e38e71976a610af288a4a14c90a61c64d10e5596",
-    "packages/music-core/test/parity.mjs": "a600fa2ddc7d5893bb15d3747113fbc0b1dda706f4ab4510d78412eff3b6a44f",
+    "packages/music-core/test/parity.mjs": "2dd6252de28cf795ff060050d9be725ee5421797ecb484cb9fac365d7469c272",
     "packages/music-core/test/normalization.mjs": "f1985f4fa13de105e31b9854c387a1fb1216b6849ffdf8eb764531377d1874c6",
     "packages/music-core/test/runtime-driver.mjs": "652585fe183e71c23d3dd05f3b2baee535ce2959e8daea56439a7c9ed5b290ef",
     "packages/music-core/bindings/wasm/index.mjs": "b5ea9985ff2dfc6b29384ace6a2a9cc1ad39e6758f992553b30978ad0070864d"

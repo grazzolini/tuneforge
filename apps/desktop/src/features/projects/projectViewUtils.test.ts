@@ -161,6 +161,23 @@ describe("buildLeadSheetRows", () => {
     ]);
   });
 
+  it("keeps timed preview word anchors when saved word text does not match the lyric", () => {
+    const rows = buildLeadSheetRows(
+      [{
+        text: "hello world", start_seconds: 0, end_seconds: 4,
+        words: [
+          { text: "hello", start_seconds: 0, end_seconds: 1, confidence: null },
+          { text: "missing", start_seconds: 1, end_seconds: 3, confidence: null },
+          { text: "world", start_seconds: 3, end_seconds: 4, confidence: null },
+        ],
+      }],
+      [chord(2, 3, "C")],
+      { activeChordIndex: -1, activeLyricsIndex: -1, activeLyricsWordIndex: -1 },
+    );
+    if (rows[0]?.type !== "lyrics") throw new Error("Expected lyrics row");
+    expect(rows[0].chords[0]?.anchor).toEqual({ type: "word", wordIndex: 1 });
+  });
+
   it("uses segment percentage only when word timing is unusable", () => {
     const lyrics: LyricsSegmentSchema[] = [{
       start_seconds: 10,

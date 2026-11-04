@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import shutil
+import subprocess
 import zipfile
 from pathlib import Path
 
@@ -967,3 +969,41 @@ def test_lyrics_with_chords_gap_line_matches_playback_spelling_modes(
             "display_mode": display_mode,
         },
     ) == expected
+
+
+_DOCUMENT_TEXT_CORPUS = json.loads(
+    subprocess.check_output(
+        ["node", str(Path(__file__).resolve().parents[3] / "packages/music-core/test/document-examples.mjs")],
+        encoding="utf-8", timeout=30,
+    )
+)
+
+
+@pytest.mark.parametrize("case", _DOCUMENT_TEXT_CORPUS["cases"], ids=lambda case: case["id"])
+def test_document_text_matches_shared_legacy_corpus(case):
+    if case.get("expected_error", {}).get("backend"):
+        with pytest.raises(AttributeError):
+            transformations_service._lyrics_text(case["lyrics"])
+        return
+    if "context_input" in case:
+        assert transformations_service.music_core_call({
+            "operation": "backendDocumentContext", **case["context_input"],
+        }) == case["context"]
+    request = transformations_service._document_text_request(
+        case["document_id"], case["lyrics"], case["chords"], case["context"],
+    )
+    assert request == case["prepared"]["backend"]
+    actual = (
+        transformations_service._lyrics_text(case["lyrics"])
+        if case["document_id"] == "lyrics"
+        else transformations_service._lyrics_with_chords_text(case["lyrics"], case["chords"], case["context"])
+    )
+    expected = case["expected"].get("common", case["expected"].get("backend"))
+    assert actual.encode("utf-8") == expected.encode("utf-8")
+
+
+def test_document_preparation_preserves_native_python_number_semantics():
+    for number in (float("nan"), float("inf"), -float("inf"), "1", None):
+        assert transformations_service._finite_number(number) is None
+    assert transformations_service._finite_number(True) == 1.0
+    assert transformations_service._finite_number(False) == 0.0

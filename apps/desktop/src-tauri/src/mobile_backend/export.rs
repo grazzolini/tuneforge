@@ -9,7 +9,6 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
-    cmp::Ordering,
     fs::{self, File},
     io::{self, Cursor, Read, Write},
     path::{Path, PathBuf},
@@ -620,40 +619,81 @@ fn document_chord_context(
     })
 }
 
-fn normalized_text(value: &str) -> String {
-    let normalized = value.replace("\r\n", "\n").replace('\r', "\n");
-    format!("{}\n", normalized.trim_end_matches('\n'))
+fn document_text_request(
+    document_id: &str,
+    lyrics: &[Value],
+    chords: &[Value],
+    context: Option<&ChordContext>,
+) -> Value {
+    let prepared_lyrics = lyrics
+        .iter()
+        .map(|lyric| {
+            let text = lyric
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if document_id == "lyrics" {
+                return json!({"text": text});
+            }
+            let words = lyric
+                .get("words")
+                .and_then(Value::as_array)
+                .map(|words| {
+                    words
+                        .iter()
+                        .map(|word| {
+                            let token = word
+                                .get("text")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default()
+                                .trim()
+                                .to_lowercase();
+                            json!({
+                                "cursor_advance": token.chars().count(),
+                                "token": token,
+                                "start_seconds": finite_number(word.get("start_seconds")),
+                                "end_seconds": finite_number(word.get("end_seconds")),
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            json!({
+                "text": text,
+                "search_text": text.to_lowercase(),
+                "start_seconds": finite_number(lyric.get("start_seconds")),
+                "end_seconds": finite_number(lyric.get("end_seconds")),
+                "words": words,
+            })
+        })
+        .collect::<Vec<_>>();
+    let prepared_chords = context
+        .map(|context| {
+            chords
+                .iter()
+                .map(|chord| {
+                    json!({
+                        "label": display_chord_label(chord, context),
+                        "start_seconds": finite_number(chord.get("start_seconds")),
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    json!({"operation": "renderDocumentText", "document_id": document_id, "lyrics": prepared_lyrics, "chords": prepared_chords})
 }
 
 fn lyrics_text(segments: &[Value]) -> String {
-    normalized_text(
-        &segments
-            .iter()
-            .map(|segment| {
-                segment
-                    .get("text")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-            })
-            .collect::<Vec<_>>()
-            .join("\n"),
-    )
+    call_core(document_text_request("lyrics", segments, &[], None))
+        .expect("bundled music core document text")
+        .as_str()
+        .expect("core document text")
+        .to_owned()
 }
 
 fn finite_number(value: Option<&Value>) -> Option<f64> {
     let number = value.and_then(Value::as_f64)?;
     number.is_finite().then_some(number)
-}
-
-fn chord_label(segment: &Value) -> String {
-    segment
-        .get("display_label")
-        .and_then(Value::as_str)
-        .filter(|label| !label.trim().is_empty())
-        .or_else(|| segment.get("label").and_then(Value::as_str))
-        .unwrap_or_default()
-        .trim()
-        .to_string()
 }
 
 fn display_chord_label(segment: &Value, context: &ChordContext) -> String {
@@ -672,171 +712,17 @@ fn display_chord_label(segment: &Value, context: &ChordContext) -> String {
     .to_owned()
 }
 
-fn word_positions(text: &str, words: &[Value]) -> Vec<Option<usize>> {
-    let folded = text.to_lowercase().chars().collect::<Vec<_>>();
-    let mut cursor = 0;
-    words
-        .iter()
-        .map(|word| {
-            let token = word
-                .get("text")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .trim()
-                .to_lowercase();
-            if token.is_empty() {
-                return None;
-            }
-            let token = token.chars().collect::<Vec<_>>();
-            let position = folded[cursor..]
-                .windows(token.len())
-                .position(|candidate| candidate == token)
-                .map(|position| cursor + position)?;
-            cursor = position + token.len();
-            Some(position)
-        })
-        .collect()
-}
-
-fn chord_anchor(chord: &Value, lyric: &Value, text: &str) -> usize {
-    let chord_start = finite_number(chord.get("start_seconds"));
-    if let (Some(chord_start), Some(words)) =
-        (chord_start, lyric.get("words").and_then(Value::as_array))
-    {
-        let positions = word_positions(text, words);
-        let timed = words
-            .iter()
-            .enumerate()
-            .filter_map(|(index, word)| {
-                let start = finite_number(word.get("start_seconds"))?;
-                let end = finite_number(word.get("end_seconds"))?;
-                (end >= start).then_some((index, start, end))
-            })
-            .collect::<Vec<_>>();
-        if timed
-            .iter()
-            .any(|(index, _, _)| positions.get(*index).copied().flatten().is_some())
-        {
-            let chosen = timed
-                .iter()
-                .find(|(_, start, end)| {
-                    chord_start < *start || (*start <= chord_start && chord_start < *end)
-                })
-                .map(|(index, _, _)| *index)
-                .or_else(|| timed.last().map(|(index, _, _)| *index));
-            if let Some(position) = chosen.and_then(|index| positions.get(index).copied().flatten())
-            {
-                return position;
-            }
-        }
-    }
-    let lyric_start = finite_number(lyric.get("start_seconds"));
-    let lyric_end = finite_number(lyric.get("end_seconds"));
-    if let (Some(chord_start), Some(start), Some(end)) = (chord_start, lyric_start, lyric_end) {
-        if end > start {
-            let ratio = ((chord_start - start) / (end - start)).clamp(0.0, 1.0);
-            let text_length = text.chars().count();
-            return ((ratio * text_length as f64) as usize).min(text_length.saturating_sub(1));
-        }
-    }
-    0
-}
-
-fn anchored_chord_line(
-    chords: &[&Value],
-    lyric: &Value,
-    text: &str,
-    context: &ChordContext,
-) -> String {
-    let mut line = String::new();
-    let mut next_column = 0;
-    for chord in chords {
-        let label = display_chord_label(chord, context);
-        if label.is_empty() {
-            continue;
-        }
-        let column = chord_anchor(chord, lyric, text).max(next_column);
-        let line_width = line.chars().count();
-        if line_width < column {
-            line.push_str(&" ".repeat(column - line_width));
-        }
-        line.push_str(&label);
-        next_column = line.chars().count() + 1;
-    }
-    line
-}
-
 fn lyrics_with_chords_text(lyrics: &[Value], chords: &[Value], context: &ChordContext) -> String {
-    let mut ordered = chords.iter().collect::<Vec<_>>();
-    ordered.sort_by(|left, right| {
-        match (
-            finite_number(left.get("start_seconds")),
-            finite_number(right.get("start_seconds")),
-        ) {
-            (Some(left), Some(right)) => left.partial_cmp(&right).unwrap_or(Ordering::Equal),
-            (Some(_), None) => Ordering::Less,
-            (None, Some(_)) => Ordering::Greater,
-            (None, None) => Ordering::Equal,
-        }
-    });
-    let mut lyric_chords = vec![Vec::<&Value>::new(); lyrics.len()];
-    let mut gap_chords = vec![Vec::<&Value>::new(); lyrics.len() + 1];
-    for chord in ordered {
-        let start = finite_number(chord.get("start_seconds"));
-        let lyric_index = lyrics.iter().position(|lyric| {
-            match (
-                start,
-                finite_number(lyric.get("start_seconds")),
-                finite_number(lyric.get("end_seconds")),
-            ) {
-                (Some(chord_start), Some(lyric_start), Some(lyric_end)) => {
-                    lyric_start <= chord_start && chord_start < lyric_end
-                }
-                _ => false,
-            }
-        });
-        if let Some(index) = lyric_index {
-            lyric_chords[index].push(chord);
-        } else {
-            let insertion = lyrics
-                .iter()
-                .position(
-                    |lyric| match (start, finite_number(lyric.get("start_seconds"))) {
-                        (Some(chord_start), Some(lyric_start)) => chord_start < lyric_start,
-                        _ => false,
-                    },
-                )
-                .unwrap_or(lyrics.len());
-            gap_chords[insertion].push(chord);
-        }
-    }
-    let mut blocks = Vec::new();
-    for index in 0..=lyrics.len() {
-        let gap = gap_chords[index]
-            .iter()
-            .map(|chord| display_chord_label(chord, context))
-            .filter(|label| !label.is_empty())
-            .collect::<Vec<_>>()
-            .join(" ");
-        if !gap.is_empty() {
-            blocks.push(gap);
-        }
-        if let Some(lyric) = lyrics.get(index) {
-            let text = lyric
-                .get("text")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .replace("\r\n", "\n")
-                .replace('\r', "\n");
-            let chord_line = anchored_chord_line(&lyric_chords[index], lyric, &text, context);
-            blocks.push(if chord_line.is_empty() {
-                text
-            } else {
-                format!("{chord_line}\n{text}")
-            });
-        }
-    }
-    normalized_text(&blocks.join("\n\n"))
+    call_core(document_text_request(
+        "lyrics_with_chords",
+        lyrics,
+        chords,
+        Some(context),
+    ))
+    .expect("bundled music core document text")
+    .as_str()
+    .expect("core document text")
+    .to_owned()
 }
 
 fn export_item(
@@ -1505,6 +1391,113 @@ pub(super) fn fail_interrupted_exports(connection: &Connection) -> Result<(), St
 
 #[cfg(test)]
 mod tests {
+    fn document_examples() -> &'static Value {
+        static CORPUS: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
+        CORPUS.get_or_init(|| {
+            let output = std::process::Command::new("node")
+                .arg(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../../../packages/music-core/test/document-examples.mjs"
+                ))
+                .output()
+                .expect("Node 26 from the monorepo test toolchain is required");
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            serde_json::from_slice(&output.stdout).expect("shared named document examples")
+        })
+    }
+
+    #[test]
+    fn document_text_matches_shared_legacy_corpus() {
+        let corpus = document_examples();
+        for case in corpus["cases"].as_array().unwrap() {
+            let context_value = case.get("native_context").unwrap_or(&case["context"]);
+            let context = ChordContext {
+                transpose_semitones: context_value["transpose_semitones"].as_i64().unwrap(),
+                active_key: key_from_value(&context_value["active_key"]),
+                display_mode: context_value["display_mode"].as_str().unwrap().to_owned(),
+            };
+            if case["context_input"].is_object() {
+                let mut request = case["context_input"].clone();
+                request["operation"] = json!("nativeDocumentContext");
+                assert_eq!(
+                    call_core(request).unwrap(),
+                    *context_value,
+                    "{}",
+                    case["id"]
+                );
+            }
+            let lyrics = case["lyrics"].as_array().unwrap();
+            let chords = case["chords"].as_array().unwrap();
+            let actual = std::panic::catch_unwind(|| {
+                if case["document_id"] == "lyrics" {
+                    lyrics_text(lyrics)
+                } else {
+                    lyrics_with_chords_text(lyrics, chords, &context)
+                }
+            });
+            if case["expected_error"]["native"] == true {
+                assert!(actual.is_err(), "{}", case["id"]);
+                continue;
+            }
+            let expected = case["expected"]
+                .get("common")
+                .unwrap_or(&case["expected"]["native"]);
+            assert_eq!(
+                actual.unwrap().as_bytes(),
+                expected.as_str().unwrap().as_bytes(),
+                "{}",
+                case["id"]
+            );
+            let request = document_text_request(
+                case["document_id"].as_str().unwrap(),
+                lyrics,
+                chords,
+                (case["document_id"] != "lyrics").then_some(&context),
+            );
+            assert_eq!(request, case["prepared"]["native"], "{}", case["id"]);
+        }
+    }
+
+    #[test]
+    fn document_snapshot_rejects_malformed_saved_json() {
+        let corpus = document_examples();
+        let fixture = ExportFixture::new("malformed-document-json");
+        for case in corpus["saved_json_cases"].as_array().unwrap() {
+            let raw = case["raw"].as_str().unwrap();
+            fixture.connection.execute(
+                "INSERT OR REPLACE INTO lyrics_transcripts (project_id, backend, source_kind, source_segments_json, segments_json, has_user_edits, created_at, updated_at) VALUES (?1, 'synthetic', 'generated', '[]', ?2, 0, 'now', 'now')",
+                params![fixture.project_id, raw],
+            ).unwrap();
+            fixture.connection.execute(
+                "INSERT OR REPLACE INTO chord_timelines (project_id, source_segments_json, segments_json, timeline_json, has_user_edits, created_at, updated_at) VALUES (?1, '[]', ?2, '{}', 0, 'now', 'now')",
+                params![fixture.project_id, raw],
+            ).unwrap();
+            assert!(
+                saved_lyrics(&fixture.connection, &fixture.project_id).is_err(),
+                "{}",
+                case["id"]
+            );
+            assert!(
+                saved_chords(&fixture.connection, &fixture.project_id).is_err(),
+                "{}",
+                case["id"]
+            );
+            assert_eq!(fixture.receipt_count(), 0);
+        }
+    }
+
+    #[test]
+    fn document_preparation_rejects_nonfinite_times_and_boolean_numbers() {
+        assert_eq!(finite_number(Some(&json!(true))), None);
+        for number in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(finite_number(Some(&json!(number))), None);
+        }
+    }
+
     use super::*;
     use crate::native_audio::harmony::{parse_key, shortest_semitone_delta, KeyMode};
     use std::{cell::RefCell, fs};
@@ -1853,9 +1846,26 @@ mod tests {
     fn legacy_summary_repair_preserves_known_receipts_and_provider_output() {
         let fixture = ExportFixture::new("legacy-receipt");
         let target = fixture.root.join("provider-owned.wav");
-        let provider = TestProvider { target: Some(target.clone()), readback: "verified", selected_names: RefCell::new(Vec::new()) };
-        let complete = submit_export_with_provider(&fixture.connection, &fixture.root, &fixture.project_id, fixture.payload(), &provider).unwrap();
-        fixture.connection.execute("UPDATE jobs SET status = 'cancelled', payload_json = '{' WHERE id = ?1", params![complete.id]).unwrap();
+        let provider = TestProvider {
+            target: Some(target.clone()),
+            readback: "verified",
+            selected_names: RefCell::new(Vec::new()),
+        };
+        let complete = submit_export_with_provider(
+            &fixture.connection,
+            &fixture.root,
+            &fixture.project_id,
+            fixture.payload(),
+            &provider,
+        )
+        .unwrap();
+        fixture
+            .connection
+            .execute(
+                "UPDATE jobs SET status = 'cancelled', payload_json = '{' WHERE id = ?1",
+                params![complete.id],
+            )
+            .unwrap();
         fail_interrupted_exports(&fixture.connection).unwrap();
         let repaired = get_export_job(&fixture.connection, &complete.id).unwrap();
         assert_eq!(repaired.status, "cancelled");

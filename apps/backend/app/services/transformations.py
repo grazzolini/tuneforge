@@ -523,15 +523,6 @@ def _export_one_to_target(
         temp_path.unlink(missing_ok=True)
 
 
-def _normalized_text_file(value: str) -> str:
-    normalized = value.replace("\r\n", "\n").replace("\r", "\n").rstrip("\n")
-    return f"{normalized}\n"
-
-
-def _lyrics_text(segments: list[dict[str, Any]]) -> str:
-    return _normalized_text_file("\n".join(str(segment.get("text", "")) for segment in segments))
-
-
 def _finite_number(value: object) -> float | None:
     if not isinstance(value, int | float):
         return None
@@ -555,67 +546,51 @@ def _display_chord_segment(segment: dict[str, Any], context: dict[str, Any] | No
     }))
 
 
-def _word_character_positions(text: str, words: list[object]) -> list[int | None]:
-    cursor = 0
-    positions: list[int | None] = []
-    folded_text = text.casefold()
-    for word in words:
-        if not isinstance(word, dict):
-            positions.append(None)
+def _document_text_request(
+    document_id: str,
+    lyrics_segments: list[dict[str, Any]],
+    chord_segments: list[dict[str, Any]],
+    chord_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    lyrics: list[dict[str, Any]] = []
+    for segment in lyrics_segments:
+        text = str(segment.get("text", ""))
+        if document_id == "lyrics":
+            lyrics.append({"text": text})
             continue
-        raw_word = word.get("text")
-        token = raw_word.strip() if isinstance(raw_word, str) else ""
-        position = folded_text.find(token.casefold(), cursor) if token else -1
-        if position < 0:
-            positions.append(None)
-            continue
-        positions.append(position)
-        cursor = position + len(token)
-    return positions
+        words = segment.get("words")
+        prepared_words: list[dict[str, Any]] = []
+        for word in words if isinstance(words, list) else []:
+            item = word if isinstance(word, dict) else {}
+            raw_token = item.get("text")
+            token = raw_token.strip() if isinstance(raw_token, str) else ""
+            prepared_words.append({
+                "token": token.casefold(),
+                "cursor_advance": len(token),
+                "start_seconds": _finite_number(item.get("start_seconds")),
+                "end_seconds": _finite_number(item.get("end_seconds")),
+            })
+        lyrics.append({
+            "text": text,
+            "search_text": text.casefold(),
+            "start_seconds": _finite_number(segment.get("start_seconds")),
+            "end_seconds": _finite_number(segment.get("end_seconds")),
+            "words": prepared_words,
+        })
+    chords = [
+        {
+            "label": _chord_label(displayed),
+            "start_seconds": _finite_number(displayed.get("start_seconds")),
+        }
+        for segment in chord_segments
+        if isinstance(segment, dict)
+        for displayed in [_display_chord_segment(segment, chord_context)]
+    ] if document_id == "lyrics_with_chords" else []
+    return {"operation": "renderDocumentText", "document_id": document_id, "lyrics": lyrics, "chords": chords}
 
 
-def _chord_character_anchor(chord: dict[str, Any], lyric: dict[str, Any], text: str) -> int:
-    chord_start = _finite_number(chord.get("start_seconds"))
-    words = lyric.get("words")
-    if chord_start is not None and isinstance(words, list) and words:
-        timed_words: list[tuple[int, float, float]] = []
-        for index, word in enumerate(words):
-            if not isinstance(word, dict):
-                continue
-            start = _finite_number(word.get("start_seconds"))
-            end = _finite_number(word.get("end_seconds"))
-            if start is not None and end is not None and end >= start:
-                timed_words.append((index, start, end))
-        positions = _word_character_positions(text, words)
-        if timed_words and any(index < len(positions) and positions[index] is not None for index, _, _ in timed_words):
-            chosen = timed_words[-1][0]
-            for index, start, end in timed_words:
-                if chord_start < start or start <= chord_start < end:
-                    chosen = index
-                    break
-            selected_position = positions[chosen] if chosen < len(positions) else None
-            if selected_position is not None:
-                return selected_position
-
-    lyric_start = _finite_number(lyric.get("start_seconds"))
-    lyric_end = _finite_number(lyric.get("end_seconds"))
-    if chord_start is not None and lyric_start is not None and lyric_end is not None and lyric_end > lyric_start:
-        ratio = min(1.0, max(0.0, (chord_start - lyric_start) / (lyric_end - lyric_start)))
-        return min(max(len(text) - 1, 0), int(ratio * len(text)))
-    return 0
-
-
-def _anchored_chord_line(chords: list[dict[str, Any]], lyric: dict[str, Any], text: str) -> str:
-    line = ""
-    next_column = 0
-    for chord in chords:
-        label = _chord_label(chord)
-        if not label:
-            continue
-        column = max(_chord_character_anchor(chord, lyric, text), next_column)
-        line += " " * max(0, column - len(line)) + label
-        next_column = len(line) + 1
-    return line
+def _lyrics_text(segments: list[dict[str, Any]]) -> str:
+    return cast(str, music_core_call(_document_text_request("lyrics", segments, [])))
 
 
 def _lyrics_with_chords_text(
@@ -623,59 +598,9 @@ def _lyrics_with_chords_text(
     chord_segments: list[dict[str, Any]],
     chord_context: dict[str, Any] | None = None,
 ) -> str:
-    ordered_chords = sorted(
-        (
-            _display_chord_segment(segment, chord_context)
-            for segment in chord_segments
-            if isinstance(segment, dict)
-        ),
-        key=lambda segment: (_finite_number(segment.get("start_seconds")) is None,
-                             _finite_number(segment.get("start_seconds")) or 0),
-    )
-    lyric_chords: dict[int, list[dict[str, Any]]] = {}
-    gap_chords: dict[int, list[dict[str, Any]]] = {}
-    for chord in ordered_chords:
-        chord_start = _finite_number(chord.get("start_seconds"))
-        lyric_index = next(
-            (
-                index
-                for index, lyric in enumerate(lyrics_segments)
-                if chord_start is not None
-                and (start := _finite_number(lyric.get("start_seconds"))) is not None
-                and (end := _finite_number(lyric.get("end_seconds"))) is not None
-                and start <= chord_start < end
-            ),
-            None,
-        )
-        if lyric_index is not None:
-            lyric_chords.setdefault(lyric_index, []).append(chord)
-            continue
-        insertion_index = next(
-            (
-                index
-                for index, lyric in enumerate(lyrics_segments)
-                if chord_start is not None
-                and (start := _finite_number(lyric.get("start_seconds"))) is not None
-                and chord_start < start
-            ),
-            len(lyrics_segments),
-        )
-        gap_chords.setdefault(insertion_index, []).append(chord)
-
-    blocks: list[str] = []
-    for index in range(len(lyrics_segments) + 1):
-        gap_line = " ".join(
-            _chord_label(chord) for chord in gap_chords.get(index, []) if _chord_label(chord)
-        )
-        if gap_line:
-            blocks.append(gap_line)
-        if index >= len(lyrics_segments):
-            continue
-        lyric = lyrics_segments[index]
-        text = str(lyric.get("text", "")).replace("\r\n", "\n").replace("\r", "\n")
-        chord_line = _anchored_chord_line(lyric_chords.get(index, []), lyric, text)
-        blocks.append(f"{chord_line}\n{text}" if chord_line else text)
-    return _normalized_text_file("\n\n".join(blocks))
+    return cast(str, music_core_call(_document_text_request(
+        "lyrics_with_chords", lyrics_segments, chord_segments, chord_context,
+    )))
 
 
 def _write_document_to_target(

@@ -342,10 +342,184 @@ double pythonRound3(double value) {
   formatted << std::fixed << std::setprecision(3) << value;
   return std::stod(formatted.str());
 }
+
+// Layout columns are Unicode scalars, including offsets in the adapter-folded
+// search text. They deliberately are not grapheme, UTF-16, or terminal widths.
+std::vector<std::uint32_t> documentScalars(const std::string &text) {
+  std::vector<std::uint32_t> result;
+  for (std::size_t index = 0; index < text.size();) {
+    const auto first = static_cast<unsigned char>(text[index++]);
+    const int remaining = first < 0x80 ? 0 : first < 0xe0 ? 1 : first < 0xf0 ? 2 : 3;
+    std::uint32_t scalar = first & (remaining == 0 ? 0x7f : remaining == 1 ? 0x1f : remaining == 2 ? 0x0f : 0x07);
+    for (int part = 0; part < remaining; ++part)
+      scalar = (scalar << 6) | (static_cast<unsigned char>(text[index++]) & 0x3f);
+    result.push_back(scalar);
+  }
+  return result;
+}
+std::string documentNewlines(const std::string &text) {
+  std::string result;
+  for (std::size_t index = 0; index < text.size(); ++index) {
+    if (text[index] == '\r') {
+      result += '\n';
+      if (index + 1 < text.size() && text[index + 1] == '\n')
+        ++index;
+    } else {
+      result += text[index];
+    }
+  }
+  return result;
+}
+std::string documentFinalText(const std::string &text) {
+  auto result = documentNewlines(text);
+  while (!result.empty() && result.back() == '\n')
+    result.pop_back();
+  return result + "\n";
+}
+std::optional<double> documentTime(const J &item, const std::string &key) {
+  const auto &value = item[key];
+  return value.number() && std::isfinite(value.d())
+             ? std::optional<double>(value.d()) : std::nullopt;
+}
+struct DocumentLyric {
+  const J &input;
+  std::string text;
+  std::size_t width;
+  std::vector<std::optional<std::size_t>> positions;
+};
+DocumentLyric prepareDocumentLyric(const J &input) {
+  auto text = documentNewlines(str(input, "text"));
+  DocumentLyric lyric{input, text, documentScalars(text).size(), {}};
+  const auto search = documentScalars(documentNewlines(str(input, "search_text")));
+  std::size_t cursor = 0;
+  for (const auto &word : input["words"].a()) {
+    const auto token = documentScalars(str(word, "token"));
+    const auto advance = word["cursor_advance"].as_i64();
+    if (!advance || *advance < 0)
+      throw std::invalid_argument("invalid-document-cursor-advance");
+    if (token.empty() || cursor > search.size()) {
+      lyric.positions.push_back(std::nullopt);
+      continue;
+    }
+    const auto found = std::search(search.begin() + cursor, search.end(), token.begin(), token.end());
+    if (found == search.end()) {
+      lyric.positions.push_back(std::nullopt);
+      continue;
+    }
+    const auto position = static_cast<std::size_t>(found - search.begin());
+    lyric.positions.push_back(position);
+    const auto remaining = search.size() - position;
+    cursor = static_cast<std::uint64_t>(*advance) > remaining
+                 ? search.size() + 1 : position + static_cast<std::size_t>(*advance);
+  }
+  return lyric;
+}
+std::size_t documentAnchor(const J &chord, const DocumentLyric &lyric) {
+  const auto time = documentTime(chord, "start_seconds");
+  if (time) {
+    std::optional<std::size_t> last, chosen;
+    bool matched = false;
+    std::size_t index = 0;
+    for (const auto &word : lyric.input["words"].a()) {
+      const auto start = documentTime(word, "start_seconds");
+      const auto end = documentTime(word, "end_seconds");
+      if (start && end && *end >= *start) {
+        last = index;
+        matched = matched || lyric.positions[index].has_value();
+        if (!chosen && (*time < *start || (*start <= *time && *time < *end)))
+          chosen = index;
+      }
+      ++index;
+    }
+    if (matched) {
+      const auto selected = chosen ? chosen : last;
+      if (selected && lyric.positions[*selected])
+        return *lyric.positions[*selected];
+    }
+  }
+  const auto start = documentTime(lyric.input, "start_seconds");
+  const auto end = documentTime(lyric.input, "end_seconds");
+  if (time && start && end && *end > *start) {
+    const auto ratio = std::clamp((*time - *start) / (*end - *start), 0.0, 1.0);
+    return std::min(lyric.width == 0 ? 0 : lyric.width - 1,
+                    static_cast<std::size_t>(ratio * lyric.width));
+  }
+  return 0;
+}
+std::string renderDocumentText(const J &request) {
+  const auto &lyrics = request["lyrics"].a();
+  if (str(request, "document_id") == "lyrics") {
+    std::string text;
+    for (std::size_t index = 0; index < lyrics.size(); ++index) {
+      if (index) text += '\n';
+      text += str(lyrics[index], "text");
+    }
+    // Join raw segments first: a CR before a segment separator forms CRLF.
+    return documentFinalText(text);
+  }
+  std::vector<DocumentLyric> prepared;
+  for (const auto &lyric : lyrics)
+    prepared.push_back(prepareDocumentLyric(lyric));
+  std::vector<const J *> ordered;
+  for (const auto &chord : request["chords"].a())
+    ordered.push_back(&chord);
+  std::stable_sort(ordered.begin(), ordered.end(), [](const J *left, const J *right) {
+    const auto a = documentTime(*left, "start_seconds");
+    const auto b = documentTime(*right, "start_seconds");
+    return a && (!b || *a < *b);
+  });
+  std::vector<std::vector<const J *>> anchored(lyrics.size()), gaps(lyrics.size() + 1);
+  for (const auto *chord : ordered) {
+    const auto time = documentTime(*chord, "start_seconds");
+    std::optional<std::size_t> overlap, insertion;
+    for (std::size_t index = 0; index < lyrics.size(); ++index) {
+      const auto start = documentTime(lyrics[index], "start_seconds");
+      const auto end = documentTime(lyrics[index], "end_seconds");
+      if (!overlap && time && start && end && *start <= *time && *time < *end)
+        overlap = index;
+      if (!insertion && time && start && *time < *start)
+        insertion = index;
+    }
+    if (overlap) anchored[*overlap].push_back(chord);
+    else gaps[insertion.value_or(lyrics.size())].push_back(chord);
+  }
+  std::vector<std::string> blocks;
+  for (std::size_t index = 0; index <= lyrics.size(); ++index) {
+    std::string gap;
+    for (const auto *chord : gaps[index]) {
+      const auto label = str(*chord, "label");
+      if (label.empty()) continue;
+      if (!gap.empty()) gap += ' ';
+      gap += label;
+    }
+    if (!gap.empty()) blocks.push_back(gap);
+    if (index == lyrics.size()) continue;
+    std::string line;
+    std::size_t width = 0, next = 0;
+    for (const auto *chord : anchored[index]) {
+      const auto label = str(*chord, "label");
+      if (label.empty()) continue;
+      const auto column = std::max(documentAnchor(*chord, prepared[index]), next);
+      if (width < column) line.append(column - width, ' ');
+      line += label;
+      width = std::max(width, column) + documentScalars(label).size();
+      next = width + 1;
+    }
+    blocks.push_back(line.empty() ? prepared[index].text : line + "\n" + prepared[index].text);
+  }
+  std::string text;
+  for (std::size_t index = 0; index < blocks.size(); ++index) {
+    if (index) text += "\n\n";
+    text += blocks[index];
+  }
+  return documentFinalText(text);
+}
 } // namespace
 
 std::optional<J> legacy_policy(const J &request) {
   auto operation = str(request, "operation"), input = str(request, "input");
+  if (operation == "renderDocumentText")
+    return J(renderDocumentText(request));
   if (operation == "backendParseChord")
     return backendParse(input);
   if (operation == "backendNormalizeQuality")

@@ -113,6 +113,25 @@ CMake graph and JSON operation boundary; it must not recreate theory or instrume
 Missing or incompatible core artifacts fail explicitly. Runtime acquisition and alternate
 music engines are unsupported.
 
+The shared API-v1 core exposes `renderDocumentText` for complete TXT document strings.
+Its prepared requests carry display/search text, tokens, finite timestamps, and canonical chord
+labels. The core owns scalar search/width, timed-word choice, proportional fallback, stable
+chord ordering, first-overlap assignment, instrumental gaps, collision spacing, and block joining.
+Plain lyrics join raw segments before CRLF/CR normalization; combined documents normalize
+each display/search string before anchoring. Word tokens retain internal newlines. Output
+always ends with exactly one LF, including empty output. There is no typography, escaping,
+wrapping, or Unicode normalization.
+
+The synthetic named cases in `packages/music-core/test/document-examples.mjs` fix complete
+legacy strings and prepared requests for Python, Rust, and WASM parity. Small input builders
+parameterize repeated cases; expected text, folded tokens, and labels remain independent
+literals. Prepared inputs preserve intentional runtime differences: Python coercion and
+`strip().casefold()` with original stripped-token cursor advances; Rust string-only
+extraction and `trim().to_lowercase()` with folded-token scalar advances. Unicode expansions
+such as `ß` can therefore produce different legacy columns. Application adapters still use
+their existing renderers; adoption of this operation is a separate consumer change after
+the producer CI image is published and its digest verified.
+
 Build artifacts carry relative-path manifests with source, toolchain, version, license,
 output-size, and SHA-256 evidence. The published immutable CI image supplies verified WASM; one acquisition job installs
 that payload and distributes its exact artifact ID to consumers in the same run. Consumers verify

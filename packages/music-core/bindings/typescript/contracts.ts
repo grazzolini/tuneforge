@@ -408,6 +408,30 @@ export type NativeCrema = ({
     "raw_quality_range": (ReadonlyArray<number>) | (null);
     "bass_degree_range": (ReadonlyArray<number>) | (null);
 });
+export type DocumentTextWord = {
+    "token": string;
+    "cursor_advance": number;
+    "start_seconds": (number) | (null);
+    "end_seconds": (number) | (null);
+};
+export type DocumentTextLyric = {
+    "text": string;
+    "search_text": string;
+    "start_seconds": (number) | (null);
+    "end_seconds": (number) | (null);
+    "words": ReadonlyArray<DocumentTextWord>;
+};
+export type DocumentPlainLyric = {
+    "text": string;
+    "search_text"?: string;
+    "start_seconds"?: (number) | (null);
+    "end_seconds"?: (number) | (null);
+    "words"?: ReadonlyArray<DocumentTextWord>;
+};
+export type DocumentTextChord = {
+    "label": string;
+    "start_seconds": (number) | (null);
+};
 export type OperationRequest = {
     "apiVersion": 1;
     "schemaVersion": 1;
@@ -816,6 +840,20 @@ export type OperationRequest = {
     "schemaVersion": 1;
     "operation": "nativeAutomaticPitchSpelling";
     "input": (LegacyKey) | (null);
+} | {
+    "apiVersion": 1;
+    "schemaVersion": 1;
+    "operation": "renderDocumentText";
+    "document_id": "lyrics";
+    "lyrics": ReadonlyArray<DocumentPlainLyric>;
+    "chords"?: ReadonlyArray<DocumentTextChord>;
+} | {
+    "apiVersion": 1;
+    "schemaVersion": 1;
+    "operation": "renderDocumentText";
+    "document_id": "lyrics_with_chords";
+    "lyrics": ReadonlyArray<DocumentTextLyric>;
+    "chords": ReadonlyArray<DocumentTextChord>;
 };
 export type OperationResponse = {
     "apiVersion": 1;
@@ -1209,6 +1247,11 @@ export type OperationResponse = {
     "schemaVersion": 1;
     "operation": "nativeAutomaticPitchSpelling";
     "result": "sharps" | "flats" | "neutral";
+} | {
+    "apiVersion": 1;
+    "schemaVersion": 1;
+    "operation": "renderDocumentText";
+    "result": string;
 };
 export type Operation = OperationRequest["operation"];
 export type Request<O extends Operation> = Omit<Extract<OperationRequest, {

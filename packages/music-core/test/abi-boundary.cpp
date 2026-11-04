@@ -79,6 +79,9 @@ int main() {
                                    "NaN",
                                    "Infinity",
                                    "1e309",
+                                   "-1e309",
+                                   "1e-9999",
+                                   "-1e-9999",
                                    "{\"x\":null,\"x\":1}",
                                    "\"\\uD800\"",
                                    "\"\\uDC00\"",
@@ -97,6 +100,13 @@ int main() {
   assert(unicode.s() ==
          std::string("A\0\n\t\r\b\f\"\\/", 10) + "\xF0\x9D\x84\x9E");
   assert(tuneforge::parse_json(unicode.dump()) == unicode);
+  for (const auto &text : {"1e-310", "-1e-310", "5e-324", "-5e-324"}) {
+    const auto number = tuneforge::parse_json(text);
+    assert(number.number() && std::isfinite(number.d()) && number.d() != 0.0);
+    assert(tuneforge::parse_json(number.dump()) == number);
+    assert(!number.integer_kind() && number.numeric_token == text);
+  }
+  assert(tuneforge::parse_json("0e-9999").d() == 0.0);
   assert(tuneforge::parse_json("-1.25e+2").d() == -125);
   assert(tuneforge::parse_json("-0").dump() == "0");
   auto bad_profile_request = tuneforge::J{{"apiVersion", 1},

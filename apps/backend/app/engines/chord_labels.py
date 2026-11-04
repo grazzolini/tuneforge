@@ -22,10 +22,6 @@ def parse_chord_label(raw_label: str) -> ParsedChordLabel:
     return ParsedChordLabel(**music_core_call({"operation": "backendParseChord", "input": raw_label}))
 
 
-def normalize_chord_quality(quality: str | None) -> str | None:
-    return cast(str | None, music_core_call({"operation": "backendNormalizeQuality", "input": quality}))
-
-
 def chord_label_to_segment(
     raw_label: str,
     *,
@@ -39,17 +35,4 @@ def chord_label_to_segment(
         "start_seconds": start_seconds,
         "end_seconds": end_seconds,
         "confidence": confidence,
-    }))
-
-
-def format_chord_display(
-    root_pitch_class: int | None,
-    quality: str | None,
-    bass_pitch_class: int | None = None,
-) -> str:
-    return cast(str, music_core_call({
-        "operation": "backendFormatChord",
-        "root": root_pitch_class,
-        "quality": quality,
-        "bass": bass_pitch_class,
     }))

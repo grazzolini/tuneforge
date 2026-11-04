@@ -26,13 +26,6 @@ export type GuitarStringProfile = GuitarStringTuning;
 
 export type GuitarVoicingPosition = GuitarVoicingNote;
 
-type AccidentalFamily = "sharp" | "flat" | "neutral";
-
-export type EnharmonicContext = {
-  mode: EnharmonicDisplayMode;
-  family: AccidentalFamily;
-};
-
 export type MusicalLabelPart = {
   root: string;
   suffix: string;
@@ -118,21 +111,6 @@ export type GuitarProfile = {
   frets: number;
   canCapo: boolean;
   canRetune: boolean;
-};
-
-export type GuitarVoicingTemplateNote = {
-  string: number;
-  fret: number;
-  finger?: GuitarFinger;
-};
-
-export type GuitarVoicingTemplate = {
-  id: string;
-  label: string;
-  shapeChordLabel: string;
-  shapeFamily: GuitarShapeFamily;
-  rank: number;
-  notes: readonly GuitarVoicingTemplateNote[];
 };
 
 export type GuitarVoicingNote = {
@@ -284,14 +262,11 @@ export type AccordionVoicingContext =
 const constants = callMusicCore({ operation: "constants" });
 const profiles = callMusicCore({ operation: "profiles" });
 export const CHORD_QUALITY_DEFINITIONS = constants.CHORD_QUALITY_DEFINITIONS as Record<ChordSpellingQuality, ChordQualityDefinition>;
-export const DEFAULT_CHORD_DISPLAY_CONTEXT: ChordDisplayContext = constants.DEFAULT_CHORD_DISPLAY_CONTEXT;
 export const DEFAULT_KEY: MusicalKey = constants.DEFAULT_KEY;
 export const MUSICAL_KEYS = constants.MUSICAL_KEYS;
 export const GUITAR_STANDARD_PROFILE = profiles.guitar as GuitarProfile;
 export const PIANO_STANDARD_PROFILE = profiles.piano as PianoProfile;
 export const ACCORDION_STANDARD_PROFILE = profiles.accordion as AccordionProfile;
-export const INSTRUMENT_PROFILES = { guitar: GUITAR_STANDARD_PROFILE, piano: PIANO_STANDARD_PROFILE, accordion: ACCORDION_STANDARD_PROFILE } as const;
-export const GUITAR_COMMON_VOICING_TEMPLATES: readonly GuitarVoicingTemplate[] = callMusicCore({ operation: "seeds" });
 
 export function parseKey(value: string | null | undefined): MusicalKey | null {
   return callMusicCore({ operation: "parseKey", input: value });
@@ -303,17 +278,6 @@ export function parseStoredKey(value: string | null | undefined): MusicalKey | n
 
 export function serializeKey(key: MusicalKey): string {
   return callMusicCore({ operation: "serializeKey", input: key });
-}
-
-export function deserializeKey(value: string): MusicalKey {
-  return callMusicCore({ operation: "deserializeKey", input: value });
-}
-
-export function getEnharmonicContext(
-  activeKey: MusicalKey | null | undefined,
-  mode: EnharmonicDisplayMode = "auto",
-): EnharmonicContext {
-  return callMusicCore({ operation: "getEnharmonicContext", input: activeKey, mode });
 }
 
 export function formatKey(
@@ -335,14 +299,6 @@ export function formatPitchClass(pitchClass: number, options: PitchFormatOptions
   return callMusicCore({ operation: "formatPitchClass", input: pitchClass, options });
 }
 
-export function formatAlternatePitchClass(pitchClass: number, options: PitchFormatOptions = {}): string | null {
-  return callMusicCore({ operation: "formatAlternatePitchClass", input: pitchClass, options });
-}
-
-export function formatChordRoot(pitchClass: number, options: PitchFormatOptions = {}): string {
-  return callMusicCore({ operation: "formatChordRoot", input: pitchClass, options });
-}
-
 export function formatChordLabel(
   pitchClass: number,
   quality: ChordQuality,
@@ -359,23 +315,6 @@ export function formatChordDisplay(
   bassPitchClass?: number | null,
 ): FormattedMusicalLabel {
   return callMusicCore({ operation: "formatChordDisplay", input: pitchClass, quality, options, bassPitchClass });
-}
-
-export function formatAlternateKey(
-  key: MusicalKey,
-  format: "short" | "long" = "short",
-  options: PitchFormatOptions = {},
-): string | null {
-  return callMusicCore({ operation: "formatAlternateKey", input: key, format, options });
-}
-
-export function formatAlternateChordLabel(
-  pitchClass: number,
-  quality: ChordQuality,
-  options: PitchFormatOptions = {},
-  bassPitchClass?: number | null,
-): string | null {
-  return callMusicCore({ operation: "formatAlternateChordLabel", input: pitchClass, quality, options, bassPitchClass });
 }
 
 export function isSupportedChordQuality(quality: string | null | undefined): quality is ChordQuality {
@@ -418,10 +357,6 @@ export function parseChordLabel(label: string | null | undefined): ParsedChord |
   return callMusicCore({ operation: "parseChordLabel", input: label });
 }
 
-export function isChordSpellingQuality(quality: string | null | undefined): quality is ChordSpellingQuality {
-  return callMusicCore({ operation: "isChordSpellingQuality", input: quality });
-}
-
 export function formatParsedChordLabel(chord: ParsedChord, options: PitchFormatOptions = {}): string {
   return callMusicCore({ operation: "formatParsedChordLabel", input: chord, options });
 }
@@ -440,20 +375,6 @@ export function transposeChordLabel(
   options: PitchFormatOptions = {},
 ): string | null {
   return callMusicCore({ operation: "transposeChordLabel", input: chord, semitones, options });
-}
-
-export function resolveChordDisplayContext(
-  context: Partial<ChordDisplayContext> = {},
-  profile: Pick<GuitarProfile, "canCapo"> = GUITAR_STANDARD_PROFILE,
-): ChordDisplayContext {
-  return callMusicCore({ operation: "resolveChordDisplayContext", context, profile });
-}
-
-export function getCapoShapeSemitones(
-  context: Partial<ChordDisplayContext> = {},
-  profile: Pick<GuitarProfile, "canCapo"> = GUITAR_STANDARD_PROFILE,
-): number {
-  return callMusicCore({ operation: "getCapoShapeSemitones", context, profile });
 }
 
 export function getCapoShapeChord(

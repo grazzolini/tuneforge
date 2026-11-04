@@ -188,19 +188,6 @@ def _has_saved_lyrics(lyrics: LyricsTranscript | None) -> bool:
     )
 
 
-def _parse_key(value: str | None) -> tuple[int, str] | None:
-    parsed = music_core_call({"operation": "backendParseKey", "input": value})
-    return (parsed["pitch_class"], parsed["mode"]) if parsed is not None else None
-
-
-def _semitone_delta(source_pitch_class: int, target_pitch_class: int) -> int:
-    return cast(int, music_core_call({
-        "operation": "shortestSemitoneDelta",
-        "source": source_pitch_class,
-        "target": target_pitch_class,
-    }))
-
-
 def _resolved_document_chord_context(
     project: Project,
     *,

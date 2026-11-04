@@ -3,8 +3,6 @@
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PitchSpelling {
     Sharps,
-    Flats,
-    Neutral,
     Dual,
 }
 
@@ -27,13 +25,6 @@ impl KeyMode {
 pub(crate) struct KeySignature {
     pub(crate) pitch_class: i64,
     pub(crate) mode: KeyMode,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct ParsedChord {
-    pub(crate) root_pitch_class: i64,
-    pub(crate) quality: &'static str,
-    pub(crate) bass_pitch_class: Option<i64>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -84,8 +75,6 @@ impl PitchSpelling {
     fn as_str(self) -> &'static str {
         match self {
             Self::Sharps => "sharps",
-            Self::Flats => "flats",
-            Self::Neutral => "neutral",
             Self::Dual => "dual",
         }
     }
@@ -152,19 +141,10 @@ pub(crate) static SHARP_PITCH_NAMES: LazyLock<[&'static str; 12]> = LazyLock::ne
             .expect("core pitch name")
     })
 });
-pub(crate) fn pitch_class_name(pitch_class: i64, spelling: PitchSpelling) -> &'static str {
-    let value = core(
-        json!({"operation":"nativePitchClassName", "pitch_class":pitch_class, "spelling":spelling.as_str()}),
-    );
-    static_text(value.as_str().expect("core pitch name")).expect("immutable core pitch name")
-}
 pub(crate) fn sharp_pitch_class(note: &str) -> Option<usize> {
     core(json!({"operation":"nativeSharpPitchClass", "input":note}))
         .as_u64()
         .map(|value| value as usize)
-}
-pub(crate) fn note_pitch_class(note: &str) -> Option<i64> {
-    core(json!({"operation":"nativeNotePitchClass", "input":note})).as_i64()
 }
 pub(crate) fn parse_key(value: &str) -> Option<KeySignature> {
     key_from_value(&core(json!({"operation":"nativeParseKey", "input":value})))
@@ -193,26 +173,6 @@ pub(crate) fn shortest_semitone_delta(source: i64, target: i64) -> i64 {
         .as_i64()
         .expect("core semitone delta")
 }
-pub(crate) fn automatic_pitch_spelling(key: Option<KeySignature>) -> PitchSpelling {
-    match core(json!({"operation":"nativeAutomaticPitchSpelling", "input":key_value(key)}))
-        .as_str()
-        .expect("core spelling")
-    {
-        "sharps" => PitchSpelling::Sharps,
-        "flats" => PitchSpelling::Flats,
-        "neutral" => PitchSpelling::Neutral,
-        _ => panic!("invalid core spelling"),
-    }
-}
-pub(crate) fn quality_suffix(quality: &str) -> Option<&'static str> {
-    constants().values["quality_suffixes"]
-        .get(quality)?
-        .as_str()
-}
-pub(crate) fn quality_from_display_suffix(suffix: &str) -> Option<&'static str> {
-    let value = core(json!({"operation":"nativeQualityFromSuffix", "input":suffix}));
-    static_text(value.as_str()?)
-}
 pub(crate) fn quality_intervals(quality: &str) -> Option<&'static [usize]> {
     constants().intervals.get(quality).map(Vec::as_slice)
 }
@@ -220,11 +180,6 @@ pub(crate) fn degree_name(relative_pitch_class: usize) -> Option<&'static str> {
     constants().values["scale_degrees"]
         .get(relative_pitch_class)?
         .as_str()
-}
-pub(crate) fn degree_pitch_class(root_pitch_class: usize, degree: &str) -> Option<usize> {
-    core(json!({"operation":"nativeDegreePitchClass", "root":root_pitch_class,"degree":degree}))
-        .as_u64()
-        .map(|value| value as usize)
 }
 pub(crate) fn crema_quality_contains(label: &str, relative_pitch_class: usize) -> bool {
     core(json!({"operation":"nativeCremaContains", "input":label,"relative":relative_pitch_class}))
@@ -264,14 +219,6 @@ pub(crate) fn parse_crema_model_label(raw: &str) -> CremaModelLabel<'_> {
         }
         _ => panic!("invalid core label kind"),
     }
-}
-pub(crate) fn parse_display_chord(label: &str) -> Option<ParsedChord> {
-    let value = core(json!({"operation":"nativeParseChord", "input":label}));
-    Some(ParsedChord {
-        root_pitch_class: value["root_pitch_class"].as_i64()?,
-        quality: static_text(value["quality"].as_str()?)?,
-        bass_pitch_class: value["bass_pitch_class"].as_i64(),
-    })
 }
 pub(crate) fn format_chord_with_suffix(
     root_pitch_class: i64,

@@ -662,6 +662,8 @@ test("release inventory follows the normalized Flatpak profile selection", () =>
   ]) {
     const inventory = buildReleaseLicenseInventory({ flatpakProfiles: profiles });
     const policy = inventory.modelPolicy;
+    assert.ok([...policy.defaultPackageCommands, ...policy.onnxPackageCommands].every(({ command }) => command.includes("--release")));
+    assert.ok([...policy.explicitModelBundleCommands, ...policy.cremaOnnxModelBundleCommands].every(({ command }) => !command.includes("--release")));
     assert.deepEqual(policy.flatpakTorchProfiles.map(({ id }) => id), expectedIds);
     assert.equal(policy.flatpakTorchProfiles.find(({ id }) => id === "cpu").cudaFamily, null);
     assert.equal(policy.flatpakChecksumContents.length, expectedIds.length);

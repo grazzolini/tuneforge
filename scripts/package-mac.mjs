@@ -5,8 +5,10 @@ import {
   backendSyncArgs,
   packageOptionsEnvironment,
   parsePackageOptions,
+  formatBuildDuration,
   printModelBundleWarning,
 } from "./package-options.mjs";
+import { createDmg, dmgPaths } from "./package-dmg.mjs";
 import { writeTestTauriOverlay } from "./package-profile.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -30,53 +32,59 @@ function run(command, args, options = {}) {
   }
 }
 
-function main() {
-  const rawArgs = process.argv.slice(2);
+function main(rawArgs = process.argv.slice(2)) {
   const appOnly = rawArgs.includes("--app-only");
   const options = parsePackageOptions(
     rawArgs.filter((arg) => arg !== "--app-only"),
-    { platform: "mac" },
+    { platform: "mac", defaultTestPackage: true },
   );
 
-  if (options.modelBundle) {
-    printModelBundleWarning();
-  }
+  const startedAt = performance.now();
+  try {
+    if (options.modelBundle) {
+      printModelBundleWarning();
+    }
 
-  const configuredFfmpeg = process.env.TUNEFORGE_FFMPEG_RUNTIME_DIR;
-  if (!configuredFfmpeg) {
+    const configuredFfmpeg = process.env.TUNEFORGE_FFMPEG_RUNTIME_DIR;
+    if (!configuredFfmpeg) {
+      run(process.execPath, [
+        path.join("scripts", "build-ffmpeg.mjs"),
+        "--target", "macos-arm64",
+        "--ensure",
+      ]);
+    }
+
     run(process.execPath, [
-      path.join("scripts", "build-ffmpeg.mjs"),
+      path.join("scripts", "validate-packaged-ffmpeg.mjs"),
       "--target", "macos-arm64",
-      "--ensure",
+      "--root", configuredFfmpeg
+        ?? path.join("packaging", "ffmpeg", "generated", "macos-arm64"),
     ]);
-  }
 
-  run(process.execPath, [
-    path.join("scripts", "validate-packaged-ffmpeg.mjs"),
-    "--target", "macos-arm64",
-    "--root", configuredFfmpeg
-      ?? path.join("packaging", "ffmpeg", "generated", "macos-arm64"),
-  ]);
-
-  run(process.execPath, ["scripts/build-music-core.mjs", "--target", "wasm"]);
-  run(process.execPath, ["scripts/build-music-core.mjs", "--target", "python", "--python", "3.14"]);
-  run("uv", backendSyncArgs(options), { cwd: backendRoot });
-  const configArgs = options.testPackage
-    ? ["--config", writeTestTauriOverlay(tauriRoot)] : [];
-  run("pnpm", ["--filter", "@tuneforge/desktop", "tauri", "build", "--bundles", "app", ...configArgs], {
-    env: {
-      ...packageOptionsEnvironment(options),
-      ...(options.testPackage ? { CARGO_TARGET_DIR: path.join(tauriRoot, "target", "test-package") } : {}),
-    },
-  });
-  if (!appOnly) {
-    run(process.execPath, [path.join("scripts", "package-dmg.mjs"), ...(options.testPackage ? ["--test"] : [])]);
+    run(process.execPath, ["scripts/build-music-core.mjs", "--target", "wasm"]);
+    run(process.execPath, ["scripts/build-music-core.mjs", "--target", "python", "--python", "3.14"]);
+    run("uv", backendSyncArgs(options), { cwd: backendRoot });
+    const configArgs = options.testPackage
+      ? ["--config", writeTestTauriOverlay(tauriRoot)] : [];
+    run("pnpm", ["--filter", "@tuneforge/desktop", "tauri", "build", "--bundles", "app", ...configArgs], {
+      env: {
+        ...packageOptionsEnvironment(options),
+        ...(options.testPackage ? { CARGO_TARGET_DIR: path.join(tauriRoot, "target", "test-package") } : {}),
+      },
+    });
+    if (!appOnly) {
+      createDmg(dmgPaths(options.testPackage));
+    }
+  } finally {
+    process.stdout.write(`BUILD time: ${formatBuildDuration(performance.now() - startedAt)}\n`);
   }
 }
 
-try {
-  main();
-} catch (error) {
-  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-  process.exitCode = 1;
+if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
+  try {
+    main();
+  } catch (error) {
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    process.exitCode = 1;
+  }
 }

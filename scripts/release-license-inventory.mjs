@@ -394,12 +394,12 @@ export function buildReleaseLicenseInventory({
         generatorArgs: defaultGeneratorArgs,
       },
       defaultPackageCommands: [
-        { platform: "macOS", command: "pnpm package:mac" },
-        { platform: "Linux Flatpak", command: "pnpm package:linux" },
+        { platform: "macOS", command: "pnpm package:mac --release" },
+        { platform: "Linux Flatpak", command: "pnpm package:linux --release" },
       ],
       onnxPackageCommands: [
-        { platform: "macOS", command: "pnpm package:mac -- --crema-onnx" },
-        { platform: "Linux Flatpak", command: "pnpm package:linux -- --crema-onnx" },
+        { platform: "macOS", command: "pnpm package:mac -- --release --crema-onnx" },
+        { platform: "Linux Flatpak", command: "pnpm package:linux -- --release --crema-onnx" },
       ],
       explicitModelBundleCommands: [
         { platform: "macOS", command: "pnpm package:mac -- --model-bundle" },

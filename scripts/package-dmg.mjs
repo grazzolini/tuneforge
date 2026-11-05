@@ -3,6 +3,7 @@ import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rm
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { formatBuildDuration, parsePackageOptions } from "./package-options.mjs";
 import { packageProfile } from "./package-profile.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -56,9 +57,18 @@ export function createDmg({
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
-  const args = process.argv.slice(2);
-  if (args.length > 1 || args.some((arg) => arg !== "--test")) {
-    throw new Error("Usage: package-dmg.mjs [--test]");
+  try {
+    const args = process.argv.slice(2).filter((arg) => arg !== "--");
+    if (args.some((arg) => !["--test", "--release"].includes(arg))) {
+      throw new Error("Usage: package-dmg.mjs [--test|--release]");
+    }
+    const options = parsePackageOptions(args, { platform: "mac", defaultTestPackage: true });
+    const startedAt = performance.now();
+    try { createDmg(dmgPaths(options.testPackage)); } finally {
+      process.stdout.write(`BUILD time: ${formatBuildDuration(performance.now() - startedAt)}\n`);
+    }
+  } catch (error) {
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    process.exitCode = 1;
   }
-  createDmg(dmgPaths(args.includes("--test")));
 }

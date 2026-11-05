@@ -26,6 +26,7 @@
     "package:android:prepare": "pnpm --filter @tuneforge/desktop android:prepare",
     "package:android:release": "pnpm --filter @tuneforge/desktop android:build:release",
     "package:linux": "pnpm package:linux:flatpak",
+    "package:linux:no-bundle": "node scripts/package-flatpak.mjs --no-bundle",
     "package:linux:flatpak": "node scripts/package-flatpak.mjs",
     "package:mac": "node scripts/package-mac.mjs",
     "package:mac:app": "node scripts/package-mac.mjs --app-only",

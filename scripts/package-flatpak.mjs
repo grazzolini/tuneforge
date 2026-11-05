@@ -26,6 +26,7 @@ import {
   packageOptionsEnvironment,
   packageOptionsToGeneratorArgs,
   parsePackageOptions,
+  formatBuildDuration,
   printModelBundleWarning,
   validatePackageOptions,
 } from "./package-options.mjs";
@@ -44,7 +45,17 @@ const flatpakRoot = path.join(workspaceRoot, "packaging", "flatpak");
 const baseManifestPath = path.join(flatpakRoot, "com.tuneforge.desktop.yml");
 const flatpakVersionInfoPath = path.join(flatpakRoot, "generated", "version.json");
 const frontendVersionInfoPath = path.join(flatpakRoot, "generated", "frontend-version.json");
-const testPackage = process.argv.slice(2).includes("--test");
+const cliInvocation = process.argv[1] && path.resolve(process.argv[1]) === __filename;
+let cliOptions;
+if (cliInvocation) {
+  try {
+    cliOptions = parsePackageOptions(packageArguments(), { platform: "linux", defaultTestPackage: true });
+  } catch (error) {
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    process.exit(1);
+  }
+}
+const testPackage = cliOptions?.testPackage ?? false;
 const currentProfile = packageProfile(testPackage);
 const appId = currentProfile.id;
 const nvidiaTorchCoreRef = `${appId}.Torch.Stack.Nvidia.Core`;
@@ -53,12 +64,12 @@ const legacyTorchCoreRef = `${appId}.Torch.Stack.LegacyNvidia.Core`;
 const legacyTorchRuntimeRef = `${appId}.Torch.Stack.LegacyNvidia.Runtime`;
 const torchProfileArtifacts = {
   nvidia: [
-    { id: "nvidia-core", refId: nvidiaTorchCoreRef, module: "nvidia-torch-core-extension" },
-    { id: "nvidia-runtime", refId: nvidiaTorchRuntimeRef, module: "nvidia-torch-runtime-extension" },
+    { id: "nvidia-core", refId: `${PRODUCTION_PACKAGE.id}.Torch.Stack.Nvidia.Core`, module: "nvidia-torch-core-extension" },
+    { id: "nvidia-runtime", refId: `${PRODUCTION_PACKAGE.id}.Torch.Stack.Nvidia.Runtime`, module: "nvidia-torch-runtime-extension" },
   ],
   "legacy-nvidia": [
-    { id: "legacy-nvidia-core", refId: legacyTorchCoreRef, module: "legacy-nvidia-torch-core-extension" },
-    { id: "legacy-nvidia-runtime", refId: legacyTorchRuntimeRef, module: "legacy-nvidia-torch-runtime-extension" },
+    { id: "legacy-nvidia-core", refId: `${PRODUCTION_PACKAGE.id}.Torch.Stack.LegacyNvidia.Core`, module: "legacy-nvidia-torch-core-extension" },
+    { id: "legacy-nvidia-runtime", refId: `${PRODUCTION_PACKAGE.id}.Torch.Stack.LegacyNvidia.Runtime`, module: "legacy-nvidia-torch-runtime-extension" },
   ],
 };
 export function localRepoRemoteFor(isTestPackage) {
@@ -71,6 +82,7 @@ const bundleStateSchema = "flatpak-bundle-state-v1";
 const sizeReportSchema = "flatpak-size-v1";
 const bundleCommandContract = "flatpak build-bundle [--runtime] --arch=x86_64 <repository> <output> <ref-id> stable";
 let activeRunEvidence;
+let buildStartedAt;
 const gibibyte = 1024 ** 3;
 const flatpakBundleHardLimitBytes = 2 * gibibyte;
 const flatpakBundleTargetBytes = 1.9 * gibibyte;
@@ -115,6 +127,10 @@ const obsoleteDefaultBundlePaths = [
 ];
 const sha256SumsPath =
   process.env.FLATPAK_SHA256SUMS_PATH ?? path.join(flatpakRoot, "generated", testPackage ? "TEST-SHA256SUMS" : "SHA256SUMS");
+export function flatpakSizeReportPath(isTestPackage, env = process.env) {
+  return env.FLATPAK_SIZE_REPORT_PATH ?? path.join(flatpakRoot, "generated", isTestPackage ? "TEST-size-report.json" : "size-report.json");
+}
+
 export const frontendModuleInputPaths = flatpakSourceSnapshotInputs.frontend.map((input) => typeof input === "string" ? input : input.source);
 
 function run(command, args, options = {}) {
@@ -1608,9 +1624,10 @@ function cacheReport({ namespace, inputs, cacheDirectory, timings, evidence, ref
 }
 
 async function main() {
-  const startedAt = performance.now();
-  const packageOptions = parsePackageOptions(packageArguments(), { platform: "linux" });
+  const startedAt = buildStartedAt = performance.now();
+  const packageOptions = cliOptions;
   const selectedProfiles = packageOptions.flatpakProfiles;
+  const sizeReportPath = flatpakSizeReportPath(packageOptions.testPackage);
   const bundlePlan = flatpakBundlePlan({ selectedProfiles });
   const skipBundle = packageOptions.noBundle || process.env.FLATPAK_NO_BUNDLE === "1";
   const evidence = process.env.FLATPAK_CACHE_EVIDENCE === "1";
@@ -1654,7 +1671,7 @@ async function main() {
   const sourceStartedAt = performance.now();
   run(process.execPath, [
     path.join("scripts", "generate-flatpak-sources.mjs"),
-    ...packageOptionsToGeneratorArgs(packageOptions),
+    ...packageOptionsToGeneratorArgs(packageOptions, { explicitMode: true }),
   ], { env: { SOURCE_DATE_EPOCH: sourceDateEpoch } });
   normalizeGeneratedModelBundleManifest({ sourceDateEpoch });
   const installedBuildInfo = writeBuildInfoFile(flatpakVersionInfoPath, { workspaceRoot });
@@ -1815,7 +1832,6 @@ async function main() {
     if (!comparison.equivalent) throw new Error(comparison.errors.join(" "));
   }
   if (skipBundle) {
-    const sizeReportPath = process.env.FLATPAK_SIZE_REPORT_PATH ?? path.join(flatpakRoot, "generated", packageOptions.testPackage ? "TEST-size-report.json" : "size-report.json");
     const sizeReport = { ...checkoutSize, selectedProfiles };
     writeJson(sizeReportPath, sizeReport);
     printFlatpakSizeReport(sizeReport);
@@ -1845,7 +1861,6 @@ async function main() {
       evidence,
       reportWorkerLimit: true,
     });
-    const sizeReportPath = process.env.FLATPAK_SIZE_REPORT_PATH ?? path.join(flatpakRoot, "generated", "size-report.json");
     const sizeReport = flatpakBundleSizeReportFromCheckout({
       checkoutSize,
       bundle: bundlePlan[0].path,
@@ -1910,7 +1925,7 @@ function isLockedPackagingInvocation() {
 if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
   if (process.argv.slice(2).includes("--preflight")) {
     try {
-      const options = parsePackageOptions(packageArguments(), { platform: "linux" });
+      const options = cliOptions;
       process.stdout.write(`${JSON.stringify(packagingPreflight(options).preflight, null, 2)}\n`);
     } catch (error) {
       process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
@@ -1921,6 +1936,8 @@ if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
       recordFailedPackagingRun(error);
       process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
       process.exitCode = 1;
+    }).finally(() => {
+      process.stdout.write(`BUILD time: ${formatBuildDuration(performance.now() - buildStartedAt)}\n`);
     });
   } else {
     try {

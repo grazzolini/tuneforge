@@ -7,6 +7,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { selectAndroidTools } from "./validate-android-release-jni.mjs";
 import { validateSoxrOutput } from "./build-soxr.mjs";
+import { formatBuildDuration } from "./package-options.mjs";
 import { PRODUCTION_PACKAGE, TEST_PACKAGE } from "./package-profile.mjs";
 import { resolveSdk as discoverSdk, resolveNdk as discoverNdk, validatedNdkRevision, compareVersions, androidToolchainProfiles, selectSdkPlatform as discoverSdkPlatform } from "./android-toolchain.mjs";
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
@@ -75,8 +76,8 @@ export function parseMode(argv) {
   if (argv.length === 0) return "local-release";
   if (argv.length === 1 && argv[0] === "--prepare") return "prepare";
   if (argv.length === 1 && argv[0] === "--debug") return "debug";
-  if (argv.length === 1 && argv[0] === "--publishable") return "publishable";
-  throw new Error("Usage: package-android.mjs [--prepare|--debug|--publishable]");
+  if (argv.length === 1 && ["--publishable", "--release"].includes(argv[0])) return "publishable";
+  throw new Error("Usage: package-android.mjs [--prepare|--debug|--release|--publishable]");
 }
 export function parseAndroidOptions(argv) {
   let modelBundle = false;
@@ -94,7 +95,7 @@ export function parseAndroidOptions(argv) {
     } else if (value === "--profile") {
       if (profile) throw new Error("--profile may be supplied only once.");
       profile = true;
-    } else if (value === "--test-identity") {
+    } else if (value === "--test-identity" || value === "--test") {
       if (testIdentity) throw new Error("--test-identity may be supplied only once.");
       testIdentity = true;
     } else if (value === "--package-name") {
@@ -875,6 +876,7 @@ export function main(argv = process.argv.slice(2)) {
   const cleanEnv = sanitizedEnv(sourceEnv);
   console.log(`[android package] start (${mode})`);
   const lock = acquirePackagingLock();
+  const startedAt = performance.now();
   let isolatedHome;
   try {
     const config = publishable ? readPublishableConfig(sourceEnv) : undefined;
@@ -1018,6 +1020,7 @@ export function main(argv = process.argv.slice(2)) {
       if (isolatedHome) fs.rmSync(isolatedHome, { recursive: true, force: true });
     } finally {
       lock.release();
+      if (mode !== "prepare") process.stdout.write(`BUILD time: ${formatBuildDuration(performance.now() - startedAt)}\n`);
     }
   }
 }

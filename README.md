@@ -257,12 +257,18 @@ CI fails if `packages/shared-types/src/generated/openapi.ts` drifts from the bac
 
 ## Packaging
 
-Build local unsigned desktop packages with:
+Build isolated local Test packages with:
 
 ```sh
 pnpm package:mac
 pnpm package:linux:flatpak
 ```
+
+Bare package commands select the existing Test profile; `--test` is equivalent. Add `--release`
+for production identity and data paths (`pnpm package:mac --release`,
+`pnpm package:linux --release`, or `pnpm package:android --release`). Both direct flags and
+`-- --release` are supported. Android release packaging requires the manual signing steps.
+Each actual build prints one `BUILD time` on success or failure; Linux excludes lock wait.
 
 Before publishing a release package, follow the [Release Package Gate](./docs/PACKAGING.md#release-package-gate)
 and record package build plus packaged launch-smoke evidence from the built artifact.
@@ -286,18 +292,21 @@ weights, plus the beat-this `small0` checkpoint when beat-this dependencies are 
 [Third-party notices and release package policy](./THIRD_PARTY_NOTICES.md) for the dependency and
 model-weight policy.
 
-Linux Flatpak packages use host XDG data and model cache directories by default, so
-packaged runs share `~/.local/share/tuneforge`, `~/.cache/torch`, and `~/.cache/whisper`
-with development runs. Pass `--sandbox-data` to keep Flatpak app data private under
-`/var/data/tuneforge`.
+Production Linux Flatpak packages (`--release`) use host XDG data and model cache directories, so
+production packaged runs share `~/.local/share/tuneforge`, `~/.cache/torch`, and `~/.cache/whisper`
+with `pnpm dev --production-data`. Default Test packages isolate data, model caches, and sync
+under `~/.local/share/tuneforge-test`. Pass `--sandbox-data` to keep Flatpak app data private under
+`/var/data/tuneforge-test` (Test) or `/var/data/tuneforge` (production).
 
 For faster Flatpak testing, skip the single-file bundle step:
 
 ```sh
-pnpm package:linux:flatpak -- --no-bundle
+pnpm package:linux:no-bundle
 ```
 
-macOS packaging writes a `.app` bundle and DMG. Flatpak packaging writes a CPU `.flatpak` plus
+macOS packaging writes a `.app` bundle and DMG. Use `package:mac:app` for the app alone or
+`package:mac:dmg` for an existing matching app; both default to Test and accept `--release`.
+Flatpak packaging writes a CPU `.flatpak` plus
 matching NVIDIA and legacy NVIDIA Core/Runtime bundles or, with `--no-bundle`, a local repository
 install flow. Pass `--cpu`, `--nvidia`, or `--legacy-nvidia` to limit a Flatpak build; accelerator
 selections always include the CPU app, while no profile flags build all profiles. Source distribution is the source

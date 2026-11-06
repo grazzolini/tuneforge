@@ -2168,6 +2168,7 @@ export type TuneForgeClient = {
     tabImportId: string,
     body: TabImportApplyRequest,
   ) => Promise<TabImportApplyResponse>;
+  createSections: (projectId: string) => Promise<components["schemas"]["JobResponse"]>;
   listSections: (projectId: string) => Promise<SongSectionsResponse>;
   createPreview: (projectId: string, body: PreviewRequest) => Promise<components["schemas"]["JobResponse"]>;
   createStems: (projectId: string, body: StemRequest) => Promise<components["schemas"]["JobResponse"]>;
@@ -2431,6 +2432,8 @@ function createHttpTuneForgeClient(): TuneForgeClient {
           body,
         }),
       ),
+    createSections: (projectId: string) =>
+      unwrap(client.POST("/api/v1/projects/{project_id}/sections/detect", { params: { path: { project_id: projectId } } })),
     listSections: (projectId: string) =>
       unwrap(client.GET("/api/v1/projects/{project_id}/sections", { params: { path: { project_id: projectId } } })),
     createPreview: (projectId: string, body: PreviewRequest) =>
@@ -2611,6 +2614,13 @@ function createMobileTuneForgeClient(platform: "android" | "ios"): TuneForgeClie
         details: {},
       });
     },
+    createSections: async () => {
+      throw new ApiError({
+        code: "UNSUPPORTED_RUNTIME",
+        message: "Section detection is available on desktop only.",
+        details: {},
+      });
+    },
     listSections: async () => ({ sections: [] }),
     createPreview: (projectId: string, body: PreviewRequest) =>
       invokeMobile("mobile_submit_preview", { projectId, payload: body }),
@@ -2757,6 +2767,7 @@ export function withJobLifecycle(client: TuneForgeClient, runtime: () => object 
   return {
     ...client,
     analyzeProject: (...args) => submit(args[0], () => client.analyzeProject(...args)),
+    createSections: (...args) => submit(args[0], () => client.createSections(...args)),
     createChords: (...args) => submit(args[0], () => client.createChords(...args)),
     createLyrics: (...args) => submit(args[0], () => client.createLyrics(...args)),
     createPreview: (...args) => submit(args[0], () => client.createPreview(...args)),
@@ -2807,6 +2818,7 @@ export const api: TuneForgeClient = withJobLifecycle({
   getTabImport: (projectId: string, tabImportId: string) => activeClient.getTabImport(projectId, tabImportId),
   acceptTabImport: (projectId: string, tabImportId: string, body: TabImportApplyRequest) =>
     activeClient.acceptTabImport(projectId, tabImportId, body),
+  createSections: (projectId: string) => activeClient.createSections(projectId),
   listSections: (projectId: string) => activeClient.listSections(projectId),
   createPreview: (projectId: string, body: PreviewRequest) => activeClient.createPreview(projectId, body),
   createStems: (projectId: string, body: StemRequest) => activeClient.createStems(projectId, body),

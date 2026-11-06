@@ -38,6 +38,7 @@ class Settings:
     ffprobe_path: str
     stem_model: str
     stem_device: str
+    section_device: str
     demucs_model_repo: Path | None
     model_bundle_dir: Path | None
     lyrics_model: str
@@ -80,6 +81,7 @@ def get_settings() -> Settings:
         ffprobe_path=os.environ.get("TUNEFORGE_FFPROBE_PATH", "ffprobe"),
         stem_model=os.environ.get("TUNEFORGE_STEM_MODEL", "htdemucs_6s"),
         stem_device=os.environ.get("TUNEFORGE_STEM_DEVICE", "auto"),
+        section_device=os.environ.get("TUNEFORGE_SECTION_DEVICE", "auto").strip().lower(),
         demucs_model_repo=(
             Path(os.environ["TUNEFORGE_DEMUCS_MODEL_REPO"]).expanduser().resolve()
             if os.environ.get("TUNEFORGE_DEMUCS_MODEL_REPO")

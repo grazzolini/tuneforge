@@ -5,6 +5,16 @@ download, installation, verification, signature, and publication instructions.
 
 ## [Unreleased]
 
+### Added
+
+- Store local named section candidates after six-source desktop imports, preserving model-only
+  and beat/chord/lyric-refined ordered time/label maps separately from accepted song sections.
+  Detect sections from Studio Processing after a replacement warning, or across eligible desktop
+  projects from Activity, with grouped skip reasons.
+  Select CUDA/MPS automatically when available, retain an explicit CPU override, and preserve
+  model start/end labels during refinement. Retry failed CUDA/MPS section execution once on CPU
+  in a fresh worker, preserving existing candidates if the retry fails or is cancelled.
+
 ### Changed
 
 - Default local packages to the isolated Test profile; require `--release` for production,

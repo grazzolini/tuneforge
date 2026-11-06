@@ -6,6 +6,8 @@ readme = "README.md"
 requires-python = ">=3.14,<3.15"
 dependencies = [
   "tuneforge-music-core==0.1.0",
+  "all-in-one-infer @ https://github.com/openmirlab/all-in-one-infer/archive/da84f9606c10f1b8b605cce637426afeeafef227.tar.gz",
+  "madmom-infer @ https://github.com/openmirlab/madmom-infer/archive/a9ed04ec942dd6ec5309df7ce7f3783d1bb42575.tar.gz",
   "alembic>=1.19.1,<2.0.0",
   "audioop-lts>=0.2.2; python_version >= '3.13'",
   "cryptography>=50.0.1,<51.0.0",

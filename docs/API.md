@@ -634,6 +634,8 @@ Staged import does not enqueue analysis, chord, lyrics, stem, or other generatio
 `POST /api/v1/projects/import`
 
 Creates a project from a source path and queues initial analysis, chord, lyrics, and source stem jobs.
+Desktop imports selecting `htdemucs_6s` append named section detection after lyrics. Two-source imports skip
+section detection. Generated candidates are stored separately from accepted song sections.
 
 Request fields:
 
@@ -834,6 +836,30 @@ Response: `TabImportApplyResponse`, including the updated tab import, accepted/i
 updated lyrics, chords, sections, or project metadata.
 
 ## Sections
+
+### Detect named section candidates
+
+`POST /api/v1/projects/{project_id}/sections/detect`
+
+Queues a local `sections` job. No request body. Requires the project's six-source stem set.
+The CPU/accelerator profile accepts at most 926 seconds, with aligned 44.1 kHz mono/stereo stems.
+Input bounds and temporary-disk preflight remain; failed final attempts are reported through the job.
+
+Response: the existing `JobResponse` shape. Poll the normal job endpoint for completion or failure.
+The processing stage is labeled `Detecting named section candidates.`
+
+The job stores one local row with `project_id`, `model_revision`, nullable `source_artifact_id`,
+`raw_sections_json`, `refined_sections_json`, and a working `sections_json` list. On success it seeds
+the working list from refined results, sets `source_kind` to `generated`, clears `has_user_edits`,
+preserves `created_at`, and advances the non-null UTC `updated_at`, including identical reruns.
+These fields prepare future editing, tab-import reconciliation, and LWW sync; those flows remain deferred.
+Each ordered array contains only `{start_seconds, end_seconds, label}`
+objects. Frame scores are used transiently with the current saved timing, chord, lyric, and vocal
+cues for refinement, then discarded. Each request runs inference again;
+previous maps remain intact if inference fails, is cancelled, or its inputs/cues change before commit.
+Repeated adjacent role names remain separate occurrences; uncertain labels may abstain.
+Detection does not generate, replace, or synchronize accepted `SongSection` records. The section
+list endpoint below continues to return accepted project sections.
 
 ### List project sections
 
@@ -1054,7 +1080,7 @@ Queues the same project activity job for eligible projects in the local library.
 
 Request fields:
 
-- `job_type` - `analyze`, `chords`, `lyrics`, `stems`, or desktop-only `convert_audio`.
+- `job_type` - `analyze`, `chords`, `lyrics`, `stems`, or desktop-only `sections` / `convert_audio`.
 - `output_format` - captured durable stem/conversion format; defaults to `wav` and must remain `wav` for other jobs.
 - `chord_backend`
 - `chord_backend_fallback_from`
@@ -1062,6 +1088,20 @@ Request fields:
 - `beat_backend`
 
 Response: `BulkJobsResponse`, with `created_jobs`, `total_projects`, and `skipped`.
+
+Bulk `sections` queues a fresh detection for each eligible project using its source audio and
+complete matching `htdemucs_6s` stem generation. Active section jobs and sync-locked projects
+are skipped. Missing or mismatched stems report `section_stems_required`; ongoing stem generation
+reports `section_stems_busy`; missing or non-owned input files report `section_inputs_unavailable`.
+Deleted projects are excluded. Mobile runtimes reject the action with `SECTIONS_UNAVAILABLE`.
+Detection uses available saved analysis/chords from any backend and replaces local candidates
+only after success, preserving accepted song sections and model start/end labels. Section inference
+uses `TUNEFORGE_SECTION_DEVICE` (`auto`, `cpu`, `mps`, `cuda`); auto prefers compatible CUDA,
+then MPS, then CPU. Existing job runtime fields report the actual inference device after placement.
+Explicit unavailable accelerators fail clearly. Failed resolved CUDA/MPS execution retries once
+in a fresh CPU worker, with fallback stage/detail and the actual CPU device after placement. CPU-first
+failures, failed CPU retries, cancellation, and input/configuration failures do not enqueue more attempts.
+Section inference uses standard framework allocator behavior without section-specific memory caps or an RSS watchdog.
 
 ### Get job
 

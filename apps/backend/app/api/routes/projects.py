@@ -5,6 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.pagination import PaginationQuery, pagination_metadata
+from app.config import get_settings
 from app.dependencies import get_db, get_job_runner
 from app.engines.audio_encoding import require_encoding_available
 from app.models import AnalysisResult, Artifact, ChordTimeline, LyricsTranscript
@@ -55,7 +56,8 @@ from app.services.projects import (
     list_projects,
     update_project,
 )
-from app.services.stem_models import resolve_stem_model
+from app.services.section_detection import section_inputs
+from app.services.stem_models import DEFAULT_STEM_MODEL_ID, resolve_stem_model
 from app.services.stems import resolve_stem_source_artifact
 from app.services.tabs import (
     apply_tab_suggestions,
@@ -151,12 +153,19 @@ def create_project(
         job_type="lyrics",
         payload=LyricsGenerateRequest(force=False).model_dump(),
     )
+    sections_job = runner.create_job(
+        session, project_id=project.id, job_type="sections", payload={},
+    ) if selected_stem_model.id == DEFAULT_STEM_MODEL_ID and get_settings().runtime_platform not in {
+        "android", "ios", "mobile"
+    } else None
     session.commit()
     session.refresh(project)
     runner.enqueue(analyze_job.id)
     runner.enqueue(stem_job.id)
     runner.enqueue(chords_job.id)
     runner.enqueue(lyrics_job.id)
+    if sections_job is not None:
+        runner.enqueue(sections_job.id)
     return ProjectResponse(project=ProjectSchema.model_validate(project))
 
 
@@ -510,6 +519,19 @@ def project_export(
         job_type="export",
         payload=job_payload,
     )
+    session.commit()
+    session.refresh(job)
+    runner.enqueue(job.id)
+    return JobResponse(job=JobSchema.model_validate(job))
+
+
+@router.post("/{project_id}/sections/detect", response_model=JobResponse)
+def project_detect_sections(
+    project_id: str, session: Session = Depends(get_db), runner=Depends(get_job_runner),
+) -> JobResponse:
+    project = get_mutable_project(session, project_id)
+    section_inputs(session, project, hash_files=False)
+    job = runner.create_job(session, project_id=project_id, job_type="sections", payload={})
     session.commit()
     session.refresh(job)
     runner.enqueue(job.id)

@@ -214,7 +214,7 @@ fi
 
 if [[ "${skip_model_prewarm}" -eq 0 ]]; then
   cd "${backend_dir}"
-  prewarm_args=()
+  prewarm_args=(--include-sections)
   if [[ "${skip_demucs_models}" -eq 1 ]]; then
     prewarm_args+=(--skip-demucs)
   fi

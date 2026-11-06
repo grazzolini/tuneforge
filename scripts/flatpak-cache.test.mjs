@@ -528,7 +528,8 @@ test("source snapshots use byte ordering and retain the exact Flatpak input mapp
       ...musicCoreSourceSnapshotInputs,
     ]);
     assert.deepEqual(flatpakSourceSnapshotInputs.backend.map((input) => typeof input === "string" ? input : `${input.source}:${input.destination}`), [
-      "README.md", "LICENSE", "THIRD_PARTY_NOTICES.md", "LICENSES/crema-0.2.0-BSD-2-Clause.txt", "docs/PACKAGING.md",
+      "README.md", "LICENSE", "THIRD_PARTY_NOTICES.md", "LICENSES/crema-0.2.0-BSD-2-Clause.txt",
+    "LICENSES/all-in-one-Transformers-Apache-2.0.txt", "LICENSES/antlr4-BSD-3-Clause.txt", "docs/PACKAGING.md",
       "apps/backend/app", "apps/backend/alembic", "apps/backend/alembic.ini", "apps/backend/pyproject.toml",
       "packaging/demucs/models.json:apps/backend/demucs-models.json", "packaging/flatpak/ffmpeg-wrapper.sh:ffmpeg",
       "packaging/flatpak/ffprobe-wrapper.sh:ffprobe", "packaging/flatpak/com.tuneforge.desktop.desktop:com.tuneforge.desktop.desktop",
@@ -1675,4 +1676,17 @@ test("public Flatpak preflight selects all identity/profile combinations without
   const explicit = parsePackageOptions(["--test"], { platform: "linux" });
   assert.deepEqual(cacheNamespace(implicit), cacheNamespace(explicit));
   assert.match(packageScript, /packageOptionsToGeneratorArgs\(packageOptions, \{ explicitMode: true \}\)/);
+});
+
+test("section adapted-code and configuration licenses reach desktop runtime resources", () => {
+  const root = new URL("../", import.meta.url);
+  const manifest = readFileSync(new URL("packaging/flatpak/com.tuneforge.desktop.yml", root), "utf8");
+  const bundle = readFileSync(new URL("scripts/prepare-bundle.mjs", root), "utf8");
+  for (const name of ["all-in-one-Transformers-Apache-2.0.txt", "antlr4-BSD-3-Clause.txt"]) {
+    assert.ok(readFileSync(new URL(`LICENSES/${name}`, root), "utf8").includes("Redistribution") || name.includes("Apache"));
+    assert.ok(flatpakSourceSnapshotInputs.backend.includes(`LICENSES/${name}`));
+    assert.ok(manifest.includes(`install -Dm644 LICENSES/${name} /app/share/doc/tuneforge/LICENSES/${name}`));
+    assert.ok(bundle.includes(`"${name}"`));
+  }
+  assert.ok(bundle.includes('copyInto(path.join(workspaceRoot, "LICENSES", name), path.join(stagedBackendRoot, "licenses", name))'));
 });

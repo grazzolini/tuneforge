@@ -141,6 +141,64 @@ uv run --python 3.14 python -m app.cli.prewarm_models --skip-demucs --skip-whisp
 
 The preload is stored at `$TORCH_HOME/hub/checkpoints/beat_this-small0.ckpt` when `TORCH_HOME` is set, `$XDG_CACHE_HOME/torch/hub/checkpoints/beat_this-small0.ckpt` when `XDG_CACHE_HOME` is set, or `~/.cache/torch/hub/checkpoints/beat_this-small0.ckpt` by default. When that file already matches the expected size and SHA-256, setup only verifies it and skips beat-this import/download.
 
+### Named section candidates
+
+The desktop backend uses the eight-fold All-In-One model on existing six-source stems to store
+local section candidates. Imports using `htdemucs_6s` queue this job after lyrics; two-source imports
+skip it. `POST /api/v1/projects/{project_id}/sections/detect` also queues detection for an eligible
+project. Studio Processing offers Detect Sections with a replacement warning; Activity also offers
+bulk detection for eligible projects with complete six-source stems.
+Model-only and refined candidates remain separate from accepted `SongSection` records.
+Refinement uses available saved beats/bars, chords, timed lyrics, and vocal activity; missing cues
+are omitted.
+Each project has one local result row with `model_revision`, nullable `source_artifact_id` provenance,
+`raw_sections_json`, `refined_sections_json`, and a working `sections_json` list. Successful detection
+copies refined candidates into the working list, resets `source_kind` to `generated` and
+`has_user_edits` to false, preserves `created_at`, and advances `updated_at` even for identical results.
+The non-null UTC timestamps and edit fields prepare this row for future editing and LWW sync;
+section editing, tab-import reconciliation, and synchronization are not implemented yet.
+All three JSON arrays contain only ordered
+`start_seconds`, `end_seconds`, and `label` objects, including consecutive occurrences with the same
+label. Frame scores and vocal features are used transiently for refinement, then discarded.
+Refinement preserves model `start`/`end` labels; verse/chorus ambiguity rules still apply.
+`TUNEFORGE_SECTION_DEVICE=auto` uses the shared compatible CUDA → MPS → CPU selection.
+Set `cpu`, `mps`, or `cuda` to request a device explicitly. An unavailable/incompatible explicit
+accelerator fails clearly. If resolved CUDA/MPS execution fails, the worker exits and one fresh
+CPU attempt runs. Jobs show the fallback; CPU-first failures and failed CPU retries fail the job.
+Cancellation, input validation, model loading, and CPU postprocessing failures do not trigger retries.
+Spectrogram preprocessing and section decoding/refinement remain on CPU; all eight models and
+inference inputs move to the selected device in FP32. Jobs report the observed inference device
+only after placement, including the CPU retry. MPS operator fallback stays disabled inside each
+isolated worker. PyTorch retains its standard allocator behavior; section detection does not impose
+a separate memory-fraction cap or RSS watchdog.
+Existing stored maps and their revision stay unchanged until a successful explicit rerun.
+Every explicit rerun performs fresh inference with the current cues before atomically replacing
+both maps. Failure, cancellation, or concurrent input/cue changes preserve the previous result.
+The CPU/accelerator profile accepts tracks up to 926 seconds and requires six aligned 44.1 kHz
+mono or stereo stems. The source/stems must be project-owned regular files; decoded stem clocks must match, with only
+one recognized trailing AAC/MP3 frame allowed for source alignment. Inputs are bounded to 512 MiB
+per file; source mono/stereo audio may use sample rates up to 192 kHz. Temporary-disk preflight and
+input bounds remain. Out-of-profile inputs or a failed final attempt fail the job instead of creating candidates. Inspect the job error
+before retrying, and keep accepted sections intact.
+
+`pnpm setup:dev` verifies/preloads all eight pinned author checkpoints unless
+`--skip-model-prewarm` is supplied. To prepare just this cache from `apps/backend`:
+
+```sh
+uv run --python 3.14 python -m app.cli.prewarm_models --skip-demucs --skip-whisper --include-sections
+```
+
+The files are verified against their immutable author revision, byte sizes, and SHA-256 hashes.
+They live below `tuneforge-all-in-one/379e5fd010b3fdd0ee8381ff8cbcfa51d70b5c19/` within
+`$TORCH_HOME/hub/checkpoints`, `$XDG_CACHE_HOME/torch/hub/checkpoints`, or the default model cache.
+First use downloads missing assets; subsequent use is local. Setup prepares the cache selected by
+its environment. A Test app with separate `TORCH_HOME`/`XDG_CACHE_HOME` needs its own prewarm under
+that same identity. This cache is not added to `--model-bundle`.
+
+The source, author MIT model-card declaration, downstream license discrepancy, and dependency
+notices are recorded in [THIRD_PARTY_NOTICES.md](../../THIRD_PARTY_NOTICES.md). These candidates
+remain unvalidated suggestions; model probabilities and cue scores are not calibrated confidence.
+
 ### Linux legacy NVIDIA profile
 
 If you are on Linux `x86_64` and the default PyTorch build does not support your NVIDIA GPU architecture, start from the standard sync above and then locally override `torch` / `torchaudio` with the older CUDA 12.6 wheels:
@@ -225,6 +283,7 @@ their own root and ignore inherited production data/cache/sync overrides.
 | `TUNEFORGE_FFMPEG_PATH` | `ffmpeg` | Override the `ffmpeg` binary location. |
 | `TUNEFORGE_FFPROBE_PATH` | `ffprobe` | Override the `ffprobe` binary location. |
 | `TUNEFORGE_STEM_MODEL` | `htdemucs_6s` | Default Demucs model used for stem separation. |
+| `TUNEFORGE_SECTION_DEVICE` | `auto` | `auto`, `cpu`, `mps`, or `cuda`. Shared auto selection prefers compatible CUDA, then MPS, then CPU; explicit unavailable accelerators fail. |
 | `TUNEFORGE_STEM_DEVICE` | `auto` | One of `auto`, `cpu`, `mps`, `cuda`. `auto` prefers compatible CUDA, then MPS, then CPU. |
 | `TUNEFORGE_DEMUCS_MODEL_REPO` | unset | Optional pinned Demucs repo using `<model-id>/<revision>/<yaml-and-safetensors>`. It takes precedence over a package bundle and the normal Hugging Face cache. Legacy `.th` repos are rejected. |
 | `TUNEFORGE_MODEL_BUNDLE_DIR` | unset | Optional packaged model bundle directory. Demucs assets are validated at startup and loaded directly; other model entries seed normal caches. |

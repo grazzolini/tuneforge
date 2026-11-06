@@ -554,6 +554,14 @@ export function useProjectViewModel() {
     },
   });
 
+  const sectionActionPending = useRef(false);
+  const sectionsMutation = useMutation({
+    mutationFn: async () => {
+      assertProjectEditable();
+      return api.createSections(projectId);
+    },
+  });
+
   const chordMutation = useMutation({
     mutationFn: async (overwriteUserEdits: boolean) => {
       assertProjectEditable();
@@ -817,6 +825,7 @@ export function useProjectViewModel() {
   useJobLifecycleScope(projectId, undefined, Boolean(projectId) && !isIOSRuntime);
 
   const analyzeJob = projectJobs.find((job) => job.type === "analyze");
+  const sectionsJob = projectJobs.find((job) => job.type === "sections");
   const chordJob = projectJobs.find((job) => job.type === "chords");
   const lyricsJob = projectJobs.find((job) => job.type === "lyrics");
   const stemJobs = useMemo(
@@ -1018,6 +1027,7 @@ export function useProjectViewModel() {
   const isAnalysisRunning = Boolean(
     analyzeJob && ["pending", "running"].includes(analyzeJob.status),
   );
+  const isSectionsRunning = Boolean(sectionsJob && ["pending", "running"].includes(sectionsJob.status));
   const isChordRunning = Boolean(
     chordJob && ["pending", "running"].includes(chordJob.status),
   );
@@ -1084,6 +1094,18 @@ export function useProjectViewModel() {
   const canGenerateStems =
     !projectEditLocked &&
     (!isMobileRuntime || mobileCapabilities?.stemSeparationAvailable === true);
+  const hasSectionStems = Boolean(sourceArtifact) && [
+    "vocal_stem", "drums_stem", "bass_stem", "guitar_stem", "piano_stem", "other_stem",
+  ].every((type) => (artifactsQuery.data ?? []).filter((artifact) =>
+    artifact.type === type
+      && artifact.metadata?.stem_model === "htdemucs_6s"
+      && artifact.metadata?.source_artifact_id === sourceArtifact?.id,
+  ).length === 1);
+  const sourceStemsBusy = stemJobs.some((job) =>
+    ["pending", "running"].includes(job.status)
+      && (job.source_artifact_id == null || job.source_artifact_id === sourceArtifact?.id),
+  );
+  const canDetectSections = !projectEditLocked && !isMobileRuntime && hasSectionStems && !sourceStemsBusy;
   const mobileBuiltInChordsSelected = defaultChordBackend === "tuneforge-fast";
   const mobileCremaChordsSelected = defaultChordBackend === "crema-advanced";
   const mobileUnsupportedChordBackend = isMobileRuntime &&
@@ -1682,6 +1704,22 @@ export function useProjectViewModel() {
       [direction]: current[direction] + 1,
     }));
     seekBy(secondsDelta);
+  }
+
+  async function handleSectionsAction() {
+    if (!canDetectSections || sectionsMutation.isPending || isSectionsRunning || sectionActionPending.current) return;
+    sectionActionPending.current = true;
+    try {
+      const approved = await confirm(
+        "Detect sections? Successful detection replaces the current detected sections and discards their edits. Accepted song sections stay unchanged.",
+        { title: "Detect sections", kind: "warning", okLabel: "Detect Sections", cancelLabel: "Cancel" },
+      );
+      if (approved) await sectionsMutation.mutateAsync();
+    } catch {
+      // The mutation error is shown in Processing.
+    } finally {
+      sectionActionPending.current = false;
+    }
   }
 
   async function handleLyricsAction() {
@@ -2826,6 +2864,7 @@ export function useProjectViewModel() {
     canGenerateChords,
     canGenerateLyrics,
     canGenerateStems,
+    canDetectSections,
     canUseTempo,
     capoKey,
     capoOptionRefs,
@@ -2923,6 +2962,7 @@ export function useProjectViewModel() {
     handleTogglePlaybackLoop,
     handleSetPlaybackDisplayMode,
     handleStemAction,
+    handleSectionsAction,
     handleRefineDrumsAction,
     handleTogglePlaybackDisplayLane,
     handleToggleTabSuggestion,
@@ -2944,6 +2984,7 @@ export function useProjectViewModel() {
     inspectorOpen,
     isRenaming,
     isAnalysisRunning,
+    isSectionsRunning,
     isChordRunning,
     isEditingLyrics,
     isTabImportOpen,
@@ -3021,6 +3062,8 @@ export function useProjectViewModel() {
     seekAnimationRevision,
     seekTo,
     sectionsQuery,
+    sectionsJob,
+    sectionsMutation,
     selectedArtifactId,
     selectedTabSuggestionId,
     selectedArtifactTimestamp,

@@ -11,7 +11,7 @@ This file is the source of truth for dependency and model-weight distribution po
 - Bare package commands select the isolated local Test profile; production requires `--release`.
 - Default release package commands (`pnpm package:mac --release`, `pnpm package:linux:flatpak --release`) do not pass `--model-bundle`. They include Advanced Chords, Advanced Beat Analysis, and LV Chordia. LV Chordia's five dependency-owned checkpoints are included; external Demucs, Whisper, and beat-this weights are not.
 - Packaged macOS arm64 and Android arm64 include the LGPL FFmpeg/LAME distribution pinned by [`packaging/ffmpeg/sources.lock.json`](./packaging/ffmpeg/sources.lock.json). Android arm64 also dynamically links the owned libsoxr runtime pinned by [`packaging/soxr/sources.lock.json`](./packaging/soxr/sources.lock.json). Development/source runs keep host lookup and explicit overrides. Flatpak includes neither owned payload and uses runtime/extension wrappers for FFmpeg.
-- Demucs, Whisper, and beat-this weights are local cache assets by default. Setup/model-prewarm can prepare them ahead of time, and the app may download them on first use if they are missing. Fully offline use requires the relevant caches/assets to already exist.
+- Demucs, Whisper, beat-this, and All-In-One weights are local cache assets by default. Setup/model-prewarm can prepare them ahead of time, and the app may download them on first use if they are missing. Fully offline use requires the relevant caches/assets to already exist.
 - `--model-bundle` is an explicit local/dev packaging option, not part of default release packaging. It stages Demucs and Whisper weights and, when selected, the beat-this `small0` checkpoint; redistribution needs separate review before publishable artifacts use it.
 - Android Advanced Chords uses ONNX Runtime and installs the exact pinned Crema model/runtime-state pair on first use. The explicit local/dev `--model-bundle` option embeds the same pair for first-launch offline use. The Crema Python package, TensorFlow, and Keras are not included.
 - LV Chordia's five MIT checkpoints are bundled inside its pinned source dependency, total exactly 28,730,939 bytes, and are removed with `--no-lv-chordia`. They never use a downloader or user cache.
@@ -30,12 +30,6 @@ This file is the source of truth for dependency and model-weight distribution po
 - **License:** Apache-2.0
 - **Source:** <https://github.com/mozilla/sccache/tree/v0.17.0>
 - **Notes:** The pinned x86_64 musl release binary accelerates Rust compilation during Linux Flatpak builds. It is build-only and is removed from the final Tuneforge package.
-
-### Pillow
-
-- **License:** HPND
-- **Source:** <https://github.com/python-pillow/Pillow>
-- **Notes:** Development-only renderer for the repository language-history animation. It is not bundled into TuneForge runtime artifacts.
 
 ## Runtime Dependencies (bundled or required)
 
@@ -82,6 +76,73 @@ This file is the source of truth for dependency and model-weight distribution po
 - **Notes:** Used for source separation from the immutable source archive pinned in
   `apps/backend/pyproject.toml`. TuneForge loads its pinned YAML+safetensors models through a
   native strict loader and does not use the package's legacy pickle checkpoint loader.
+
+### All-In-One section detection
+
+- **Source license:** MIT, Copyright (c) 2023 Taejun Kim. The immutable
+  [all-in-one-infer v3.1.0 source](https://github.com/openmirlab/all-in-one-infer/tree/da84f9606c10f1b8b605cce637426afeeafef227)
+  supplies pure-PyTorch attention; NATTEN is not required. It reuses TuneForge's verified
+  six-source stems rather than invoking the upstream separator or downloader.
+- **Adapted code:** DiNAT layers derive from Hugging Face Transformers, Copyright 2022
+  SHI Labs and The HuggingFace Inc. team, under Apache-2.0. Preserve the attribution,
+  modification notice, and complete license in
+  [`LICENSES/all-in-one-Transformers-Apache-2.0.txt`](./LICENSES/all-in-one-Transformers-Apache-2.0.txt).
+- **Weights:** the original publisher's [immutable model card](https://huggingface.co/taejunkim/allinone/blob/379e5fd010b3fdd0ee8381ff8cbcfa51d70b5c19/README.md)
+  explicitly declares `license: mit`. The card contains this declaration rather than a full
+  copyright/license text. Eight original-author `harmonix-fold*.pth` files are fetched directly
+  from that revision and each verified at 1,400,571 bytes with its pinned SHA-256 before
+  `torch.load(weights_only=True)`, primitive configuration validation, and strict tensor loading.
+- **Discrepancy:** the downstream fork's
+  [checkpoint catalog](https://github.com/openmirlab/all-in-one-infer/blob/566f96c3f007c783ab5eb6db0123bf3335af8f31/src/allin1_infer/config/checkpoints.toml)
+  labels the same hashes CC BY-NC-SA-4.0, conflicting with the author's MIT declaration.
+  TuneForge uses direct original-author files and records this conflict; no third-party
+  rehosted weights or original madmom neural checkpoints are used. Checkpoints remain local
+  first-use/prewarm cache assets and are not added to release packages or `--model-bundle`.
+- **DSP/decoding:** pinned
+  [madmom-infer source](https://github.com/openmirlab/madmom-infer/tree/a9ed04ec942dd6ec5309df7ce7f3783d1bb42575)
+  is BSD-2-Clause. TuneForge uses its spectrogram frontend and All-In-One's functional
+  decoder. The package contains a checkpoint catalog but no model payloads; optional neural
+  downloads are unused.
+
+### All-In-One configuration and plotting dependencies
+
+- **Configuration:** Hydra Core 1.3.8 is MIT; OmegaConf 2.3.1 is BSD-3-Clause; ANTLR Python
+  runtime 4.9.3 is BSD-3-Clause. The ANTLR wheel omits the complete license text, so retain
+  [`LICENSES/antlr4-BSD-3-Clause.txt`](./LICENSES/antlr4-BSD-3-Clause.txt) alongside its source headers.
+- **Plotting import closure:** Matplotlib 3.11.2 retains the Matplotlib license;
+  contourpy 1.4.0, cycler 0.12.1, kiwisolver 1.5.1, and python-dateutil 4.0.0 are BSD-3-Clause;
+  fonttools 4.68.0 and pyparsing 3.3.3 are MIT. The upstream package imports plotting modules
+  even for headless analysis; TuneForge does not expose plotting or sonification here.
+- **Actual wheel assets:** the CPython 3.14 macOS arm64 and Linux x86_64 wheels retain
+  per-distribution license files. Matplotlib's bundled FreeType uses the permissive FreeType
+  License (FTL) alternative, not GPL; its HarfBuzz portions are MIT-style and Qhull is permissive.
+  This product uses the FreeType Project (<https://www.freetype.org/>). Retain wheel notices
+  for BaKoMa/Bitstream/DejaVu/STIX fonts, OFL font material, Apache-2.0 ColorBrewer data, and
+  CC0 style data. These are separate from model-checkpoint licensing. Fonttools' external
+  Apache/MIT/OFL notices also remain intact.
+- **Distribution:** macOS resource staging preserves dependency `.dist-info` notices plus the
+  two explicit licenses above under `backend/licenses/`. Flatpak preserves installed wheel
+  notices and installs those explicit licenses under `/app/share/doc/tuneforge/LICENSES/`.
+  Verify the resolved wheel payloads/notices again when their locked versions or platforms change.
+
+### Pillow
+
+- **License:** MIT-CMU
+- **Source:** <https://github.com/python-pillow/Pillow/tree/12.3.0>
+- **Notes:** The pinned 12.3.0 macOS arm64 and Linux x86_64 wheels declare MIT-CMU.
+  Required by the plotting import closure and also used by the development renderer.
+  The audited macOS arm64 and Linux x86_64 wheels retain codec/font notices for
+  FreeType FTL, HarfBuzz MIT-style, JPEG, OpenJPEG, WebP, AVIF, PNG/zlib, TIFF, LittleCMS,
+  XZ, and X11 components. The optional system FriBidi integration is not a bundled LGPL
+  payload. Preserve the complete wheel `licenses/LICENSE`, including its full FTL text.
+
+### tzdata
+
+- **License:** Apache-2.0
+- **Source:** <https://github.com/python/tzdata>
+- **Notes:** The resolved desktop Python shipping closure includes the `tzdata==2026.6` wheel
+  pinned in `apps/backend/uv.lock`. Retain its bundled license and copyright notices in macOS
+  arm64 and Linux x86_64 desktop packages.
 
 ### htdemucs_6s / htdemucs_ft model weights
 

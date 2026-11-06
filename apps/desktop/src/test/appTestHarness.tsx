@@ -85,6 +85,7 @@ const {
   mockTrustSyncPeer,
   mockRevokeSyncTrustedPeer,
   mockSyncTrustedPeerNow,
+  mockCreateSections,
   mockCreateChords,
   mockCreateLyrics,
   mockCreateTabImport,
@@ -2327,6 +2328,11 @@ const {
     };
     return clone(syncResult);
   });
+  const mockCreateSections = vi.fn(async (projectId: string) => {
+    const job = makeMockJob({ project_id: projectId, type: "sections", status: "pending", progress: 0 });
+    state.jobs.unshift(job);
+    return { job: clone(job) };
+  });
   const mockCreateChords = vi.fn(async (projectId: string, body?: Record<string, unknown>) => {
     state.chordsByProject[projectId] = makeChordTimeline(projectId);
     const job = makeMockJob({
@@ -2868,6 +2874,7 @@ const {
     mockTrustSyncPeer,
     mockRevokeSyncTrustedPeer,
     mockSyncTrustedPeerNow,
+    mockCreateSections,
     mockCreateChords,
     mockCreateLyrics,
     mockCreateTabImport,
@@ -2959,6 +2966,7 @@ export {
   mockTrustSyncPeer,
   mockRevokeSyncTrustedPeer,
   mockSyncTrustedPeerNow,
+  mockCreateSections,
   mockCreateChords,
   mockCreateLyrics,
   mockCreateTabImport,
@@ -3035,6 +3043,7 @@ vi.mock("../lib/api", async (importOriginal) => {
       trustSyncPeer: mockTrustSyncPeer,
       revokeSyncTrustedPeer: mockRevokeSyncTrustedPeer,
       syncTrustedPeerNow: mockSyncTrustedPeerNow,
+      createSections: mockCreateSections,
       createChords: mockCreateChords,
       createLyrics: mockCreateLyrics,
       createTabImport: mockCreateTabImport,
@@ -3472,6 +3481,7 @@ export function resetAppTestHarness() {
   mockTrustSyncPeer.mockClear();
   mockRevokeSyncTrustedPeer.mockClear();
   mockSyncTrustedPeerNow.mockClear();
+  mockCreateSections.mockClear();
   mockCreateChords.mockClear();
   mockCreateLyrics.mockClear();
   mockCreateTabImport.mockClear();

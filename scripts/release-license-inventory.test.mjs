@@ -1,12 +1,29 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import {
   buildReleaseLicenseInventory,
+  buildFlatpakProfileComponentInventory,
   collectToolStatuses,
   formatReleaseLicenseInventory,
   releaseInventoryCommands,
+  REVIEWED_FLATPAK_PYTHON_LICENSES,
 } from "./release-license-inventory.mjs";
 import { DEFAULT_LYRICS_MODEL } from "./model-bundle-metadata.mjs";
+import {
+  assertDefaultCpuTorchClosure,
+  flatpakPythonBuildRequirementNames,
+  flatpakTorchLockPaths,
+  mergeLegacyTorchPackageSets,
+  parsePylock,
+  parseUvLock,
+  resolveNamedPythonPackages,
+  resolvePythonRuntimePackages,
+  selectPythonArtifact,
+} from "./generate-flatpak-sources.mjs";
+import { backendSyncArgs, defaultPackageOptions } from "./package-options.mjs";
 
 test("release inventory commands cover JS, Python, and Rust without writing reports", () => {
   const checklist = buildReleaseLicenseInventory();
@@ -169,3 +186,66 @@ function withLyricsModelEnv(value, callback) {
     }
   }
 }
+
+test("section runtime inventory retains code and native plotting license distinctions", () => {
+  assert.equal(REVIEWED_FLATPAK_PYTHON_LICENSES["all-in-one-infer"], "MIT AND Apache-2.0");
+  assert.equal(REVIEWED_FLATPAK_PYTHON_LICENSES["madmom-infer"], "BSD-2-Clause");
+  assert.equal(REVIEWED_FLATPAK_PYTHON_LICENSES["antlr4-python3-runtime"], "BSD-3-Clause");
+  assert.match(REVIEWED_FLATPAK_PYTHON_LICENSES.matplotlib, /FTL/);
+  assert.match(REVIEWED_FLATPAK_PYTHON_LICENSES.matplotlib, /OFL-1.1/);
+  assert.match(REVIEWED_FLATPAK_PYTHON_LICENSES.matplotlib, /CC0-1.0/);
+  assert.doesNotMatch(REVIEWED_FLATPAK_PYTHON_LICENSES.matplotlib, /GPL/);
+  for (const name of ["contourpy", "cycler", "fonttools", "hydra-core", "kiwisolver", "omegaconf",
+    "pillow", "pyparsing", "python-dateutil"]) assert.ok(REVIEWED_FLATPAK_PYTHON_LICENSES[name], name);
+});
+
+test("the real Flatpak shipping lock passes strict license inventory", (context) => {
+  const lock = parseUvLock(readFileSync(new URL("../apps/backend/uv.lock", import.meta.url), "utf8"));
+  const syncArgs = backendSyncArgs(defaultPackageOptions());
+  const extras = syncArgs.flatMap((arg, index) => arg === "--extra" ? [syncArgs[index + 1]] : []);
+  const runtime = mergeLegacyTorchPackageSets(
+    resolvePythonRuntimePackages(lock, { extras }),
+    parsePylock(readFileSync(flatpakTorchLockPaths.cpu, "utf8")),
+  );
+  assertDefaultCpuTorchClosure(runtime);
+  const build = resolveNamedPythonPackages(lock, flatpakPythonBuildRequirementNames);
+  const packages = [...new Map([...runtime, ...build].map((pkg) =>
+    [`${pkg.name}@${pkg.version}`, pkg])).values()];
+  const artifacts = packages.map((pkg) => ({
+    name: pkg.name, version: pkg.version, ...selectPythonArtifact(pkg),
+  }));
+  const generatedRoot = mkdtempSync(path.join(tmpdir(), "tuneforge-real-license-inventory-"));
+  context.after(() => rmSync(generatedRoot, { recursive: true, force: true }));
+  const write = (name, value) => writeFileSync(path.join(generatedRoot, name), value);
+  write("python-requirements.txt", runtime.map((pkg) => `${pkg.name}==${pkg.version}`).join("\n"));
+  write("python-build-requirements.txt", build.map((pkg) => `${pkg.name}==${pkg.version}`).join("\n"));
+  write("python-size-report.json", JSON.stringify(artifacts));
+  write("python-sources.json", JSON.stringify(artifacts.map((artifact) => ({
+    url: artifact.url, sha256: artifact.sha256, "dest-filename": artifact.fileName,
+  }))));
+
+  const options = { generatedRoot, selectedProfiles: ["cpu"], strict: true };
+  const inventory = buildFlatpakProfileComponentInventory(options);
+  assert.deepEqual(inventory.errors, []);
+  assert.equal(inventory.profiles.length, 1);
+  const components = inventory.profiles[0].components;
+  assert.equal(components.length, packages.length);
+  assert.ok(components.every((component) => component.license));
+  for (const [name, version, license] of [
+    ["pillow", "12.3.0", "MIT-CMU"], ["tzdata", "2026.6", "Apache-2.0"],
+  ]) {
+    const component = components.find((entry) => entry.name === name);
+    assert.equal(component?.version, version);
+    assert.equal(component?.license, license);
+  }
+  const pillow = runtime.find((pkg) => pkg.name === "pillow");
+  for (const target of [/cp314-cp314-manylinux.*_x86_64/, /cp314-cp314-macosx_.*_arm64/]) {
+    assert.ok(pillow.wheels.some((wheel) => target.test(wheel.fileName)), String(target));
+  }
+  context.diagnostic(`${components.length} resolved shipping/build packages have reviewed licenses`);
+  const withoutTzdata = { ...REVIEWED_FLATPAK_PYTHON_LICENSES };
+  delete withoutTzdata.tzdata;
+  assert.throws(() => buildFlatpakProfileComponentInventory({
+    ...options, licenseMetadata: withoutTzdata,
+  }), /tzdata 2026\.6 lacks reviewed license metadata/);
+});

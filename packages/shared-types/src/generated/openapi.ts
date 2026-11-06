@@ -451,6 +451,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/sections/detect": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Project Detect Sections */
+        post: operations["project_detect_sections_api_v1_projects__project_id__sections_detect_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/jobs": {
         parameters: {
             query?: never;
@@ -1010,7 +1027,7 @@ export interface components {
              * @description Project job type to enqueue for every project.
              * @enum {string}
              */
-            job_type: "analyze" | "chords" | "lyrics" | "stems" | "convert_audio";
+            job_type: "analyze" | "chords" | "lyrics" | "stems" | "convert_audio" | "sections";
             /**
              * Output Format
              * @default wav
@@ -1040,7 +1057,7 @@ export interface components {
              * Reason
              * @enum {string}
              */
-            reason: "active_job" | "locked" | "creation_failed" | "no_existing_stems" | "already_target_format";
+            reason: "active_job" | "locked" | "creation_failed" | "no_existing_stems" | "already_target_format" | "section_stems_required" | "section_stems_busy" | "section_inputs_unavailable";
         };
         /** BulkJobsResponse */
         BulkJobsResponse: {
@@ -4046,6 +4063,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    project_detect_sections_api_v1_projects__project_id__sections_detect_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

@@ -34,6 +34,11 @@ environment with default desktop Advanced Chords and Advanced Beat Analysis depe
 regenerates shared API contracts, and verifies/preloads the default Demucs, Whisper, crema, and
 beat-this `small0` model caches.
 
+Setup reuses verified pinned music-core source/tool archives from linked Git worktrees and a
+user cache: `$XDG_CACHE_HOME/tuneforge-dev/music-core`, or `~/Library/Caches/tuneforge-dev/music-core`
+on macOS and `~/.cache/tuneforge-dev/music-core` on Linux. Each checkout still builds and verifies
+its own outputs; unavailable caches fall back to the existing producer.
+
 Advanced Chords and Advanced Beat Analysis are default desktop/dev engines. Use opt-outs when you
 need a built-in-only or unsupported-platform dependency set:
 

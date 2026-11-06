@@ -356,7 +356,7 @@ Use the root commands to build Android APKs without opening Android Studio:
 pnpm package:android:prepare
 pnpm package:android:debug
 pnpm package:android
-pnpm package:android:release
+pnpm package:android --release
 ```
 
 Each build command validates the JDK, Android SDK, selected NDK, Rust target, and Tauri tools;
@@ -367,7 +367,7 @@ it stops before Gradle, APK creation, and signing.
 Preparation rejects package identity options and stores no identity choice. Explicit native-runtime
 overrides are validated but never rebuilt.
 
-`pnpm package:android` produces an optimized local release-profile APK, debug-key signed.
+Bare `pnpm package:android` (or explicit `--test`) produces an optimized local release-profile APK, debug-key signed.
 `pnpm package:android:debug` produces the corresponding debug APK. These local outputs remain under
 the generated Android project:
 
@@ -383,8 +383,12 @@ selected ID applies only to that build and generated Gradle configuration is res
 failure. Local APKs reuse `~/.android/tuneforge-test.keystore`; packaging creates it only when absent
 and rejects an invalid existing file without replacing it.
 
-`pnpm package:android:release` builds the direct GitHub Release APK with TuneForge's stable signing
-identity. It requires the five environment
+`pnpm package:android --release` (also `-- --release`, `package:android:release`, or
+`--publishable`) is a manual signing step and builds the direct GitHub Release APK with TuneForge's stable signing
+identity. The manual-only release protection applies to every spelling. Release rejects
+Test identity, custom IDs, profiling, debug, or preparation selectors before mutations.
+Each build prints one `BUILD time` on success or failure; preparation-only runs omit it.
+It requires the five environment
 variables documented in [Packaging](PACKAGING.md#android), verifies the PKCS12 file, private-key alias,
 passwords, expected certificate fingerprint, signer count, and manifest version, then atomically
 writes `apps/desktop/src-tauri/target/release/bundle/apk/TuneForge_<version>_android_aarch64_publishable.apk`.

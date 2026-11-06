@@ -145,7 +145,7 @@ an accelerator installs only as a complete matching Core/Runtime pair. Flatpak F
 available through its runtime/extension paths; Flatpak never searches host `PATH` directly.
 
 All seven payloads are mandatory. Manual steps build the five Flatpaks on Linux, run
-`pnpm package:android:release` with the externally managed release key, create the eight detached
+`pnpm package:android --release` (also `package:android:release`) with the externally managed release key, create the eight detached
 signatures, export `release-key.asc`, and publish the verified draft. Automation may build the
 unsigned/not-notarized macOS DMG and verify supplied public artifacts. It must never run the Android
 release build, Linux package build, packaged-app launch, or artifact-signing commands. The user owns
@@ -154,9 +154,9 @@ explicit authority; final publication remains manual-only. Never move or delete 
 roll forward with a new version. Operational artifact, installation, checksum, signature, and
 upload instructions belong in the GitHub Release notes.
 
-Run `pnpm package:mac` only on supported macOS release hosts. Build the five Flatpaks from a clean
+Run `pnpm package:mac --release` only on supported macOS release hosts. Build the five Flatpaks from a clean
 x86_64 tagged checkout with no `TUNEFORGE_GIT_REF`, `--model-bundle`, or profile selectors by using
-`pnpm package:linux:flatpak`. The Linux handoff must include sanitized OS and tool versions, command,
+`pnpm package:linux:flatpak --release`. The Linux handoff must include sanitized OS and tool versions, command,
 tag, commit SHA, refs, sizes, hashes, state, checksum, and CPU smoke evidence. That tagged build
 creates the ignored profile inventories; only then run
 `node scripts/release-license-inventory.mjs --check` and require exact CPU, NVIDIA Core/Runtime, and
@@ -266,14 +266,19 @@ Build the app bundle and DMG with:
 
 ```sh
 pnpm package:mac
-pnpm package:mac -- --test
+pnpm package:mac --release
 ```
 
-`--test` builds a separate `TuneForge Test.app` with bundle ID `com.tuneforge.desktop.test`,
+Bare packaging (or explicit `--test`) builds a separate `TuneForge Test.app` with bundle ID `com.tuneforge.desktop.test`,
 binary `tuneforge-test`, and a distinct icon. It uses its own Tauri target directory and
 `~/Library/Application Support/Tuneforge Test` for application data. Its model and
 dependency caches are private to that data directory. The production command and artifacts
-keep their existing identity and paths.
+keep their existing identity and paths when `--release` is supplied.
+`package:mac:app` builds only the app; `package:mac:dmg` packages the existing matching app.
+Both also default to Test and accept `--release`. Modes conflict when `--test` and `--release`
+are combined. Direct pnpm flags and `-- --release` syntax are both supported.
+Each actual build prints one `BUILD time` on success or failure; combined app/DMG packaging
+prints it once. Linux starts timing after acquiring its lock; JSON preflight has no timing line.
 
 Package IDs derive from the base `apps/desktop/src-tauri/tauri.conf.json` identifier
 plus `.test`. Production storage defaults live in `apps/backend/app/storage-profile.json`;
@@ -309,12 +314,12 @@ backend registry marks Advanced Beat Analysis unavailable and the compile-time p
 desktop actions send an explicit Built-in Beat Analysis selection. A broken normal installation still
 submits Advanced Beat Analysis and surfaces the dependency failure instead of silently changing engines.
 
-The generated artifacts are written under `apps/desktop/src-tauri/target/release/bundle/`:
+Production (`--release`) artifacts are written under `apps/desktop/src-tauri/target/release/bundle/`:
 
 - `macos/TuneForge.app`
 - `dmg/TuneForge_<version>_<arch>.dmg`
 
-Test artifacts use `apps/desktop/src-tauri/target/test-package/release/bundle/` with
+Default Test artifacts use `apps/desktop/src-tauri/target/test-package/release/bundle/` with
 `macos/TuneForge Test.app` and `dmg/TuneForge Test_<version>_<arch>.dmg`.
 
 Run packaging from a normal macOS shell with `diskutil`; it creates an APFS UDZO disk image from
@@ -326,9 +331,15 @@ output for Demucs input decoding. Missing or invalid payloads fail package
 preparation or launch clearly; validators reject Homebrew/MacPorts linkage. Development keeps host
 lookup and explicit overrides. System microphone volume control uses CoreAudio.
 
-By default, Demucs, Whisper, and beat-this weights are read from their normal caches and downloaded on first use if missing. Demucs uses immutable Hugging Face YAML+safetensors in the standard Hub cache: `HF_HUB_CACHE`, legacy `HUGGINGFACE_HUB_CACHE`, `HF_HOME/hub`, `XDG_CACHE_HOME/huggingface/hub`, then `~/.cache/huggingface/hub`. `TUNEFORGE_DATA_DIR` does not control the upstream Demucs, Whisper, or beat-this caches. Desktop Advanced Chords retains its exact verified ONNX model/runtime-state package behavior. Android downloads the same coherent pair on first use unless `--model-bundle` embeds it for first-launch offline use. Advanced Chords excludes the Crema Python package, TensorFlow, Keras, and their HDF5 model-loading closure; preserved LV Chordia support still brings its declared `h5py` dependency. LV Chordia ships exactly five validated checkpoints. `--model-bundle` independently stages required Demucs and Whisper weights, Android Crema model/state, plus beat-this `small0` when included; Demucs is validated and loaded directly from its pinned bundle path without copying into the Hugging Face cache.
+Production (`--release`) Demucs, Whisper, and beat-this weights use their normal caches and download on first use if missing. Default Test packages use private model caches beneath their Test data root. Demucs uses immutable Hugging Face YAML+safetensors in the standard Hub cache: `HF_HUB_CACHE`, legacy `HUGGINGFACE_HUB_CACHE`, `HF_HOME/hub`, `XDG_CACHE_HOME/huggingface/hub`, then `~/.cache/huggingface/hub`. `TUNEFORGE_DATA_DIR` does not control the upstream Demucs, Whisper, or beat-this caches. Desktop Advanced Chords retains its exact verified ONNX model/runtime-state package behavior. Android downloads the same coherent pair on first use unless `--model-bundle` embeds it for first-launch offline use. Advanced Chords excludes the Crema Python package, TensorFlow, Keras, and their HDF5 model-loading closure; preserved LV Chordia support still brings its declared `h5py` dependency. LV Chordia ships exactly five validated checkpoints. `--model-bundle` independently stages required Demucs and Whisper weights, Android Crema model/state, plus beat-this `small0` when included; Demucs is validated and loaded directly from its pinned bundle path without copying into the Hugging Face cache.
 
 ## Android
+
+Production Android packaging is a manual signing step. `pnpm package:android --release`,
+`pnpm package:android -- --release`, `package:android:release`, and `--publishable` select
+the same credential-checked publishable build. These spellings retain the same manual-only
+release protection. `--release` rejects local Test identity, profiling, debug, and preparation
+selectors before credential checks or filesystem changes.
 
 See [Android Setup](MOBILE.md#android-setup) for the shared Linux/macOS prerequisites and preparation
 flow.
@@ -340,10 +351,10 @@ GitHub Release APK build:
 pnpm package:android:prepare
 pnpm package:android:debug
 pnpm package:android
-pnpm package:android:release
+pnpm package:android --release
 ```
 
-`pnpm package:android` and `pnpm package:android:debug` build the local
+Bare `pnpm package:android` (or `--test`) and `pnpm package:android:debug` build the local
 `com.tuneforge.desktop.test` package, labeled TuneForge Test, with its own icon and private Android
 application data. Its model and dependency caches remain inside that package's data directory.
 The APK is written under `apps/desktop/src-tauri/target/test-package/`. Android keeps the
@@ -426,7 +437,7 @@ printf '\n'
 export TUNEFORGE_ANDROID_RELEASE_KEYSTORE_PATH="/absolute/private/path/tuneforge-release.p12"
 export TUNEFORGE_ANDROID_RELEASE_KEY_ALIAS="tuneforge-release"
 export TUNEFORGE_ANDROID_RELEASE_EXPECTED_CERT_SHA256="0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-pnpm package:android:release
+pnpm package:android --release
 unset TUNEFORGE_ANDROID_RELEASE_KEYSTORE_PATH TUNEFORGE_ANDROID_RELEASE_KEY_ALIAS
 unset TUNEFORGE_ANDROID_RELEASE_STORE_PASSWORD TUNEFORGE_ANDROID_RELEASE_KEY_PASSWORD
 unset TUNEFORGE_ANDROID_RELEASE_EXPECTED_CERT_SHA256
@@ -451,10 +462,10 @@ Build the local Flatpak package with:
 
 ```sh
 pnpm package:linux:flatpak
-pnpm package:linux:flatpak -- --test
+pnpm package:linux:flatpak --release
 ```
 
-`--test` builds the separate `com.tuneforge.desktop.test` Flatpak with the TuneForge Test name, icon,
+Bare packaging (or explicit `--test`) builds the separate `com.tuneforge.desktop.test` Flatpak with the TuneForge Test name, icon,
 desktop entry, and `tuneforge-test` command. It has its own `~/.var/app/com.tuneforge.desktop.test`
 WebView directory. File storage derives from the selected production mode:
 `~/.local/share/tuneforge-test` by default or `/var/data/tuneforge-test` with
@@ -463,14 +474,17 @@ Host mode grants access to the derived test directory; sandbox mode needs no hos
 grant. Its manifest, Builder checkout, repository, bundle, history, and evidence paths remain
 distinct. Production and test builds share Builder state, downloads, pnpm, and compiler caches
 as described in [Flatpak Build Caches and Evidence](#flatpak-build-caches-and-evidence).
-Production packaging retains its existing identity and outputs.
+`--release` selects production identity and its existing outputs.
+`package:linux` and `package:linux:flatpak` select the same workflow.
+`package:linux:no-bundle` forwards options to that workflow with `--no-bundle`;
+`pnpm package:linux:no-bundle --release` exports only the production repository.
 For `--no-bundle` installs, use the printed `tuneforge-test-local` remote for the test
 repository; production continues to use `tuneforge-local`.
 
 For faster local iteration, skip the single-file bundle step:
 
 ```sh
-pnpm package:linux:flatpak -- --no-bundle
+pnpm package:linux:no-bundle
 ```
 
 The Flatpak build generates local dependency source manifests, builds inside the SDK sandbox, and
@@ -542,6 +556,8 @@ still change it. `TUNEFORGE_FRONTEND_GIT_REF` overrides that ref;
 
 Successful runs write `packaging/flatpak/generated/cache-report.json` for production or
 `TEST-cache-report.json` for TEST; `FLATPAK_CACHE_REPORT_PATH` overrides the latest report.
+Size reports likewise use `size-report.json` for production and `TEST-size-report.json` for Test,
+with or without bundles; `FLATPAK_SIZE_REPORT_PATH` overrides either.
 Each run also retains a Builder log and report under `generated/evidence/<identity>/`.
 Reports retain the `flatpak-cache-v1` logical namespace contract for comparisons; it no longer
 selects physical storage. They record ordered module hits, first invalidation, dependency/compiler
@@ -595,16 +611,20 @@ pnpm package:linux -- --crema-onnx --model-bundle
 - `--no-beat-this` / `--no-advanced-beats` exclude the Advanced Beat Analysis dependency stack.
 - `--lv-chordia` / `--no-lv-chordia` include or exclude LV Chordia and its five checkpoints.
 - `--model-bundle` includes pinned Demucs YAML+safetensors and required Whisper weights, plus beat-this `small0` when beat-this dependencies are included. Advanced Chords model/state files are always included when that engine is enabled.
-- `--sandbox-data` keeps app data under Flatpak-private `/var/data/tuneforge` instead of the host XDG data directory.
+- `--sandbox-data` keeps app data under Flatpak-private `/var/data/tuneforge-test` for default
+  Test packages or `/var/data/tuneforge` with `--release`, instead of the host XDG data directory.
 - With no profile flags, Flatpak packaging builds CPU, NVIDIA, and legacy NVIDIA. `--cpu` builds
   only the CPU app; `--nvidia` or `--legacy-nvidia` builds the CPU app and that accelerator pair.
   The profile flags may be combined in any order, and repeated flags have no effect.
 
-Like macOS packages, plain Flatpak packages rely on normal Demucs, Whisper, and beat-this caches
-unless `--model-bundle` is explicitly passed. The application contains the official CPU Torch base;
+Default Test Flatpaks keep Demucs, Whisper, and beat-this caches beneath the Test data root
+(`~/.local/share/tuneforge-test`, or `/var/data/tuneforge-test` with `--sandbox-data`).
+Production (`--release`) uses the normal model caches unless `--model-bundle` is explicitly passed.
+The application contains the official CPU Torch base;
 its generated closure rejects CUDA, NVIDIA, and Triton. Each NVIDIA profile is split across
-matching `Core` and `Runtime` refs beneath
-`com.tuneforge.desktop.Torch.Stack`. Core contains the profile-specific Torch binaries; Runtime
+matching `Core` and `Runtime` refs beneath `com.tuneforge.desktop.test.Torch.Stack` for
+default Test packages or `com.tuneforge.desktop.Torch.Stack` with `--release`.
+Core contains the profile-specific Torch binaries; Runtime
 contains its CUDA/NVIDIA closure. This generic profile-pair layout can also represent other GPU
 families without making Core binaries portable across backends. The launcher validates both immutable
 markers before starting Python, prefers NVIDIA over legacy NVIDIA, and prepends only the selected
@@ -615,7 +635,7 @@ Beat Analysis request that ultimately fails during first-use download, load, run
 analysis fails the job rather than switching engines; explicit Built-in Beat Analysis requests do
 not probe beat-this.
 
-By default, the Flatpak grants access to `xdg-data/tuneforge`, `xdg-cache/torch`, and
+With `--release`, the Flatpak grants access to `xdg-data/tuneforge`, `xdg-cache/torch`, and
 `xdg-cache/whisper`. Packaged runs therefore use the same data root and model caches as
 `pnpm dev --production-data`: `~/.local/share/tuneforge`, `~/.cache/torch`, and
 `~/.cache/whisper`. Default `pnpm dev` uses derived test storage. Do not run the Flatpak
@@ -626,7 +646,7 @@ library.
 ## Flatpak Local Repo Installs
 
 When `--no-bundle` is used, packaging exports a local Flatpak repository and prints the exact
-commands for the selected profiles. The local remote is `tuneforge-local` and the repository is
+commands for the selected profiles. For production (`--release`), the local remote is `tuneforge-local` and the repository is
 `packaging/flatpak/repo`:
 
 ```sh
@@ -640,7 +660,8 @@ first, then one or both complete accelerator pairs. When both pairs are installe
 precedence over legacy NVIDIA.
 
 Without profile flags or `--no-bundle`, packaging writes five independent bundles under
-`packaging/flatpak/`:
+`packaging/flatpak/`. Default Test bundles use the `Tuneforge_Test` stem; production
+(`--release`) uses the following existing names:
 
 - `Tuneforge_<version>_x86_64.flatpak`;
 - `Tuneforge_<version>_Torch_Nvidia_Core_x86_64.flatpak`;
@@ -648,21 +669,22 @@ Without profile flags or `--no-bundle`, packaging writes five independent bundle
 - `Tuneforge_<version>_Torch_LegacyNvidia_Core_x86_64.flatpak`;
 - `Tuneforge_<version>_Torch_LegacyNvidia_Runtime_x86_64.flatpak`.
 
-Selective builds write only the CPU bundle and the two bundles for each selected accelerator. The
-ignored `packaging/flatpak/generated/SHA256SUMS` contains exactly the artifacts from that run.
+Selective builds write only the CPU bundle and the two bundles for each selected accelerator.
+The ignored `packaging/flatpak/generated/TEST-SHA256SUMS` (Test) or
+`packaging/flatpak/generated/SHA256SUMS` (`--release`) contains exactly the artifacts from that run.
 Each identity's history directory stores atomic ignored `flatpak-bundle-state-v1.json` state whose
 header binds
 the namespace, exact Flatpak version, x86_64, stable, and canonical `build-bundle`. Each entry binds
 one output path and basename to its full ref, verified
 OSTree commit, app/runtime role, byte size, and SHA-256. There is no whole-profile bundle cache key.
-An ordinary run reuses each selected bundle only when that entry, the exact `SHA256SUMS` entry, and
-the full file hash all match. Ref changes rebuild only their artifacts; adding a profile builds only
+An ordinary run reuses each selected bundle only when that entry, the exact identity-specific
+checksum entry, and the full file hash all match. Ref changes rebuild only their artifacts; adding a profile builds only
 the additions, and removing one preserves the retained bundles then prunes managed unselected
 outputs. Missing or globally malformed state, or a malformed/duplicate checksum manifest, rebuilds
 all selected bundles. A fully valid warm selection launches no bundle builders and leaves bundles,
 state, and checksums untouched. `FLATPAK_CACHE_EVIDENCE=1` deliberately rebuilds every requested
 bundle and may seed verified state. `--no-bundle` never reads, hashes, creates, deletes, or rewrites
-bundle outputs, bundle state, or `SHA256SUMS`.
+bundle outputs, bundle state, or either checksum file.
 Misses build to same-directory temporary paths, are size- and hash-verified, and move into place
 only after all pending builders succeed. Packaging removes both trust markers before mutation.
 Failure removes temporary and replaced outputs plus both trust markers. Profile transitions publish
@@ -679,7 +701,9 @@ so all four components are gated independently from the CPU application. `--mode
 reviewed model weights.
 
 Every Flatpak build writes an ignored structured size report at
-`packaging/flatpak/generated/size-report.json` (override with `FLATPAK_SIZE_REPORT_PATH`). It uses
+`packaging/flatpak/generated/TEST-size-report.json` for default Test packages or
+`packaging/flatpak/generated/size-report.json` with `--release` (override either with
+`FLATPAK_SIZE_REPORT_PATH`). It uses
 bytes, includes the compressed bundle when produced, installed `/app`, Python runtime,
 site-packages, separate wheel-input and source-archive entries, and descending `/app` top-level
 directories. Each Python input group reports `knownBytes`, `unknownCount`, and `complete`; a partial

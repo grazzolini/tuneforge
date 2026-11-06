@@ -65,7 +65,8 @@ cleanup command, but never run cleanup automatically.
 
 ## Manual Steps and Automation Boundary
 
-Never run artifact-signing commands, `pnpm package:android:release`, or final
+Never run artifact-signing commands, production Android packaging (`pnpm package:android --release`,
+`pnpm package:android -- --release`, `pnpm package:android:release`, or `--publishable`), or final
 release publication. The Linux Flatpak build and every packaged-app launch are
 manual handoffs; the user owns launches and app data. Never access or automate KeePassXC, inspect private keys
 or passwords, request secrets in chat, or rely on a cached artifact-signing
@@ -124,7 +125,7 @@ for the actions after that stop. Merge authority is always separate.
    a clean verified-tag checkout with `HEAD == v<version>^{commit}` and no
    `TUNEFORGE_GIT_REF` override. Perform each build only at its
    platform-specific or manual step below.
-2. Build and stage the unsigned Apple Silicon DMG. Verify filename, embedded
+2. Build and stage the unsigned Apple Silicon DMG with `pnpm package:mac --release`. Verify filename, embedded
    package version, and git ref `v<version>-0-g<release-sha8>`. Require the
    configured uv-managed Python runtime and a passing bundle-local staged-runtime probe.
 3. Record manual launch-smoke evidence for the packaged DMG: OS, command,
@@ -132,7 +133,7 @@ for the actions after that stop. Merge authority is always separate.
    and visible release identity.
 4. Hand off the Linux build to a clean x86_64 tagged checkout with no
    `TUNEFORGE_GIT_REF`, `--model-bundle`, or profile selectors. The manual
-   command is `pnpm package:linux:flatpak`; it must return the five exact
+   command is `pnpm package:linux:flatpak --release`; it must return the five exact
    Flatpak payloads named above plus sanitized OS, tool versions, command, tag,
    commit SHA, refs, sizes, hashes, state, checksum, and CPU smoke evidence.
 5. After that tagged build creates the ignored profile inventories, run
@@ -148,7 +149,7 @@ for the actions after that stop. Merge authority is always separate.
    hash, signature, size, license, or provenance evidence fails verification
    closed. Stop before Android signing/build work only after the DMG, Linux
    handoff, and CPU smoke evidence pass. Show the five documented release
-   environment variables, `pnpm package:android:release`, unset commands, and
+   environment variables, `pnpm package:android --release`, unset commands, and
    temporary-key cleanup reminder. Do not execute them.
 8. After the manual Android release build supplies the APK, verify version, ARM64 ABI,
    non-debuggable/release state, exactly one signer, certificate continuity

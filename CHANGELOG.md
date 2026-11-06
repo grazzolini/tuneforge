@@ -7,6 +7,9 @@ download, installation, verification, signature, and publication instructions.
 
 ### Changed
 
+- Default local packages to the isolated Test profile; require `--release` for production,
+  support Linux repository-only packaging, and report build duration.
+
 - Share canonical chord spelling and instrument semantics across desktop, Android, and Python,
   with Gingo-ranked guitar positions, nearby keyboard inversions, and truthful Stradella
   standard, complete, and partial combinations. Preserve raw analysis labels and saved choices.

@@ -2,7 +2,7 @@ import "./flatpak-cache-storage.test.mjs";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -25,6 +25,7 @@ import {
   flatpakBundleWorkerLimit,
   flatpakOutputStatePath,
   flatpakSizeReport,
+  flatpakSizeReportPath,
   frontendModuleInputPaths,
   manifestWithPackageOptions,
   manifestWithSourceSnapshotChecksums,
@@ -1618,4 +1619,60 @@ test("Flatpak snapshot fixtures validate synthetic sources without ignored build
   assert.match(readFileSync(source, "utf8"), /Synthetic snapshot source/);
   writeFileSync(source, "tampered");
   assert.throws(() => generateFlatpakSourceSnapshots(options), /Flatpak core source differs from lock/);
+});
+
+
+test("bundled and repo-only size reports share the selected identity and preserve overrides", () => {
+  assert.equal(path.basename(flatpakSizeReportPath(true, {})), "TEST-size-report.json");
+  assert.equal(path.basename(flatpakSizeReportPath(false, {})), "size-report.json");
+  for (const testPackage of [false, true]) {
+    assert.equal(flatpakSizeReportPath(testPackage, { FLATPAK_SIZE_REPORT_PATH: "/custom/report.json" }), "/custom/report.json");
+  }
+  assert.equal((packageScript.match(/const sizeReportPath = flatpakSizeReportPath\(packageOptions.testPackage\)/g) ?? []).length, 1);
+  assert.equal((packageScript.match(/writeJson\(sizeReportPath, sizeReport\)/g) ?? []).length, 2);
+});
+
+function isolatedFlatpakCliEnv(root) {
+  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) =>
+    !name.startsWith("FLATPAK_") && !["TUNEFORGE_FLATPAK_LOCK_TOKEN",
+      "TUNEFORGE_PACKAGE_OPTIONS", "TUNEFORGE_GIT_REF", "TUNEFORGE_FRONTEND_GIT_REF", "SOURCE_DATE_EPOCH"].includes(name)));
+  return { ...env, FLATPAK_STATE_DIR: path.join(root, "state"),
+    FLATPAK_CACHE_DIR: path.join(root, "cache"), SOURCE_DATE_EPOCH: "1" };
+}
+
+test("Linux build failure emits one duration only after lock acquisition", (context) => {
+  const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), "tuneforge-cli-failure-")));
+  context.after(() => rmSync(root, { recursive: true, force: true }));
+  const token = "11111111-1111-1111-1111-111111111111";
+  const result = spawnSync(process.execPath, ["--import", "data:text/javascript," + encodeURIComponent(
+    'Object.defineProperty(process, "arch", { value: "arm64" });'),
+    path.join(repositoryRoot, "scripts/package-flatpak.mjs"), `--flatpak-lock-token=${token}`, "--cpu", "--no-bundle"], {
+    encoding: "utf8", env: { ...isolatedFlatpakCliEnv(root), TUNEFORGE_FLATPAK_LOCK_TOKEN: token },
+  });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /targets Linux x86_64 only/);
+  assert.equal((result.stdout.match(/^BUILD time:/gm) ?? []).length, 1);
+});
+
+test("public Flatpak preflight selects all identity/profile combinations without a build", (context) => {
+  const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), "tuneforge-cli-preflight-")));
+  context.after(() => rmSync(root, { recursive: true, force: true }));
+  const env = isolatedFlatpakCliEnv(root);
+  for (const release of [false, true]) {
+    for (const selector of ["--cpu", "--nvidia", "--legacy-nvidia"]) {
+      const result = spawnSync(process.execPath, [path.join(repositoryRoot, "scripts/package-flatpak.mjs"),
+        "--preflight", selector, ...(release ? ["--", "--release"] : [])], { encoding: "utf8", env });
+      assert.equal(result.status, 0, result.stderr);
+      const preflight = JSON.parse(result.stdout);
+      assert.equal(preflight.identity, release ? PRODUCTION_PACKAGE.id : TEST_PACKAGE.id);
+      assert.equal(preflight.storage.stateDir, path.join(root, "state", "shared"));
+      assert.equal(preflight.storage.cacheDir, path.join(root, "cache", "shared"));
+      assert.deepEqual(preflight.selectedProfiles, selector === "--cpu" ? ["cpu"] : ["cpu", selector.slice(2)]);
+      assert.equal(preflight.outputs.some((output) => path.basename(output) === (release ? "repo" : "repo-test")), true);
+    }
+  }
+  const implicit = parsePackageOptions([], { platform: "linux", defaultTestPackage: true });
+  const explicit = parsePackageOptions(["--test"], { platform: "linux" });
+  assert.deepEqual(cacheNamespace(implicit), cacheNamespace(explicit));
+  assert.match(packageScript, /packageOptionsToGeneratorArgs\(packageOptions, \{ explicitMode: true \}\)/);
 });

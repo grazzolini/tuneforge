@@ -243,3 +243,12 @@ test("Flatpak declares optional bundled Torch extension refs without widening de
   assert.match(flatpakManifest, /^  - --device=dri$/m);
   assert.doesNotMatch(flatpakManifest, /--device=all|add-ld-path/);
 });
+
+test("root packaging aliases preserve the public option boundary", () => {
+  assert.equal(rootPackage.scripts["package:android"], "pnpm --filter @tuneforge/desktop android:build");
+  assert.equal(rootPackage.scripts["package:linux"], "pnpm package:linux:flatpak");
+  assert.equal(rootPackage.scripts["package:linux:flatpak"], "node scripts/package-flatpak.mjs");
+  assert.equal(rootPackage.scripts["package:linux:no-bundle"], "node scripts/package-flatpak.mjs --no-bundle");
+  assert.equal(rootPackage.scripts["package:mac:app"], "node scripts/package-mac.mjs --app-only");
+  assert.equal(rootPackage.scripts["package:mac:dmg"], "node scripts/package-dmg.mjs");
+});

@@ -81,6 +81,17 @@ test("Android model bundle remains explicit and composes with build modes", () =
     assert.throws(() => parseAndroidOptions(args));
   }
 });
+test("production Android aliases reject local selectors before any build", () => {
+  for (const release of ["--release", "--publishable"]) {
+    assert.equal(parseAndroidOptions(["--", release]).mode, "publishable");
+    for (const local of [["--test"], ["--test-identity"], ["--profile"], ["--debug"],
+      ["--prepare"], ["--package-name", "com.example.fixture"]]) {
+      assert.throws(() => parseAndroidOptions([release, ...local]));
+    }
+  }
+  assert.equal(parseAndroidOptions(["--test"]).mode, parseAndroidOptions([]).mode);
+});
+
 test("profiling is limited to a temporary optimized local build", (t) => {
   assert.equal(parseAndroidOptions(["--profile"]).profile, true);
   for (const args of [["--profile", "--prepare"], ["--profile", "--debug"],
@@ -553,8 +564,8 @@ test("release debug signing is marker-based and idempotent", (t) => {
 });
 test("packaging exposes explicit prepare, debug, local-release, and publishable modes", () => {
   for (const [args, expected] of [[[], "local-release"], [["--prepare"], "prepare"],
-    [["--debug"], "debug"], [["--publishable"], "publishable"]]) assert.equal(parseMode(args), expected);
-  for (const args of [["--debug", "--publishable"], ["--release"]]) assert.throws(() => parseMode(args), /Usage/);
+    [["--debug"], "debug"], [["--release"], "publishable"], [["--publishable"], "publishable"]]) assert.equal(parseMode(args), expected);
+  for (const args of [["--debug", "--publishable"], ["--debug", "--release"]]) assert.throws(() => parseMode(args), /Usage/);
 });
 function signingEnv(keystore, fingerprint = "ab".repeat(32)) {
   return {
@@ -1044,6 +1055,7 @@ test("CLI credential-preflight failure excludes synthetic signing secrets", (t) 
   assert.equal(result.status, 1);
   const output = `${result.stdout}${result.stderr}`;
   assert.match(output, /readable regular file/);
+  assert.equal((output.match(/^BUILD time:/gm) ?? []).length, 1);
   assert.equal(output.includes(storeSecret), false);
   assert.equal(output.includes(keySecret), false);
 });

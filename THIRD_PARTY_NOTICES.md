@@ -8,7 +8,8 @@ This document is an engineering notice and distribution checklist, not legal adv
 
 This file is the source of truth for dependency and model-weight distribution policy:
 
-- Default release package commands (`pnpm package:mac`, `pnpm package:linux:flatpak`) do not pass `--model-bundle`. They include Advanced Chords, Advanced Beat Analysis, and LV Chordia. LV Chordia's five dependency-owned checkpoints are included; external Demucs, Whisper, and beat-this weights are not.
+- Bare package commands select the isolated local Test profile; production requires `--release`.
+- Default release package commands (`pnpm package:mac --release`, `pnpm package:linux:flatpak --release`) do not pass `--model-bundle`. They include Advanced Chords, Advanced Beat Analysis, and LV Chordia. LV Chordia's five dependency-owned checkpoints are included; external Demucs, Whisper, and beat-this weights are not.
 - Packaged macOS arm64 and Android arm64 include the LGPL FFmpeg/LAME distribution pinned by [`packaging/ffmpeg/sources.lock.json`](./packaging/ffmpeg/sources.lock.json). Android arm64 also dynamically links the owned libsoxr runtime pinned by [`packaging/soxr/sources.lock.json`](./packaging/soxr/sources.lock.json). Development/source runs keep host lookup and explicit overrides. Flatpak includes neither owned payload and uses runtime/extension wrappers for FFmpeg.
 - Demucs, Whisper, and beat-this weights are local cache assets by default. Setup/model-prewarm can prepare them ahead of time, and the app may download them on first use if they are missing. Fully offline use requires the relevant caches/assets to already exist.
 - `--model-bundle` is an explicit local/dev packaging option, not part of default release packaging. It stages Demucs and Whisper weights and, when selected, the beat-this `small0` checkpoint; redistribution needs separate review before publishable artifacts use it.

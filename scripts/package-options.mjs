@@ -19,6 +19,7 @@ const OPTION_ALIASES = new Map([
   ["--no-bundle", ["noBundle", true]],
   ["--sandbox-data", ["sandboxData", true]],
   ["--test", ["testPackage", true]],
+  ["--release", ["testPackage", false]],
 ]);
 
 export const FLATPAK_PROFILE_IDS = Object.freeze(["cpu", "nvidia", "legacy-nvidia"]);
@@ -51,8 +52,9 @@ export function defaultPackageOptions() {
   };
 }
 
-export function parsePackageOptions(argv, { platform } = {}) {
-  const options = defaultPackageOptions();
+export function parsePackageOptions(argv, { platform, defaultTestPackage = false } = {}) {
+  const options = { ...defaultPackageOptions(), testPackage: defaultTestPackage };
+  const modes = new Set();
   const cremaSelections = new Set();
   const profileSelections = new Set();
   for (const arg of argv) {
@@ -72,6 +74,10 @@ export function parsePackageOptions(argv, { platform } = {}) {
       throw new Error(`Unknown option: ${arg}`);
     }
     const [optionName, value] = option;
+    if (optionName === "testPackage") {
+      modes.add(value);
+      if (modes.size > 1) throw new Error("Conflicting package modes: --test and --release.");
+    }
     if (optionName === "crema") {
       cremaSelections.add(value);
       if (cremaSelections.size > 1) {
@@ -134,7 +140,7 @@ export function frontendPackageOptionsEnvironment(options) {
   };
 }
 
-export function packageOptionsToGeneratorArgs(options) {
+export function packageOptionsToGeneratorArgs(options, { explicitMode = false } = {}) {
   const validated = validatePackageOptions(options);
   const args = [];
   if (validated.crema === "onnx") {
@@ -157,6 +163,8 @@ export function packageOptionsToGeneratorArgs(options) {
   }
   if (validated.testPackage) {
     args.push("--test");
+  } else if (explicitMode) {
+    args.push("--release");
   }
   args.push(...validated.flatpakProfiles.map((profile) => `--${profile}`));
   return args;
@@ -184,4 +192,11 @@ export function printModelBundleWarning({ stream = process.stderr } = {}) {
       "Demucs pretrained weight redistribution is unclear/restricted upstream; " +
       "use this only for explicit local/dev packaging.\n",
   );
+}
+
+export function formatBuildDuration(milliseconds) {
+  const seconds = Math.round(milliseconds / 100) / 10;
+  const hours = Math.floor(seconds / 3_600);
+  const minutes = Math.floor(seconds % 3_600 / 60);
+  return `${hours ? `${hours}h ` : ""}${hours || minutes ? `${minutes}m ` : ""}${(seconds % 60).toFixed(1)}s`;
 }

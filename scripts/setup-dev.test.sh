@@ -2,6 +2,9 @@
 set -euo pipefail
 
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+real_node="$(command -v node)"
+export SETUP_DEV_TEST_REAL_NODE="${real_node}"
+"${real_node}" --test "${repo_root}/scripts/setup-dev-music-core-cache.test.mjs"
 tmp_root="${TMPDIR:-/tmp}"
 fixture="$(mktemp -d "${tmp_root%/}/tuneforge-setup-dev-test.XXXXXX")"
 trap 'rm -rf "${fixture}"' EXIT
@@ -12,6 +15,8 @@ mkdir -p \
   "${fixture}/scripts"
 
 cp "${repo_root}/scripts/setup-dev.sh" "${fixture}/scripts/setup-dev.sh"
+cp "${repo_root}/scripts/setup-dev-music-core-cache.mjs" "${fixture}/scripts/setup-dev-music-core-cache.mjs"
+export SETUP_DEV_TEST_NODE_CALLS="${fixture}/node-calls"
 cp "${repo_root}/scripts/sync-backend-default.sh" "${fixture}/scripts/sync-backend-default.sh"
 cp "${repo_root}/scripts/sync-backend-legacy-nvidia.sh" "${fixture}/scripts/sync-backend-legacy-nvidia.sh"
 cp "${repo_root}/scripts/verify-legacy-nvidia-setup.py" \
@@ -55,6 +60,10 @@ EOF
 cat > "${fixture}/bin/node" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+printf '%s %s\n' "${1##*/}" "${2:-}" >> "${SETUP_DEV_TEST_NODE_CALLS}"
+if [[ "${1:-}" == "${BASH_SOURCE[0]%/bin/node}/scripts/setup-dev-music-core-cache.mjs" ]]; then
+  exec "${SETUP_DEV_TEST_REAL_NODE}" "$@"
+fi
 [[ "${1:-}" == "${BASH_SOURCE[0]%/bin/node}/scripts/build-music-core.mjs" ]] || exit 1
 if [[ "${2:-}" == "--fetch-sources" ]]; then
   # Acquisition must happen while an existing environment is still available.
@@ -111,6 +120,7 @@ run_setup_dev() {
   : > "${python_args_file}"
   : > "${python_stdin_file}"
   : > "${setup_uv_args_file}"
+  : > "${SETUP_DEV_TEST_NODE_CALLS}"
   if ! PATH="${fixture}/bin:${PATH}" \
     SETUP_DEV_TEST_PYTHON_ARGS="${python_args_file}" \
     SETUP_DEV_TEST_PYTHON_STDIN="${python_stdin_file}" \
@@ -186,6 +196,7 @@ PYTHON
     "${output_file}" > /dev/null
 }
 
+: > "${SETUP_DEV_TEST_NODE_CALLS}"
 failure_output="${fixture}/setup-output-build-failure"
 if PATH="${fixture}/bin:${PATH}" SETUP_DEV_TEST_BUILD_FAIL=1 \
   /bin/bash "${fixture}/scripts/setup-dev.sh" \
@@ -196,8 +207,13 @@ else
   [[ "$?" == "23" ]] || exit 1
 fi
 grep -F 'synthetic music-core build failure' "${failure_output}" > /dev/null
+printf '%s\n' 'setup-dev-music-core-cache.mjs seed' 'build-music-core.mjs --target' > "${fixture}/expected-node-calls"
+cmp "${fixture}/expected-node-calls" "${SETUP_DEV_TEST_NODE_CALLS}"
 
 run_setup_dev "default"
+printf '%s\n' 'setup-dev-music-core-cache.mjs seed' 'build-music-core.mjs --target' \
+  'setup-dev-music-core-cache.mjs store' > "${fixture}/expected-node-calls"
+cmp "${fixture}/expected-node-calls" "${SETUP_DEV_TEST_NODE_CALLS}"
 assert_python_args "default" \
   -m \
   app.cli.prewarm_models \

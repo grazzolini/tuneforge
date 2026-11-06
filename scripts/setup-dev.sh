@@ -162,7 +162,9 @@ if [[ "${skip_playwright_browsers}" -eq 0 ]]; then
 fi
 
 echo "Building the pinned local music core..."
+node "${repo_root}/scripts/setup-dev-music-core-cache.mjs" seed
 node "${repo_root}/scripts/build-music-core.mjs" --target wasm --summary
+node "${repo_root}/scripts/setup-dev-music-core-cache.mjs" store
 
 echo "Checking Tauri build dependencies..."
 source "${repo_root}/scripts/configure-tauri-build-env.sh"

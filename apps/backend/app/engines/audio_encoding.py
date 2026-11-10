@@ -97,6 +97,8 @@ def encode_audio(
     register_process: Callable[[subprocess.Popen[str]], None] | None = None,
     unregister_process: Callable[[], None] | None = None,
     movie_timescale: int | None = None,
+    max_output_seconds: float | None = None,
+    max_output_bytes: int | None = None,
 ) -> None:
     destination_path.parent.mkdir(parents=True, exist_ok=True)
     command = [
@@ -113,6 +115,8 @@ def encode_audio(
         "-vn",
         *encoding_profile(output_format),
         *(("-movie_timescale", str(movie_timescale)) if movie_timescale is not None else ()),
+        *(("-t", f"{max_output_seconds:.12f}") if max_output_seconds is not None else ()),
+        *(("-fs", str(max_output_bytes)) if max_output_bytes is not None else ()),
         str(destination_path),
     ]
     try:

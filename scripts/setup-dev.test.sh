@@ -217,6 +217,7 @@ cmp "${fixture}/expected-node-calls" "${SETUP_DEV_TEST_NODE_CALLS}"
 assert_python_args "default" \
   -m \
   app.cli.prewarm_models \
+  --include-sections \
   --include-crema \
   --include-beat-this \
   --include-lv-chordia
@@ -224,13 +225,15 @@ assert_python_args "default" \
 run_setup_dev "opt-out" --no-crema --no-beat-this --no-lv-chordia
 assert_python_args "opt-out" \
   -m \
-  app.cli.prewarm_models
+  app.cli.prewarm_models \
+  --include-sections
 
 run_setup_dev "onnx" --crema-onnx
 grep -Fx -- "advanced-chords" "${setup_uv_args_file}"
 assert_python_args "onnx" \
   -m \
   app.cli.prewarm_models \
+  --include-sections \
   --include-crema \
   --include-beat-this \
   --include-lv-chordia
@@ -249,6 +252,7 @@ run_setup_dev "legacy-lv" --legacy-nvidia
 assert_python_args "legacy-lv" \
   -m \
   app.cli.prewarm_models \
+  --include-sections \
   --include-crema \
   --include-beat-this \
   --include-lv-chordia
@@ -264,6 +268,12 @@ grep -F 'torch.__version__ != expected_torch' "${python_stdin_file}" > /dev/null
 grep -F 'torchaudio.__version__ != expected_torchaudio' "${python_stdin_file}" > /dev/null
 grep -F 'torch.version.cuda != "12.6"' "${python_stdin_file}" > /dev/null
 assert_legacy_version_verifier "setup-dev"
+
+run_setup_dev "skip-prewarm" --skip-model-prewarm
+if [[ -s "${python_args_file}" ]]; then
+  echo "unexpected model prewarm for --skip-model-prewarm" >&2
+  exit 1
+fi
 
 sync_uv_args_file="${fixture}/sync-uv-args"
 sync_python_args_file="${fixture}/sync-python-args"

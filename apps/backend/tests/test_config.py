@@ -117,3 +117,16 @@ def test_model_defaults_use_shared_definition(monkeypatch: pytest.MonkeyPatch, t
     monkeypatch.setitem(storage_profile._PROFILE, "modelCache", ".renamed-cache")
     assert whisper_cache_dir({"unrelated": "value"}) == tmp_path / ".renamed-cache/whisper"
     assert torch_checkpoint_dir({"unrelated": "value"}) == tmp_path / ".renamed-cache/torch/hub/checkpoints"
+
+
+@pytest.mark.parametrize("device", ["auto", "cpu", "mps", "cuda"])
+def test_section_device_setting_preserves_explicit_selection(monkeypatch: pytest.MonkeyPatch, device: str) -> None:
+    monkeypatch.setenv("TUNEFORGE_SECTION_DEVICE", f" {device.upper()} ")
+    get_settings.cache_clear()
+    assert get_settings().section_device == device
+
+
+def test_section_device_defaults_to_auto(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("TUNEFORGE_SECTION_DEVICE", raising=False)
+    get_settings.cache_clear()
+    assert get_settings().section_device == "auto"

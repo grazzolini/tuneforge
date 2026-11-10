@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.db import SessionLocal
 from app.errors import AppError
-from app.models import AnalysisResult, Artifact, Job, Project
+from app.models import AnalysisResult, Artifact, Job, Project, SectionAnalysisResult
 from app.runtime_status import runtime_event_payload
 from app.services.jobs import (
     InProcessJobRunner,
@@ -22,6 +22,8 @@ from app.services.jobs import (
     JobExecutionResult,
     _convert_artifact_audio,
 )
+from app.services.paths import project_root, project_stems_dir
+from app.services.stem_models import SIX_STEM_SOURCES, model_output_artifact_type
 from app.utils.hashing import file_sha256
 
 _BASE_TIME = datetime(2026, 1, 1, tzinfo=UTC)
@@ -178,6 +180,100 @@ def test_bulk_jobs_creates_jobs_for_editable_projects(
         assert all(job.stage == "queued" for job in jobs)
         assert all(job.stage_label == "Waiting to start." for job in jobs)
         assert all(job.runtime_detail is None for job in jobs)
+
+
+def test_bulk_sections_checks_inputs_and_preserves_existing_candidates(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    enqueued = _capture_enqueued_jobs(client, monkeypatch)
+    monkeypatch.setattr(
+        "app.services.section_detection.sha256_file", lambda _path: pytest.fail("enqueue hashed inputs")
+    )
+    cases = {
+        "ready": None, "rerun": None, "missing": "section_stems_required",
+        "partial": "section_stems_required", "mismatch": "section_stems_required",
+        "busy": "section_stems_busy", "unavailable": "section_inputs_unavailable",
+        "outside": "section_inputs_unavailable", "no_source": "section_inputs_unavailable",
+        "locked": "locked", "active": "active_job", "deleted": None,
+    }
+    candidates = [{"start_seconds": 0, "end_seconds": 1, "label": "verse"}]
+    with SessionLocal() as session:
+        for name in cases:
+            project_id = f"section_{name}"
+            _add_project(
+                session, project_id, sync_status={"locked": "remote_available", "deleted": "deleted"}.get(name, "local")
+            )
+            session.flush()
+            if name == "no_source":
+                continue
+            source_id = f"{project_id}_source"
+            _add_artifact(session, source_id, project_id, "source_audio")
+            session.flush()
+            source = session.get(Artifact, source_id)
+            source_path = project_root(project_id) / "source.wav"
+            source_path.parent.mkdir(parents=True, exist_ok=True)
+            source_path.write_bytes(b"synthetic source")
+            source.path = str(source_path)
+            for index, stem in enumerate(SIX_STEM_SOURCES):
+                if name == "missing" or (name == "partial" and index == 0):
+                    continue
+                artifact_id = f"{project_id}_{stem}"
+                _add_artifact(session, artifact_id, project_id, model_output_artifact_type(stem), metadata={
+                    "stem_model": "htdemucs_6s", "source_artifact_id": source_id,
+                })
+                session.flush()
+                artifact = session.get(Artifact, artifact_id)
+                generation = "other" if name == "mismatch" and index == 0 else "generation"
+                directory = project_stems_dir(project_id) / generation
+                directory.mkdir(parents=True, exist_ok=True)
+                path = directory / f"{stem}.wav"
+                path.write_bytes(b"synthetic stem")
+                artifact.path = str(path)
+                if index == 0 and name == "unavailable":
+                    path.unlink()
+            if name == "outside":
+                source.path = str(tmp_path / "outside.wav")
+                Path(source.path).write_bytes(b"unowned source")
+            if name in {"active", "busy", "rerun"}:
+                _add_job(session, f"job_{name}", "completed" if name == "rerun" else "running",
+                         project_id=project_id, job_type="stems" if name == "busy" else "sections")
+        session.add(SectionAnalysisResult(project_id="section_rerun", model_revision="old",
+                                         raw_sections_json=candidates, refined_sections_json=candidates))
+        session.commit()
+
+    response = client.post("/api/v1/jobs/bulk", json={"job_type": "sections"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total_projects"] == len(cases) - 1
+    assert {job["project_id"] for job in payload["created_jobs"]} == {"section_ready", "section_rerun"}
+    assert all(job["type"] == "sections" and job["status"] == "pending" for job in payload["created_jobs"])
+    assert set(enqueued) == {job["id"] for job in payload["created_jobs"]}
+    assert {item["project_id"]: item["reason"] for item in payload["skipped"]} == {
+        f"section_{name}": reason for name, reason in cases.items() if reason is not None
+    }
+    with SessionLocal() as session:
+        assert all(session.get(Job, job_id).payload_json == {} for job_id in enqueued)
+        result = session.get(SectionAnalysisResult, "section_rerun")
+        assert result.model_revision == "old"
+        assert result.raw_sections_json == result.refined_sections_json == candidates
+
+
+@pytest.mark.parametrize("platform", ["android", "ios", "mobile"])
+def test_bulk_sections_rejects_mobile_before_creating_jobs(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, platform: str,
+) -> None:
+    from app.config import get_settings
+
+    enqueued = _capture_enqueued_jobs(client, monkeypatch)
+    monkeypatch.setenv("TUNEFORGE_RUNTIME_PLATFORM", platform)
+    get_settings.cache_clear()
+    response = client.post("/api/v1/jobs/bulk", json={"job_type": "sections"})
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "SECTIONS_UNAVAILABLE"
+    assert enqueued == []
+    with SessionLocal() as session:
+        assert list(session.scalars(select(Job).where(Job.type == "sections"))) == []
 
 
 def test_jobs_schema_exposes_runtime_status_fields(client: TestClient) -> None:
@@ -1448,3 +1544,26 @@ def test_cancel_kills_registered_process_after_termination_grace(
         job = session.get(Job, "job_running")
         assert job is not None
         assert job.cancel_requested is True
+
+
+@pytest.mark.parametrize("device", ["cpu", "mps", "cuda"])
+def test_section_job_reports_observed_device_without_assuming_cpu(monkeypatch: pytest.MonkeyPatch, device: str) -> None:
+    from types import SimpleNamespace
+
+    from app.runtime_status import JobRuntimeEvent
+    from app.services import jobs
+
+    events = []
+    monkeypatch.setattr(jobs, "get_project", lambda *args: object())
+
+    def detect(*args, on_runtime_event, **kwargs):
+        on_runtime_event(JobRuntimeEvent(stage="processing", stage_label="Detecting sections.", runtime_device=device))
+
+    monkeypatch.setattr(jobs, "generate_section_analysis", detect)
+    context = SimpleNamespace(update_runtime_status=lambda **kw: events.append(kw),
+                              apply_runtime_event=events.append, should_cancel=lambda: False,
+                              register_process=lambda process: None, unregister_process=lambda: None)
+    result = InProcessJobRunner(SessionLocal)._handle_sections(context, None, SimpleNamespace(project_id="synthetic"))
+    assert "runtime_device" not in events[0]
+    assert events[0]["stage"] == "preparing"
+    assert events[1].runtime_device == result.runtime_device == device

@@ -143,6 +143,28 @@ def test_choose_torch_device_rejects_requested_cuda_when_arch_is_unsupported():
         )
 
 
+@pytest.mark.parametrize("current", [0, 1])
+def test_cuda_compatibility_checks_current_gpu_in_heterogeneous_hosts(current):
+    capabilities = [(6, 1), (8, 6)]
+    queried = []
+
+    def capability(index):
+        queried.append(index)
+        return capabilities[index]
+
+    torch = make_fake_torch(has_mps=False, has_cuda=True, supported_arches=["sm_80", "sm_90"])
+    torch.cuda.current_device = lambda: current
+    torch.cuda.device_count = lambda: len(capabilities)
+    torch.cuda.get_device_capability = capability
+    assert choose_torch_device("auto", torch_module=torch) == ("cuda" if current == 1 else "cpu")
+    if current == 0:
+        with pytest.raises(RuntimeError, match="does not support"):
+            choose_torch_device("cuda", torch_module=torch)
+    else:
+        assert choose_torch_device("cuda", torch_module=torch) == "cuda"
+    assert queried == [current, current]
+
+
 def test_choose_torch_device_rejects_unknown_backend():
     with pytest.raises(ValueError, match="Unsupported torch device"):
         choose_torch_device("metal", torch_module=make_fake_torch(has_mps=True, has_cuda=False))

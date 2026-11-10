@@ -14,6 +14,7 @@ from sqlalchemy import case, func, select, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.config import get_settings
 from app.dependency_diagnostics import safe_dependency_remediation
 from app.engines.audio_encoding import (
     DurableAudioFormat,
@@ -34,6 +35,7 @@ from app.runtime_status import (
 from app.schemas import (
     AnalysisRequest,
     BulkJobRequest,
+    BulkJobSkipReason,
     ChordRequest,
     DrumSubstemsRequest,
     LyricsGenerateRequest,
@@ -51,6 +53,7 @@ from app.services.drum_substems import (
 from app.services.lyrics import generate_project_lyrics
 from app.services.project_storage import queue_project_storage_reconciliation
 from app.services.projects import get_mutable_project, get_project
+from app.services.section_detection import generate_section_analysis, section_inputs
 from app.services.stem_models import (
     DURABLE_AUDIO_ARTIFACT_TYPES,
     STEM_ARTIFACT_TYPES,
@@ -85,15 +88,14 @@ JobHandler = Callable[["JobExecutionContext", Session, Job], JobExecutionResult]
 JobSortBy = Literal["activity", "created_at", "started_at", "updated_at", "status"]
 JobSortOrder = Literal["asc", "desc"]
 JobTimestampSortBy = Literal["created_at", "started_at", "updated_at"]
-BulkActivityJobType = Literal["analyze", "chords", "lyrics", "stems", "drum_substems", "convert_audio"]
-BulkActivityJobSkipReason = Literal["active_job", "locked", "creation_failed",
-                                    "no_existing_stems", "already_target_format"]
+BulkActivityJobType = Literal["analyze", "chords", "lyrics", "stems", "drum_substems", "convert_audio", "sections"]
+BulkActivityJobSkipReason = BulkJobSkipReason
 ProjectActivityJobPayload = (
     AnalysisRequest | ChordRequest | LyricsGenerateRequest | StemRequest | DrumSubstemsRequest | dict[str, Any]
 )
 
 _ACTIVE_JOB_STATUSES = ("pending", "running")
-_BULK_ACTIVITY_JOB_TYPES = frozenset({"analyze", "chords", "lyrics", "stems", "convert_audio"})
+_BULK_ACTIVITY_JOB_TYPES = frozenset({"analyze", "chords", "lyrics", "stems", "convert_audio", "sections"})
 _CONVERSION_BATCH_CREATION_LOCK = threading.Lock()
 _TERMINAL_JOB_STATUSES = ("completed", "cancelled", "failed")
 _PROCESS_TERMINATION_GRACE_SECONDS = 1.0
@@ -292,6 +294,8 @@ def create_bulk_activity_jobs(
     payload: BulkJobRequest,
 ) -> BulkActivityJobCreationResult:
     validated_job_type = validate_bulk_activity_job_type(payload.job_type)
+    if validated_job_type == "sections" and get_settings().runtime_platform in {"android", "ios", "mobile"}:
+        raise AppError("SECTIONS_UNAVAILABLE", "Section detection is available on desktop only.", status_code=409)
     if validated_job_type == "convert_audio":
         with _CONVERSION_BATCH_CREATION_LOCK:
             return _create_bulk_activity_jobs_locked(
@@ -388,6 +392,12 @@ def _create_bulk_activity_jobs_locked(
                 reason: BulkActivityJobSkipReason = "locked"
             elif exc.code == "NO_EXISTING_STEMS":
                 reason = "no_existing_stems"
+            elif validated_job_type == "sections" and exc.code in {"SECTION_STEMS_REQUIRED", "SECTION_STEMS_MISMATCH"}:
+                reason = "section_stems_required"
+            elif validated_job_type == "sections" and exc.code == "SECTION_STEMS_BUSY":
+                reason = "section_stems_busy"
+            elif validated_job_type == "sections" and exc.code in {"ARTIFACT_NOT_FOUND", "SECTION_INPUT_UNREADABLE"}:
+                reason = "section_inputs_unavailable"
             else:
                 reason = "creation_failed"
             skipped.append(
@@ -436,6 +446,9 @@ def _bulk_activity_job_payloads(
     request: BulkJobRequest,
     job_type: BulkActivityJobType,
 ) -> list[ProjectActivityJobPayload]:
+    if job_type == "sections":
+        section_inputs(session, project, hash_files=False)
+        return [{}]
     if job_type == "convert_audio":
         artifacts = session.scalars(
             select(Artifact)
@@ -578,7 +591,7 @@ def _project_activity_job_payload(
             "source_artifact_id": source_id,
             "parent_sha256": parent.content_sha256,
         }
-    if job_type == "convert_audio" and isinstance(payload, dict):
+    if job_type in {"convert_audio", "sections"} and isinstance(payload, dict):
         return payload
     raise AppError("INVALID_REQUEST", "Job payload does not match job type.", status_code=422)
 
@@ -717,6 +730,7 @@ class InProcessJobRunner:
         self._stop_event = threading.Event()
         self._thread = threading.Thread(target=self._worker, name="tuneforge-job-runner", daemon=True)
         self._handlers: dict[str, JobHandler] = {
+            "sections": self._handle_sections,
             "analyze": self._handle_analyze,
             "chords": self._handle_chords,
             "lyrics": self._handle_lyrics,
@@ -971,6 +985,24 @@ class InProcessJobRunner:
                 self.update_job(job_id, status="cancelled", error_message=None)
             else:
                 self.update_job(job_id, status="failed", error_message=str(exc))
+
+    def _handle_sections(self, context: JobExecutionContext, session: Session, job: Job) -> JobExecutionResult:
+        project = get_project(session, job.project_id or "")
+        context.update_runtime_status(stage="preparing", stage_label="Preparing section inputs.", progress=10)
+        runtime_device = None
+
+        def report(event: JobRuntimeEvent) -> None:
+            nonlocal runtime_device
+            if event.runtime_device is not None:
+                runtime_device = event.runtime_device
+            context.apply_runtime_event(event)
+
+        generate_section_analysis(
+            session, project, should_cancel=context.should_cancel,
+            register_process=context.register_process, unregister_process=context.unregister_process,
+            on_runtime_event=report,
+        )
+        return JobExecutionResult(artifact_ids=[], runtime_device=runtime_device)
 
     def _handle_analyze(self, context: JobExecutionContext, session: Session, job: Job) -> JobExecutionResult:
         project = get_project(session, job.project_id or "")

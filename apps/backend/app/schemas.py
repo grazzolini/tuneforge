@@ -1374,13 +1374,16 @@ class JobResponse(BaseModel):
     job: JobSchema
 
 
-BulkJobType = Literal["analyze", "chords", "lyrics", "stems", "convert_audio"]
+BulkJobType = Literal["analyze", "chords", "lyrics", "stems", "convert_audio", "sections"]
 BulkJobSkipReason = Literal[
     "active_job",
     "locked",
     "creation_failed",
     "no_existing_stems",
     "already_target_format",
+    "section_stems_required",
+    "section_stems_busy",
+    "section_inputs_unavailable",
 ]
 
 

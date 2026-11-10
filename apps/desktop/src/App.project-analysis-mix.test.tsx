@@ -13,6 +13,8 @@ import {
   mockAnalyzeProject,
   mockConfirm,
   mockAcceptTabImport,
+  mockCreateSections,
+  mockGetRuntimePlatform,
   mockCreateChords,
   mockCreateLyrics,
   mockCreatePreview,
@@ -30,6 +32,8 @@ import {
   setProjectChords,
   setProjectLyrics,
   setProjects,
+  setProjectArtifacts,
+  setJobs,
 } from "./test/appTestHarness";
 
 describe("Desktop app project analysis mix", () => {
@@ -175,6 +179,150 @@ describe("Desktop app project analysis mix", () => {
     return scrollTo;
   }
 
+  function sectionArtifacts(sourceId = "art_source", model = "htdemucs_6s") {
+    return [
+      { id: "art_source", project_id: "proj_123", type: "source_audio", format: "wav", path: "/tmp/demo.wav", metadata: {}, created_at: "2026-04-18T13:16:00.000Z" },
+      { id: "art_preview", project_id: "proj_123", type: "preview_mix", format: "wav", path: "/tmp/mix.wav", metadata: {}, created_at: "2026-04-18T13:16:00.000Z" },
+      ...["vocal_stem", "drums_stem", "bass_stem", "guitar_stem", "piano_stem", "other_stem"].map((type) => ({
+        id: `art_${type}`, project_id: "proj_123", type, format: "wav", path: `/tmp/generation/${type}.wav`,
+        metadata: { stem_model: model, source_artifact_id: sourceId }, created_at: "2026-04-18T13:16:00.000Z",
+      })),
+    ];
+  }
+
+  it("detects sections from canonical source stems even with a practice mix selected", async () => {
+    const user = userEvent.setup();
+    setProjectArtifacts("proj_123", sectionArtifacts());
+    renderApp(["/projects/proj_123"]);
+    await screen.findByRole("heading", { name: "Demo Song" });
+    await openStudioPanel(user);
+    await user.click(screen.getByRole("button", { name: "Detect Sections" }));
+    expect(mockConfirm).toHaveBeenCalledWith(expect.stringContaining("discards their edits"), expect.any(Object));
+    expect(mockCreateSections).toHaveBeenCalledExactlyOnceWith("proj_123");
+    expect(await screen.findByRole("button", { name: "Detecting Sections..." })).toBeDisabled();
+  });
+
+  it("cancels section detection before submission", async () => {
+    const user = userEvent.setup();
+    setProjectArtifacts("proj_123", sectionArtifacts());
+    mockConfirm.mockResolvedValueOnce(false);
+    renderApp(["/projects/proj_123"]);
+    await screen.findByRole("heading", { name: "Demo Song" });
+    await openStudioPanel(user);
+    await user.click(screen.getByRole("button", { name: "Detect Sections" }));
+    expect(mockCreateSections).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Detect Sections" })).toBeEnabled();
+  });
+
+  it.each(["missing", "mix", "model", "duplicate"])("disables section detection for %s source stems", async (reason) => {
+    const user = userEvent.setup();
+    const artifacts = sectionArtifacts(reason === "mix" ? "art_preview" : "art_source", reason === "model" ? "htdemucs_ft" : "htdemucs_6s");
+    if (reason === "missing") artifacts.pop();
+    if (reason === "duplicate") artifacts.push({ ...artifacts[2], id: "duplicate" });
+    setProjectArtifacts("proj_123", artifacts);
+    renderApp(["/projects/proj_123"]);
+    await screen.findByRole("heading", { name: "Demo Song" });
+    await openStudioPanel(user);
+    expect(screen.getByRole("button", { name: "Detect Sections" })).toBeDisabled();
+    expect(mockCreateSections).not.toHaveBeenCalled();
+  });
+
+  it.each(["pending", "running"])("disables duplicate section detection during a %s job", async (status) => {
+    const user = userEvent.setup();
+    setProjectArtifacts("proj_123", sectionArtifacts());
+    setJobs([{ id: "active_sections", project_id: "proj_123", type: "sections", status, progress: 32 }]);
+    renderApp(["/projects/proj_123"]);
+    await screen.findByRole("heading", { name: "Demo Song" });
+    await openStudioPanel(user);
+    expect(await screen.findByRole("button", { name: "Detecting Sections..." })).toBeDisabled();
+    expect(screen.getByRole("group", { name: "Section detection" })).toHaveTextContent("32%");
+    expect(mockCreateSections).not.toHaveBeenCalled();
+  });
+
+  it("prevents duplicate section submissions while the request is pending", async () => {
+    const user = userEvent.setup();
+    setProjectArtifacts("proj_123", sectionArtifacts());
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    const create = mockCreateSections.getMockImplementation()!;
+    mockCreateSections.mockImplementationOnce(async (projectId) => { await pending; return create(projectId); });
+    renderApp(["/projects/proj_123"]);
+    await screen.findByRole("heading", { name: "Demo Song" });
+    await openStudioPanel(user);
+    await user.click(screen.getByRole("button", { name: "Detect Sections" }));
+    const pendingButton = await screen.findByRole("button", { name: "Detecting Sections..." });
+    expect(pendingButton).toBeDisabled();
+    fireEvent.click(pendingButton);
+    expect(mockCreateSections).toHaveBeenCalledTimes(1);
+    await act(async () => { release(); });
+  });
+
+  it("shows section submission failures", async () => {
+    const user = userEvent.setup();
+    setProjectArtifacts("proj_123", sectionArtifacts());
+    mockCreateSections.mockRejectedValueOnce(new Error("Section inputs changed; retry detection."));
+    renderApp(["/projects/proj_123"]);
+    await screen.findByRole("heading", { name: "Demo Song" });
+    await openStudioPanel(user);
+    await user.click(screen.getByRole("button", { name: "Detect Sections" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Section inputs changed; retry detection.");
+    expect(screen.getByRole("button", { name: "Detect Sections" })).toBeEnabled();
+  });
+
+  it("waits for source stem generation before detecting sections", async () => {
+    const user = userEvent.setup();
+    setProjectArtifacts("proj_123", sectionArtifacts());
+    setJobs([{ id: "source_stems", project_id: "proj_123", type: "stems", source_artifact_id: "art_source", status: "running", progress: 32 }]);
+    renderApp(["/projects/proj_123"]);
+    await screen.findByRole("heading", { name: "Demo Song" });
+    await openStudioPanel(user);
+    expect(screen.getByRole("button", { name: "Detect Sections" })).toBeDisabled();
+  });
+
+  it("disables section detection for an otherwise eligible sync-locked project", async () => {
+    const user = userEvent.setup();
+    setProjectArtifacts("proj_123", sectionArtifacts());
+    setProjects([
+      {
+        id: "proj_123",
+        display_name: "Demo Song",
+        source_key_override: null,
+        source_path: "/tmp/demo.wav",
+        imported_path: "/tmp/app/demo-song.wav",
+        duration_seconds: 182,
+        sample_rate: 44100,
+        channels: 2,
+        created_at: "2026-04-18T13:16:00.000Z",
+        updated_at: "2026-04-18T13:16:00.000Z",
+        sync_status: "remote_available",
+        sync_editable: false,
+        sync_status_reason: "Download source audio before editing.",
+      },
+    ]);
+    renderApp(["/projects/proj_123"]);
+    await screen.findByRole("heading", { name: "Demo Song" });
+    await openStudioPanel(user);
+    const button = screen.getByRole("button", { name: "Detect Sections" });
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute("title", "Download source audio before editing.");
+    fireEvent.click(button);
+    expect(mockCreateSections).not.toHaveBeenCalled();
+  });
+
+  it("hides section detection on mobile", async () => {
+    const user = userEvent.setup();
+    mockGetRuntimePlatform.mockReturnValue("android");
+    setProjectArtifacts("proj_123", sectionArtifacts());
+    try {
+      renderApp(["/projects/proj_123"]);
+      await screen.findByRole("heading", { name: "Demo Song" });
+      await openStudioPanel(user);
+      expect(screen.queryByRole("button", { name: "Detect Sections" })).not.toBeInTheDocument();
+    } finally {
+      mockGetRuntimePlatform.mockReturnValue(null);
+    }
+  });
+
   it("analyzes track from processing panel", async () => {
     const user = userEvent.setup();
     setProjectAnalysis("proj_123", null);
@@ -301,6 +449,10 @@ describe("Desktop app project analysis mix", () => {
     expect(screen.getByRole("button", { name: "Refresh Chords" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Refresh Lyrics" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Generate Stems" })).toBeDisabled();
+    const sectionsButton = screen.getByRole("button", { name: "Detect Sections" });
+    expect(sectionsButton).toBeDisabled();
+    fireEvent.click(sectionsButton);
+    expect(mockCreateSections).not.toHaveBeenCalled();
     expect(screen.getByRole("button", { name: "Create Mix" })).toBeDisabled();
 
     await openAnalysisPanel(user);

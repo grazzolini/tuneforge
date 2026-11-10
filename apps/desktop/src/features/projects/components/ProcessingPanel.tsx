@@ -9,6 +9,11 @@ export function ProcessingPanel() {
     canGenerateChords,
     canGenerateLyrics,
     canGenerateStems,
+    canDetectSections,
+    handleSectionsAction,
+    isSectionsRunning,
+    sectionsJob,
+    sectionsMutation,
     chordMutation,
     chordJob,
     handleAnalyzeAction,
@@ -244,6 +249,30 @@ export function ProcessingPanel() {
               ? "Rebuild Stems"
               : "Generate Stems"}
         </button>
+        {!isMobileRuntime ? (
+          <div role="group" aria-label="Section detection">
+            <button
+              className="button button--small"
+              disabled={!canDetectSections || sectionsMutation.isPending || isSectionsRunning}
+              onClick={() => void handleSectionsAction()}
+              title={editLockTitle ?? (!canDetectSections ? "Generate a complete six-stem set for the source track first." : undefined)}
+              type="button"
+            >
+              {sectionsMutation.isPending || isSectionsRunning ? "Detecting Sections..." : "Detect Sections"}
+            </button>
+            {isSectionsRunning && sectionsJob ? (
+              <p aria-live="polite" className="subpanel__copy">
+                {sectionsJob.status === "pending" ? "Waiting in queue" : sectionsJob.stage_label ?? "Detecting sections"} · {Math.round(sectionsJob.progress)}% ·{" "}
+                <Link to="/activity">Activity</Link>
+              </p>
+            ) : null}
+            {sectionsMutation.isError || sectionsJob?.status === "failed" ? (
+              <p className="inline-error" role="alert">
+                {sectionsMutation.error?.message ?? sectionsJob?.error_message ?? "Section detection failed. Retry when ready."}
+              </p>
+            ) : null}
+          </div>
+        ) : null}
         {!isMobileRuntime ? (
           <div className="processing-panel__drum-actions" role="group" aria-label="Drum refinement">
             <button

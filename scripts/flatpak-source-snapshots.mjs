@@ -59,6 +59,7 @@ export const flatpakSourceSnapshotInputs = {
   ],
   backend: [
     "README.md", "LICENSE", "THIRD_PARTY_NOTICES.md", "LICENSES/crema-0.2.0-BSD-2-Clause.txt",
+    "LICENSES/all-in-one-Transformers-Apache-2.0.txt", "LICENSES/antlr4-BSD-3-Clause.txt",
     "docs/PACKAGING.md", "apps/backend/app", "apps/backend/alembic", "apps/backend/alembic.ini",
     "apps/backend/pyproject.toml", { source: "packaging/demucs/models.json", destination: "apps/backend/demucs-models.json" },
     { source: "packaging/flatpak/ffmpeg-wrapper.sh", destination: "ffmpeg" },

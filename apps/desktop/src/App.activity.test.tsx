@@ -5581,6 +5581,48 @@ describe("Desktop app activity", () => {
     expect(mockBulkJobs).not.toHaveBeenCalled();
   });
 
+  it.each([false, true])("confirms bulk section detection before enqueueing: %s", async (approved) => {
+    const user = userEvent.setup();
+    mockConfirm.mockResolvedValueOnce(approved);
+    if (approved) mockBulkJobs.mockResolvedValueOnce({
+      created_jobs: [job({ type: "sections" }) as unknown as JobSchema],
+      total_projects: 4,
+      skipped: [
+        { project_id: "missing", project_name: "Missing stems", reason: "section_stems_required" },
+        { project_id: "busy", project_name: "Busy stems", reason: "section_stems_busy" },
+        { project_id: "unavailable", project_name: "Unavailable source", reason: "section_inputs_unavailable" },
+      ],
+    });
+    renderApp(["/activity"]);
+    await user.click(await screen.findByRole("button", { name: "Detect sections for all projects" }));
+    expect(mockConfirm).toHaveBeenCalledWith(
+      expect.stringContaining("Existing detected sections and their edits will be replaced; accepted song sections stay unchanged"),
+      expect.objectContaining({ title: "Detect sections for all projects", okLabel: "Detect sections" }),
+    );
+    if (!approved) {
+      expect(mockBulkJobs).not.toHaveBeenCalled();
+      return;
+    }
+    await waitFor(() => expect(mockBulkJobs).toHaveBeenCalledWith({ job_type: "sections" }));
+    expect(await screen.findByText("Section jobs: 1 queued, 3 skipped.")).toBeInTheDocument();
+    const skipped = within(screen.getByLabelText("Skipped projects"));
+    for (const label of ["Complete six-stem set required:", "Stem generation active:", "Section inputs unavailable:"]) {
+      expect(skipped.getByText(label)).toBeInTheDocument();
+    }
+    expect(skipped.getByText("Missing stems (missing)")).toBeInTheDocument();
+    expect(skipped.getByText("Busy stems (busy)")).toBeInTheDocument();
+    expect(skipped.getByText("Unavailable source (unavailable)")).toBeInTheDocument();
+  });
+
+  it("hides bulk section detection when Android capabilities resolve", async () => {
+    mockGetMobileCapabilities.mockResolvedValue(androidCapabilities);
+    renderApp(["/activity"]);
+    expect(await screen.findByRole("heading", { level: 2, name: "Jobs" })).toBeInTheDocument();
+    await waitFor(() => expect(mockGetMobileCapabilities).toHaveBeenCalled());
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Detect sections for all projects" }))
+      .not.toBeInTheDocument());
+  });
+
   it("shows a bulk job success summary and refreshes jobs", async () => {
     const user = userEvent.setup();
     setProjects([
@@ -5748,6 +5790,7 @@ describe("Desktop app activity", () => {
 
       expect(await screen.findByRole("heading", { level: 2, name: "Jobs" })).toBeInTheDocument();
       expect(screen.queryByRole("button", { name: /Re-process existing audio as/ })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Detect sections for all projects" })).not.toBeInTheDocument();
     } finally {
       userAgent.mockRestore();
     }

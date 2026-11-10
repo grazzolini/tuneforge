@@ -626,6 +626,9 @@ function stripTrailingStagePeriod(stageLabel: string) {
 }
 
 export function formatJobStageLabel(job: JobSchema) {
+  if (job.type === "sections" && job.status === "completed") {
+    return "Saved section candidates";
+  }
   if (job.type === "convert_audio" && job.status === "completed") {
     return "Converted audio";
   }

@@ -79,6 +79,16 @@ const BULK_JOB_ACTIONS = [
     icon: Layers,
   },
   {
+    jobType: "sections",
+    label: "Detect sections for all projects",
+    pendingLabel: "Queueing section jobs...",
+    resultLabel: "Section jobs",
+    confirmTitle: "Detect sections for all projects",
+    confirmBody: "Detect sections for projects with a complete six-stem set? Existing detected sections and their edits will be replaced; accepted song sections stay unchanged. This may take time and may use CPU heavily.",
+    okLabel: "Detect sections",
+    icon: Layers,
+  },
+  {
     jobType: "convert_audio",
     label: "Re-process existing audio",
     pendingLabel: "Queueing audio conversion jobs...",
@@ -192,6 +202,12 @@ function bulkJobSkipReasonLabel(reason: BulkJobSkippedProject["reason"]) {
       return "Locked by sync";
     case "no_existing_stems":
       return "No existing stems";
+    case "section_stems_required":
+      return "Complete six-stem set required";
+    case "section_stems_busy":
+      return "Stem generation active";
+    case "section_inputs_unavailable":
+      return "Section inputs unavailable";
     case "already_target_format":
       return "Already in target format";
     case "creation_failed":
@@ -662,7 +678,10 @@ export function ActivityView() {
             </div>
           </div>
           <div aria-label="Bulk job actions" className="activity-bulk-actions" role="group">
-            {BULK_JOB_ACTIONS.filter((action) => action.jobType !== "convert_audio" || !isAndroidRuntime()).map((action) => {
+            {BULK_JOB_ACTIONS.filter((action) =>
+              (action.jobType !== "convert_audio" || !isAndroidRuntime()) &&
+              (action.jobType !== "sections" || (!isAndroidRuntime() && !["android", "ios", "mobile"].includes(runtimePlatform ?? ""))),
+            ).map((action) => {
               const Icon = action.icon;
               const isPending = bulkJobsMutation.isPending &&
                 bulkJobsMutation.variables?.jobType === action.jobType;

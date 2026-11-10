@@ -108,6 +108,12 @@ function buildMusicCorePolicy() {
 }
 
 export const REVIEWED_FLATPAK_PYTHON_LICENSES = Object.freeze({
+  "all-in-one-infer": "MIT AND Apache-2.0", "madmom-infer": "BSD-2-Clause",
+  "antlr4-python3-runtime": "BSD-3-Clause", contourpy: "BSD-3-Clause", cycler: "BSD-3-Clause",
+  fonttools: "MIT", "hydra-core": "MIT", kiwisolver: "BSD-3-Clause",
+  matplotlib: "LicenseRef-Matplotlib AND FTL AND MIT AND LicenseRef-Qhull AND OFL-1.1 AND CC0-1.0 AND Apache-2.0 AND LicenseRef-BaKoMa AND LicenseRef-Bitstream-Vera",
+  omegaconf: "BSD-3-Clause", pillow: "MIT-CMU", pyparsing: "MIT", "python-dateutil": "BSD-3-Clause",
+
   alembic: "MIT", "annotated-doc": "MIT", "annotated-types": "MIT", anyio: "MIT",
   "audioop-lts": "PSF-2.0", certifi: "MPL-2.0", cffi: "MIT", "charset-normalizer": "MIT",
   click: "BSD-3-Clause", cryptography: "Apache-2.0 OR BSD-3-Clause", decorator: "BSD-2-Clause",
@@ -129,6 +135,7 @@ export const REVIEWED_FLATPAK_PYTHON_LICENSES = Object.freeze({
   "scikit-learn": "BSD-3-Clause", scipy: "BSD-3-Clause", setuptools: "MIT", six: "MIT",
   soundfile: "BSD-3-Clause", soxr: "LGPL-2.1-or-later", sphn: "MIT",
   sqlalchemy: "MIT", starlette: "BSD-3-Clause", sympy: "BSD-3-Clause",
+  tzdata: "Apache-2.0",
   threadpoolctl: "BSD-3-Clause", tiktoken: "MIT", torch: "BSD-3-Clause",
   torchaudio: "BSD-2-Clause", tqdm: "MPL-2.0 AND MIT", "typing-extensions": "PSF-2.0",
   tomlkit: "MIT", "trove-classifiers": "Apache-2.0", "typing-inspection": "MIT",

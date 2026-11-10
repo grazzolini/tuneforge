@@ -26,6 +26,7 @@ from app.engines.lv_chordia import (
     preload_lv_chordia_session,
 )
 from app.engines.lyrics import invalid_whisper_model_cache_files, preload_whisper_model
+from app.engines.section_weights import preload_section_weights
 from app.utils.model_cache import (
     InvalidModelFile,
     format_invalid_model_files,
@@ -46,6 +47,9 @@ def main(argv: list[str] | None = None) -> int:
             _verify_or_prewarm_crema()
         if args.include_beat_this:
             _verify_or_prewarm_beat_this(args.beat_this_checkpoint)
+        if args.include_sections:
+            preload_section_weights()
+            sys.stdout.write("Section model assets verified and cached.\n")
         if args.include_lv_chordia:
             _verify_or_prewarm_lv_chordia()
     except Exception as exc:
@@ -77,6 +81,7 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Verify/prewarm the optional bundled LV Chordia submission model.",
     )
+    parser.add_argument("--include-sections", action="store_true", help="Verify/prewarm the section model cache.")
     parser.add_argument("--beat-this-checkpoint", default=BEAT_THIS_CHECKPOINT)
     return parser
 

@@ -87,6 +87,9 @@ class Project(Base):
     tab_import: Mapped[TabImport | None] = relationship(
         back_populates="project", uselist=False, cascade="all, delete-orphan"
     )
+    section_analysis: Mapped[SectionAnalysisResult | None] = relationship(
+        back_populates="project", uselist=False, cascade="all, delete-orphan"
+    )
     song_sections: Mapped[list[SongSection]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
     )
@@ -543,3 +546,22 @@ class Setting(Base):
     key: Mapped[str] = mapped_column(String(128), primary_key=True)
     value_json: Mapped[dict[str, Any]] = mapped_column(JSON(), default=dict)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class SectionAnalysisResult(Base):
+    __tablename__ = "section_analysis_results"
+
+    project_id: Mapped[str] = mapped_column(
+        String(PROJECT_ID_LENGTH), ForeignKey("projects.id", ondelete="CASCADE"), primary_key=True
+    )
+    model_revision: Mapped[str] = mapped_column(String(128))
+    raw_sections_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON())
+    refined_sections_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON())
+    source_artifact_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    sections_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON(), default=list)
+    source_kind: Mapped[str] = mapped_column(String(32), default="generated")
+    has_user_edits: Mapped[bool] = mapped_column(Boolean(), default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    project: Mapped[Project] = relationship(back_populates="section_analysis")

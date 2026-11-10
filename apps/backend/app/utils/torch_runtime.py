@@ -11,7 +11,7 @@ def with_mps_fallback_env(base_env: Mapping[str, str] | None = None) -> dict[str
     return env
 
 
-def _cuda_build_supports_visible_devices(torch_module: Any) -> bool:
+def _cuda_build_supports_current_device(torch_module: Any) -> bool:
     cuda = getattr(torch_module, "cuda", None)
     if cuda is None:
         return False
@@ -27,12 +27,13 @@ def _cuda_build_supports_visible_devices(torch_module: Any) -> bool:
         return True
 
     supported_majors = {int(arch.removeprefix("sm_")) // 10 for arch in arch_list}
-    for device_index in range(max(0, int(device_count()))):
-        capability = get_device_capability(device_index)
-        cap_major = capability[0] if isinstance(capability, tuple) and capability else None
-        if cap_major in supported_majors:
-            return True
-    return False
+    current_device = getattr(cuda, "current_device", None)
+    device_index = int(current_device()) if callable(current_device) else 0
+    if not 0 <= device_index < int(device_count()):
+        return False
+    capability = get_device_capability(device_index)
+    cap_major = capability[0] if isinstance(capability, tuple) and capability else None
+    return cap_major in supported_majors
 
 
 def choose_torch_device(requested: str = "auto", *, torch_module: Any) -> str:
@@ -47,7 +48,7 @@ def choose_torch_device(requested: str = "auto", *, torch_module: Any) -> str:
     if mps_backend is not None and hasattr(mps_backend, "is_available"):
         has_mps = bool(mps_backend.is_available())
     has_cuda = bool(torch_module.cuda.is_available())
-    has_compatible_cuda = has_cuda and _cuda_build_supports_visible_devices(torch_module)
+    has_compatible_cuda = has_cuda and _cuda_build_supports_current_device(torch_module)
 
     if requested == "auto":
         if has_compatible_cuda:

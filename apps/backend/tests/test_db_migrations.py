@@ -257,7 +257,9 @@ def test_stamped_v1_database_is_noop_and_preserves_data() -> None:
             "SELECT version_num FROM alembic_version"
         ).fetchone()[0]
 
-    assert revision == "0023_analysis_revisions"
+    with sqlite3.connect(settings.database_path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM section_analysis_results").fetchone()[0] == 0
+    assert revision == "0024_section_analysis_results"
     assert after == before
 
 
@@ -358,3 +360,52 @@ def test_v1_baseline_downgrade_removes_application_schema() -> None:
     assert tables == {"alembic_version"}
     assert indexes == set()
     assert revisions == []
+
+
+def test_section_result_migration_creates_compact_project_maps() -> None:
+    settings = get_settings()
+    ensure_data_dirs(settings)
+    reconfigure_engine(settings)
+    command.upgrade(_migration_config(settings), "0023_analysis_revisions")
+    run_migrations(settings)
+    with sqlite3.connect(settings.database_path) as connection:
+        connection.execute("PRAGMA foreign_keys=ON")
+        columns = connection.execute("PRAGMA table_info(section_analysis_results)").fetchall()
+        assert [row[1] for row in columns] == [
+            "project_id", "model_revision", "raw_sections_json", "refined_sections_json",
+            "source_artifact_id", "sections_json", "source_kind", "has_user_edits", "created_at", "updated_at",
+        ]
+        assert columns[0][5] == 1
+        assert all(row[3] == (0 if row[1] == "source_artifact_id" else 1) for row in columns)
+        foreign_key = connection.execute("PRAGMA foreign_key_list(section_analysis_results)").fetchone()
+        assert foreign_key[2:7] == ("projects", "project_id", "id", "NO ACTION", "CASCADE")
+        timestamp = "2026-11-06 00:00:00+00:00"
+        connection.execute(
+            "INSERT INTO projects (id, display_name, source_path, imported_path, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ("section-project", "Synthetic", "", "", timestamp, timestamp),
+        )
+        maps = json.dumps([{"start_seconds": 0., "end_seconds": 1., "label": "verse"}])
+        connection.execute(
+            "INSERT INTO section_analysis_results "
+            "(project_id, model_revision, raw_sections_json, refined_sections_json) VALUES (?, ?, ?, ?)",
+            ("section-project", "model-revision", maps, maps),
+        )
+        defaults = connection.execute(
+            "SELECT source_artifact_id, sections_json, source_kind, has_user_edits, created_at, updated_at "
+            "FROM section_analysis_results"
+        ).fetchone()
+        assert defaults[:4] == (None, "[]", "generated", 0)
+        assert defaults[4] is not None and defaults[5] is not None
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "INSERT INTO section_analysis_results "
+                "(project_id, model_revision, raw_sections_json, refined_sections_json) VALUES (?, ?, ?, ?)",
+                ("missing-project", "model-revision", maps, maps),
+            )
+        connection.execute("DELETE FROM projects WHERE id = 'section-project'")
+        assert connection.execute("SELECT COUNT(*) FROM section_analysis_results").fetchone()[0] == 0
+    command.downgrade(_migration_config(settings), "0023_analysis_revisions")
+    run_migrations(settings)
+    with sqlite3.connect(settings.database_path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM section_analysis_results").fetchone()[0] == 0

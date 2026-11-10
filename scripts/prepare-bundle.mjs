@@ -43,6 +43,7 @@ const sourceDrumSepManifestPath = path.join(workspaceRoot, "packaging", "demucs"
 const stagedLvChordiaRoot = path.join(stagedPythonRoot, "share", "lv-chordia", "cache_data");
 const sourceLvChordiaRoot = path.join(backendRoot, ".venv", "share", "lv-chordia", "cache_data");
 const cremaLicensePath = path.join(workspaceRoot, "LICENSES", "crema-0.2.0-BSD-2-Clause.txt");
+const sectionLicenseNames = ["all-in-one-Transformers-Apache-2.0.txt", "antlr4-BSD-3-Clause.txt"];
 const CREMA_ONNX_ARTIFACT_NAMES = new Set([
   "crema-0.2.0-opset18.onnx",
   "crema-0.2.0-runtime-state.json",
@@ -416,6 +417,9 @@ async function main() {
   copyInto(path.join(backendRoot, "pyproject.toml"), path.join(stagedBackendSourceRoot, "pyproject.toml"));
   mkdirSync(path.join(stagedBackendRoot, "licenses"), { recursive: true });
   copyInto(cremaLicensePath, path.join(stagedBackendRoot, "licenses", path.basename(cremaLicensePath)));
+  for (const name of sectionLicenseNames) {
+    copyInto(path.join(workspaceRoot, "LICENSES", name), path.join(stagedBackendRoot, "licenses", name));
+  }
   copyInto(pythonInstallRoot, stagedPythonRoot, { dereference: true });
   assertBundledPythonLayout(stagedPythonRoot);
   copyInto(sitePackagesRoot, stagedSitePackagesRoot, { filter: shouldIncludeBundledSitePackage });

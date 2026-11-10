@@ -4,12 +4,14 @@ import hashlib
 import json
 import re
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
 from typing import Any, cast
 
-from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy import inspect, select
+from sqlalchemy.orm import Session, load_only
+from sqlalchemy.orm.attributes import set_committed_value
 
 from app.models import (
     AnalysisResult,
@@ -40,6 +42,136 @@ REGENERATION_ENTITY_TYPE = "regeneration"
 _WINDOWS_ABSOLUTE_PATH_PATTERN = re.compile(r"^[A-Za-z]:[\\/]")
 _UNC_PATH_PATTERN = re.compile(r"^\\\\")
 _DROP = object()
+
+
+@dataclass
+class _ResultRevisionLookup:
+    analysis: dict[str, AnalysisResult | None]
+    chords: dict[str, ChordTimeline | None]
+    lyrics: dict[str, LyricsTranscript | None]
+    artifact_owners: dict[str, str]
+    deleted_artifacts: set[tuple[str, str]]
+
+
+def _load_result_revision_lookup(
+    session: Session,
+    project_ids: list[str],
+    revisions: list[SyncEntityRevision],
+) -> _ResultRevisionLookup:
+    lookup = _ResultRevisionLookup(
+        dict.fromkeys(project_ids), dict.fromkeys(project_ids), dict.fromkeys(project_ids), {}, set()
+    )
+    eligible = set(project_ids)
+    source_ids: set[str] = set()
+    for revision in revisions:
+        if revision.project_id not in eligible or revision.state not in {CURRENT_REVISION_STATE, "current"}:
+            continue
+        if revision.entity_type not in {ANALYSIS_ENTITY_TYPE, CHORDS_ENTITY_TYPE, LYRICS_ENTITY_TYPE}:
+            continue
+        if isinstance(revision.source_artifact_id, str):
+            source_ids.add(revision.source_artifact_id)
+        payload = revision.payload_json
+        source_id = payload.get("source_artifact_id") if isinstance(payload, Mapping) else None
+        if isinstance(source_id, str):
+            source_ids.add(source_id)
+    # Reserve one binding for target_type on the tombstone query.
+    for offset in range(0, len(project_ids), 899):
+        chunk = project_ids[offset:offset + 899]
+        lookup.analysis.update((row.project_id, row) for row in session.scalars(
+            select(AnalysisResult).where(AnalysisResult.project_id.in_(chunk))
+        ))
+        lookup.chords.update((row.project_id, row) for row in session.scalars(
+            select(ChordTimeline).where(ChordTimeline.project_id.in_(chunk))
+        ))
+        lookup.lyrics.update((row.project_id, row) for row in session.scalars(
+            select(LyricsTranscript).where(LyricsTranscript.project_id.in_(chunk))
+        ))
+        lookup.deleted_artifacts.update(session.execute(
+            select(SyncDeleteTombstone.project_id, SyncDeleteTombstone.target_id).where(
+                SyncDeleteTombstone.project_id.in_(chunk), SyncDeleteTombstone.target_type == "artifact",
+            )
+        ).tuples())
+    referenced_ids = sorted(source_ids)
+    for offset in range(0, len(referenced_ids), 900):
+        # Do not filter by owner: a foreign artifact must remain invalid even with a tombstone.
+        lookup.artifact_owners.update(list(session.execute(
+            select(Artifact.id, Artifact.project_id).where(Artifact.id.in_(referenced_ids[offset:offset + 900]))
+        ).tuples()))
+    return lookup
+
+
+@dataclass(frozen=True, slots=True)
+class _ResultRevisionCandidate:
+    id: str
+    entity_id: str
+    order_key: tuple[datetime, str, str]
+
+
+def _load_startup_result_revisions(
+    session: Session,
+    project_ids: list[str],
+) -> tuple[
+    dict[tuple[str, str], list[SyncEntityRevision]],
+    dict[tuple[str, str], list[SyncEntityRevision]],
+]:
+    by_entity: dict[tuple[str, str], list[SyncEntityRevision]] = {}
+    candidates: dict[tuple[str, str], list[_ResultRevisionCandidate]] = {}
+    for offset in range(0, len(project_ids), 897):
+        headers = session.execute(
+            select(
+                SyncEntityRevision.id,
+                SyncEntityRevision.project_id,
+                SyncEntityRevision.entity_type,
+                SyncEntityRevision.entity_id,
+                SyncEntityRevision.state,
+                SyncEntityRevision.updated_at,
+                SyncEntityRevision.author_device_id,
+            ).where(
+                SyncEntityRevision.project_id.in_(project_ids[offset:offset + 897]),
+                SyncEntityRevision.entity_type.in_((ANALYSIS_ENTITY_TYPE, CHORDS_ENTITY_TYPE, LYRICS_ENTITY_TYPE)),
+            ).execution_options(yield_per=900)
+        ).tuples()
+        for revision_id, project_id, entity_type, entity_id, state, updated_at, author_device_id in headers:
+            key = (project_id, entity_type)
+            # Presence without a current revision must delete a projection, not backfill it.
+            by_entity.setdefault(key, [])
+            if state in {CURRENT_REVISION_STATE, "current"}:
+                candidates.setdefault(key, []).append(_ResultRevisionCandidate(
+                    revision_id, entity_id, _revision_order_key(updated_at, author_device_id, revision_id),
+                ))
+    winner_groups: dict[str, tuple[str, str]] = {}
+    loser_groups: dict[str, tuple[str, str]] = {}
+    for key, active in candidates.items():
+        winner = max(active, key=lambda candidate: candidate.order_key)
+        winner_groups[winner.id] = key
+        for sibling in active:
+            if sibling.id != winner.id and sibling.entity_id == winner.entity_id:
+                loser_groups[sibling.id] = key
+    winner_ids = list(winner_groups)
+    for offset in range(0, len(winner_ids), 900):
+        for revision in session.scalars(select(SyncEntityRevision).where(
+            SyncEntityRevision.id.in_(winner_ids[offset:offset + 900]),
+        )):
+            by_entity[winner_groups[revision.id]].append(revision)
+    losers: dict[tuple[str, str], list[SyncEntityRevision]] = {}
+    loser_ids = []
+    for loser_id, key in loser_groups.items():
+        existing = session.identity_map.get(session.identity_key(SyncEntityRevision, loser_id))
+        if existing is not None:
+            # Flush needs the committed PK; refreshing an expired PK would also load payloads.
+            if "id" in inspect(existing).unloaded:
+                set_committed_value(existing, "id", loser_id)
+            # Keep a caller-held instance's other deferred-column behavior intact.
+            losers.setdefault(key, []).append(existing)
+        else:
+            loser_ids.append(loser_id)
+    for offset in range(0, len(loser_ids), 900):
+        rows = session.scalars(select(SyncEntityRevision).options(
+            load_only(SyncEntityRevision.id, SyncEntityRevision.state, raiseload=True),
+        ).where(SyncEntityRevision.id.in_(loser_ids[offset:offset + 900])))
+        for row in rows:
+            losers.setdefault(loser_groups[row.id], []).append(row)
+    return by_entity, losers
 
 
 def record_analysis_revision(
@@ -80,15 +212,21 @@ def record_analysis_revision(
 
 def materialize_result_revisions(session: Session, project_id: str | None = None) -> None:
     """Upgrade unversioned results without assigning the upgrade clock as their write time."""
-    from app.services.sync_manifest import _export_entity_revision_manifest, _hydrate_current_entity_revisions
+    from app.services.sync_manifest import (
+        _export_entity_revision_manifest,
+        _hydrate_current_entity_revisions,
+        _hydrate_selected_result_revision,
+    )
 
     get_or_create_local_identity(session)
+    if project_id is None:
+        session.flush()
     revision_query = select(SyncEntityRevision)
     project_query = select(Project).where(Project.sync_status != "deleted")
     if project_id is not None:
         revision_query = revision_query.where(SyncEntityRevision.project_id == project_id)
         project_query = project_query.where(Project.id == project_id)
-    revisions = list(session.scalars(revision_query))
+    revisions = list(session.scalars(revision_query)) if project_id is not None else []
     by_entity: dict[tuple[str, str], list[SyncEntityRevision]] = {}
     for revision in revisions:
         by_entity.setdefault((revision.project_id, revision.entity_type), []).append(revision)
@@ -107,26 +245,48 @@ def materialize_result_revisions(session: Session, project_id: str | None = None
         if tombstone.prior_metadata_json.get("entity_id") == tombstone.project_id
         and isinstance(tombstone.prior_metadata_json.get("entity_type"), str)
     }
-    for project in session.scalars(project_query):
-        if deleted_projects.get(project.id, datetime.min.replace(tzinfo=UTC)) >= _as_utc(project.updated_at):
-            continue
+    projects = [
+        project for project in session.scalars(project_query)
+        if deleted_projects.get(project.id, datetime.min.replace(tzinfo=UTC)) < _as_utc(project.updated_at)
+    ]
+    startup_losers: dict[tuple[str, str], list[SyncEntityRevision]] = {}
+    if project_id is None:
+        by_entity, startup_losers = _load_startup_result_revisions(session, [project.id for project in projects])
+        revisions = [revision for selected in by_entity.values() for revision in selected]
+    lookup = (
+        _load_result_revision_lookup(session, [project.id for project in projects], revisions)
+        if project_id is None else None
+    )
+    for project in projects:
         for entity_type, model in (
             (ANALYSIS_ENTITY_TYPE, AnalysisResult),
             (CHORDS_ENTITY_TYPE, ChordTimeline),
             (LYRICS_ENTITY_TYPE, LyricsTranscript),
         ):
-            existing = by_entity.get((project.id, entity_type), [])
-            if existing:
+            key = (project.id, entity_type)
+            existing = by_entity.get(key, [])
+            if key in by_entity:
                 active = [revision for revision in existing if revision.state in {CURRENT_REVISION_STATE, "current"}]
                 if active:
                     winner = max(active, key=revision_lww_key)
-                    _hydrate_current_entity_revisions(session, project, [_export_entity_revision_manifest(winner)])
+                    if lookup is None:
+                        _hydrate_current_entity_revisions(session, project, [_export_entity_revision_manifest(winner)])
+                    else:
+                        for sibling in startup_losers.get(key, []):
+                            sibling.state = SUPERSEDED_REVISION_STATE
+                        _hydrate_selected_result_revision(session, project, winner, lookup)
                 else:
-                    row = session.get(model, project.id)
+                    row = (
+                        getattr(lookup, entity_type).get(project.id)
+                        if lookup is not None else session.get(model, project.id)
+                    )
                     if row is not None:
                         session.delete(row)
                 continue
-            result = session.get(model, project.id)
+            result = (
+                getattr(lookup, entity_type).get(project.id)
+                if lookup is not None else session.get(model, project.id)
+            )
             if result is None:
                 continue
             if (project.id, entity_type) in deleted_results:
@@ -524,7 +684,11 @@ def _revision_precedes_existing(
 
 
 def revision_lww_key(revision: SyncEntityRevision) -> tuple[datetime, str, str]:
-    return (_as_utc(revision.updated_at), revision.author_device_id, revision.id)
+    return _revision_order_key(revision.updated_at, revision.author_device_id, revision.id)
+
+
+def _revision_order_key(updated_at: datetime, author_device_id: str, revision_id: str) -> tuple[datetime, str, str]:
+    return (_as_utc(updated_at), author_device_id, revision_id)
 
 
 def _revision_state_rank(state: str) -> int:

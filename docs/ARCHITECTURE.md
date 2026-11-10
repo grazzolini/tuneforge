@@ -255,6 +255,13 @@ from sync metadata, manifests, announcements and artifact tombstones. Their file
 and may hydrate analysis only when no canonical revision exists. After local identity setup,
 upgrade materialization records unversioned results once using their recorded timestamps and
 provenance. Existing revisions hydrate their winner instead; deleted results stay deleted.
+Full-library startup hydration selects winners from streamed scalar revision headers, loading full
+payloads only for winners and state-only rows for their active same-entity losers. It bulk-loads
+result projections, referenced artifact ownership, and
+same-project artifact deletion proofs within the startup transaction. It validates each selected
+winner before comparing every persisted field, normalizes timestamps to UTC, and repairs only
+changed fields. Canonical libraries require no projection writes. Project-scoped sync hydration
+retains its existing path; neither path uses content hashes or timestamps to skip validation.
 Analysis job completion returns an empty `result_artifact_ids` array because results are documents.
 
 ### Database Migrations

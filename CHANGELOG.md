@@ -43,6 +43,9 @@ download, installation, verification, signature, and publication instructions.
 
 ### Performance
 
+- Reduce desktop startup result hydration queries, skip superseded payload reads, and avoid rewriting
+  unchanged saved results while preserving revision validation, deletion handling, and legacy upgrades.
+
 - Reuse unchanged musical labels during playback so navigation remains responsive.
 
 - Reduce repeated desktop sync reads and staging cleanup queries for already synchronized libraries,

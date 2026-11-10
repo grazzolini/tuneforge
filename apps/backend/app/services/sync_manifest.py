@@ -13,6 +13,7 @@ from fastapi import status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.engines.audio_encoding import (
     DURABLE_AUDIO_FORMATS,
@@ -46,6 +47,7 @@ from app.services.sync_project_status import mark_project_sync_local
 from app.services.sync_revisions import (
     CURRENT_REVISION_STATE,
     SUPERSEDED_REVISION_STATE,
+    _ResultRevisionLookup,
     revision_payload_sha256,
     sanitize_revision_payload,
 )
@@ -1200,63 +1202,138 @@ def _hydrate_project_metadata_revision(
     project.updated_at = revision.updated_at
 
 
+def _hydrate_selected_result_revision(
+    session: Session,
+    project: Project,
+    selected: SyncEntityRevision,
+    lookup: _ResultRevisionLookup,
+) -> None:
+    revision = _export_entity_revision_manifest(selected)
+    if revision.entity_type == "analysis":
+        _hydrate_analysis_revision(session, project, revision, lookup)
+    elif revision.entity_type == "chords":
+        _hydrate_chord_revision(session, project, revision, lookup)
+    elif revision.entity_type == "lyrics":
+        _hydrate_lyrics_revision(session, project, revision, lookup)
+
+
+def _result_value_equal(actual: Any, expected: Any) -> bool:
+    if actual is expected:
+        return True
+    value_type = type(actual)
+    if value_type is not type(expected):
+        return False
+    if value_type is dict:
+        if actual.keys() != expected.keys():
+            return False
+        for key, value in actual.items():
+            if not _result_value_equal(value, expected[key]):
+                return False
+        return True
+    if value_type is list:
+        if len(actual) != len(expected):
+            return False
+        for left, right in zip(actual, expected, strict=True):
+            if not _result_value_equal(left, right):
+                return False
+        return True
+    if isinstance(actual, datetime):
+        return sync_datetime_as_utc(actual) == sync_datetime_as_utc(expected)
+    return bool(actual == expected)
+
+
+def _apply_result_values(
+    row: AnalysisResult | ChordTimeline | LyricsTranscript,
+    values: dict[str, Any],
+    lookup: _ResultRevisionLookup | None,
+) -> None:
+    changed = False
+    for name, value in values.items():
+        if lookup is None or not _result_value_equal(getattr(row, name), value):
+            is_bulk_json = lookup is not None and name.endswith("_json")
+            setattr(row, name, deepcopy(value) if is_bulk_json else value)
+            if is_bulk_json:
+                flag_modified(row, name)
+            changed = True
+    if lookup is not None and changed:
+        # Explicitly bind the winner's timestamp, including when its value already matches.
+        # Otherwise a projection-only repair can invoke the model's onupdate clock.
+        row.updated_at = values["updated_at"]
+        flag_modified(row, "updated_at")
+
+
 def _hydrate_chord_revision(
     session: Session,
     project: Project,
     revision: SyncEntityRevisionManifest,
+    lookup: _ResultRevisionLookup | None = None,
 ) -> None:
     payload = revision.payload
-    chords = session.get(ChordTimeline, project.id)
+    copy_values = lookup is None
+    segments = _payload_list(payload, ("segments", "segments_json", "timeline"), _copy=copy_values)
+    timeline = _payload_list(payload, ("timeline", "timeline_json"), default=segments, _copy=copy_values)
+    values = {
+        "backend": _payload_optional_str(payload, "backend") or "default",
+        "source_artifact_id": _result_source_artifact_id(
+            session, project.id,
+            _payload_optional_str(payload, "source_artifact_id") or revision.source_artifact_id, lookup
+        ),
+        "source_segments_json": _payload_list(payload, ("source_segments", "source_segments_json"), _copy=copy_values),
+        "segments_json": segments,
+        "timeline_json": timeline,
+        "source_kind": _payload_optional_str(payload, "source_kind") or "generated",
+        "has_user_edits": _payload_bool(payload, "has_user_edits", default=False),
+        "metadata_json": _payload_mapping(
+            payload,
+            ("metadata", "metadata_json"),
+            default=revision.metadata,
+            _copy=copy_values,
+        ),
+        "created_at": _payload_datetime(payload, "created_at") or revision.created_at,
+        "updated_at": _payload_datetime(payload, "updated_at") or revision.updated_at,
+    }
+    chords = lookup.chords.get(project.id) if lookup is not None else session.get(ChordTimeline, project.id)
     if chords is None:
-        chords = ChordTimeline(project_id=project.id, created_at=revision.created_at)
+        chords = ChordTimeline(project_id=project.id)
         session.add(chords)
-
-    segments = _payload_list(payload, ("segments", "segments_json", "timeline"))
-    timeline = _payload_list(payload, ("timeline", "timeline_json"), default=segments)
-    chords.backend = _payload_optional_str(payload, "backend") or "default"
-    chords.source_artifact_id = _result_source_artifact_id(
-        session, project.id, _payload_optional_str(payload, "source_artifact_id") or revision.source_artifact_id
-    )
-    chords.source_segments_json = _payload_list(payload, ("source_segments", "source_segments_json"))
-    chords.segments_json = segments
-    chords.timeline_json = timeline
-    chords.source_kind = _payload_optional_str(payload, "source_kind") or "generated"
-    chords.has_user_edits = _payload_bool(payload, "has_user_edits", default=False)
-    chords.metadata_json = _payload_mapping(
-        payload,
-        ("metadata", "metadata_json"),
-        default=revision.metadata,
-    )
-    chords.created_at = _payload_datetime(payload, "created_at") or revision.created_at
-    chords.updated_at = _payload_datetime(payload, "updated_at") or revision.updated_at
+        if lookup is not None:
+            lookup.chords[project.id] = chords
+    _apply_result_values(chords, values, lookup)
 
 
 def _hydrate_lyrics_revision(
     session: Session,
     project: Project,
     revision: SyncEntityRevisionManifest,
+    lookup: _ResultRevisionLookup | None = None,
 ) -> None:
     payload = revision.payload
-    lyrics = session.get(LyricsTranscript, project.id)
+    copy_values = lookup is None
+    values = {
+        "backend": _payload_optional_str(payload, "backend") or "openai-whisper",
+        "source_artifact_id": _result_source_artifact_id(
+            session, project.id,
+            _payload_optional_str(payload, "source_artifact_id") or revision.source_artifact_id, lookup
+        ),
+        "source_kind": _payload_optional_str(payload, "source_kind") or "ai",
+        "requested_device": _payload_optional_str(payload, "requested_device"),
+        "device": _payload_optional_str(payload, "device"),
+        "model_name": _payload_optional_str(payload, "model_name"),
+        "language": _payload_optional_str(payload, "language"),
+        "language_override": _payload_lyrics_language_override(payload),
+        "source_segments_json": _payload_list(payload, ("source_segments", "source_segments_json"), _copy=copy_values),
+        "segments_json": _payload_list(payload, ("segments", "segments_json"), _copy=copy_values),
+        "has_user_edits": _payload_bool(payload, "has_user_edits", default=False),
+        "created_at": _payload_datetime(payload, "created_at") or revision.created_at,
+        "updated_at": _payload_datetime(payload, "updated_at") or revision.updated_at,
+    }
+    lyrics = lookup.lyrics.get(project.id) if lookup is not None else session.get(LyricsTranscript, project.id)
     if lyrics is None:
-        lyrics = LyricsTranscript(project_id=project.id, created_at=revision.created_at)
+        lyrics = LyricsTranscript(project_id=project.id)
         session.add(lyrics)
-
-    lyrics.backend = _payload_optional_str(payload, "backend") or "openai-whisper"
-    lyrics.source_artifact_id = _result_source_artifact_id(
-        session, project.id, _payload_optional_str(payload, "source_artifact_id") or revision.source_artifact_id
-    )
-    lyrics.source_kind = _payload_optional_str(payload, "source_kind") or "ai"
-    lyrics.requested_device = _payload_optional_str(payload, "requested_device")
-    lyrics.device = _payload_optional_str(payload, "device")
-    lyrics.model_name = _payload_optional_str(payload, "model_name")
-    lyrics.language = _payload_optional_str(payload, "language")
-    lyrics.language_override = _payload_lyrics_language_override(payload)
-    lyrics.source_segments_json = _payload_list(payload, ("source_segments", "source_segments_json"))
-    lyrics.segments_json = _payload_list(payload, ("segments", "segments_json"))
-    lyrics.has_user_edits = _payload_bool(payload, "has_user_edits", default=False)
-    lyrics.created_at = _payload_datetime(payload, "created_at") or revision.created_at
-    lyrics.updated_at = _payload_datetime(payload, "updated_at") or revision.updated_at
+        if lookup is not None:
+            lookup.lyrics[project.id] = lyrics
+    _apply_result_values(lyrics, values, lookup)
 
 
 def _hydrate_section_revision(
@@ -1290,9 +1367,21 @@ def _hydrate_section_revision(
     section.updated_at = _payload_datetime(payload, "updated_at") or revision.updated_at
 
 
-def _result_source_artifact_id(session: Session, project_id: str, source_id: str | None) -> str | None:
+def _result_source_artifact_id(
+    session: Session,
+    project_id: str,
+    source_id: str | None,
+    lookup: _ResultRevisionLookup | None = None,
+) -> str | None:
     if source_id is None:
         return None
+    if lookup is not None:
+        owner = lookup.artifact_owners.get(source_id)
+        if owner == project_id:
+            return source_id
+        if owner is None and (project_id, source_id) in lookup.deleted_artifacts:
+            return None
+        raise _invalid_manifest("Result source_artifact_id must belong to the manifest project.")
     source = session.get(Artifact, source_id)
     if source is not None and source.project_id == project_id:
         return source_id
@@ -1310,25 +1399,31 @@ def _hydrate_analysis_revision(
     session: Session,
     project: Project,
     revision: SyncEntityRevisionManifest,
+    lookup: _ResultRevisionLookup | None = None,
 ) -> None:
     payload = revision.payload
     source_artifact_id = _analysis_optional_str(payload, "source_artifact_id") or revision.source_artifact_id
-    source_artifact_id = _result_source_artifact_id(session, project.id, source_artifact_id)
-    analysis = session.get(AnalysisResult, project.id)
+    source_artifact_id = _result_source_artifact_id(session, project.id, source_artifact_id, lookup)
+    values = {
+        "source_artifact_id": source_artifact_id,
+        "estimated_key": _analysis_optional_str(payload, "estimated_key"),
+        "key_confidence": _analysis_optional_float(payload, "key_confidence"),
+        "estimated_reference_hz": _analysis_optional_float(payload, "estimated_reference_hz"),
+        "tuning_offset_cents": _analysis_optional_float(payload, "tuning_offset_cents"),
+        "tempo_bpm": _analysis_optional_float(payload, "tempo_bpm"),
+        "timing_json": _analysis_optional_mapping(payload, "timing", _copy=lookup is None),
+        "analysis_version": _analysis_optional_str(payload, "analysis_version") or "v3",
+        "created_at": _payload_datetime(payload, "created_at") or revision.created_at,
+        "updated_at": _payload_datetime(payload, "updated_at") or revision.updated_at,
+        "metadata_json": deepcopy(revision.metadata) if lookup is None else revision.metadata,
+    }
+    analysis = lookup.analysis.get(project.id) if lookup is not None else session.get(AnalysisResult, project.id)
     if analysis is None:
         analysis = AnalysisResult(project_id=project.id)
         session.add(analysis)
-    analysis.source_artifact_id = source_artifact_id
-    analysis.estimated_key = _analysis_optional_str(payload, "estimated_key")
-    analysis.key_confidence = _analysis_optional_float(payload, "key_confidence")
-    analysis.estimated_reference_hz = _analysis_optional_float(payload, "estimated_reference_hz")
-    analysis.tuning_offset_cents = _analysis_optional_float(payload, "tuning_offset_cents")
-    analysis.tempo_bpm = _analysis_optional_float(payload, "tempo_bpm")
-    analysis.timing_json = _analysis_optional_mapping(payload, "timing")
-    analysis.analysis_version = _analysis_optional_str(payload, "analysis_version") or "v3"
-    analysis.created_at = _payload_datetime(payload, "created_at") or revision.created_at
-    analysis.updated_at = _payload_datetime(payload, "updated_at") or revision.updated_at
-    analysis.metadata_json = deepcopy(revision.metadata)
+        if lookup is not None:
+            lookup.analysis[project.id] = analysis
+    _apply_result_values(analysis, values, lookup)
 
 
 def _hydrate_analysis_result_from_artifact(session: Session, project: Project) -> None:
@@ -2293,11 +2388,12 @@ def _payload_list(
     names: tuple[str, ...],
     *,
     default: list[dict[str, Any]] | None = None,
+    _copy: bool = True,
 ) -> list[dict[str, Any]]:
     value = _payload_first(payload, names, default=[] if default is None else default)
     if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
         raise _invalid_manifest(f"Entity revision payload field must be a list of objects: {names[0]}.")
-    return cast(list[dict[str, Any]], deepcopy(value))
+    return cast(list[dict[str, Any]], deepcopy(value) if _copy else value)
 
 
 def _payload_mapping(
@@ -2305,11 +2401,12 @@ def _payload_mapping(
     names: tuple[str, ...],
     *,
     default: dict[str, Any] | None = None,
+    _copy: bool = True,
 ) -> dict[str, Any]:
     value = _payload_first(payload, names, default={} if default is None else default)
     if not isinstance(value, dict):
         raise _invalid_manifest(f"Entity revision payload field must be an object: {names[0]}.")
-    return cast(dict[str, Any], deepcopy(value))
+    return cast(dict[str, Any], deepcopy(value) if _copy else value)
 
 
 def _payload_datetime(payload: Mapping[str, Any], name: str) -> datetime | None:
@@ -2354,13 +2451,15 @@ def _analysis_optional_float(payload: Mapping[str, Any], name: str) -> float | N
     return float(value)
 
 
-def _analysis_optional_mapping(payload: Mapping[str, Any], name: str) -> dict[str, Any] | None:
+def _analysis_optional_mapping(
+    payload: Mapping[str, Any], name: str, *, _copy: bool = True,
+) -> dict[str, Any] | None:
     value = payload.get(name)
     if value is None:
         return None
     if not isinstance(value, dict):
         raise _invalid_manifest(f"Analysis artifact field must be an object or null: {name}.")
-    return cast(dict[str, Any], deepcopy(value))
+    return cast(dict[str, Any], deepcopy(value) if _copy else value)
 
 
 def _payload_first(payload: Mapping[str, Any], names: tuple[str, ...], *, default: Any) -> Any:

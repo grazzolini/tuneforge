@@ -12,6 +12,11 @@ const rules = `-keepclassmembers class com.tuneforge.desktop.MainActivity {
     public java.lang.String getTuneForgePowerInhibitionStatus();
     public java.lang.String getTuneForgeAudioPermissionState();
     public java.lang.String requestTuneForgeAudioPermission();
+    public java.lang.String getTuneForgeDemucsStatus();
+    public java.lang.String runTuneForgeDemucs(java.lang.String,java.lang.String,java.lang.String);
+    public java.lang.String takeTuneForgeDemucsError(java.lang.String);
+    public void cancelTuneForgeDemucs(java.lang.String);
+    public int getTuneForgeDemucsProgress(java.lang.String);
     public java.lang.String getTuneForgeBeatThisStatus();
     public float[][] runTuneForgeBeatThis(float[],int,java.lang.String);
     public java.lang.String takeTuneForgeBeatThisError(java.lang.String);
@@ -41,6 +46,11 @@ test("parses only exact narrow JNI rules", () => {
     ["getTuneForgePowerInhibitionStatus", "()Ljava/lang/String;"],
     ["getTuneForgeAudioPermissionState", "()Ljava/lang/String;"],
     ["requestTuneForgeAudioPermission", "()Ljava/lang/String;"],
+  ["getTuneForgeDemucsStatus", "()Ljava/lang/String;"],
+  ["runTuneForgeDemucs", "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;"],
+  ["takeTuneForgeDemucsError", "(Ljava/lang/String;)Ljava/lang/String;"],
+  ["cancelTuneForgeDemucs", "(Ljava/lang/String;)V"],
+  ["getTuneForgeDemucsProgress", "(Ljava/lang/String;)I"],
     ["getTuneForgeBeatThisStatus", "()Ljava/lang/String;"],
     ["runTuneForgeBeatThis", "([FILjava/lang/String;)[[F"],
     ["takeTuneForgeBeatThisError", "(Ljava/lang/String;)Ljava/lang/String;"],

@@ -1,3 +1,4 @@
+import { cleanAndroidDemucsStaging, prepareAndroidDemucsRuntime, validateAndroidDemucsApk } from "./prepare-android-demucs-runtime.mjs";
 import { configureAndroidToolchain } from "./android-configure-toolchain.mjs";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -9,7 +10,7 @@ import { selectAndroidTools } from "./validate-android-release-jni.mjs";
 import { validateSoxrOutput } from "./build-soxr.mjs";
 import { formatBuildDuration } from "./package-options.mjs";
 import { PRODUCTION_PACKAGE, TEST_PACKAGE } from "./package-profile.mjs";
-import { resolveSdk as discoverSdk, resolveNdk as discoverNdk, validatedNdkRevision, compareVersions, androidToolchainProfiles, selectSdkPlatform as discoverSdkPlatform } from "./android-toolchain.mjs";
+import { resolveSdk as discoverSdk, resolveNdk as discoverNdk, androidHostPrebuilt, validatedNdkRevision, compareVersions, androidToolchainProfiles, selectSdkPlatform as discoverSdkPlatform } from "./android-toolchain.mjs";
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDir, "..");
 const desktopDir = path.join(repoRoot, "apps/desktop");
@@ -129,11 +130,15 @@ export function validateLocalPackageName(value) {
 export function sanitizedEnv(env = process.env) {
   const result = { ...env };
   for (const name of publishableVariables) delete result[name];
+  delete result.TUNEFORGE_ANDROID_PACKAGE_STAGING;
   return result;
 }
-export function publishableBuildEnv(baseEnv, sourceEnv) {
+export function publishableBuildEnv(baseEnv, sourceEnv, stagingEnv = {}) {
   const result = sanitizedEnv(baseEnv);
   for (const name of publishableVariables.slice(0, 4)) result[name] = sourceEnv[name];
+  if (stagingEnv.TUNEFORGE_ANDROID_PACKAGE_STAGING) {
+    result.TUNEFORGE_ANDROID_PACKAGE_STAGING = stagingEnv.TUNEFORGE_ANDROID_PACKAGE_STAGING;
+  }
   return result;
 }
 export function acquirePackagingLock(lockPath = packageLock, {
@@ -878,6 +883,7 @@ export function main(argv = process.argv.slice(2)) {
   const lock = acquirePackagingLock();
   const startedAt = performance.now();
   let isolatedHome;
+  let preparedProject = false;
   try {
     const config = publishable ? readPublishableConfig(sourceEnv) : undefined;
     const { java, sdk, ndk, tools } = resolveAndroidToolchain({ env: cleanEnv });
@@ -886,7 +892,7 @@ export function main(argv = process.argv.slice(2)) {
     isolatedHome = fs.mkdtempSync(path.join(os.tmpdir(), "tuneforge-android-home-"));
     const ffmpegRoot = path.resolve(sourceEnv.TUNEFORGE_ANDROID_FFMPEG_ROOT ?? defaultFfmpegRoot);
     const soxrRoot = path.resolve(sourceEnv.TUNEFORGE_ANDROID_SOXR_ROOT ?? defaultSoxrRoot);
-    const ndkHost = process.platform === "darwin" ? "darwin-x86_64" : "linux-x86_64";
+    const ndkHost = androidHostPrebuilt();
     const llvmReadelf = path.join(ndk.path, "toolchains/llvm/prebuilt", ndkHost, "bin/llvm-readelf");
     requireExecutables([llvmReadelf]);
     const env = {
@@ -904,28 +910,47 @@ export function main(argv = process.argv.slice(2)) {
     const selectedProfile = androidToolchainProfiles.find((profile) => profile.id === tools.profile);
     if (compareVersions(tools.sdkVersion, String(selectedProfile.minimumSdk)) > 0) console.warn(`[android package] API ${tools.sdkVersion} is newer than configured API ${selectedProfile.minimumSdk}; packaging is unvalidated.`);
     prepareNativeProject({ env, ffmpegRoot, soxrRoot, sourceEnv });
-    const localSigning = mode !== "prepare" && !publishable
-      ? ensureLocalTestKeystore(java, { env: cleanEnv }) : undefined;
-    const buildEnv = publishable ? publishableBuildEnv(env, sourceEnv) : localSigning ? {
-      ...env,
-      TUNEFORGE_ANDROID_TEST_KEYSTORE_PATH: localSigning.path,
-      TUNEFORGE_ANDROID_TEST_KEY_PASSWORD: localSigning.password,
-    } : env;
+    preparedProject = true;
+    cleanAndroidDemucsStaging(androidDir);
+    const stagingRoot = path.join(isolatedHome, "package-staging");
+    const models = path.join(stagingRoot, "assets/models");
     console.log(`[android package] ${tools.profile} profile; JDK ${java.version}; SDK ${sdk} (API ${tools.sdkVersion}, build-tools ${tools.version}); NDK ${ndk.version} (${ndk.path})`);
     if (mode === "prepare") {
-      if (modelBundle) run(process.execPath, [prepareModelAssets], { env, label: "Android model bundle preparation" });
-      else fs.rmSync(path.join(androidDir, "app/src/main/assets/models"), { recursive: true, force: true });
+      if (modelBundle) run(process.execPath, [prepareModelAssets, models],
+        { env, label: "Android model bundle verification" });
       console.log("[android package] completion (prepare)");
       return;
     }
+    const localSigning = !publishable ? ensureLocalTestKeystore(java, { env: cleanEnv }) : undefined;
+    fs.mkdirSync(stagingRoot, { recursive: true });
+    const { receipt, env: stagingEnv } = prepareAndroidDemucsRuntime({
+      androidDir, stagingRoot, ndk: ndk.path, readelf: llvmReadelf, env,
+    });
+    run(process.execPath, [prepareModelAssets, models, ...(modelBundle ? [] : ["--descriptor-only"])],
+      { env, label: "Android model asset preparation" });
+    const modelManifestSha256 = crypto.createHash("sha256").update(fs.readFileSync(path.join(models, "manifest.json"))).digest("hex");
+    const audit = (apk) => {
+      const identity = publishable ? PRODUCTION_PACKAGE.id : packageName ?? TEST_PACKAGE.id;
+      const auditDir = path.join(desktopDir, "src-tauri/target/android-demucs-audit", identity, profile ? "profile" : mode);
+      const temporaryReport = path.join(stagingRoot, "apk-runtime-audit.json");
+      validateAndroidDemucsApk({ apk, readelf: llvmReadelf, receipt, modelManifestSha256, report: temporaryReport, env });
+      fs.mkdirSync(auditDir, { recursive: true });
+      fs.copyFileSync(temporaryReport, path.join(auditDir, "apk-runtime-audit.json"));
+      fs.writeFileSync(path.join(auditDir, "producer-receipt.json"),
+        `${JSON.stringify({ ...receipt, modelManifestSha256 }, null, 2)}\n`);
+    };
+    const buildEnv = publishable ? publishableBuildEnv(env, sourceEnv, stagingEnv) : {
+      ...env,
+      ...stagingEnv,
+      TUNEFORGE_ANDROID_TEST_KEYSTORE_PATH: localSigning.path,
+      TUNEFORGE_ANDROID_TEST_KEY_PASSWORD: localSigning.password,
+    };
     run(process.execPath, [path.join(scriptDir, "build-music-core.mjs"), "--target", "wasm"],
       { env: cleanEnv, label: "Music-core WASM build" });
     run(process.execPath, [path.join(scriptDir, "build-music-core.mjs"), "--target", "wasm", "--check"],
       { env: cleanEnv, label: "Music-core WASM verification" });
     stageMusicCoreNotices();
     const buildFile = path.join(androidDir, "app/build.gradle.kts");
-    if (modelBundle) run(process.execPath, [prepareModelAssets], { env, label: "Android model bundle preparation" });
-    else fs.rmSync(path.join(androidDir, "app/src/main/assets/models"), { recursive: true, force: true });
     const rawApk = path.join(androidDir, "app/build/outputs/apk/universal/release/app-universal-release.apk");
     const metadata = path.join(path.dirname(rawApk), "output-metadata.json");
     const mapping = path.join(androidDir, "app/build/outputs/mapping/universalRelease/mapping.txt");
@@ -953,6 +978,7 @@ export function main(argv = process.argv.slice(2)) {
         apk, tools, config.expectedFingerprint, tauriConfig.version, { env });
         run(process.execPath, [path.join(scriptDir, "validate-android-release-jni.mjs"), "--apk", apk],
           { env, label: "Android release JNI validation" });
+        audit(apk);
       };
       const output = runPublishableTransaction({ buildFile, configure: configurePublishableSigning,
         intermediates: [path.dirname(rawApk), mapping], metadataPath: metadata, staging, destination,
@@ -989,6 +1015,7 @@ export function main(argv = process.argv.slice(2)) {
         const artifact = verifySpecific(debug, tools, buildEnv);
         verifyApplicationId(artifact.apk, tools, localPackageId, { env: buildEnv });
         verifyLocalSigner(artifact.apk, tools, localSigning.fingerprint, { env: buildEnv });
+        audit(artifact.apk);
         if (!debug) run(process.execPath, [path.join(scriptDir, "validate-android-release-jni.mjs")],
           { env, label: "Android release JNI validation" });
         if (profile) {
@@ -1017,7 +1044,11 @@ export function main(argv = process.argv.slice(2)) {
     }
   } finally {
     try {
-      if (isolatedHome) fs.rmSync(isolatedHome, { recursive: true, force: true });
+      try {
+        if (preparedProject) cleanAndroidDemucsStaging(androidDir);
+      } finally {
+        if (isolatedHome) fs.rmSync(isolatedHome, { recursive: true, force: true });
+      }
     } finally {
       lock.release();
       if (mode !== "prepare") process.stdout.write(`BUILD time: ${formatBuildDuration(performance.now() - startedAt)}\n`);

@@ -2309,18 +2309,20 @@ const mobileBeatBackendsResponse = (capabilities: MobileCapabilities): BeatBacke
     },
   ],
 });
-const mobileStemModelsResponse: StemModelsResponse = {
+const mobileStemModelsResponse = (available: boolean): StemModelsResponse => ({
   models: [
     {
-      availability: "unavailable",
-      available: false,
+      availability: available ? "available" : "unavailable",
+      available,
       default: true,
-      description: "Demucs six-source stem separation is not available on mobile.",
+      description: available
+        ? "Offline Demucs six-source separation on CPU."
+        : "Bundled Demucs runtime or six-source model is unavailable.",
       id: "htdemucs_6s",
       label: "Default (6 stems model)",
       sourceCount: 6,
       sources: ["vocals", "drums", "bass", "guitar", "piano", "other"],
-      unavailable_reason: "stem separation is disabled on mobile",
+      unavailable_reason: available ? null : "bundled stem runtime or model is unavailable",
     },
     {
       availability: "unavailable",
@@ -2334,7 +2336,7 @@ const mobileStemModelsResponse: StemModelsResponse = {
       unavailable_reason: "stem separation is disabled on mobile",
     },
   ],
-};
+});
 
 export class ApiError extends Error {
   code: string;
@@ -2582,7 +2584,9 @@ function createMobileTuneForgeClient(platform: "android" | "ios"): TuneForgeClie
     listChordBackends: async () => mobileChordBackendsResponse(
       await invokeMobile<MobileCapabilities>("mobile_capabilities"),
     ),
-    listStemModels: async () => mobileStemModelsResponse,
+    listStemModels: async () => mobileStemModelsResponse(
+      platform === "android" && (await invokeMobile<MobileCapabilities>("mobile_capabilities")).stemSeparationAvailable,
+    ),
     createChords: (projectId: string, body: ChordRequest) => {
       requireSupportedMobileChordBackend(body);
       return invokeMobile("mobile_submit_chords", { projectId, payload: body });

@@ -107,6 +107,32 @@ describe("mobile sync API adapter", () => {
     vi.resetModules();
   });
 
+  it("exposes only the verified bundled six-source model on Android", async () => {
+    const api = await loadMobileApi();
+    const unavailable = await api.listStemModels();
+    expect(unavailable.models.every((model) => !model.available)).toBe(true);
+    mockInvoke.mockImplementation(async (command: string) => {
+      if (command === "mobile_capabilities") {
+        return { ...mobileCapabilities, stemSeparationAvailable: true };
+      }
+      return {};
+    });
+    const ready = await api.listStemModels();
+    expect(ready.models.find((model) => model.id === "htdemucs_6s")).toMatchObject({
+      available: true,
+      description: "Offline Demucs six-source separation on CPU.",
+      sourceCount: 6,
+      unavailable_reason: null,
+    });
+    expect(ready.models.find((model) => model.id === "htdemucs_ft")?.available).toBe(false);
+    const payload = {
+      mode: "stems" as const, stem_model: "htdemucs_6s", output_format: "flac" as const,
+      source_artifact_id: "source", chord_backend: "tuneforge-fast" as const, force: false,
+    };
+    await api.createStems("project", payload);
+    expect(mockInvoke).toHaveBeenLastCalledWith("mobile_submit_stems", { projectId: "project", payload });
+  });
+
   it("routes mobile sync pairing and trusted-peer methods to mobile commands", async () => {
     const api = await loadMobileApi();
 
@@ -139,6 +165,9 @@ describe("mobile sync API adapter", () => {
     await expect(apiModule.initializeApi()).resolves.toBe("mobile://embedded");
     mockInvoke.mockClear();
 
+    const stemModels = await apiModule.api.listStemModels();
+    expect(stemModels.models.every((model) => !model.available)).toBe(true);
+    expect(mockInvoke).not.toHaveBeenCalledWith("mobile_capabilities", undefined);
     await apiModule.api.getHealth();
 
     expect(mockInvoke).toHaveBeenCalledWith("mobile_get_health", undefined);

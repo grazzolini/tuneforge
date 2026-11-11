@@ -102,9 +102,16 @@ test("owned codec policy records audited payloads and platform ownership", () =>
   assert.doesNotMatch(rendered, /FFmpeg and ffprobe are host-installed and are not bundled/);
 });
 
-test("Android analysis inventory pins Crema, ONNX Runtime, and owned libsoxr", () => {
+test("Android analysis inventory pins Demucs, Crema, ONNX Runtime, and owned libsoxr", () => {
   const policy = buildReleaseLicenseInventory().androidAnalysisPolicy;
 
+  assert.equal(policy.demucs.profile.variant, "cpu-t4-b1-openblas-pthread");
+  assert.equal(policy.demucs.openblas.license, "BSD-3-Clause");
+  assert.equal(policy.demucs.openblas.sourceSha256, "cd7e129868320cc2d033afa920e31202dfe0b8066a5b66661900ccc0f197dfed");
+  assert.equal(policy.demucs.model.revision, "053e1404489b3dc58bf718224fac4b7316de8c93");
+  assert.equal(policy.demucs.model.fileName, "5c90dfd2.safetensors");
+  assert.equal(policy.demucs.nativeArchives.find(({ name }) => name === "python-torch").version, "2.15.0");
+  assert.ok(policy.demucs.nativeArchives.every(({ recipeSha256 }) => /^[a-f0-9]{64}$/.test(recipeSha256)));
   assert.deepEqual(policy.onnxRuntime, {
     coordinate: "com.microsoft.onnxruntime:onnxruntime-android:1.29.0",
     version: "1.29.0",
@@ -125,6 +132,8 @@ test("Android analysis inventory pins Crema, ONNX Runtime, and owned libsoxr", (
 
   const rendered = formatReleaseLicenseInventory(buildReleaseLicenseInventory());
   assert.match(rendered, /Android analysis runtime policy:/);
+  assert.match(rendered, /Demucs runtime: cpu-t4-b1-openblas-pthread/);
+  assert.match(rendered, /OpenBLAS 0\.3\.34: BSD-3-Clause/);
   assert.match(rendered, /onnxruntime-android:1\.29\.0/);
   assert.match(rendered, /libsoxr soxr-a66f3eee: LGPL-2\.1-or-later/);
   assert.match(rendered, /PFFFT 483453d8f7661058e74aa4e7cf5c27bcd7887e7a: BSD-3-Clause/);

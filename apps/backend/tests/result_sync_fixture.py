@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -13,18 +14,26 @@ from pathlib import Path
 from unittest.mock import patch
 
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.db import SessionLocal, run_migrations
 from app.engines.lyrics import LyricsTranscription
-from app.models import AnalysisResult, Artifact, ChordTimeline, LyricsTranscript
+from app.models import AnalysisResult, Artifact, ChordTimeline, LyricsTranscript, Project, SyncTrustedPeer
 from app.services import analysis, chords, lyrics, stems
 from app.services.chord_backends import ChordDetectionResult, CremaChordBackend, FastChordBackend
 from app.services.projects import import_project
 from app.services.stem_models import STEM_MODELS
+from app.services.stem_signal_metadata import (
+    add_analysis_usability_to_stem_signal_metadatas,
+    build_stem_signal_metadata,
+    has_current_stem_signal_analysis_usability,
+)
 from app.services.sync_bundle import export_sync_bundle
 from app.services.sync_reconciliation_apply import apply_sync_reconciliation
 from app.services.sync_revisions import materialize_result_revisions
+from app.services.sync_staging import stage_sync_artifact
+from app.services.sync_trust import get_or_create_local_identity
 
 
 def write_tone(path: Path, hz: float) -> None:
@@ -48,6 +57,7 @@ def build(root: Path, *, count: int, variant: str) -> None:
     run_migrations()
     metrics = {"empty_migration_ms": round((time.perf_counter() - started) * 1000, 2)}
     advanced = False
+    output_format = "flac" if variant == "combined" else "m4a"
 
     def separate(_source, plan, **_kwargs):
         for index, item in enumerate(plan):
@@ -121,7 +131,7 @@ def build(root: Path, *, count: int, variant: str) -> None:
                 source_path=str(source),
                 copy_into_project=True,
                 display_name=f"Synthetic {index}",
-                output_format="m4a",
+                output_format=output_format,
             )
             session.commit()
             session.refresh(project)
@@ -131,7 +141,7 @@ def build(root: Path, *, count: int, variant: str) -> None:
                     session,
                     project=project,
                     source_artifact_id=source_artifact.id,
-                    output_format="m4a",
+                    output_format=output_format,
                     force=True,
                     stem_model="htdemucs_ft",
                 )
@@ -155,7 +165,7 @@ def build(root: Path, *, count: int, variant: str) -> None:
                     session,
                     project=project,
                     source_artifact_id=source.id,
-                    output_format="m4a",
+                    output_format=output_format,
                     force=True,
                     stem_model="htdemucs_6s",
                 )
@@ -183,8 +193,44 @@ def build(root: Path, *, count: int, variant: str) -> None:
 
 
 def verify_native(root: Path, manifest_path: Path) -> None:
+    assert get_settings().data_root == (root / "backend-data").resolve()
+    assert Path(os.environ["TUNEFORGE_SYNC_TRANSPORT_DATA_DIR"]).resolve() == (root / "transport-data").resolve()
     manifest = json.loads(manifest_path.read_text())
+    project_id = manifest["project"]["project_id"]
+    native_stems = [item for item in manifest["artifacts"] if item["type"].endswith("_stem")]
+    assert len(native_stems) == 6
+    provider_id = next(
+        item["author_device_id"]
+        for item in manifest["entity_revisions"]
+        if item["entity_type"] == "lyrics" and item["revision_type"] == "user_edit"
+    )
     with SessionLocal() as session:
+        identity = get_or_create_local_identity(session)
+        session.add(SyncTrustedPeer(
+            device_id=provider_id,
+            sync_group_id=identity.sync_group_id,
+            display_name="Synthetic Android peer",
+            public_key=f"synthetic_{provider_id}",
+        ))
+        project = session.get(Project, project_id)
+        assert project is not None
+        source_path = Path(project.imported_path)
+        assert source_path.suffix == ".flac"
+        source_bytes = source_path.read_bytes()
+        published_bytes = {}
+        for item in native_stems:
+            existing = session.get(Artifact, item["artifact_id"])
+            assert existing is not None and existing.format == "flac"
+            assert item["format"] == "wav"
+            native_path = root / "receiver" / "projects" / project_id / item["relative_path"]
+            published_bytes[item["artifact_id"]] = native_path.read_bytes()
+            stage_sync_artifact(
+                session,
+                source_path=native_path,
+                content_sha256=item["content_sha256"],
+                size_bytes=item["size_bytes"],
+                provider_device_id=provider_id,
+            )
         request = {
             "remote_library": {
                 "projects": [manifest["project"]],
@@ -193,12 +239,16 @@ def verify_native(root: Path, manifest_path: Path) -> None:
                 "delete_tombstones": [],
             },
             "project_manifests": [manifest],
+            "peer_inventory": [{
+                "device_id": provider_id,
+                "available_content_sha256": [item["content_sha256"] for item in native_stems],
+            }],
             "use_content_addressed_staging": True,
         }
         result = apply_sync_reconciliation(session, request)
-        assert result.summary.failed_actions == 0
+        assert result.summary.failed_actions == 0, result
+        assert result.plan.summary.total_conflicts == 0, result.plan
         session.commit()
-        project_id = manifest["project"]["project_id"]
         assert session.get(AnalysisResult, project_id).estimated_reference_hz == 432.0, result
         assert session.get(ChordTimeline, project_id).segments_json[0]["label"] == "Dm"
         assert session.get(LyricsTranscript, project_id).segments_json[0]["text"] == "Native canção\x7f 🎵", result
@@ -210,6 +260,63 @@ def verify_native(root: Path, manifest_path: Path) -> None:
         assert replay.plan.summary.total_conflicts == 0
         export_sync_bundle(session, bundle_root=root / "native-return", project_ids=[project_id])
         session.commit()
+        assert source_path.read_bytes() == source_bytes
+        imported = [session.get(Artifact, item["artifact_id"]) for item in native_stems]
+        desktop_signals = add_analysis_usability_to_stem_signal_metadatas(
+            [{"stem_signal": build_stem_signal_metadata(Path(artifact.path))} for artifact in imported]
+        )
+        for artifact, desktop_signal in zip(imported, desktop_signals, strict=True):
+            assert artifact.format == "wav"
+            assert Path(artifact.path).suffix == ".wav"
+            content = Path(artifact.path).read_bytes()
+            assert content == published_bytes[artifact.id]
+            assert artifact.content_sha256 == hashlib.sha256(content).hexdigest()
+            assert has_current_stem_signal_analysis_usability(artifact.metadata_json)
+            actual = artifact.metadata_json["stem_signal"]
+            expected = desktop_signal["stem_signal"]
+            assert actual["has_signal"] == expected["has_signal"]
+            assert actual["analysis_usability"]["reason"] == expected["analysis_usability"]["reason"]
+            assert actual["thresholds"] == expected["thresholds"]
+            for key in ("peak", "rms", "active_duration_seconds", "inspected_duration_seconds", "active_ratio"):
+                assert math.isclose(actual[key], expected[key], rel_tol=1e-9, abs_tol=1e-12)
+        verify_native_stem_consumers(session, project, imported)
+
+
+def verify_native_stem_consumers(session: Session, project: Project, artifacts: list[Artifact]) -> None:
+    by_source = {artifact.metadata_json["stem_source"]: artifact for artifact in artifacts}
+    with (
+        patch.object(chords, "mix_audio_files", wraps=chords.mix_audio_files) as mix,
+        patch.object(
+            chords,
+            "_detect_timeline",
+            return_value=ChordDetectionResult(
+                segments=[{"start_seconds": 0.0, "end_seconds": 0.5, "label": "C", "confidence": 0.8}],
+                backend_id="tuneforge-fast",
+                metadata={},
+                runtime_device="cpu",
+            ),
+        ),
+        patch.object(
+            lyrics,
+            "transcribe_project_lyrics",
+            return_value=LyricsTranscription(
+                backend="openai-whisper",
+                requested_device="cpu",
+                device="cpu",
+                model="turbo",
+                language="en",
+                segments=[{"start_seconds": 0.0, "end_seconds": 0.5, "text": "Synthetic vocal"}],
+            ),
+        ) as transcribe,
+    ):
+        chords.detect_project_chords(session, project, backend="tuneforge-fast", force=True, overwrite_user_edits=True)
+        mix.assert_called_once()
+        assert mix.call_args.args[0] == [Path(by_source[name].path) for name in ("drums", "bass", "other")]
+        transcript = lyrics.generate_project_lyrics(session, project=project, force=True)
+        transcribe.assert_called_once()
+        assert transcribe.call_args.args[0] == Path(by_source["vocals"].path)
+        assert transcript.source_kind == "vocal_stem"
+        assert transcript.source_artifact_id == by_source["vocals"].id
 
 
 if __name__ == "__main__":

@@ -17,6 +17,10 @@ download, installation, verification, signature, and publication instructions.
 
 ### Changed
 
+- Enable CPU six-stem separation on supported arm64 Android packages. Download the model on
+  first use, then separate offline. Cancellation preserves prior stems, and eligible synced
+  stems can supply desktop chord and lyric analysis.
+
 - Default local packages to the isolated Test profile; require `--release` for production,
   support Linux repository-only packaging, and report build duration.
 

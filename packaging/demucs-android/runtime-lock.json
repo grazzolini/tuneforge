@@ -1,0 +1,219 @@
+{
+  "version": 2,
+  "abi": "arm64-v8a",
+  "python": "3.14",
+  "native": [
+    {
+      "Package": "abseil-cpp",
+      "Version": "20260817.0",
+      "Origin": "https://packages.termux.dev/apt/termux-main/pool/main/a/abseil-cpp/abseil-cpp_20260817.0_aarch64.deb",
+      "SHA256": "b698963bb7096494ad928ce89cd869a53e6adf0b05f5f407b40fda9c85c6e2b0",
+      "License": "Apache-2.0",
+      "RecipeURL": "https://raw.githubusercontent.com/termux/termux-packages/267d5b8564f278c96659c5312197c8963386d306/packages/abseil-cpp/build.sh",
+      "RecipeSHA256": "ae02da3b4486ec6bec1ac6906dea22bd7dd1ed3ae64b596d1bd21ba71ede1149"
+    },
+    {
+      "Package": "libandroid-execinfo",
+      "Version": "0.1-3",
+      "Origin": "https://packages.termux.dev/apt/termux-main/pool/main/liba/libandroid-execinfo/libandroid-execinfo_0.1-3_aarch64.deb",
+      "SHA256": "725dd2c6da7fc96e860fcc928e18aa9fb0e85e0bdcaf4f8ce0f0654ca6860fc2",
+      "License": "BSD 2-Clause",
+      "RecipeURL": "https://raw.githubusercontent.com/termux/termux-packages/267d5b8564f278c96659c5312197c8963386d306/packages/libandroid-execinfo/build.sh",
+      "RecipeSHA256": "24f3401bdc7f9adbf009a7ad33d9ad824c3ec99f7dbcdc6e3202ab51f2611db1"
+    },
+    {
+      "Package": "libandroid-posix-semaphore",
+      "Version": "0.1-4",
+      "Origin": "https://packages.termux.dev/apt/termux-main/pool/main/liba/libandroid-posix-semaphore/libandroid-posix-semaphore_0.1-4_aarch64.deb",
+      "SHA256": "0efa8677a0166315ba4e685863712eba0ca0a1732827492f38226e2723730c7a",
+      "License": "MIT",
+      "RecipeURL": "https://raw.githubusercontent.com/termux/termux-packages/267d5b8564f278c96659c5312197c8963386d306/packages/libandroid-posix-semaphore/build.sh",
+      "RecipeSHA256": "d970743073549fcbbf2afe4774c7a8a7239adc724c578eb44ef888afed71d0d6"
+    },
+    {
+      "Package": "libandroid-support",
+      "Version": "29-1",
+      "Origin": "https://packages.termux.dev/apt/termux-main/pool/main/liba/libandroid-support/libandroid-support_29-1_aarch64.deb",
+      "SHA256": "f2f145d6135ad4843ac9670153be3e3944dc1e6f1736d46d2306c28f2b86f517",
+      "License": "Apache-2.0, MIT",
+      "RecipeURL": "https://raw.githubusercontent.com/termux/termux-packages/267d5b8564f278c96659c5312197c8963386d306/packages/libandroid-support/build.sh",
+      "RecipeSHA256": "23f10711528bcc66a3a8728d218f43efea8467bfbb7db222796e5f5b89ac0d79"
+    },
+    {
+      "Package": "libc++",
+      "Version": "30",
+      "Origin": "https://packages.termux.dev/apt/termux-main/pool/main/libc/libc++/libc++_30_aarch64.deb",
+      "SHA256": "53d0b84a7ba7459024257cb94d5b136fe13ef858567f65a8064b35950799f2ca",
+      "License": "NCSA",
+      "RecipeURL": "https://raw.githubusercontent.com/termux/termux-packages/267d5b8564f278c96659c5312197c8963386d306/packages/libc++/build.sh",
+      "RecipeSHA256": "f0e670ec0f30469e91920a42427115e4bee082c8a22a6dc72e983603dfe659cf"
+    },
+    {
+      "Package": "libffi",
+      "Version": "3.8.0",
+      "Origin": "https://packages.termux.dev/apt/termux-main/pool/main/libf/libffi/libffi_3.8.0_aarch64.deb",
+      "SHA256": "4f255badf74cd31f6a2801c17fa1444199c84c834b517b7c843e2fe9ebe91d77",
+      "License": "MIT",
+      "RecipeURL": "https://raw.githubusercontent.com/termux/termux-packages/267d5b8564f278c96659c5312197c8963386d306/packages/libffi/build.sh",
+      "RecipeSHA256": "0a7f2e44163fe2d43a48680968a5254bad0ee1032f89fe20cfcfe5dbddb2555e"
+    },
+    {
+      "Package": "libprotobuf",
+      "Version": "2:36.2-1",
+      "Origin": "https://packages.termux.dev/apt/termux-main/pool/main/libp/libprotobuf/libprotobuf_2:36.2-1_aarch64.deb",
+      "SHA256": "daa3b9169e094644ba95c35d40a5cc283473144decc7dae8396c49cc51440815",
+      "License": "BSD 3-Clause, MIT",
+      "RecipeURL": "https://raw.githubusercontent.com/termux/termux-packages/267d5b8564f278c96659c5312197c8963386d306/packages/libprotobuf/build.sh",
+      "RecipeSHA256": "09f6ee70be759b05ad151d2fddf888df954ecc2c9c4112781fcd07d99f739f48"
+    },
+    {
+      "Package": "python",
+      "Version": "3.14.10",
+      "Origin": "https://packages.termux.dev/apt/termux-main/pool/main/p/python/python_3.14.10_aarch64.deb",
+      "SHA256": "1a5a300c8d844f2c18a3bb61cafbffb2e93fba9a7106ebe967f06c9628d1e434",
+      "License": "custom",
+      "RecipeURL": "https://raw.githubusercontent.com/termux/termux-packages/267d5b8564f278c96659c5312197c8963386d306/packages/python/build.sh",
+      "RecipeSHA256": "a7753fa9f45ad4f4adb688da5f89f59c8bd5037b9882c5dca1f15c599baa2230"
+    },
+    {
+      "Package": "python-numpy",
+      "Version": "2.5.4",
+      "Origin": "https://packages.termux.dev/apt/termux-main/pool/main/p/python-numpy/python-numpy_2.5.4_aarch64.deb",
+      "SHA256": "a99ae20cd33c77553cc94d402aefc4bed96b7ec9f18e9fb6e2e5a7943693c802",
+      "License": "BSD 3-Clause",
+      "RecipeURL": "https://raw.githubusercontent.com/termux/termux-packages/267d5b8564f278c96659c5312197c8963386d306/packages/python-numpy/build.sh",
+      "RecipeSHA256": "22d05396a193a3449a25c0262fa7b463da7e84f7a7140b4c3970b1aec2e63729"
+    },
+    {
+      "Package": "python-torch",
+      "Version": "2.15.0",
+      "Origin": "https://packages.termux.dev/apt/termux-main/pool/main/p/python-torch/python-torch_2.15.0_aarch64.deb",
+      "SHA256": "d3003cceabc1e62a50b9cb3b0bc8aac993c1ce8d96d44bd7b0d463603d032924",
+      "License": "BSD 3-Clause",
+      "RecipeURL": "https://raw.githubusercontent.com/termux/termux-packages/267d5b8564f278c96659c5312197c8963386d306/packages/python-torch/build.sh",
+      "RecipeSHA256": "fac0d482e1bcd40f716ac53e7c4a71c2a05cba56e338c6c1df57718a09df8663"
+    },
+    {
+      "Package": "zlib",
+      "Version": "1.3.2",
+      "Origin": "https://fast-mirror.isrc.ac.cn/termux/termux-packages-24/pool/main/z/zlib/zlib_1.3.2_aarch64.deb",
+      "SHA256": "75e7d0af17fcc3b40004309fdc00a1ddb9ae08346dce5e269902c34ac3966ac9",
+      "License": "ZLIB",
+      "RecipeURL": "https://raw.githubusercontent.com/termux/termux-packages/9d26eb2028bc966821111b7076512383b352ce89/packages/zlib/build.sh",
+      "RecipeSHA256": "9edf6e044f5ca08c91bde6e6b0d99c2569ba0f6bbbc57700bb9a0c5b3b4c27ec"
+    }
+  ],
+  "pure": [
+    {
+      "name": "filelock",
+      "version": "4.2.9",
+      "license": "MIT",
+      "url": "https://files.pythonhosted.org/packages/00/05/76184fe08339723d643ab47887a8e4de8f2921ca4e008617ab7490af7857/filelock-4.2.9-py3-none-any.whl",
+      "sha256": "a379c50a729e5b68c8519a4d26489f755d9769960a236ecd838190e2a78db2e9",
+      "bytes": 164734
+    },
+    {
+      "name": "typing-extensions",
+      "version": "4.16.0",
+      "license": "PSF-2.0",
+      "url": "https://files.pythonhosted.org/packages/49/d3/b8441a820a491ddfc024b0b0cf0393375b75ea13866d9c66727e54c2fc80/typing_extensions-4.16.0-py3-none-any.whl",
+      "sha256": "481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8",
+      "bytes": 45571
+    },
+    {
+      "name": "sympy",
+      "version": "1.14.0",
+      "license": "BSD",
+      "url": "https://files.pythonhosted.org/packages/a2/09/77d55d46fd61b4a135c444fc97158ef34a095e5681d0a6c10b75bf356191/sympy-1.14.0-py3-none-any.whl",
+      "sha256": "e091cc3e99d2141a0ba2847328f5479b05d94a6635cb96148ccb3f34671bd8f5",
+      "bytes": 6299353
+    },
+    {
+      "name": "mpmath",
+      "version": "1.4.1",
+      "license": "BSD-3-Clause",
+      "url": "https://files.pythonhosted.org/packages/13/f2/abeec3db71d221ccd3cd89d206be1fabf5a3ee7178862f5fba23a59607e0/mpmath-1.4.1-py3-none-any.whl",
+      "sha256": "dc4f0ea2304480d4a9a48a94c1020571558ade522b44a6912efac63a586e140f",
+      "bytes": 567787
+    },
+    {
+      "name": "networkx",
+      "version": "3.7",
+      "license": "BSD-3-Clause",
+      "url": "https://files.pythonhosted.org/packages/7e/cd/fe58041e9011f307c490e3e17dd48cc516448f7c698a3f2d9d9d65d7e6a8/networkx-3.7-py3-none-any.whl",
+      "sha256": "e3fd2c13a7814cee3746340d8d7f8598a67f16a58bf47fb7f8793fab6efca1b0",
+      "bytes": 2142205
+    },
+    {
+      "name": "jinja2",
+      "version": "3.1.6",
+      "license": null,
+      "url": "https://files.pythonhosted.org/packages/62/a1/3d680cbfd5f4b8f15abc1d571870c5fc3e594bb582bc3b64ea099db13e56/jinja2-3.1.6-py3-none-any.whl",
+      "sha256": "85ece4451f492d0c13c5dd7c13a64681a86afae63a5f347908daf103ce6d2f67",
+      "bytes": 134899
+    },
+    {
+      "name": "fsspec",
+      "version": "2026.9.0",
+      "license": "BSD-3-Clause",
+      "url": "https://files.pythonhosted.org/packages/6c/c0/a98505f18594f1bce828bb159cec0fcf9860562f1a2c85913409fc8f3d9e/fsspec-2026.9.0-py3-none-any.whl",
+      "sha256": "8dd6e646e99ea382bd85f97a45e6b526a442d79423a7dc673f1e2756d05fcb5f",
+      "bytes": 221738
+    },
+    {
+      "name": "julius",
+      "version": "0.2.8",
+      "license": "MIT License",
+      "url": "https://files.pythonhosted.org/packages/86/43/efdb0bcb07c47826fa55857cec0deb743f74cd83b6ba5ec9e413505a72e6/julius-0.2.8-py3-none-any.whl",
+      "sha256": "6891235cbc355e629d839f87489bff8ca46e57a0e7cc35abb909c7a2aa538c25",
+      "bytes": 21819
+    },
+    {
+      "name": "einops",
+      "version": "0.8.2",
+      "license": "MIT",
+      "url": "https://files.pythonhosted.org/packages/2a/09/f8d8f8f31e4483c10a906437b4ce31bdf3d6d417b73fe33f1a8b59e34228/einops-0.8.2-py3-none-any.whl",
+      "sha256": "54058201ac7087911181bfec4af6091bb59380360f069276601256a76af08193",
+      "bytes": 65638
+    },
+    {
+      "name": "MarkupSafe",
+      "version": "3.0.4",
+      "license": "BSD-3-Clause",
+      "url": "https://files.pythonhosted.org/packages/38/9b/e422a865e1d5d57d0e509b4e0bf1c1a70a7f6382c29a5aa428df994c8bc8/markupsafe-3.0.4.tar.gz",
+      "sha256": "2e9ad7dd851bf45fab9f75cbff4cb493fee9979e8d8c7c9c3ee119022518edd6",
+      "bytes": 153777,
+      "adaptation": "upstream supported _native.py fallback; no C speedup extension"
+    }
+  ],
+  "demucs": {
+    "revision": "4b79d5c756ce298503d90b0cca2abbc76c565416",
+    "url": "https://github.com/openmirlab/demucs-infer/archive/4b79d5c756ce298503d90b0cca2abbc76c565416.tar.gz",
+    "sha256": "ce17f629bad9a22d16b6d13231a0dcd5f5c298e22594dde5d5a268d50ea44e94"
+  },
+  "reviewedNoticeHashes": {
+    "b0e25a78cffb43f4d92de8b61ccfa1f1f98ecbc22330b54b5251e7b6ba010231": "PSF/CNRI license history and choice-of-law text mentions GNU GPL; the retained notice explicitly states Python is not distributed under GPL. No GNU license grant in this file.",
+    "3b2f81fe21d181c499c59a256c8e1968455d6689d269aa85373bfb6af41da3bf": "PSF/CNRI license history and choice-of-law text mentions GNU GPL; the retained notice explicitly states Python is not distributed under GPL. No GNU license grant in this file.",
+    "621c586e66d917d99dad44ff698bf9492cf5afc82cf9b3794199a589d553c38f": "Explicit dual license; elect PSF license for Python 2.2, retaining both choices and copyright.",
+    "68395143f21a9aa29b8232168c71892af5ec4f1ae2529571cd250a71c9e37a03": "Apache-2.0 WITH LLVM-exception; GPLv2 reference is compatibility exception, not GPL license grant. Retain notice; pinned Torch recipe statically links OpenMP.",
+    "abdfd8a6738b27cd1504e091f77b682dbae928339f040b8a6f59a548245991a0": "Apache-2.0 WITH LLVM-exception; GPLv2 reference is compatibility exception, not GPL license grant. CUDA disabled in recipe; preserve upstream bundled notices."
+  },
+  "profile": {
+    "name": "android-cpu",
+    "variant": "cpu-t4-b1-openblas-pthread",
+    "torchThreads": 4,
+    "torchInteropThreads": 1,
+    "blasThreads": 1,
+    "blasParallel": 1,
+    "blasImplementation": "pthread"
+  },
+  "ownedOpenblas": {
+    "version": "0.3.34",
+    "license": "BSD-3-Clause",
+    "licenseSha256": "190b5a9c8d9723fe958ad33916bd7346d96fab3c5ea90832bb02d854f620fcff",
+    "sourceUrl": "https://github.com/OpenMathLib/OpenBLAS/archive/refs/tags/v0.3.34.tar.gz",
+    "sourceSha256": "cd7e129868320cc2d033afa920e31202dfe0b8066a5b66661900ccc0f197dfed",
+    "sourceFile": "OpenBLAS-v0.3.34.tar.gz",
+    "androidApi": 24
+  }
+}

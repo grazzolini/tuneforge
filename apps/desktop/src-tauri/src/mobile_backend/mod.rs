@@ -105,6 +105,11 @@ mod export;
 
 #[cfg(all(test, not(target_os = "android")))]
 #[allow(dead_code)]
+#[path = "stems.rs"]
+mod stems;
+
+#[cfg(all(test, not(target_os = "android")))]
+#[allow(dead_code)]
 #[path = "manifests.rs"]
 mod manifests;
 #[cfg(all(test, not(target_os = "android")))]

@@ -153,6 +153,7 @@ pub(super) fn enqueue(
     let cancel_id = job_id.clone();
     let cancel: Action = Arc::new(move || {
         super::audio::request_audio_job_cancellation(&cancel_id);
+        super::stems::cancel_runtime(&cancel_id);
         crate::native_audio::whisper_model::cancel(&cancel_id);
         crate::native_audio::crema::cancel_android_model(&cancel_id);
         crate::native_audio::beat_this::cancel_android_model(&cancel_id);

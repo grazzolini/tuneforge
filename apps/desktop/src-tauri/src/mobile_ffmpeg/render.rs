@@ -129,6 +129,22 @@ pub(crate) fn render_audio(
     )
 }
 
+pub(crate) fn render_stem_audio(
+    input: &Path,
+    output: &Path,
+    should_cancel_callback: &mut dyn FnMut() -> bool,
+    progress_callback: &mut dyn FnMut(i32),
+) -> Result<RenderedAudio, String> {
+    let rendered = render_audio_with_properties(
+        input, output, AudioOutputFormat::Wav, 0.0, 44_100, 2,
+        should_cancel_callback, progress_callback,
+    )?;
+    if rendered.sample_rate != 44_100 || rendered.channels != 2 {
+        return Err("Android FFmpeg did not produce 44.1 kHz stereo stem audio.".into());
+    }
+    Ok(rendered)
+}
+
 pub(crate) fn render_whisper_audio(
     input: &Path,
     output: &Path,

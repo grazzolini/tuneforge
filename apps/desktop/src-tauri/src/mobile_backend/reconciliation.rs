@@ -1468,7 +1468,7 @@ mod tests {
                     .iter()
                     .find(|artifact| artifact.r#type == "source_audio")
                     .unwrap();
-                assert_eq!(source.format, "m4a");
+                assert_eq!(source.format, if variant == "combined" { "flac" } else { "m4a" });
                 if matches!(variant, "stems" | "chords-stems" | "combined") {
                     assert_eq!(
                         manifest
@@ -1520,6 +1520,9 @@ mod tests {
                     )
                     .unwrap();
                     transaction.commit().unwrap();
+                    super::super::stems::tests::publish_synthetic_stems_for_sync(
+                        &connection, &receiver_root, project_id,
+                    );
                     let native_manifest =
                         get_project_manifest(&connection, &receiver_root, project_id).unwrap();
                     let path = root.join("native-manifest.json");

@@ -524,7 +524,7 @@ fn mark_interrupted_jobs_on_first_open(root: &Path, connection: &Connection) -> 
     if !opened.contains(&database_path) {
         let mut statement = connection
             .prepare(
-                "SELECT DISTINCT project_id FROM jobs WHERE project_id IS NOT NULL AND status IN ('pending', 'running') AND type IN ('analyze', 'chords', 'lyrics', 'export', 'preview', 'retune', 'transpose')",
+                "SELECT DISTINCT project_id FROM jobs WHERE project_id IS NOT NULL AND status IN ('pending', 'running') AND type IN ('analyze', 'chords', 'lyrics', 'export', 'preview', 'retune', 'transpose', 'stems')",
             )
             .map_err(|error| error.to_string())?;
         let project_ids = statement
@@ -538,6 +538,7 @@ fn mark_interrupted_jobs_on_first_open(root: &Path, connection: &Connection) -> 
         fail_interrupted_chords(connection)?;
         fail_interrupted_lyrics(connection)?;
         fail_interrupted_audio_transforms(connection)?;
+        fail_interrupted_stems(connection)?;
         for project_id in project_ids {
             reconcile_project_storage_after_commit(connection, root, &project_id);
         }
@@ -624,6 +625,12 @@ fn fail_interrupted_lyrics(connection: &Connection) -> Result<(), String> {
             params![payload.to_string(), timestamp, job_id],
         ).map_err(|error| error.to_string())?;
     }
+    Ok(())
+}
+
+pub(super) fn fail_interrupted_stems(connection: &Connection) -> Result<(), String> {
+    connection.execute("UPDATE jobs SET status='failed', progress=0, payload_json=json_set(payload_json,'$.stage','interrupted','$.stage_label','Stem separation interrupted'), error_message='Stem separation was interrupted when TuneForge restarted. Retry the operation.', completed_at=?1, updated_at=?1 WHERE status IN ('pending','running') AND type='stems'",params![now_iso()])
+        .map_err(|error| error.to_string())?;
     Ok(())
 }
 
@@ -3853,8 +3860,12 @@ pub fn mobile_cancel_job(app: AppHandle, job_id: String) -> Result<JobResponse, 
         )
         .map_err(|error| error.to_string())?;
     #[cfg(target_os = "android")]
-    if matches!(job_type.as_deref(), Some("analyze" | "chords")) {
+    if matches!(job_type.as_deref(), Some("analyze" | "chords" | "stems")) {
         super::audio::request_audio_job_cancellation(&job_id);
+    }
+    #[cfg(target_os = "android")]
+    if job_type.as_deref() == Some("stems") {
+        super::stems::cancel_runtime(&job_id);
     }
     #[cfg(target_os = "android")]
     if job_type.as_deref() == Some("lyrics") {

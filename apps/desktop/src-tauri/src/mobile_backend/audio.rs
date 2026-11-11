@@ -1602,6 +1602,7 @@ pub fn mobile_submit_preview(
     }
 }
 
+#[cfg(not(target_os = "android"))]
 pub fn mobile_submit_stems(
     app: AppHandle,
     project_id: String,

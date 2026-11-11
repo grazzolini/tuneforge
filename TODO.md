@@ -97,3 +97,46 @@ budgets and contention, plus cancellation and failure behavior. The scheduler
 implementation remains a separate future decision.
 
 Source pointer: [job service](apps/backend/app/services/jobs.py).
+
+## Android stem acceleration and alternate runtimes
+
+Defer GPU and alternate-runtime work. The pinned Termux Torch recipe sets
+`USE_VULKAN=ON`. PyTorch's eager Vulkan backend is unmaintained, and the complex
+FFT operators HTDemucs uses lack Vulkan dispatch in the pinned Torch version.
+[PyTorch Vulkan maintenance note](https://docs.pytorch.org/tutorials/unstable/vulkan_workflow.html)
+and [Torch 2.15 FFT dispatch](https://github.com/pytorch/pytorch/blob/v2.15.0/aten/src/ATen/native/native_functions.yaml).
+
+If a concrete need warrants revisiting acceleration, consider ExecuTorch's Vulkan
+delegate or ONNX Runtime. Verify actual operator placement, CPU/GPU partitioning,
+and transfer costs. Establish output parity against CPU with the same checkpoint
+and fixtures before comparing end-to-end timings. Keep new exports and their
+provenance in the `tuneforge-models` repository. Revisit adaptive CPU thread
+settings beyond the fixed profile only when matched-fixture results identify a
+concrete need.
+
+Use the existing pinned `htdemucs_6s` weights directly for the CPU production path.
+CPU correctness, model acquisition and caching, mixed formats, metadata and
+last-writer-wins behavior, licensing and native audits, and shipping validation
+remain part of that work. Additional stem families remain separate under #590.
+
+Add Android support for two-stem separation (vocals and instrumental) in a future
+change, reusing the existing stem runtime and job pipeline.
+
+Compare source decoding, channel conversion, resampling, and working WAV
+precision on matched desktop and Android fixtures. Measure whether differences
+affect stem output before changing either input path.
+
+Android's built-in and Advanced Chords paths analyze the imported track.
+Evaluate adding the desktop source-plus-stem chord mix and timeline augmentation
+on Android. Android Whisper also prepares the imported track. Evaluate choosing
+an eligible vocal stem with the imported track as fallback.
+
+After 2.0.0, revisit sharing the desktop and Android backends. Compare running
+the desktop Python backend on Android with the Termux-built runtime against a
+shared Rust backend that retains Python where inference requires it. Reassess
+the earlier preference for Rust using the new runtime evidence. Verify full
+backend compatibility separately from the embedded stem worker.
+
+See the [runtime lock](packaging/demucs-android/runtime-lock.json),
+[CPU worker](packaging/demucs-android/runner.py), and
+[Android stem packaging](docs/PACKAGING.md#android-cpu-stem-runtime).

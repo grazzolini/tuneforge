@@ -54,6 +54,16 @@ import { configureAndroidToolchain } from "./android-configure-toolchain.mjs";
 import { androidToolchainProfiles, readGeneratedNdk, resolveGeneratedNdk, readLocalNdkPath, escapeLocalProperty, hasSdkPlatform } from "./android-toolchain.mjs";
 const ndkRevision = whisperVulkanShaderTool.ndkRevision;
 
+test("ordinary Android packaging modes accept only the current model-bundle selector", () => {
+  for (const [flags, mode] of [[[], "local-release"], [["--debug"], "debug"],
+    [["--release"], "publishable"], [["--publishable"], "publishable"]]) {
+    assert.equal(parseAndroidOptions(flags).mode, mode);
+    assert.equal(parseAndroidOptions(flags).modelBundle, false);
+    assert.equal(parseAndroidOptions([...flags, "--model-bundle"]).modelBundle, true);
+    assert.throws(() => parseAndroidOptions([...flags, "--demucs-runtime"]), /Usage/);
+  }
+});
+
 test("Android model bundle remains explicit and composes with build modes", () => {
   assert.deepEqual(parseAndroidOptions([]), {
     mode: "local-release", modelBundle: false, profile: false, testIdentity: false, packageName: undefined,
@@ -841,11 +851,13 @@ test("publishable verification requires strict apksigner flags, one signer, fing
     fingerprint, "1.2.3", { runCapture: () => ({ ok: false, output: "secret diagnostic" }) }), /signature verification/);
 });
 test("release variables are removed from unrelated children and scoped to the publishable build", (t) => {
-  const source = { KEEP: "yes", ...signingEnv("/release.p12") };
+  const source = { KEEP: "yes", ...signingEnv("/release.p12"), TUNEFORGE_ANDROID_PACKAGE_STAGING: "/stale" };
   const clean = sanitizedEnv(source);
   assert.deepEqual(clean, { KEEP: "yes" });
-  assert.deepEqual(source, { KEEP: "yes", ...signingEnv("/release.p12") });
-  const build = publishableBuildEnv(clean, source);
+  assert.equal(source.TUNEFORGE_ANDROID_PACKAGE_STAGING, "/stale");
+  assert.equal(publishableBuildEnv(source, source).TUNEFORGE_ANDROID_PACKAGE_STAGING, undefined);
+  const build = publishableBuildEnv(clean, source, { TUNEFORGE_ANDROID_PACKAGE_STAGING: "/owned-staging" });
+  assert.equal(build.TUNEFORGE_ANDROID_PACKAGE_STAGING, "/owned-staging");
   assert.equal(build.KEEP, "yes");
   for (const name of ["KEYSTORE_PATH", "KEY_ALIAS", "STORE_PASSWORD", "KEY_PASSWORD"]) {
     assert.equal(build[`TUNEFORGE_ANDROID_RELEASE_${name}`], source[`TUNEFORGE_ANDROID_RELEASE_${name}`]);

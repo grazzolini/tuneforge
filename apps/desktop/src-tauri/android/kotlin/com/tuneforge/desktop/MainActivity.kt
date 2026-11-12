@@ -88,6 +88,17 @@ class MainActivity : TauriActivity() {
 
   fun getTuneForgePowerInhibitionStatus(): String = PowerInhibitionService.status()
 
+  fun getTuneForgeDemucsStatus(): String = DemucsRunner.status(this)
+
+  fun runTuneForgeDemucs(inputPath: String, outputDirectory: String, jobId: String): String =
+    DemucsRunner.run(this, inputPath, outputDirectory, jobId)
+
+  fun takeTuneForgeDemucsError(jobId: String): String = DemucsRunner.takeError(jobId)
+
+  fun cancelTuneForgeDemucs(jobId: String) = DemucsRunner.cancel(jobId)
+
+  fun getTuneForgeDemucsProgress(jobId: String): Int = DemucsRunner.progress(jobId)
+
   fun getTuneForgeBeatThisStatus(): String = BeatThisRunner.status(this)
 
   fun runTuneForgeBeatThis(input: FloatArray, frames: Int, jobId: String): Array<FloatArray> =

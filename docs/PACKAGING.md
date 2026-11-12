@@ -456,6 +456,28 @@ lock. If packaging reports one, first verify no package command is active, then 
 its disposable outputs and preserves an existing versioned APK. The command does not install,
 launch, upload, tag, create a release, or publish that file.
 
+### Android CPU stem runtime
+
+All Android package modes include the arm64-v8a CPU runtime for six-stem `htdemucs_6s`
+separation. Ordinary APKs download and verify the [pinned checkpoint](../packaging/demucs/models.json)
+on first use, then reuse it offline. `--model-bundle` embeds the same checkpoint, reusing
+verified prewarm caches when available; distribution still requires the existing weight-rights review.
+
+Packaging requires uv with Python 3.14, CMake, Make, and the selected Android NDK. Inputs are
+verified against [the runtime lock](../packaging/demucs-android/runtime-lock.json).
+`--prepare` configures the project/codecs and optional model staging; use a package command
+to build an APK with stems.
+
+Runtime inputs use `$XDG_CACHE_HOME/tuneforge-dev/android-demucs`, falling back to
+`~/Library/Caches/tuneforge-dev/android-demucs` on macOS or
+`~/.cache/tuneforge-dev/android-demucs` on Linux. Override with
+`TUNEFORGE_ANDROID_DEMUCS_INPUT_CACHE`; set `TUNEFORGE_ANDROID_DEMUCS_OFFLINE=1`
+to require all locked runtime inputs in that cache.
+
+Packaging verifies the runtime and model assets before promoting the APK. Audit receipts and
+reports are saved in `apps/desktop/src-tauri/target/android-demucs-audit/`.
+See [Third-Party Notices](../THIRD_PARTY_NOTICES.md) for licenses and distribution evidence.
+
 ## Linux Flatpak
 
 Build the local Flatpak package with:

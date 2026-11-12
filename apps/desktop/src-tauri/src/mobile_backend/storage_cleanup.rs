@@ -313,6 +313,13 @@ fn build_project_storage_plan(
             .map_err(|_| {
                 "Mobile job storage metadata is unreadable; cleanup deferred.".to_string()
             })?;
+        if let Some(paths) = payload.get("staging_paths").and_then(Value::as_array) {
+            for path in paths {
+                if let Some(path) = path.as_str() {
+                    protect_owned_path(&mut protected_paths, &project_root, Path::new(path))?;
+                }
+            }
+        }
         if let Some(staging_path) = payload.get("staging_path").and_then(Value::as_str) {
             protect_owned_path(&mut protected_paths, &project_root, Path::new(staging_path))?;
         }
@@ -878,28 +885,55 @@ mod tests {
         )
         .unwrap();
 
-        let guard = project_storage_mutation_guard();
-        let (started_tx, started_rx) = mpsc::channel();
-        let (done_tx, done_rx) = mpsc::channel();
-        let database_path = temp.data.join("mobile.sqlite3");
-        let worker_staging = staging.clone();
-        let worker_job_id = job.id.clone();
-        let worker = std::thread::spawn(move || {
-            let worker_connection = Connection::open(database_path).unwrap();
-            started_tx.send(()).unwrap();
-            register_job_staging_path(&worker_connection, &worker_job_id, &worker_staging).unwrap();
-            write(&worker_staging, b"partial after registration");
-            done_tx.send(()).unwrap();
-        });
-        started_rx.recv().unwrap();
-        assert!(done_rx.recv_timeout(Duration::from_millis(50)).is_err());
-        assert!(!staging.exists());
-        drop(guard);
-        done_rx.recv_timeout(Duration::from_secs(2)).unwrap();
-        worker.join().unwrap();
+        for kind in ["export", "stems"] {
+            let guard = project_storage_mutation_guard();
+            let plan = build_project_storage_plan(&connection, &temp.data, &target_id).unwrap();
+            let (started_tx, started_rx) = mpsc::channel();
+            let (done_tx, done_rx) = mpsc::channel();
+            let worker_root = temp.data.clone();
+            let worker_project_id = target_id.clone();
+            let worker_staging = staging.clone();
+            let worker_job_id = job.id.clone();
+            let worker = std::thread::spawn(move || {
+                let worker_connection = Connection::open(worker_root.join("mobile.sqlite3")).unwrap();
+                started_tx.send(()).unwrap();
+                let paths = if kind == "export" {
+                    register_job_staging_path(&worker_connection, &worker_job_id, &worker_staging).unwrap();
+                    vec![worker_staging]
+                } else {
+                    let (job, _) = super::super::stems::register_stem_job(
+                        &worker_connection, &worker_root, &worker_project_id, "source-race", json!({}), "flac",
+                    ).unwrap();
+                    let raw: String = worker_connection.query_row(
+                        "SELECT payload_json FROM jobs WHERE id=?1 AND status='pending'",
+                        params![job.id], |row| row.get(0),
+                    ).unwrap();
+                    let payload: Value = serde_json::from_str(&raw).unwrap();
+                    serde_json::from_value(payload["staging_paths"].clone()).unwrap()
+                };
+                for path in &paths {
+                    write(path, b"partial after registration");
+                }
+                done_tx.send(paths).unwrap();
+            });
+            started_rx.recv().unwrap();
+            assert!(done_rx.recv_timeout(Duration::from_millis(50)).is_err());
+            // An admission waiting for cleanup cannot already hold the database writer lock.
+            connection.execute_batch("BEGIN IMMEDIATE; ROLLBACK").unwrap();
+            apply_project_storage_plan(plan).unwrap();
+            if kind == "stems" {
+                assert!(!target_root.join("stems").exists());
+            } else {
+                assert!(!staging.exists());
+            }
+            drop(guard);
+            let paths = done_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+            worker.join().unwrap();
 
-        reconcile_project_storage_after_commit(&connection, &temp.data, &target_id);
-        assert!(staging.exists());
+            assert_eq!(paths.len(), if kind == "stems" { 15 } else { 1 });
+            reconcile_project_storage_after_commit(&connection, &temp.data, &target_id);
+            assert!(paths.iter().all(|path| path.is_file()));
+        }
     }
 
     #[test]

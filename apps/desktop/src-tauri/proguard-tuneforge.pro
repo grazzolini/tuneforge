@@ -4,6 +4,11 @@
     public java.lang.String getTuneForgePowerInhibitionStatus();
     public java.lang.String getTuneForgeAudioPermissionState();
     public java.lang.String requestTuneForgeAudioPermission();
+    public java.lang.String getTuneForgeDemucsStatus();
+    public java.lang.String runTuneForgeDemucs(java.lang.String,java.lang.String,java.lang.String);
+    public java.lang.String takeTuneForgeDemucsError(java.lang.String);
+    public void cancelTuneForgeDemucs(java.lang.String);
+    public int getTuneForgeDemucsProgress(java.lang.String);
     public java.lang.String getTuneForgeBeatThisStatus();
     public float[][] runTuneForgeBeatThis(float[],int,java.lang.String);
     public java.lang.String takeTuneForgeBeatThisError(java.lang.String);

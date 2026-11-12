@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { buildModelBundlePlan, DEFAULT_LYRICS_MODEL } from "./model-bundle-metadata.mjs";
 import { ffmpegCorrespondingSourcesFileName } from "./build-ffmpeg.mjs";
 import { onnxRuntimeAndroidArtifact } from "./package-android.mjs";
-import { cremaAndroidAssets } from "./prepare-android-model-assets.mjs";
+import { cremaAndroidAssets, demucsAndroidAsset } from "./prepare-android-model-assets.mjs";
 import {
   defaultPackageOptions,
   normalizeFlatpakProfiles,
@@ -50,7 +50,23 @@ function buildOwnedCodecPolicy() {
 
 function buildAndroidAnalysisPolicy() {
   const soxr = JSON.parse(readFileSync(soxrSourceLockPath, "utf8"));
+  const sourceLock = "packaging/demucs-android/runtime-lock.json";
+  const demucs = JSON.parse(readFileSync(path.join(workspaceRoot, sourceLock), "utf8"));
   return {
+    demucs: {
+      sourceLock,
+      profile: demucs.profile,
+      worker: { ...demucs.demucs, license: "MIT" },
+      nativeArchives: demucs.native.map(({ Package, Version, Origin, SHA256, License, RecipeURL, RecipeSHA256 }) => ({
+        name: Package, version: Version, url: Origin, sha256: SHA256, license: License,
+        recipeUrl: RecipeURL, recipeSha256: RecipeSHA256,
+      })),
+      pythonSources: demucs.pure.map(({ name, version, license, url, sha256 }) => ({ name, version, license, url, sha256 })),
+      openblas: demucs.ownedOpenblas,
+      model: demucsAndroidAsset,
+      acquisition: "Verified download from the pinned author's revision on first use; --model-bundle embeds the same checkpoint.",
+      evidence: "APK includes curated notices and actual OpenBLAS build provenance; verify the APK against its producer receipt.",
+    },
     onnxRuntime: onnxRuntimeAndroidArtifact,
     crema: {
       revision: cremaAndroidAssets[0].revision,
@@ -545,6 +561,16 @@ export function formatReleaseLicenseInventory(checklist) {
   const android = checklist.androidAnalysisPolicy;
   lines.push("");
   lines.push("Android analysis runtime policy:");
+  const { demucs } = android;
+  lines.push(`- Demucs runtime: ${demucs.profile.variant}, sources and recipe hashes in ${demucs.sourceLock}`);
+  for (const name of ["python", "python-torch", "python-numpy"]) {
+    const component = demucs.nativeArchives.find((archive) => archive.name === name);
+    lines.push(`- ${name} ${component.version}: archive SHA-256 ${component.sha256}`);
+  }
+  lines.push(`- OpenBLAS ${demucs.openblas.version}: ${demucs.openblas.license}, source SHA-256 ${demucs.openblas.sourceSha256}`);
+  lines.push(`- Demucs checkpoint ${demucs.model.fileName}: revision ${demucs.model.revision}, SHA-256 ${demucs.model.sha256}`);
+  lines.push(`- Demucs acquisition: ${demucs.acquisition}`);
+  lines.push(`- Demucs evidence: ${demucs.evidence}`);
   lines.push(
     `- ONNX Runtime ${android.onnxRuntime.version}: ${android.onnxRuntime.license}, ` +
       `${android.onnxRuntime.coordinate}, ${android.onnxRuntime.size} bytes, ` +

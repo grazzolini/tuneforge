@@ -148,7 +148,7 @@ This file is the source of truth for dependency and model-weight distribution po
 
 - **License:** not covered by the Demucs MIT license; upstream contributors describe the pretrained weights as provided for scientific/research purposes.
 - **Source:** <https://github.com/facebookresearch/demucs>
-- **Notes:** Default release packaged desktop builds do not redistribute these weights. `pnpm setup:dev` preloads the pinned, verified Hugging Face YAML+safetensors cache, and packaged apps reuse that cache or download on first use. The explicit local/dev `--model-bundle` option stores the same immutable files and loads them directly; it still prints a redistribution warning.
+- **Notes:** Default desktop and Android packages omit these weights. `pnpm setup:dev` preloads the pinned, verified Hugging Face YAML+safetensors cache, and packaged apps reuse that cache or download on first use. The explicit local/dev `--model-bundle` option stores the same immutable files and loads them directly; it still prints a redistribution warning.
 
 ### huggingface-hub
 
@@ -365,6 +365,17 @@ This file is the source of truth for dependency and model-weight distribution po
 ### React, Vite, TanStack Query, openapi-fetch, openapi-typescript, lucide-react
 
 - See each project's own license. The installed JavaScript tree is primarily permissive, with some non-copyleft notice/data licenses such as MPL-2.0 (`lightningcss`), BlueOak-1.0.0 (`lru-cache` / `minimatch`), CC-BY-4.0 (`caniuse-lite` browser data), and CC0-1.0 (`mdn-data`).
+
+### Android CPU Demucs runtime
+
+- **Scope:** The Android arm64-v8a runtime ships in default optimized Test, debug Test, and signed release APKs.
+- **Sources:** [demucs-infer](https://github.com/openmirlab/demucs-infer/tree/4b79d5c756ce298503d90b0cca2abbc76c565416), [Termux package recipes](https://github.com/termux/termux-packages). The runtime lock records each exact archive, recipe, source revision, and SHA-256, including the byte-identical mirror for zlib 1.3.2 and its matching historical recipe.
+- **Components:** CPython 3.14.10 (PSF/CNRI/CWI notices), PyTorch 2.15.0 and NumPy 2.5.4 (BSD and bundled third-party notices), owned rebuilt OpenBLAS 0.3.34 (BSD-3-Clause, Android ARM64 LP64 pthread capacity 4/effective 1), protobuf (BSD/MIT), Abseil (Apache-2.0), Android compatibility libraries (MIT/BSD/Apache), libffi (MIT), libc++ (LLVM/NCSA), zlib, and the locked permissive Python modules. Preserve all upstream combined-license notices; metadata alone is not a complete grant audit.
+- **Curation:** Omit GPL readline/history/gdbm code and dependent Python extensions; omit optional lzma/zstd consumers, package managers, CLI tools, development headers and test code. Torch's GPL Valgrind headers are omitted with the development headers. The import-required internal `torch_shm_manager` is retained with Torch's BSD notices; this single-process eager worker does not launch it. `tqdm` has MPL-2.0/MIT contributions and is omitted; the guarded Demucs adaptation rejects progress bars while keeping numerical inference unchanged. Legacy Demucs pickle/network/audio loaders are omitted; a fixed-hash strict safetensors loader constructs the only supported model.
+- **Grant review:** Retain PSF/CNRI history that mentions GPL compatibility; it does not make Python GPL. Elect the explicit PSF option for `urllib.robotparser`. Torch's retained OpenMP/NVTX notices are Apache-2.0 with LLVM exceptions; their GPLv2 compatibility exception is not a GPL license grant. Exact reviewed notice-content hashes and explanations remain in the lock. Preserve notices for optional upstream components even when CUDA/other features were disabled in the pinned recipe.
+- **Evidence:** Packaging verifies the signed APK's nested runtime against an independently captured source-build receipt. It checks AArch64 ELF closure and alignment, checked-out worker and lock identity, and retained notices. Review the pinned recipes and preserved `licenses/runtime-audit.json` for statically embedded upstream components. The owned FFmpeg/LAME and libsoxr components have separate evidence.
+- **OpenBLAS:** The producer verifies the official source SHA-256 `cd7e129868320cc2d033afa920e31202dfe0b8066a5b66661900ccc0f197dfed`, rebuilds with the selected NDK/CMake toolchain, and verifies the BSD notice. The APK retains the producer recipe and actual toolchain, configure flags and emitted library SHA-256 in `licenses/openblas/`. The worker checks that identity and uses CPU Torch 4/inter-op 1 with effective pthread OpenBLAS 1.
+- **Weights:** Ordinary APKs download the exact `htdemucs_6s` checkpoint on first use from the pinned author's revision in `packaging/demucs/models.json`. The explicit `--model-bundle` option embeds the same verified checkpoint under the existing model-weight distribution policy.
 
 ## Generating a Full Inventory
 

@@ -344,6 +344,7 @@ function generatedProject(t, { soxrProfile = "ON" } = {}) {
   fs.copyFileSync(cremaRunnerSource, path.join(javaSource, "CremaRunner.java"));
   fs.copyFileSync(whisperModelInstallerSource, path.join(javaSource, "WhisperModelInstaller.java"));
   fs.copyFileSync(inferenceLockSource, path.join(javaSource, "InferenceLock.java"));
+  fs.copyFileSync(new URL("../apps/desktop/src-tauri/android/java/com/tuneforge/desktop/DemucsRunner.java", import.meta.url), path.join(javaSource, "DemucsRunner.java"));
   fs.copyFileSync(modelAssetSource, path.join(javaSource, "ModelAssetDescriptor.java"));
   const kotlinSource = path.join(tauri, "android/kotlin/com/tuneforge/desktop");
   fs.mkdirSync(kotlinSource, { recursive: true });
@@ -609,8 +610,9 @@ test("maintained Beat This runtime pins and verifies the Android model", (t) => 
   assert.match(beatRunnerSource, /beatShape\.length != 2 \|\| beatShape\[0\] != 1 \|\| beatShape\[1\] != frames/);
   assert.match(beatRunnerSource, /downbeatShape\.length != 2 \|\| downbeatShape\[0\] != 1/);
   assert.match(beatRunnerSource, /downbeatShape\[1\] != frames/);
-  assert.match(beatRunnerSource, /output\.getFD\(\)\.sync\(\)/);
-  assert.match(beatRunnerSource, /temporary\.renameTo\(destination\)/);
+  assert.match(beatRunnerSource, /ASSET\.prepare\(/);
+  assert.match(modelAssetSource, /output\.getFD\(\)\.sync\(\)/);
+  assert.match(modelAssetSource, /Files\.move\(temporary\.toPath\(\), destination\.toPath\(\), StandardCopyOption\.ATOMIC_MOVE/);
   assert.match(beatRunnerSource, /LAST_ERRORS\.put\(jobId/);
 });
 

@@ -44,7 +44,7 @@ The current Rust command surface is present even when generation is unavailable.
 
 ## Mobile Processing Gates
 
-Analyze and basic chord detection may run on CPU. Lyrics transcription may also run locally on CPU when a side-loaded `whisper.cpp` ggml model is present in app-private storage. Stem separation and other heavier generation paths stay unavailable until a native local runtime is wired. Capability detection returns:
+Analyze and basic chord detection may run on CPU. Lyrics transcription may also run locally on CPU when a side-loaded `whisper.cpp` ggml model is present in app-private storage. Android stem separation is available only when the app-owned embedded Demucs runtime and pinned six-source weights verify locally. Other heavier generation paths remain capability-gated. Capability detection returns:
 
 - `gpuBackend`: `vulkan`, `nnapi`, `qnn`, `coreml`, or `null`
 - `isEmulator`
@@ -60,6 +60,22 @@ Analyze and basic chord detection may run on CPU. Lyrics transcription may also 
 - `generationTestingAvailable`
 - `maxRecommendedModel`
 - `cpuFallbackAllowed`
+
+Android packages include the app-private CPU runtime for six-stem `htdemucs_6s` separation.
+The Separate action uses the protected processing queue shared with analysis, chords, and lyrics.
+First use obtains the pinned author's checkpoint, verifies its size and SHA-256, and promotes it
+into app-private storage. An explicit `--model-bundle` enables first-use separation offline.
+A verified cached checkpoint works offline on later runs. CPU inference uses Torch intra-op 4,
+Torch inter-op 1, and pthread OpenBLAS 1. Source audio or a saved practice mix is rendered through
+the owned FFmpeg runtime as stereo 44.1 kHz PCM16. Android supports six-source separation with
+this model. See [Android CPU stem runtime](PACKAGING.md#android-cpu-stem-runtime) for packaging.
+
+Every returned source must match the six-source mapping, sample rate, channels, input frame
+count, and SHA-256. Six durable outputs are staged and published in one database transaction,
+with standard stem types, source identity, runtime provenance, and readable mixer paths.
+Cancellation, source replacement, newer saved stems, and conversion/publication failure preserve
+the previous set. Runtime cancellation waits for native worker exit before queue cleanup.
+This integration does not establish physical-device performance or listening quality.
 
 Android lyrics use the exact full `large-v3-turbo` GGML weights. First use downloads them from the
 pinned upstream revision, verifies their SHA-256, and atomically promotes them into app-private
@@ -269,7 +285,7 @@ transfer, recovery, or conflict states rather than where the data originated.
 | Timing | Timing arrays embedded in the analysis document. | Keep complete arrays with analysis so playback and practice do not depend on lazy fragments. | Healthy readable local data has no badge. `Missing` if analysis lacks timing. `Unreadable` if the timing schema is invalid. |
 | Chords | Chord document or entity revision with source and current timelines, backend, source artifact, source kind, edit state, metadata, and timestamps. | Render and edit imported timelines. Basic mobile chords may generate only when available; advanced desktop output remains valid data. | Healthy readable local data has no badge. Empty timeline means no chords, not failure. Invalid schema is `Unreadable`. Unsupported generation is `Unavailable on this device`. |
 | Lyrics | Lyrics document or entity revision with source and edited segments, backend, model/device metadata, language fields, edit state, and timestamps. | Render and edit imported transcripts. Generate only when local Whisper is available, or record empty lyrics for `language_override: "none"`. | Healthy readable local data has no badge. Empty lyrics can be valid. `Missing` means expected lyrics were absent. Without a local model, generation is `Unavailable on this device`. |
-| Stems | Generated stem artifact rows with type, format, stem model, source artifact metadata, content hash, and size. | Play synced stem files from app-local storage when readable. Mobile stem separation remains disabled. | Healthy readable local data has no badge. `Not on this device`, `Missing`, or `Unreadable` follows byte state. Create action is `Unavailable on this device`, not failed or pending. |
+| Stems | Generated stem artifact rows with type, format, stem model, source artifact metadata, content hash, and size. | Play synced stem files from app-local storage when readable. Android can generate six sources when the bundled runtime and weights are ready. | Healthy readable local data has no badge. `Not on this device`, `Missing`, or `Unreadable` follows byte state. Create action is `Unavailable on this device` when the embedded runtime or model is unavailable. |
 | Edits | Project updates plus lyrics, chord, section, and tab-apply edits persisted as project documents or entity revisions. | Persist mobile edits locally and sync as revisions. Desktop-synced edits stay editable documents, not flattened files. | Healthy editable local data has no badge. Local edits use normal unsynced or conflicted states, not generation failure states. |
 | Sync revisions | `entity_revisions` with revision identity, entity type, source artifact, content hash, state, author device, payload, metadata, and timestamps. | Select the higher `(updated_at in UTC, author_device_id, revision_id)` for concurrent writes. Apply tombstones before accepting older revisions. | Healthy accepted revisions have no badge. `Missing` if referenced payload is absent. `Unreadable` if hash or schema validation fails. |
 | Tombstones | `delete_tombstones` for deleted projects, artifacts, and entity revisions, with author, target, group/project context, and prior metadata. | Persist delete markers and suppress resurrected records from offline peers. | Deleted records stay deleted or hidden, not `Missing`. Invalid tombstones are `Unreadable`; accepted tombstones have no status badge. |
@@ -558,15 +574,7 @@ build, and record whether the scan produced the expected pairing payload before 
 If the camera permission is denied or the scanner is unavailable, record that blocker and do not
 count QR pairing as validated.
 
-## Stem Separation Spike
-
-Stem separation remains unavailable on mobile in this experiment. The lowest-risk next spike is an
-ONNX/Open-Unmix path because it has existing Android-oriented ONNX exports and a smaller integration
-surface than a full Demucs port, but it still needs native STFT/iSTFT, chunking, memory budgeting,
-and model-file policy work. ExecuTorch/Demucs is the more future-proof PyTorch-native direction, but
-it is higher risk for this branch because it requires model export validation, Android runtime
-integration, and careful device/backend selection. Full runtime integration should wait until the
-basic mobile project, analysis, chords, lyrics, playback, and packaging path is stable.
+## Android Studio
 
 For Android Studio repo-root import, run `pnpm android:studio:shim` after Android init. The script
 writes ignored root Gradle files that point Studio at `apps/desktop/src-tauri/gen/android`, set the

@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { Writable } from "node:stream";
 import test from "node:test";
-import { prepareAndroidModelAssets } from "./prepare-android-model-assets.mjs";
+import { cachedDemucsModel, demucsAndroidAsset, prepareAndroidModelAssets } from "./prepare-android-model-assets.mjs";
 
 function temp(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "tuneforge-android-model-"));
@@ -145,4 +145,40 @@ test("interrupted or ENOSPC downloads reject and leave no advertised assets", as
     }),
   }), /no space/);
   assert.equal(fs.existsSync(noSpaceRoot), false);
+});
+
+test("ordinary APK stages only the canonical Demucs descriptor and does not acquire weights", async (t) => {
+  const destinationRoot = temp(t);
+  const acquired = await prepareAndroidModelAssets({ destinationRoot, bundle: false,
+    fetchImpl: () => assert.fail("An ordinary APK must not download model weights") });
+  assert.deepEqual(acquired, []);
+  assert.deepEqual(fs.readdirSync(destinationRoot), ["manifest.json"]);
+  const manifest = JSON.parse(fs.readFileSync(path.join(destinationRoot, "manifest.json"), "utf8"));
+  assert.deepEqual(manifest.assets, [{ ...demucsAndroidAsset, bundled: false,
+    relativePath: `models/demucs/${demucsAndroidAsset.fileName}` }]);
+  assert.match(demucsAndroidAsset.url, /^https:\/\/huggingface\.co\/adefossez\/HTDemucs-6s\/resolve\/[a-f0-9]{40}\//);
+});
+
+test("explicit Demucs bundle reuses a verified prewarm cache and repairs a corrupt input by downloading", async (t) => {
+  const root = temp(t);
+  const cache = path.join(root, "hub");
+  const prewarmed = cachedDemucsModel({ HF_HUB_CACHE: cache, HF_HOME: "ignored" }, "ignored");
+  assert.ok(prewarmed.startsWith(cache + path.sep + "models--adefossez--HTDemucs-6s"));
+  fs.mkdirSync(path.dirname(prewarmed), { recursive: true });
+  const bytes = Buffer.from("verified prewarmed bytes");
+  fs.writeFileSync(prewarmed, bytes);
+  const spec = { ...fixtureSpec(bytes), family: "demucs" };
+  const destinationRoot = path.join(root, "assets");
+  const [first] = await prepareAndroidModelAssets({ destinationRoot, specs: [spec], demucsSource: prewarmed,
+    fetchImpl: () => assert.fail("Verified prewarm cache should avoid a download") });
+  assert.deepEqual(fs.readFileSync(first), bytes);
+  fs.writeFileSync(prewarmed, "corrupt");
+  const [repaired] = await prepareAndroidModelAssets({ destinationRoot, specs: [spec], demucsSource: prewarmed,
+    fetchImpl: async (url) => {
+      assert.equal(url, spec.url);
+      return new Response(bytes);
+    },
+  });
+  assert.deepEqual(fs.readFileSync(repaired), bytes);
+  assert.equal(fs.readFileSync(prewarmed, "utf8"), "corrupt");
 });

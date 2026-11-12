@@ -2,12 +2,6 @@ package com.tuneforge.desktop;
 
 import android.content.Context;
 import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileOutputStream;
-import java.io.InputStream;
-import java.net.HttpURLConnection;
-import java.net.URL;
-import java.security.MessageDigest;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.pytorch.executorch.EValue;
@@ -27,10 +21,10 @@ final class BeatThisRunner {
     private BeatThisRunner() {}
 
     static String status(Context context) {
-        File model = modelFile(context);
+        File model = ASSET.cachedFile(context.getFilesDir());
         if (!model.exists()) return "download-required";
         try {
-            return ASSET.verification.verify(model, () -> verify(model)) ? "ready" : "corrupt";
+            return ASSET.verifiedFile(model) ? "ready" : "corrupt";
         } catch (Exception ignored) {
             return "unavailable";
         }
@@ -94,97 +88,13 @@ final class BeatThisRunner {
     }
 
     private static File prepare(Context context, AtomicBoolean cancellation) {
-        File destination = modelFile(context);
         try {
-            if (verify(destination)) return destination;
-            File parent = destination.getParentFile();
-            if (parent == null || (!parent.isDirectory() && !parent.mkdirs())) {
-                throw new IllegalStateException("BEAT_THIS_MODEL_STORAGE_UNAVAILABLE");
-            }
-            if (parent.getUsableSpace() < ASSET.size * 2) {
-                throw new IllegalStateException("BEAT_THIS_MODEL_STORAGE_INSUFFICIENT");
-            }
-            File temporary = new File(parent, "." + ASSET.fileName + ".download");
-            if (temporary.exists() && !temporary.delete()) {
-                throw new IllegalStateException("BEAT_THIS_MODEL_STAGING_UNAVAILABLE");
-            }
-            try {
-                if (!copyBundle(context, temporary, cancellation)) download(temporary, cancellation);
-                if (!verify(temporary)) throw new IllegalStateException("BEAT_THIS_MODEL_INTEGRITY_FAILED");
-                if (destination.exists() && !destination.delete()) {
-                    throw new IllegalStateException("BEAT_THIS_MODEL_REPLACE_FAILED");
-                }
-                if (!temporary.renameTo(destination)) {
-                    throw new IllegalStateException("BEAT_THIS_MODEL_REPLACE_FAILED");
-                }
-            } finally {
-                if (temporary.exists()) temporary.delete();
-            }
-            return destination;
+            return ASSET.prepare(context.getFilesDir(), () -> context.getAssets().open(ASSET.bundlePath),
+                cancellation, "BEAT_THIS", ignored -> {});
         } catch (IllegalStateException error) {
             throw error;
         } catch (Exception error) {
             throw new IllegalStateException("BEAT_THIS_MODEL_DOWNLOAD_FAILED", error);
         }
-    }
-
-    private static boolean copyBundle(Context context, File temporary, AtomicBoolean cancellation) throws Exception {
-        try (InputStream input = context.getAssets().open(ASSET.bundlePath)) {
-            copy(input, temporary, cancellation);
-            return true;
-        } catch (java.io.FileNotFoundException missing) {
-            return false;
-        }
-    }
-
-    private static void download(File temporary, AtomicBoolean cancellation) throws Exception {
-        HttpURLConnection connection = (HttpURLConnection) new URL(ASSET.url).openConnection();
-        connection.setConnectTimeout(30000);
-        connection.setReadTimeout(60000);
-        connection.setRequestProperty("User-Agent", "TuneForge/1");
-        connection.setInstanceFollowRedirects(true);
-        try {
-            int response = connection.getResponseCode();
-            if (response < 200 || response >= 300) {
-                throw new IllegalStateException("BEAT_THIS_MODEL_DOWNLOAD_HTTP_" + response);
-            }
-            try (InputStream input = connection.getInputStream()) { copy(input, temporary, cancellation); }
-        } finally {
-            connection.disconnect();
-        }
-    }
-
-    private static void copy(InputStream input, File destination, AtomicBoolean cancellation) throws Exception {
-        byte[] buffer = new byte[1024 * 1024];
-        long total = 0;
-        try (FileOutputStream output = new FileOutputStream(destination)) {
-            int count;
-            while ((count = input.read(buffer)) != -1) {
-                if (cancellation.get()) throw new IllegalStateException("BEAT_THIS_CANCELLED");
-                total += count;
-                if (total > ASSET.size) throw new IllegalStateException("BEAT_THIS_MODEL_SIZE_INVALID");
-                output.write(buffer, 0, count);
-            }
-            output.getFD().sync();
-        }
-        if (total != ASSET.size) throw new IllegalStateException("BEAT_THIS_MODEL_SIZE_INVALID");
-    }
-
-    private static boolean verify(File file) throws Exception {
-        if (!file.isFile() || file.length() != ASSET.size) return false;
-        MessageDigest digest = MessageDigest.getInstance("SHA-256");
-        byte[] buffer = new byte[1024 * 1024];
-        try (InputStream input = new FileInputStream(file)) {
-            int count;
-            while ((count = input.read(buffer)) != -1) digest.update(buffer, 0, count);
-        }
-        StringBuilder actual = new StringBuilder(64);
-        for (byte value : digest.digest()) actual.append(String.format("%02x", value & 0xff));
-        return ASSET.sha256.equals(actual.toString());
-    }
-
-    private static File modelFile(Context context) {
-        return new File(new File(new File(new File(context.getFilesDir(), "models"), ASSET.family),
-            ASSET.revision), ASSET.fileName);
     }
 }

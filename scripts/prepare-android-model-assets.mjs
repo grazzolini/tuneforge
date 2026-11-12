@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -26,7 +27,25 @@ for (const asset of cremaAndroidAssets) {
 }
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const assetRoot = path.join(root, "apps/desktop/src-tauri/gen/android/app/src/main/assets/models");
+const demucs = JSON.parse(fs.readFileSync(path.join(root, "packaging/demucs/models.json"), "utf8"))
+  .models.find((model) => model.id === "htdemucs_6s");
+const weight = demucs.files.find((file) => file.file_name === `${demucs.bag_order[0]}.safetensors`);
+if (demucs.bag_order.length !== 1 || !weight) {
+  throw new Error("Android Demucs requires the canonical single-file six-stem checkpoint.");
+}
+export const demucsAndroidAsset = {
+  family: "demucs", revision: demucs.revision, fileName: weight.file_name, size: weight.size, sha256: weight.sha256,
+  url: `https://huggingface.co/${demucs.repo_id}/resolve/${demucs.revision}/${weight.file_name}`,
+};
+
+export function cachedDemucsModel(env = process.env, home = os.homedir()) {
+  const cache = env.HF_HUB_CACHE || env.HUGGINGFACE_HUB_CACHE
+    || path.join(env.HF_HOME || path.join(env.XDG_CACHE_HOME || path.join(home, ".cache"), "huggingface"), "hub");
+  return path.join(cache, `models--${demucs.repo_id.replaceAll("/", "--")}`,
+    "snapshots", demucs.revision, weight.file_name);
+}
+
+const assetRoot = path.join(root, "apps/desktop/src-tauri/target/android-model-assets");
 
 function sha256(file) {
   return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
@@ -65,8 +84,10 @@ export async function prepareAndroidModelAssets({
   cremaSources = [process.env.TUNEFORGE_ANDROID_CREMA_ONNX,
     process.env.TUNEFORGE_ANDROID_CREMA_RUNTIME_STATE],
   destinationRoot = assetRoot,
+  bundle = true,
+  demucsSource = cachedDemucsModel(),
   fetchImpl = fetch,
-  specs = [beatThisAndroidAsset, ...cremaAndroidAssets],
+  specs = bundle ? [beatThisAndroidAsset, ...cremaAndroidAssets, demucsAndroidAsset] : [demucsAndroidAsset],
   createWriteStreamImpl = fs.createWriteStream,
 } = {}) {
   const sources = [source, ...cremaSources];
@@ -79,12 +100,15 @@ export async function prepareAndroidModelAssets({
   let published = false;
   fs.mkdirSync(parent, { recursive: true });
   try {
-    for (const [index, spec] of specs.entries()) {
+    fs.mkdirSync(stagingRoot);
+    for (const [index, spec] of (bundle ? specs : []).entries()) {
       const familyRoot = path.join(stagingRoot, spec.family);
       fs.mkdirSync(familyRoot, { recursive: true });
       const temporary = path.join(familyRoot, spec.fileName);
-      if (sources[index]) {
-        fs.copyFileSync(path.resolve(sources[index]), temporary, fs.constants.COPYFILE_EXCL);
+      const cached = spec.family === "demucs" ? demucsSource : undefined;
+      const local = sources[index] ?? (cached && verify(cached, spec) ? cached : undefined);
+      if (local) {
+        fs.copyFileSync(path.resolve(local), temporary, fs.constants.COPYFILE_EXCL);
       } else {
         const response = await fetchImpl(spec.url, { redirect: "follow" });
         await downloadVerifiedAsset(response, temporary, spec, createWriteStreamImpl);
@@ -92,7 +116,7 @@ export async function prepareAndroidModelAssets({
       if (!verify(temporary, spec)) throw new Error(`${spec.family} Android model failed size or SHA-256 verification.`);
       syncPath(temporary);
     }
-    const manifest = { version: 1, assets: specs.map((spec) => ({ ...spec,
+    const manifest = { version: 1, assets: specs.map((spec) => ({ ...spec, bundled: bundle,
       relativePath: `models/${spec.family}/${spec.fileName}` })) };
     const manifestPath = path.join(stagingRoot, "manifest.json");
     fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, { flag: "wx" });
@@ -106,7 +130,7 @@ export async function prepareAndroidModelAssets({
     published = true;
     fs.rmSync(backupRoot, { recursive: true, force: true });
     backedUp = false;
-    return specs.map((spec) => path.join(destinationRoot, spec.family, spec.fileName));
+    return (bundle ? specs : []).map((spec) => path.join(destinationRoot, spec.family, spec.fileName));
   } catch (error) {
     if (published) fs.rmSync(destinationRoot, { recursive: true, force: true });
     if (backedUp) fs.renameSync(backupRoot, destinationRoot);
@@ -122,7 +146,8 @@ export function cleanAndroidModelAssets(destinationRoot = assetRoot) {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
-  prepareAndroidModelAssets()
+  const [destinationRoot, mode] = process.argv.slice(2);
+  prepareAndroidModelAssets({ destinationRoot, bundle: mode !== "--descriptor-only" })
     .then((destinations) => console.log(`[android models] verified ${destinations.length} assets`))
     .catch((error) => { console.error(`[android models] ${error.message}`); process.exitCode = 1; });
 }

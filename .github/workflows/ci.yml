@@ -378,8 +378,11 @@ jobs:
           pnpm --filter @tuneforge/music-core types:check
           node packages/music-core/test/artifact-metadata.mjs
 
+      - name: Set up uv for Android runtime audit fixtures
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+
       - name: Test Android packaging helpers
-        run: node --test --test-reporter=spec scripts/package-android.test.mjs
+        run: node --test --test-reporter=spec scripts/package-android.test.mjs scripts/prepare-android-demucs-runtime.test.mjs scripts/prepare-android-model-assets.test.mjs
 
       - name: Test music-core package consumers
         run: node --test scripts/music-core-packaging.test.mjs

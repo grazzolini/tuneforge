@@ -22,6 +22,8 @@ mod audio;
 mod export;
 #[path = "lyrics.rs"]
 mod lyrics;
+#[path = "stems.rs"]
+mod stems;
 
 include!("embedded.rs");
 
@@ -29,9 +31,10 @@ use audio::{ensure_source_playback_proxy_metadata, spawn_playback_proxy_generati
 
 pub use audio::{
     mobile_get_analysis, mobile_get_chords, mobile_submit_analyze, mobile_submit_chords,
-    mobile_submit_preview, mobile_submit_retune, mobile_submit_stems, mobile_submit_transpose,
+    mobile_submit_preview, mobile_submit_retune, mobile_submit_transpose,
 };
 pub use export::mobile_submit_export;
+pub use stems::mobile_submit_stems;
 pub(crate) use lyrics::request_lyrics_job_cancellation;
 pub use lyrics::{mobile_get_lyrics, mobile_submit_lyrics, mobile_update_lyrics};
 
@@ -55,7 +58,7 @@ pub fn mobile_capabilities(app: AppHandle) -> Result<MobileCapabilities, String>
         crema_model_status,
         whisper_available: whisper_model_status == "ready",
         whisper_model_status,
-        stem_separation_available: false,
+        stem_separation_available: stems::runtime_available(),
         generation_testing_available: generation_testing_available(is_emulator),
         max_recommended_model: Some("large-v3-turbo"),
         cpu_fallback_allowed: true,

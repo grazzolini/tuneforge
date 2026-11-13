@@ -3,6 +3,8 @@ import type { ExportWorkspaceState } from "./projectPlaybackState";
 import { artifactLabel, isStemArtifact } from "./projectViewUtils";
 import { activeStemArtifacts, describeDrumGroup, drumParentKey, type DrumMode } from "./drumStemGroup";
 
+import { activeVocalStems, describeVocalGroup, vocalPlaybackMode } from "./vocalStemGroup";
+
 export type ExportAudioSet = {
   artifact: ArtifactSchema;
   label: string;
@@ -277,6 +279,7 @@ export function reconcileExportWorkspaceState({
 export function buildExportAudioSets(
   artifacts: ArtifactSchema[], drumModesBySource: Record<string, DrumMode> = {},
   drumModeParentKeysBySource: Record<string, string> = {},
+  vocalSplitGenerations: Record<string, string> = {},
 ): ExportAudioSet[] {
   const source = artifacts.find((artifact) => artifact.type === "source_audio") ?? null;
   const mixes = artifacts
@@ -292,14 +295,16 @@ export function buildExportAudioSets(
     const drumGroup = describeDrumGroup(sourceStems);
     const drumMode = drumModesBySource[artifact.id] === "split" && drumGroup?.splitAvailable &&
       drumModeParentKeysBySource[artifact.id] === drumParentKey(drumGroup) ? "split" : "original";
+    const vocalGroup = describeVocalGroup(sourceStems, artifact);
+    const vocalStems = activeVocalStems(sourceStems, vocalGroup, vocalPlaybackMode(vocalGroup, vocalSplitGenerations[artifact.id]));
     return {
       artifact,
       label:
         artifact.type === "source_audio"
           ? "Source Track"
           : `Practice Mix ${mixes.findIndex((mix) => mix.id === artifact.id) + 1}`,
-      stems: sourceStems,
-      defaultStemIds: activeStemArtifacts(sourceStems, drumMode).map((stem) => stem.id),
+      stems: vocalStems,
+      defaultStemIds: activeStemArtifacts(vocalStems, drumMode).map((stem) => stem.id),
     };
   });
 }

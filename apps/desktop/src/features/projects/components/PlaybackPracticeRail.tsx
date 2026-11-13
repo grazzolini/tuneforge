@@ -23,6 +23,8 @@ import {
   formatArtifactTimestamp,
 } from "../projectViewUtils";
 import { TargetKeySelector } from "./TargetKeySelector";
+import { VocalStemGroupControls } from "./VocalStemGroupControls";
+import { isVocalSubstem } from "../vocalStemGroup";
 import { useProjectViewModelContext } from "./useProjectViewModelContext";
 import { OutputVolumeControl } from "../../../components/OutputVolumeControl";
 import { useAudioOutput } from "../../../lib/audioOutputContext";
@@ -109,13 +111,17 @@ export const PlaybackPracticeRail = forwardRef<
     drumGroup,
     drumMode,
     drumGroupExpanded,
+    vocalGroup,
+    vocalMode,
+    vocalGroupExpanded,
     handleSetDrumMode,
     handleToggleDrumExpanded,
     nativeDesktopRuntime,
   } = useProjectViewModelContext();
   const displayStemArtifacts = coarseVisibleStemArtifacts.flatMap((artifact) =>
     artifact.type === "drums_stem" && drumGroupExpanded && drumGroup
-      ? [artifact, ...drumGroup.includedChildren] : [artifact],
+      ? [artifact, ...drumGroup.includedChildren]
+      : artifact.id === vocalGroup?.parent.id && vocalGroupExpanded ? [artifact, ...vocalGroup.includedChildren] : [artifact],
   );
   const showHeaderDetails = informationDensity === "detailed";
   const tempoSummary =
@@ -585,16 +591,18 @@ export const PlaybackPracticeRail = forwardRef<
             <div className="playback-stem-grid playback-stem-grid--compact" role="group" aria-label="Playback stem list">
               {displayStemArtifacts.map((artifact) => {
                 const state = stemControls[artifact.id] ?? { muted: false, solo: false, gain: 1 };
+                const vocalChild = isVocalSubstem(artifact);
+                const childDisabled = Boolean(artifact.metadata?.parent_artifact_id && (vocalChild ? vocalMode : drumMode) !== "split");
                 return (
                   <div className={`playback-stem-card${artifact.metadata?.parent_artifact_id ? " playback-stem-card--child" : ""}`} key={artifact.id}
-                    aria-disabled={artifact.metadata?.parent_artifact_id && drumMode !== "split" ? true : undefined}
-                    title={artifact.metadata?.parent_artifact_id && drumMode !== "split" ? "Select Split to control drum parts." : undefined}>
+                    aria-disabled={childDisabled || undefined}
+                    title={childDisabled ? "Select Split to control these parts." : undefined}>
                     <button
                       className={`artifact-pill${
                         selectedArtifactId === artifact.id ? " artifact-pill--active" : ""
                       }`}
                       onClick={() => void handleSelectStemArtifact(artifact)}
-                      disabled={Boolean(artifact.metadata?.parent_artifact_id && drumMode !== "split")}
+                      disabled={childDisabled}
                       type="button"
                     >
                       <span className="artifact-pill__title">{artifactLabel(artifact)}</span>
@@ -605,7 +613,7 @@ export const PlaybackPracticeRail = forwardRef<
                         className={`chip${state.muted ? " chip--active" : ""}`}
                         aria-label={`Mute ${artifactLabel(artifact)}`}
                         aria-pressed={state.muted}
-                        disabled={Boolean(artifact.metadata?.parent_artifact_id && drumMode !== "split")}
+                        disabled={childDisabled}
                         onClick={() => toggleStemControl(artifact, "muted")}
                         type="button"
                       >
@@ -615,14 +623,14 @@ export const PlaybackPracticeRail = forwardRef<
                         className={`chip${state.solo ? " chip--active" : ""}`}
                         aria-label={`Solo ${artifactLabel(artifact)}`}
                         aria-pressed={state.solo}
-                        disabled={Boolean(artifact.metadata?.parent_artifact_id && drumMode !== "split")}
+                        disabled={childDisabled}
                         onClick={() => toggleStemControl(artifact, "solo")}
                         type="button"
                       >
                         S
                       </button>
-                      <OutputVolumeControl
-                        disabled={Boolean(artifact.metadata?.parent_artifact_id && drumMode !== "split")}
+                      {!vocalChild ? <OutputVolumeControl
+                        disabled={childDisabled}
                         gain={state.gain ?? 1}
                         label={`${artifactLabel(artifact)} volume`}
                         muted={state.muted}
@@ -633,8 +641,9 @@ export const PlaybackPracticeRail = forwardRef<
                           }
                         }}
                         showLabel={false}
-                      />
+                      /> : null}
                     </div>
+                    {artifact.id === vocalGroup?.parent.id ? <VocalStemGroupControls playback /> : null}
                     {artifact.type === "drums_stem" && drumGroup ? (
                       <div className="stem-group__details">
                         <div className="stem-group__actions">

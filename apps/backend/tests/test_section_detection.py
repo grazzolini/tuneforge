@@ -251,18 +251,23 @@ def test_failure_cancel_and_stale_cue_preserve_last_good(client, sample_audio_fi
 def test_detect_route_requires_complete_stems_and_runs_local_job(client, sample_audio_file, monkeypatch):
     project_id = _seed(sample_audio_file)
     monkeypatch.setattr(service, "detect_sections", _prediction)
-    response = client.post(f"/api/v1/projects/{project_id}/sections/detect")
+    sections_url = f"/api/v1/projects/{project_id}/sections"
+    before = client.get(sections_url).json()
+    assert before["has_detected_sections"] is False
+    assert [section["label"] for section in before["sections"]] == ["My verse"]
+    response = client.post(f"{sections_url}/detect")
     assert response.status_code == 200
     from tests.conftest import wait_for_job
 
     job = wait_for_job(client, response.json()["job"]["id"])
     assert job["status"] == "completed"
+    assert client.get(sections_url).json() == {**before, "has_detected_sections": True}
     with SessionLocal() as session:
         assert session.get(SectionAnalysisResult, project_id) is not None
         stem = next(a for a in get_project(session, project_id).artifacts if a.type == "piano_stem")
         stem.metadata_json = {**stem.metadata_json, "source_artifact_id": "wrong-source"}
         session.commit()
-    assert client.post(f"/api/v1/projects/{project_id}/sections/detect").status_code == 409
+    assert client.post(f"{sections_url}/detect").status_code == 409
 
 
 def test_clock_mismatch_rejected_before_inference(client, sample_audio_file):

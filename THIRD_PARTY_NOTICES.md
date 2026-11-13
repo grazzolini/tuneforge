@@ -11,6 +11,8 @@ This file is the source of truth for dependency and model-weight distribution po
 - Bare package commands select the isolated local Test profile; production requires `--release`.
 - Default release package commands (`pnpm package:mac --release`, `pnpm package:linux:flatpak --release`) do not pass `--model-bundle`. They include Advanced Chords, Advanced Beat Analysis, and LV Chordia. LV Chordia's five dependency-owned checkpoints are included; external Demucs, Whisper, and beat-this weights are not.
 - Packaged macOS arm64 and Android arm64 include the LGPL FFmpeg/LAME distribution pinned by [`packaging/ffmpeg/sources.lock.json`](./packaging/ffmpeg/sources.lock.json). Android arm64 also dynamically links the owned libsoxr runtime pinned by [`packaging/soxr/sources.lock.json`](./packaging/soxr/sources.lock.json). Development/source runs keep host lookup and explicit overrides. Flatpak includes neither owned payload and uses runtime/extension wrappers for FFmpeg.
+- Mega53 model files are downloaded from the publisher to the active TuneForge data cache on
+  explicit vocal refinement or setup prewarm. Packages, including optional model bundles, exclude them.
 - Demucs, Whisper, beat-this, and All-In-One weights are local cache assets by default. Setup/model-prewarm can prepare them ahead of time, and the app may download them on first use if they are missing. Fully offline use requires the relevant caches/assets to already exist.
 - `--model-bundle` is an explicit local/dev packaging option, not part of default release packaging. It stages Demucs and Whisper weights and, when selected, the beat-this `small0` checkpoint; redistribution needs separate review before publishable artifacts use it.
 - Android Advanced Chords uses ONNX Runtime and installs the exact pinned Crema model/runtime-state pair on first use. The explicit local/dev `--model-bundle` option embeds the same pair for first-launch offline use. The Crema Python package, TensorFlow, and Keras are not included.
@@ -76,6 +78,17 @@ This file is the source of truth for dependency and model-weight distribution po
 - **Notes:** Used for source separation from the immutable source archive pinned in
   `apps/backend/pyproject.toml`. TuneForge loads its pinned YAML+safetensors models through a
   native strict loader and does not use the package's legacy pickle checkpoint loader.
+
+### BS-RoFormer inference and Mega53 vocal refinement
+
+- **License:** [MIT](./LICENSE), Copyright (c) 2023 Phil Wang.
+- **Source:** [Music Source Separation Training at ea7eb9c20ea0e3f94368a30fc1654b51cdd55789](https://github.com/ZFTurbo/Music-Source-Separation-Training/tree/ea7eb9c20ea0e3f94368a30fc1654b51cdd55789/models/bs_roformer).
+- **Notes:** TuneForge adapts the BS-RoFormer inference subset and verifies the checkpoint and
+  configuration from the [publisher's v1.0.21 release](https://github.com/ZFTurbo/Music-Source-Separation-Training/releases/tag/v1.0.21)
+  by size and SHA-256. The [author's MIT grant](https://github.com/ZFTurbo/Music-Source-Separation-Training/issues/245#issuecomment-5834608838)
+  covers the model and software. Rights in training material remain unverified.
+  [rotary-embedding-torch 0.9.1](https://github.com/lucidrains/rotary-embedding-torch)
+  is MIT and ships in the desktop Python runtime.
 
 ### All-In-One section detection
 

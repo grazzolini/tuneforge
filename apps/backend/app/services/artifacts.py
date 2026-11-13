@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from app.errors import AppError
 from app.models import Artifact, Job
 from app.services.project_storage import queue_project_storage_reconciliation
-from app.services.stem_models import DRUM_SUBSTEM_ARTIFACT_TYPES, STEM_ARTIFACT_TYPES
+from app.services.stem_models import DRUM_SUBSTEM_ARTIFACT_TYPES, STEM_ARTIFACT_TYPES, VOCAL_SUBSTEM_ARTIFACT_TYPES
 from app.services.sync_tombstones import record_artifact_delete_tombstone
 from app.utils.hashing import file_sha256
 from app.utils.ids import new_artifact_id
@@ -20,7 +20,7 @@ REGENERABLE_ARTIFACT_TYPES = {
     "lyrics",
     "preview_mix",
     "waveform_cache",
-} | STEM_ARTIFACT_TYPES | DRUM_SUBSTEM_ARTIFACT_TYPES
+} | STEM_ARTIFACT_TYPES | DRUM_SUBSTEM_ARTIFACT_TYPES | VOCAL_SUBSTEM_ARTIFACT_TYPES
 
 
 def _artifact_size_bytes(path: Path) -> int:
@@ -107,7 +107,7 @@ def prune_project_artifacts(
 
 
 def _has_pending_audio_job(session: Session, *, project_id: str) -> bool:
-    pending_audio_job_types = ("chords", "stems", "drum_substems", "export")
+    pending_audio_job_types = ("chords", "stems", "drum_substems", "vocal_substems", "convert_audio", "export")
     stmt = select(Job.id).where(
         Job.project_id == project_id,
         Job.type.in_(pending_audio_job_types),
@@ -141,7 +141,7 @@ def delete_project_artifact(session: Session, *, project_id: str, artifact_id: s
     if artifact.type == "source_audio":
         raise AppError("INVALID_REQUEST", "Source audio cannot be deleted from a project.")
     if (
-        artifact.type in STEM_ARTIFACT_TYPES | DRUM_SUBSTEM_ARTIFACT_TYPES
+        artifact.type in STEM_ARTIFACT_TYPES | DRUM_SUBSTEM_ARTIFACT_TYPES | VOCAL_SUBSTEM_ARTIFACT_TYPES
         and _has_pending_audio_job(session, project_id=project_id)
     ):
         raise AppError(
@@ -155,11 +155,19 @@ def delete_project_artifact(session: Session, *, project_id: str, artifact_id: s
             "Practice mixes cannot be deleted while chord, stem, or export jobs are pending or running.",
             status_code=409,
         )
-    if artifact.type in STEM_ARTIFACT_TYPES | DRUM_SUBSTEM_ARTIFACT_TYPES:
+    if artifact.type in STEM_ARTIFACT_TYPES | DRUM_SUBSTEM_ARTIFACT_TYPES | VOCAL_SUBSTEM_ARTIFACT_TYPES:
         if artifact.type == "drums_stem":
             from app.services.drum_substems import invalidate_drum_refinement
 
             invalidate_drum_refinement(session, artifact)
+        elif artifact.type == "vocal_stem":
+            from app.services.vocal_substems import invalidate_vocal_refinement
+
+            invalidate_vocal_refinement(session, artifact)
+        elif artifact.type in VOCAL_SUBSTEM_ARTIFACT_TYPES:
+            from app.services.vocal_substems import remove_vocal_child_membership
+
+            remove_vocal_child_membership(session, artifact)
         elif artifact.type in DRUM_SUBSTEM_ARTIFACT_TYPES:
             parent_id = artifact.metadata_json.get("parent_artifact_id")
             parent = session.get(Artifact, parent_id) if isinstance(parent_id, str) else None
@@ -185,7 +193,7 @@ def delete_project_artifact(session: Session, *, project_id: str, artifact_id: s
 
     stmt = select(Artifact).where(
         Artifact.project_id == project_id,
-        Artifact.type.in_(tuple(STEM_ARTIFACT_TYPES | DRUM_SUBSTEM_ARTIFACT_TYPES)),
+        Artifact.type.in_(tuple(STEM_ARTIFACT_TYPES | DRUM_SUBSTEM_ARTIFACT_TYPES | VOCAL_SUBSTEM_ARTIFACT_TYPES)),
     )
     related_stems = [
         stem

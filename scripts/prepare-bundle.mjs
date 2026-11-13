@@ -371,6 +371,7 @@ function verifyStagedPython(options) {
         "assert importlib.metadata.version('tuneforge-music-core') == '0.1.0'",
         "direct_url = importlib.metadata.distribution('tuneforge-music-core').read_text('direct_url.json')",
         "assert not direct_url or not __import__('json').loads(direct_url).get('dir_info', {}).get('editable')",
+        "from app.engines.mega_roformer import MegaRoformer",
         ...(options.lvChordia ? [
           "from app.engines.lv_chordia import lv_chordia_dependency_status",
           "available, reason = lv_chordia_dependency_status()",

@@ -6,6 +6,7 @@ import sys
 from io import StringIO
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
+from weakref import ReferenceType, ref
 
 import pytest
 
@@ -188,12 +189,25 @@ def test_transcribe_project_lyrics_falls_back_to_cpu(monkeypatch):
     assert result.segments[0]["text"] == "Hello world"
 
 
-def test_transcribe_project_lyrics_retries_smaller_model_on_cuda_oom(monkeypatch):
-    attempts: list[tuple[str, str]] = []
+def test_transcribe_project_lyrics_retries_smaller_model_on_cuda_oom(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FailedModel:
+        def __init__(self) -> None:
+            self.cycle = self
 
+    attempts: list[tuple[str, str]] = []
+    failed_model: ReferenceType[FailedModel] | None = None
+    cache_cleared = False
+
+    def empty_cache() -> None:
+        nonlocal cache_cleared
+        assert failed_model is not None and failed_model() is None
+        cache_cleared = True
+
+    fake_torch = make_fake_torch(has_mps=False, has_cuda=True)
+    fake_torch.cuda.empty_cache = empty_cache
     monkeypatch.setattr(
         "app.engines.lyrics._load_runtime",
-        lambda: (make_fake_torch(has_mps=False, has_cuda=True), object()),
+        lambda: (fake_torch, object()),
     )
 
     def fake_transcribe_with_device(
@@ -209,10 +223,14 @@ def test_transcribe_project_lyrics_retries_smaller_model_on_cuda_oom(monkeypatch
         progress_min: int = 20,
         progress_max: int = 85,
     ) -> LyricsTranscription:
+        nonlocal failed_model
         del on_runtime_event, progress_min, progress_max
         attempts.append((device, model_name))
         if model_name == "turbo":
+            model = FailedModel()
+            failed_model = ref(model)
             raise RuntimeError("CUDA out of memory")
+        assert cache_cleared
         return LyricsTranscription(
             backend="openai-whisper",
             requested_device=requested_device,

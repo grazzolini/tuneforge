@@ -31,6 +31,11 @@ the sheet does not make unavailable mobile generation paths available.
 These changes are mobile-runtime behavior only. Desktop Playback keeps its existing workspace tabs,
 practice rail, display toggles, follow controls, and transport layout.
 
+Synced Lead and Backing can replace Original Vocals when their parent and membership verify.
+Android plays and exports these files through its existing audio paths, with one file per export.
+iOS plays registered WAV artifacts. It stores synced non-WAV parts for other devices and shows
+the split as unavailable when its required audio cannot play. Mega53 inference runs on desktop.
+
 ## Android Embedded Backend
 
 Rust owns mobile project persistence, artifact records, job records, and app data paths. Kotlin/Android or Rust NDK bindings are the intended bridge for platform-only work:

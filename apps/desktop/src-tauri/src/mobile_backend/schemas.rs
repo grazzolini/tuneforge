@@ -95,6 +95,8 @@ pub struct ArtifactSchema {
     path: String,
     content_sha256: Option<String>,
     size_bytes: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    file_integrity: Option<&'static str>,
     generated_by: String,
     can_delete: bool,
     can_regenerate: bool,

@@ -40,6 +40,12 @@ from app.services.stems import resolve_stem_source_artifact
 from app.utils.model_cache import sha256_file
 
 
+def has_detected_sections(session: Session, project_id: str) -> bool:
+    return session.scalar(
+        select(SectionAnalysisResult.project_id).where(SectionAnalysisResult.project_id == project_id)
+    ) is not None
+
+
 def _digest(value: object) -> str:
     return hashlib.sha256(
         json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()

@@ -359,10 +359,14 @@ fn snapshot_export(
             .ok_or_else(|| "Export audio does not belong to this project.".to_string())?;
         if !matches!(artifact.r#type.as_str(), "source_audio" | "preview_mix")
             && !artifact.r#type.ends_with("_stem")
+            && super::storage::vocal_part(&artifact.r#type).is_none()
         {
             return Err(
                 "Only project tracks, practice mixes, and stems can be exported.".to_string(),
             );
+        }
+        if super::storage::vocal_part(&artifact.r#type).is_some() {
+            super::storage::validate_vocal_export(connection, root, &artifact)?;
         }
         let path = canonical_project_file(root, project_id, &artifact.path)?;
         if fs::metadata(&path)
@@ -477,6 +481,8 @@ fn stem_export_context(
         "snare_drum_substem" => "Snare",
         "cymbals_drum_substem" => "Cymbals",
         "toms_drum_substem" => "Toms",
+        "lead_vocal_substem" => "Lead",
+        "backing_vocal_substem" => "Backing",
         _ => return Err("Selected stem type is not exportable.".to_string()),
     };
     Ok(format!("{audio_set} - {stem_label}"))

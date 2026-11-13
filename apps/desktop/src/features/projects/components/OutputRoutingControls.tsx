@@ -14,6 +14,7 @@ import {
 } from "../../../lib/outputRouting";
 import { usePlayback } from "../playback-context";
 import { isDrumSubstem, stemControlKey } from "../drumStemGroup";
+import { isVocalSubstem } from "../vocalStemGroup";
 import { artifactLabel } from "../projectViewUtils";
 
 const DISCOVERY_NOTICE_ID = "project-output-discovery-notice";
@@ -294,8 +295,9 @@ export function OutputRoutingPanel({ stemArtifacts, noticeId = DISCOVERY_NOTICE_
       </div>
       {stemArtifacts.length ? stemArtifacts.map((artifact) => {
         const lane = lanes.find((entry) => entry.laneId === artifact.id);
-        const parent = isDrumSubstem(artifact) ? stemArtifacts.find((candidate) =>
-          candidate.type === "drums_stem" && candidate.id === artifact.metadata?.parent_artifact_id) : null;
+        const parentType = isVocalSubstem(artifact) ? "vocal_stem" : isDrumSubstem(artifact) ? "drums_stem" : null;
+        const parent = parentType ? stemArtifacts.find((candidate) =>
+          candidate.type === parentType && candidate.id === artifact.metadata?.parent_artifact_id) : null;
         const parentStableKey = lane?.parentStableKey ?? (parent ? stemControlKey(parent) : null);
         const stableKey = lane?.stableKey ?? stemControlKey(artifact);
         const destination = snapshot?.lanes.find((entry) => entry.laneId === artifact.id) ?? null;
@@ -308,7 +310,7 @@ export function OutputRoutingPanel({ stemArtifacts, noticeId = DISCOVERY_NOTICE_
             destination={destination}
             devices={devices}
             disabled={!playback.session}
-            inheritLabel={parentStableKey ? "Follow Drums" : "Follow project"}
+            inheritLabel={parentStableKey ? (isVocalSubstem(artifact) ? "Follow Vocals" : "Follow Drums") : "Follow project"}
             key={stableKey}
             label={artifactLabel(artifact)}
             native={native}

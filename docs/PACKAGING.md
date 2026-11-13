@@ -88,6 +88,11 @@ static compilation, APK linking, and physical-device behavior each need their ow
 - Advanced Chords uses ONNX Runtime. Every package that enables it includes the exact pinned 2.2 MB converted model, runtime state, and Brian McFee BSD-2-Clause notice; startup verifies and seeds the normal cache. This is independent of the broader `--model-bundle` option.
 - LV Chordia checkpoints ship inside its pinned dependency for offline first use. `--no-lv-chordia` excludes both the runtime and checkpoints; damaged assets fail closed and are repaired by reinstalling.
 
+Desktop packages include the Mega53 inference code and its Python dependencies. They fetch the
+pinned checkpoint and configuration directly from the publisher on the first explicit
+**Refine Vocals** action. These assets are cached under the active data root and excluded from
+all package and model bundle payloads.
+
 ## Release Package Gate
 
 A release package is not ready to publish until package build evidence and a

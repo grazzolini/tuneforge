@@ -107,6 +107,22 @@ function drumSession(mode: "original" | "split", onDrumModeRollback?: () => void
   });
 }
 
+function vocalSession(
+  mode: "original" | "split",
+  onVocalModeRollback?: () => void,
+  splitIdentity: string | null = "validated-vocal-split",
+): ProjectPlaybackSession {
+  const ids = mode === "split" ? ["lead", "backing"] : ["vocals"];
+  return bufferedSession({
+    vocalMode: mode, vocalSourceArtifactId: "source", vocalGenerationKey: "vocalset",
+    vocalSplitIdentity: splitIdentity, onVocalModeRollback,
+    selectedPlaybackArtifactId: ids[0], playbackArtifactIds: ids, visibleStemArtifactIds: ids,
+    artifactPathsById: Object.fromEntries(ids.map((id) => [id, `/tmp/${id}.wav`])),
+    artifactFormatsById: Object.fromEntries(ids.map((id) => [id, "wav"])),
+    stemControls: Object.fromEntries(ids.map((id) => [id, { muted: false, solo: false }])),
+  });
+}
+
 function activePlaybackContextValue(
   targetSession: ProjectPlaybackSession,
   playbackTimeSeconds: number,
@@ -639,6 +655,50 @@ describe("native playback race regressions", () => {
     expect(rollback).toHaveBeenCalledTimes(1);
     expect(playback.session?.drumMode).toBe("original");
     expect(playback.playbackTimeSeconds).toBe(7);
+    expect(playback.isPlaying).toBe(false);
+  });
+
+  it("restores playing Original Vocals after a rejected Web Audio split fetch", async () => {
+    const rollback = vi.fn();
+    const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      if (String(input).includes("lead")) throw new Error("Synthetic child fetch failed");
+      return new Response(new ArrayBuffer(16));
+    });
+    await setup(vocalSession("original", rollback));
+    await act(async () => playback.playPlayback());
+    act(() => playback.seekTo(6));
+    await flush();
+
+    act(() => playback.registerProjectSession(vocalSession("split")));
+    await flush();
+
+    expect(fetch.mock.calls.some(([input]) => String(input).includes("lead"))).toBe(true);
+    expect(rollback).toHaveBeenCalledTimes(1);
+    expect(playback.session?.vocalMode).toBe("original");
+    expect(playback.playbackTimeSeconds).toBe(6);
+    expect(playback.isPlaying).toBe(true);
+  });
+
+  it.each([
+    [null, false], ["new-membership", false], [null, true],
+  ] as const)("keeps invalidated vocal Split stopped when Original fails (%s, drum switch %s)", async (identity, drumSwitch) => {
+    enableNativePlayback();
+    const rollback = vi.fn();
+    await setup({ ...vocalSession("split", rollback), drumMode: drumSwitch ? "split" : "original" });
+    await act(async () => playback.playPlayback());
+    const invoke = getMockInvoke();
+    const originalInvoke = invoke.getMockImplementation()!;
+    invoke.mockImplementation(async (command, args) => {
+      const payload = (args as { payload?: { lanes?: { artifactId?: string }[] } })?.payload;
+      if (command === "audio_prepare_session" && payload?.lanes?.some((lane) => lane.artifactId === "vocals")) {
+        throw new Error("Synthetic Original preparation failure");
+      }
+      return originalInvoke(command, args);
+    });
+    act(() => playback.registerProjectSession({ ...vocalSession("original", undefined, identity), drumMode: "original" }));
+    await flush();
+    expect(rollback).not.toHaveBeenCalled();
+    expect(playback.session?.vocalMode).toBe("original");
     expect(playback.isPlaying).toBe(false);
   });
 

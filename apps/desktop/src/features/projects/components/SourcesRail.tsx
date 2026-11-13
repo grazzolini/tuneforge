@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Trash2 } from "lucide-react";
+import { VocalStemGroupControls } from "./VocalStemGroupControls";
 import { useProjectViewModelContext } from "./useProjectViewModelContext";
 import { artifactLabel, artifactSummary, fileNameFromPath, formatArtifactTimestamp } from "../projectViewUtils";
 import { OutputRoutingPanel, ProjectOutputRoute, RoutingTabs } from "./OutputRoutingControls";
@@ -32,6 +33,8 @@ export function SourcesRail() {
     drumGroup,
     drumMode,
     drumGroupExpanded,
+    vocalGroup,
+    vocalGroupExpanded,
     handleSetDrumMode,
     handleToggleDrumExpanded,
     handleDeleteDrumSplit,
@@ -41,7 +44,8 @@ export function SourcesRail() {
   const [routingTab, setRoutingTab] = useState<"stems" | "outputs">("stems");
   const outputStemArtifacts = coarseVisibleStemArtifacts.flatMap((artifact) =>
     artifact.type === "drums_stem" && drumGroupExpanded && drumGroup
-      ? [artifact, ...drumGroup.includedChildren] : [artifact],
+      ? [artifact, ...drumGroup.includedChildren]
+      : artifact.id === vocalGroup?.parent.id && vocalGroupExpanded ? [artifact, ...vocalGroup.includedChildren] : [artifact],
   );
 
   return (
@@ -209,6 +213,7 @@ export function SourcesRail() {
                         <Trash2 aria-hidden="true" className="artifact-action-row__delete-icon" />
                       </button>
                     </div>
+                    {artifact.id === vocalGroup?.parent.id ? <VocalStemGroupControls playback={false} /> : null}
                     {artifact.type === "drums_stem" && drumGroup ? (
                       <div className="stem-group__details">
                         <div className="stem-group__actions">

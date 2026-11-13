@@ -156,17 +156,24 @@
 
 .processing-panel__actions {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(8.75rem, max-content));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 10.5rem), max-content));
   align-items: start;
   gap: 0.65rem;
 }
 
-.processing-panel__drum-actions {
+.processing-panel__actions > * {
+  min-width: 0;
+}
+
+.processing-panel__actions .button {
+  max-width: 100%;
+}
+
+.processing-panel__refinement-actions {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
   gap: 0.42rem;
-  min-width: min(100%, 12rem);
 }
 
 .stem-group__details {
@@ -217,7 +224,6 @@
 .processing-panel__chord-actions,
 .processing-panel__lyrics-actions {
   display: flex;
-  min-width: 10.5rem;
   flex-direction: column;
   align-items: stretch;
   gap: 0.42rem;

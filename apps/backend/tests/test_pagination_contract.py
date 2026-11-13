@@ -188,11 +188,12 @@ def test_top_level_array_response_components_are_classified_for_pagination() -> 
 def test_existing_list_response_components_do_not_add_pagination_metadata() -> None:
     openapi = app.openapi()
     components = openapi["components"]["schemas"]
+    additional_properties = {"SongSectionsResponse": {"has_detected_sections"}}
 
     for schema_name, list_field, field_required in LIST_RESPONSE_CONTRACTS.values():
         component_schema = components[schema_name]
 
-        assert set(component_schema["properties"]) == {list_field}
+        assert set(component_schema["properties"]) == {list_field, *additional_properties.get(schema_name, set())}
         assert set(component_schema["properties"][list_field]) >= {"items", "type", "title"}
         assert component_schema["properties"][list_field]["type"] == "array"
         if field_required:

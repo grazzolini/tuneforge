@@ -637,6 +637,24 @@ def _merge_staged_project_manifest(
                     "A copied artifact file does not match its manifest.",
                     details={"artifact_id": verified_artifact.manifest.artifact_id},
                 )
+        for incoming in manifest.artifacts:
+            if incoming.type != "vocal_stem":
+                continue
+            local = session.get(Artifact, incoming.artifact_id)
+            if (
+                local is None or local.type != incoming.type
+                or _as_utc(incoming.updated_at) <= _as_utc(local.updated_at)
+            ):
+                continue
+            group = incoming.metadata.get("vocal_substems")
+            if group != local.metadata_json.get("vocal_substems"):
+                metadata = dict(local.metadata_json)
+                if group is None:
+                    metadata.pop("vocal_substems", None)
+                else:
+                    metadata["vocal_substems"] = group
+                local.metadata_json = metadata
+                local.updated_at = incoming.updated_at
         _import_entity_revisions(session, merge_manifest)
         imported_tombstones = _import_delete_tombstones(session, manifest)
         _apply_delete_tombstones(session, imported_tombstones)

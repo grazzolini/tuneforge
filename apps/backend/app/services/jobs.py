@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import queue
+import shutil
 import threading
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -40,6 +41,7 @@ from app.schemas import (
     DrumSubstemsRequest,
     LyricsGenerateRequest,
     StemRequest,
+    VocalSubstemsRequest,
 )
 from app.services.analysis import analyze_project
 from app.services.beat_backends import beat_backend_runtime_device
@@ -67,6 +69,12 @@ from app.services.transformations import (
     execute_transform_plan,
     export_artifacts,
 )
+from app.services.vocal_audio_conversion import convert_vocal_audio_groups
+from app.services.vocal_substems import (
+    generate_vocal_substems,
+    guard_vocal_parent_rebuild,
+    validate_vocal_refinement_request,
+)
 from app.utils.hashing import file_sha256
 from app.utils.ids import new_id
 
@@ -76,6 +84,7 @@ class JobExecutionResult:
     artifact_ids: list[str]
     runtime_device: str | None = None
     export_result: dict[str, Any] | None = None
+    uncommitted_directory: Path | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,10 +97,13 @@ JobHandler = Callable[["JobExecutionContext", Session, Job], JobExecutionResult]
 JobSortBy = Literal["activity", "created_at", "started_at", "updated_at", "status"]
 JobSortOrder = Literal["asc", "desc"]
 JobTimestampSortBy = Literal["created_at", "started_at", "updated_at"]
-BulkActivityJobType = Literal["analyze", "chords", "lyrics", "stems", "drum_substems", "convert_audio", "sections"]
+BulkActivityJobType = Literal[
+    "analyze", "chords", "lyrics", "stems", "drum_substems", "vocal_substems", "convert_audio", "sections",
+]
 BulkActivityJobSkipReason = BulkJobSkipReason
 ProjectActivityJobPayload = (
-    AnalysisRequest | ChordRequest | LyricsGenerateRequest | StemRequest | DrumSubstemsRequest | dict[str, Any]
+    AnalysisRequest | ChordRequest | LyricsGenerateRequest | StemRequest | DrumSubstemsRequest
+    | VocalSubstemsRequest | dict[str, Any]
 )
 
 _ACTIVE_JOB_STATUSES = ("pending", "running")
@@ -110,6 +122,7 @@ _PREPARING_STAGE_LABELS = {
     "transpose": "Preparing pitch adjustment.",
     "stems": "Preparing stem separation.",
     "drum_substems": "Preparing drum refinement.",
+    "vocal_substems": "Preparing vocal refinement.",
     "export": "Preparing export.",
 }
 
@@ -570,6 +583,7 @@ def _project_activity_job_payload(
             source_artifact_id=payload.source_artifact_id,
         )
         guard_parent_rebuild(session, project_id=project.id, source_artifact_id=source_artifact.id)
+        guard_vocal_parent_rebuild(session, project.id, source_artifact.id)
         selected_chord_backend = resolve_chord_backend(payload.chord_backend, require_available=False)
         requested_stem_model = payload.stem_model
         if payload.mode == "two_stem" and requested_stem_model in {None, "default"}:
@@ -591,6 +605,11 @@ def _project_activity_job_payload(
             "source_artifact_id": source_id,
             "parent_sha256": parent.content_sha256,
         }
+    if job_type == "vocal_substems" and isinstance(payload, VocalSubstemsRequest):
+        snapshots = validate_vocal_refinement_request(
+            session, project_id=project.id, parent_id=payload.vocals_artifact_id, output_format=payload.output_format,
+        )
+        return {**payload.model_dump(), **snapshots}
     if job_type in {"convert_audio", "sections"} and isinstance(payload, dict):
         return payload
     raise AppError("INVALID_REQUEST", "Job payload does not match job type.", status_code=422)
@@ -739,6 +758,7 @@ class InProcessJobRunner:
             "transpose": self._handle_single_transform,
             "stems": self._handle_stems,
             "drum_substems": self._handle_drum_substems,
+            "vocal_substems": self._handle_vocal_substems,
             "export": self._handle_export,
             "convert_audio": self._handle_convert_audio,
         }
@@ -944,6 +964,7 @@ class InProcessJobRunner:
             job.duration_seconds = None
             session.commit()
 
+        uncommitted_directory = None
         try:
             with self.session_factory() as session:
                 job = session.get(Job, job_id)
@@ -957,6 +978,7 @@ class InProcessJobRunner:
                     get_mutable_project(session, job.project_id)
                 context.ensure_not_cancelled()
                 result = handler(context, session, job)
+                uncommitted_directory = result.uncommitted_directory
                 session.refresh(job, attribute_names=["stage", "stage_label", "runtime_device", "runtime_detail"])
                 job.status = "completed"
                 job.progress = 100
@@ -970,6 +992,7 @@ class InProcessJobRunner:
                 if job.project_id is not None and job.type != "export":
                     queue_project_storage_reconciliation(session, job.project_id)
                 session.commit()
+                uncommitted_directory = None
         except JobCancelledError:
             self._mark_export_result_cancelled(job_id)
             self.update_job(job_id, status="cancelled", error_message=None)
@@ -985,6 +1008,10 @@ class InProcessJobRunner:
                 self.update_job(job_id, status="cancelled", error_message=None)
             else:
                 self.update_job(job_id, status="failed", error_message=str(exc))
+
+        finally:
+            if uncommitted_directory is not None:
+                shutil.rmtree(uncommitted_directory, ignore_errors=True)
 
     def _handle_sections(self, context: JobExecutionContext, session: Session, job: Job) -> JobExecutionResult:
         project = get_project(session, job.project_id or "")
@@ -1325,6 +1352,21 @@ class InProcessJobRunner:
         )
         return JobExecutionResult([artifact.id for artifact in artifacts], runtime_device)
 
+    def _handle_vocal_substems(
+        self, context: JobExecutionContext, session: Session, job: Job,
+    ) -> JobExecutionResult:
+        project = get_project(session, job.project_id or "")
+        context.update_runtime_status(stage="loading_model", stage_label="Verifying Mega53 model.", progress=10)
+        result = generate_vocal_substems(
+            session, project=project, payload=job.payload_json, output_format=job.payload_json["output_format"],
+            on_runtime_event=context.apply_runtime_event, should_cancel=context.should_cancel,
+            register_process=context.register_process, unregister_process=context.unregister_process,
+        )
+        return JobExecutionResult(
+            [artifact.id for artifact in result.artifacts], result.device,
+            uncommitted_directory=result.installed_dir,
+        )
+
     def _handle_convert_audio(
         self,
         context: JobExecutionContext,
@@ -1334,8 +1376,14 @@ class InProcessJobRunner:
         output_format = cast(DurableAudioFormat, job.payload_json["output_format"])
         snapshots = cast(list[dict[str, Any]], job.payload_json["artifacts"])
         require_encoding_available(output_format)
-        converted_ids: list[str] = []
+        claimed, converted_ids = convert_vocal_audio_groups(
+            session, project_id=job.project_id or "", snapshots=snapshots, output_format=output_format,
+            should_cancel=context.should_cancel, register_process=context.register_process,
+            unregister_process=context.unregister_process,
+        )
         for raw_snapshot in snapshots:
+            if raw_snapshot["artifact_id"] in claimed:
+                continue
             context.ensure_not_cancelled()
             converted = _convert_artifact_audio(
                 context,

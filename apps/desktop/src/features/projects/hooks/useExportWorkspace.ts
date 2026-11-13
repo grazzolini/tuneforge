@@ -54,6 +54,7 @@ export function useExportWorkspace() {
     displayArtifacts,
     drumModesBySource,
     drumModeParentKeysBySource,
+    vocalSplitGenerations,
     displayedChords,
     displayedLyrics,
     chordsQuerySettled,
@@ -78,8 +79,8 @@ export function useExportWorkspace() {
     hydratedProjectId === projectId && projectQuery.data?.id === projectId && artifactsQuery.isSuccess;
   const audioSets = useMemo(
     () => isCurrentProjectHydrated
-      ? buildExportAudioSets(displayArtifacts, drumModesBySource, drumModeParentKeysBySource) : [],
-    [displayArtifacts, drumModesBySource, drumModeParentKeysBySource, isCurrentProjectHydrated],
+      ? buildExportAudioSets(displayArtifacts, drumModesBySource, drumModeParentKeysBySource, vocalSplitGenerations) : [],
+    [displayArtifacts, drumModesBySource, drumModeParentKeysBySource, vocalSplitGenerations, isCurrentProjectHydrated],
   );
   const defaultAudioSetId =
     audioSets.find((audioSet) => audioSet.artifact.id === selectedPrimaryArtifactId)?.artifact.id ??

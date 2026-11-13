@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import importlib.util
 import json
 import os
@@ -320,9 +321,8 @@ def resolve_whisper_model_candidates(model_name: str, *, device: str) -> list[st
     return [model_name, *fallbacks]
 
 
-def _is_cuda_memory_error(error: Exception) -> bool:
-    message = str(error).lower()
-    return "out of memory" in message or "cuda error: out of memory" in message
+def _is_cuda_memory_error(message: str) -> bool:
+    return "out of memory" in message.lower()
 
 
 def _clear_cuda_cache(torch_module: Any) -> None:
@@ -539,7 +539,7 @@ def transcribe_project_lyrics_in_process(
         for device in candidates
     )
     attempt_index = 0
-    errors: list[Exception] = []
+    errors: list[str] = []
 
     requested_normalized = requested_device.strip().lower()
     if requested_normalized in {"mps", "cuda"} and candidates == ["cpu"]:
@@ -585,31 +585,34 @@ def transcribe_project_lyrics_in_process(
             except AppError:
                 raise
             except Exception as exc:  # pragma: no cover - defensive fallback around whisper runtime
-                errors.append(exc)
+                message = str(exc)
+                errors.append(message)
                 should_retry_smaller_cuda_model = (
                     device == "cuda"
                     and index < len(model_candidates) - 1
-                    and _is_cuda_memory_error(exc)
+                    and _is_cuda_memory_error(message)
                 )
-                if should_retry_smaller_cuda_model:
-                    _clear_cuda_cache(torch_module)
-                    _emit_lyrics_runtime_event(
-                        on_runtime_event,
-                        stage="fallback",
-                        stage_label="Falling back to a smaller Whisper model on CUDA.",
-                        runtime_device="cuda",
-                        runtime_detail="Whisper switched to a smaller model after CUDA memory pressure.",
-                    )
-                    continue
-                if device != "cpu" and "cpu" in candidates:
-                    _emit_lyrics_runtime_event(
-                        on_runtime_event,
-                        stage="fallback",
-                        stage_label=f"Falling back from {device.upper()} to CPU.",
-                        runtime_device="cpu",
-                        runtime_detail="Whisper switched to CPU after the accelerator attempt failed.",
-                    )
-                break
+            if should_retry_smaller_cuda_model:
+                # The failed attempt's traceback is out of scope, so its tensors can be collected.
+                gc.collect()
+                _clear_cuda_cache(torch_module)
+                _emit_lyrics_runtime_event(
+                    on_runtime_event,
+                    stage="fallback",
+                    stage_label="Falling back to a smaller Whisper model on CUDA.",
+                    runtime_device="cuda",
+                    runtime_detail="Whisper switched to a smaller model after CUDA memory pressure.",
+                )
+                continue
+            if device != "cpu" and "cpu" in candidates:
+                _emit_lyrics_runtime_event(
+                    on_runtime_event,
+                    stage="fallback",
+                    stage_label=f"Falling back from {device.upper()} to CPU.",
+                    runtime_device="cpu",
+                    runtime_detail="Whisper switched to CPU after the accelerator attempt failed.",
+                )
+            break
         if device == "cpu":
             break
 
@@ -800,7 +803,7 @@ def _whisper_failure_cache_status(
     model_name: str,
     *,
     download_root: Path,
-    errors: Sequence[Exception],
+    errors: Sequence[str],
 ) -> str | None:
     invalid_files = invalid_whisper_model_cache_files(model_name, cache_dir=download_root)
     invalid_cache_status = cache_status_from_invalid_files(invalid_files)
@@ -811,7 +814,7 @@ def _whisper_failure_cache_status(
     if text_status is not None:
         return text_status
 
-    failure_text = " ".join(str(error).lower() for error in errors)
+    failure_text = " ".join(errors).lower()
     if any(marker in failure_text for marker in ("cache", "checkpoint", "download", "model", "whisper")):
         return invalid_cache_status
     return None

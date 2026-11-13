@@ -34,6 +34,8 @@ STEM_SOURCE_ARTIFACT_TYPES = {
 STEM_ARTIFACT_TYPES = frozenset(STEM_SOURCE_ARTIFACT_TYPES.values())
 DRUM_SUBSTEM_SOURCES = ("kick", "snare", "cymbals", "toms")
 DRUM_SUBSTEM_ARTIFACT_TYPES = frozenset(f"{source}_drum_substem" for source in DRUM_SUBSTEM_SOURCES)
+VOCAL_SUBSTEM_TYPES = {"lead": "lead_vocal_substem", "backing": "backing_vocal_substem"}
+VOCAL_SUBSTEM_ARTIFACT_TYPES = frozenset(VOCAL_SUBSTEM_TYPES.values())
 STEM_ARTIFACT_TYPE_SOURCES = {artifact_type: source for source, artifact_type in STEM_SOURCE_ARTIFACT_TYPES.items()}
 DURABLE_AUDIO_ARTIFACT_TYPES = frozenset(
     {
@@ -41,6 +43,7 @@ DURABLE_AUDIO_ARTIFACT_TYPES = frozenset(
         "preview_mix",
         *STEM_ARTIFACT_TYPES,
         *DRUM_SUBSTEM_ARTIFACT_TYPES,
+        *VOCAL_SUBSTEM_ARTIFACT_TYPES,
         *STEM_SOURCE_ARTIFACT_TYPES,
     }
 )

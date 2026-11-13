@@ -1890,10 +1890,11 @@ def _plan_artifact(
             remote_metadata = _first_field(artifact.raw, "metadata", "metadata_json", default={})
             remote_updated_at = _coerce_datetime(_first_field(artifact.raw, "updated_at", default=None))
             local_updated_at = _coerce_datetime(local_artifact.updated_at)
+            membership_key = {"drums_stem": "drum_substems", "vocal_stem": "vocal_substems"}.get(local_artifact.type)
             if (
-                local_artifact.type == "drums_stem"
+                membership_key is not None and local_artifact.type == artifact.type
                 and isinstance(remote_metadata, dict)
-                and local_artifact.metadata_json.get("drum_substems") != remote_metadata.get("drum_substems")
+                and local_artifact.metadata_json.get(membership_key) != remote_metadata.get(membership_key)
                 and remote_updated_at is not None
                 and (local_updated_at is None or remote_updated_at > local_updated_at)
             ):
@@ -1903,14 +1904,14 @@ def _plan_artifact(
                     project_id=artifact.project_id, status="remote_available",
                     action_type=ACTION_IMPORT_ARTIFACT_MANIFEST,
                     content_sha256=artifact.content_sha256,
-                    reason="Import newer DrumSep membership metadata without copying unchanged audio.",
+                    reason="Import newer refinement membership metadata without copying unchanged audio.",
                     details=details,
                 ))
                 actions.append(_action(
                     ACTION_IMPORT_ARTIFACT_MANIFEST,
                     item_type=ITEM_ARTIFACT, item_id=artifact.artifact_id,
                     project_id=artifact.project_id, content_sha256=artifact.content_sha256,
-                    reason="Import newer DrumSep membership metadata.", details=details,
+                    reason="Import newer refinement membership metadata.", details=details,
                 ))
                 return
             _upsert_item(

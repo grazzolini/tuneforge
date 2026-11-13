@@ -93,6 +93,7 @@ function createReleaseMediaTunerFixture(metadata) {
     },
   };
 }
+const mockApiOrigin = "http://tuneforge-release-media.invalid";
 const childTailLines = 40;
 const releaseMediaCaptureCatalog = [
   {
@@ -196,6 +197,21 @@ const releaseMediaCaptureCatalog = [
     route: "/projects/proj_release_showcase",
     prepare: preparePlaybackDrumParts,
     ready: readyPlaybackDrumParts,
+    capture: captureScreenshotEntry,
+  },
+  {
+    id: "playback-vocal-parts",
+    enabled: true,
+    kind: "screenshot",
+    fileName: "playback-vocal-parts.png",
+    title: "Lead and backing vocals in Playback",
+    caption: "Switch a six-stem practice mix to Lead and Backing while the other stems keep playing.",
+    alt: "TuneForge Playback with Vocals in Split mode, Lead and Backing mute and solo, and the other five stems",
+    fixture: "release-showcase-vocal-parts-v1",
+    viewport: { width: 1600, height: 1600 },
+    route: "/projects/proj_release_showcase",
+    prepare: preparePlaybackVocalParts,
+    ready: readyPlaybackVocalParts,
     capture: captureScreenshotEntry,
   },
   {
@@ -712,7 +728,7 @@ function startDesktopDevServer(port) {
       String(port),
       "--strictPort",
     ], {
-      VITE_API_BASE_URL: "http://127.0.0.1:8765",
+      VITE_API_BASE_URL: mockApiOrigin,
     }, {
       cwd: desktopDir,
     });
@@ -728,7 +744,7 @@ function startDesktopDevServer(port) {
     String(port),
     "--strictPort",
   ], {
-    VITE_API_BASE_URL: "http://127.0.0.1:8765",
+    VITE_API_BASE_URL: mockApiOrigin,
   });
 }
 
@@ -832,6 +848,7 @@ async function installPageStabilizers(
   await page.addInitScript(({
     animatePlayback,
     mobileFixture,
+    mockApiOrigin,
     nativeAudioCapabilities,
     nativeAudioCaptureMetadata,
     nativeAudioMetadata,
@@ -1092,7 +1109,7 @@ async function installPageStabilizers(
     async function invokeReleaseMediaCommand(command, args) {
       if (command === "mobile_runtime_platform") return mobileFixture?.capabilities.platform ?? null;
       if (command === "backend_base_url") {
-        return "http://127.0.0.1:8765";
+        return mockApiOrigin;
       }
       if (command === "mobile_capabilities") {
         if (mobileFixture) {
@@ -1415,6 +1432,7 @@ async function installPageStabilizers(
   }, {
     animatePlayback: motionPolicy.animatePlayback,
     mobileFixture,
+    mockApiOrigin,
     nativeAudioCapabilities: releaseMediaNativeAudioCapabilities,
     nativeAudioCaptureMetadata: releaseMediaNativeAudioCaptureMetadata,
     nativeAudioMetadata: releaseMediaNativeAudioMetadata,
@@ -1471,7 +1489,7 @@ async function measureMobilePlaybackFollowLayouts(scenarios, { timeoutMs = 45_00
         outputDir: defaultOutputDir,
         theme: "dark",
         viewport: entry.viewport,
-      }, { entry });
+      }, { appUrl, entry });
       try {
         const page = await context.newPage();
         await installPageStabilizers(page, { theme: "dark" }, "screenshot", entry, {
@@ -1629,22 +1647,32 @@ async function measureMobilePlaybackFollowLayouts(scenarios, { timeoutMs = 45_00
   }
 }
 
-async function createCaptureContext(browser, options, { entry = null, recordVideo = false } = {}) {
+async function createCaptureContext(browser, options, { appUrl, entry = null, recordVideo = false }) {
+  const appOrigin = new URL(appUrl).origin;
   const viewport = entry?.viewport ?? options.viewport;
   const context = await browser.newContext({
     colorScheme: options.theme === "light" ? "light" : "dark",
     deviceScaleFactor: 1,
     reducedMotion: "reduce",
+    serviceWorkers: "block",
     recordVideo: recordVideo
       ? { dir: options.outputDir, size: viewport }
       : undefined,
     viewport,
   });
   await context.route("**/*", async (route) => {
-    const handled = await maybeFulfillMockApi(route, entry?.fixture);
-    if (!handled) {
+    const url = new URL(route.request().url());
+    if (url.origin === mockApiOrigin && await maybeFulfillMockApi(route, entry?.fixture)) return;
+    if (url.origin === appOrigin && !url.pathname.startsWith("/api/") && route.request().method() === "GET") {
       await route.continue();
+    } else {
+      await route.abort("blockedbyclient");
     }
+  });
+  await context.routeWebSocket("**/*", (socket) => {
+    const url = new URL(socket.url());
+    if (url.origin.replace(/^ws/, "http") === appOrigin && url.pathname === "/") socket.connectToServer();
+    else socket.close();
   });
   return context;
 }
@@ -1656,7 +1684,7 @@ async function captureCatalogScreenshots({ appUrl, browser, catalog, entries, no
 
   const capturedItems = [];
   for (const entry of entries) {
-    const context = await createCaptureContext(browser, options, { entry });
+    const context = await createCaptureContext(browser, options, { appUrl, entry });
     try {
       const page = await context.newPage();
       await installPageStabilizers(
@@ -1701,7 +1729,7 @@ async function settleScreenshotPaint(page) {
 }
 
 async function captureCatalogVideo({ appUrl, browser, catalog, entry, options }) {
-  const context = await createCaptureContext(browser, options, { recordVideo: true });
+  const context = await createCaptureContext(browser, options, { appUrl, recordVideo: true });
   let video = null;
   try {
     const page = await context.newPage();
@@ -1797,6 +1825,34 @@ async function readyPlaybackDrumParts({ page, timeoutMs }) {
     if (!bounds || bounds.y < railBounds.y || bounds.y + bounds.height > railBounds.y + railBounds.height) {
       throw new Error(`Playback drum-parts capture clips ${part}.`);
     }
+  }
+}
+
+async function preparePlaybackVocalParts({ page, timeoutMs }) {
+  await page.getByRole("button", { name: /^Practice Mix/ }).first().click();
+  const rail = page.locator(".playback-practice-rail--desktop");
+  const split = rail.getByRole("group", { name: "Vocals playback mode" }).getByRole("button", { name: "Split" });
+  await split.waitFor({ timeout: timeoutMs });
+  await split.click();
+  await rail.getByRole("button", { name: "Show Parts" }).first().click();
+  await rail.getByRole("button", { name: "Mute Other", exact: true }).scrollIntoViewIfNeeded();
+}
+
+async function readyPlaybackVocalParts({ page, timeoutMs }) {
+  const rail = page.locator(".playback-practice-rail--desktop");
+  const railBounds = await rail.locator(".playback-practice-rail__content").boundingBox();
+  if (!railBounds) throw new Error("Playback vocal-parts rail has no visible bounds.");
+  for (const part of ["Lead", "Backing", "Drums", "Bass", "Guitar", "Piano", "Other"]) {
+    const control = rail.getByRole("button", { name: `Mute ${part}`, exact: true });
+    await control.waitFor({ state: "visible", timeout: timeoutMs });
+    const bounds = await control.boundingBox();
+    if (!bounds || bounds.y < railBounds.y || bounds.y + bounds.height > railBounds.y + railBounds.height) {
+      throw new Error(`Playback vocal-parts capture clips ${part}.`);
+    }
+  }
+  const mode = rail.getByRole("group", { name: "Vocals playback mode" });
+  if (await mode.getByRole("button", { name: "Split" }).getAttribute("aria-pressed") !== "true") {
+    throw new Error("Vocal parts capture requires Split selected.");
   }
 }
 
@@ -2684,6 +2740,9 @@ function mockApiResponse(method, url, fixture = null) {
   if (method === "GET" && path === "/api/v1/stem-models") {
     return { body: { models: stemModels() } };
   }
+  if (method === "GET" && path === "/api/v1/vocal-substems/capabilities") {
+    return { body: { available: true, cached: true, download_bytes: 1368924071, unavailable_reason: null } };
+  }
   if (method === "GET" && path === "/api/v1/drum-substems/capabilities") {
     return { body: {
       platform_supported: true,
@@ -2752,7 +2811,7 @@ function mockApiResponse(method, url, fixture = null) {
     return { body: lyrics(projectId) };
   }
   if (child === "artifacts") {
-    return { body: { artifacts: artifacts(projectId, fixture === "release-showcase-drumsep-v1") } };
+    return { body: { artifacts: artifacts(projectId, fixture) } };
   }
   if (child === "sections") {
     return { body: { sections: sections(projectId) } };
@@ -2773,7 +2832,7 @@ function healthResponse() {
       git_ref: "release-media-fixture",
     },
     status: "ok",
-    api_base_url: "http://127.0.0.1:8765/api/v1",
+    api_base_url: `${mockApiOrigin}/api/v1`,
     data_root: "/tmp/tuneforge-release-media",
     default_export_format: "wav",
     preview_format: "wav",
@@ -2956,7 +3015,7 @@ function lyrics(projectId) {
   };
 }
 
-function artifacts(projectId, drumsep = false) {
+function artifacts(projectId, fixture = null) {
   const result = [
     {
       id: "art_preview",
@@ -3006,7 +3065,36 @@ function artifacts(projectId, drumsep = false) {
       created_at: fixtureTimestamp,
     },
   ];
-  if (!drumsep) return result;
+  if (fixture === "release-showcase-vocal-parts-v1") {
+    const parent = result.find((artifact) => artifact.id === "art_vocals");
+    const parts = ["lead", "backing"];
+    const generation = "vocalset_release_fixture";
+    const ids = Object.fromEntries(parts.map((part) => [part, `art_vocal_${part}`]));
+    parent.metadata = {
+      ...parent.metadata, mode: "six_stems", stem_model: "htdemucs_6s",
+      vocal_substems: {
+        generation_id: generation, source_artifact_id: "art_preview",
+        parent_sha256: "a".repeat(64), source_sha256: "b".repeat(64),
+        format: "wav", expected_parts: parts, excluded_parts: [], child_artifact_ids: ids,
+        child_sha256: { lead: "c".repeat(64), backing: "d".repeat(64) },
+      },
+    };
+    parent.file_integrity = "verified";
+    for (const [id, type] of [["art_piano", "piano_stem"], ["art_other", "other_stem"]]) {
+      result.push({ id, type, project_id: projectId, format: "wav",
+        path: `/tmp/tuneforge-release-media/${id}.wav`, metadata: { source_artifact_id: "art_preview" },
+        created_at: fixtureTimestamp });
+    }
+    for (const part of parts) {
+      result.push({ id: ids[part], type: `${part}_vocal_substem`, project_id: projectId, format: "wav",
+        path: `/tmp/tuneforge-release-media/${ids[part]}.wav`, file_integrity: "verified",
+        metadata: { source_artifact_id: "art_preview", parent_artifact_id: parent.id,
+          generation_id: generation, vocal_part: part },
+        created_at: fixtureTimestamp });
+    }
+    return result;
+  }
+  if (fixture !== "release-showcase-drumsep-v1") return result;
   const parent = result.find((artifact) => artifact.id === "art_drums");
   const parentSha = "a".repeat(64);
   const childIds = Object.fromEntries(

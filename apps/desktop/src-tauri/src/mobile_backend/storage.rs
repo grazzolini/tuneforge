@@ -881,6 +881,7 @@ pub(super) fn row_artifact(row: &Row<'_>) -> rusqlite::Result<ArtifactSchema> {
         path: row.get(4)?,
         content_sha256: row.get(5)?,
         size_bytes: row.get(6)?,
+        file_integrity: None,
         generated_by: row.get(7)?,
         can_delete: row.get::<_, i64>(8)? != 0,
         can_regenerate: row.get::<_, i64>(9)? != 0,
@@ -3723,6 +3724,135 @@ pub fn mobile_delete_project(app: AppHandle, project_id: String) -> Result<Delet
     Ok(DeleteResponse { deleted: true })
 }
 
+pub(super) fn vocal_part(artifact_type: &str) -> Option<&'static str> {
+    match artifact_type {
+        "lead_vocal_substem" => Some("lead"),
+        "backing_vocal_substem" => Some("backing"),
+        _ => None,
+    }
+}
+
+fn is_current_vocal_part(parent: &ArtifactSchema, child: &ArtifactSchema) -> bool {
+    let Some(part) = vocal_part(&child.r#type) else {
+        return false;
+    };
+    let group = &parent.metadata["vocal_substems"];
+    let generation = group["generation_id"].as_str().filter(|id| !id.is_empty());
+    parent.r#type == "vocal_stem"
+        && parent.project_id == child.project_id
+        && child.metadata["parent_artifact_id"].as_str() == Some(parent.id.as_str())
+        && child.metadata["source_artifact_id"] == parent.metadata["source_artifact_id"]
+        && child.metadata["vocal_part"].as_str() == Some(part)
+        && generation.is_some()
+        && generation == child.metadata["generation_id"].as_str()
+        && group["child_artifact_ids"][part].as_str() == Some(child.id.as_str())
+        && child.content_sha256.is_some()
+        && group["child_sha256"][part].as_str() == child.content_sha256.as_deref()
+        && group["format"].as_str() == Some(child.format.as_str())
+}
+
+fn owned_vocal_file_integrity(root: &Path, artifact: &ArtifactSchema) -> &'static str {
+    let Ok(project_root) = project_root_path(root, &artifact.project_id) else {
+        return "corrupt";
+    };
+    let path = Path::new(&artifact.path);
+    if !path.is_file() {
+        return "missing";
+    }
+    if super::storage_cleanup::capture_owned_project_file(root, &project_root, path).is_err() {
+        return "corrupt";
+    }
+    if artifact.content_sha256.as_ref().is_some_and(|expected| {
+        fs::metadata(path).is_ok_and(|stat| stat.len() as i64 == artifact.size_bytes)
+            && file_sha256(path).is_ok_and(|digest| &digest == expected)
+    }) {
+        "verified"
+    } else {
+        "corrupt"
+    }
+}
+
+fn vocal_file_integrity(
+    root: &Path,
+    artifact: &ArtifactSchema,
+    rows: &[ArtifactSchema],
+) -> Option<&'static str> {
+    if artifact.r#type == "vocal_stem" && artifact.metadata.get("vocal_substems").is_some() {
+        let group = &artifact.metadata["vocal_substems"];
+        let source = rows.iter().find(|source| {
+            artifact.metadata["source_artifact_id"].as_str() == Some(source.id.as_str())
+                && matches!(source.r#type.as_str(), "source_audio" | "preview_mix")
+        });
+        if artifact.metadata["stem_model"] != "htdemucs_6s"
+            || artifact.metadata["mode"] != "six_stems"
+            || artifact.content_sha256.is_none()
+            || group["parent_sha256"].as_str() != artifact.content_sha256.as_deref()
+            || !source.is_some_and(|source| {
+                source.content_sha256.is_some()
+                    && group["source_artifact_id"].as_str() == Some(source.id.as_str())
+                    && group["source_sha256"].as_str() == source.content_sha256.as_deref()
+                    && owned_vocal_file_integrity(root, source) == "verified"
+            })
+        {
+            return Some("corrupt");
+        }
+    } else if vocal_part(&artifact.r#type).is_some() {
+        if !rows
+            .iter()
+            .any(|parent| is_current_vocal_part(parent, artifact))
+        {
+            return Some("corrupt");
+        }
+    } else {
+        return None;
+    }
+    Some(owned_vocal_file_integrity(root, artifact))
+}
+
+#[cfg(any(target_os = "android", test))]
+pub(super) fn validate_vocal_export(
+    connection: &Connection,
+    root: &Path,
+    artifact: &ArtifactSchema,
+) -> Result<(), String> {
+    let rows = list_project_artifacts(connection, &artifact.project_id)?;
+    let parent = rows
+        .iter()
+        .find(|parent| is_current_vocal_part(parent, artifact));
+    let valid = parent.is_some_and(|parent| {
+        let group = &parent.metadata["vocal_substems"];
+        let excluded = group["excluded_parts"].as_array();
+        let parts = ["lead", "backing"];
+        group["expected_parts"] == json!(parts)
+            && excluded.is_some_and(|excluded| {
+                excluded
+                    .iter()
+                    .all(|part| part.as_str().is_some_and(|part| parts.contains(&part)))
+                    && group["child_artifact_ids"]
+                        .as_object()
+                        .is_some_and(|ids| ids.len() + excluded.len() == 2)
+                    && group["child_sha256"]
+                        .as_object()
+                        .is_some_and(|hashes| hashes.len() + excluded.len() == 2)
+                    && !excluded.contains(&json!(vocal_part(&artifact.r#type)))
+                    && parts.iter().all(|part| {
+                        excluded.contains(&json!(part))
+                            || rows.iter().any(|child| {
+                                vocal_part(&child.r#type) == Some(*part)
+                                    && is_current_vocal_part(parent, child)
+                                    && owned_vocal_file_integrity(root, child) == "verified"
+                            })
+                    })
+            })
+            && vocal_file_integrity(root, parent, &rows) == Some("verified")
+    });
+    if valid {
+        Ok(())
+    } else {
+        Err("Export requires a current vocal split.".to_string())
+    }
+}
+
 pub fn mobile_list_artifacts(
     app: AppHandle,
     project_id: String,
@@ -3743,7 +3873,82 @@ pub fn mobile_list_artifacts(
     for row in rows {
         artifacts.push(row.map_err(|error| error.to_string())?);
     }
+    let integrity = artifacts
+        .iter()
+        .map(|artifact| vocal_file_integrity(&root, artifact, &artifacts))
+        .collect::<Vec<_>>();
+    for (artifact, status) in artifacts.iter_mut().zip(integrity) {
+        artifact.file_integrity = status;
+    }
     Ok(ArtifactsResponse { artifacts })
+}
+
+fn record_and_delete_artifact(
+    connection: &Connection,
+    artifact: &ArtifactSchema,
+) -> Result<(), String> {
+    record_local_delete_tombstone(
+        connection,
+        &artifact.project_id,
+        "artifact",
+        &artifact.id,
+        json!({
+            "project_id": artifact.project_id,
+            "type": artifact.r#type,
+            "content_sha256": artifact.content_sha256,
+            "size_bytes": artifact.size_bytes,
+        }),
+    )?;
+    connection
+        .execute("DELETE FROM artifacts WHERE id = ?1", params![artifact.id])
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn delete_with_vocal_membership(
+    connection: &Connection,
+    artifact: &ArtifactSchema,
+) -> Result<(), String> {
+    if matches!(artifact.r#type.as_str(), "vocal_stem" | "preview_mix") {
+        for child in list_project_artifacts(connection, &artifact.project_id)? {
+            if vocal_part(&child.r#type).is_some()
+                && (if artifact.r#type == "vocal_stem" {
+                    child.metadata["parent_artifact_id"].as_str() == Some(artifact.id.as_str())
+                } else {
+                    child.metadata["source_artifact_id"].as_str() == Some(artifact.id.as_str())
+                })
+            {
+                record_and_delete_artifact(connection, &child)?;
+            }
+        }
+    } else if let Some(part) = vocal_part(&artifact.r#type) {
+        let rows = list_project_artifacts(connection, &artifact.project_id)?;
+        if let Some(parent) = rows
+            .iter()
+            .find(|parent| is_current_vocal_part(parent, artifact))
+        {
+            let mut metadata = parent.metadata.clone();
+            let group = &mut metadata["vocal_substems"];
+            if let Some(excluded) = group["excluded_parts"].as_array_mut() {
+                if !excluded.contains(&json!(part)) {
+                    excluded.push(json!(part));
+                }
+                group["child_artifact_ids"]
+                    .as_object_mut()
+                    .expect("validated member ids")
+                    .remove(part);
+                group["child_sha256"]
+                    .as_object_mut()
+                    .expect("validated member fingerprints")
+                    .remove(part);
+                connection.execute(
+                    "UPDATE artifacts SET metadata_json=?1, updated_at=?2 WHERE id=?3 AND project_id=?4",
+                    params![metadata.to_string(), now_iso(), parent.id, artifact.project_id],
+                ).map_err(|error| error.to_string())?;
+            }
+        }
+    }
+    record_and_delete_artifact(connection, artifact)
 }
 
 pub fn mobile_delete_artifact(
@@ -3772,22 +3977,7 @@ pub fn mobile_delete_artifact(
         if !artifact.can_delete {
             return Err("This artifact cannot be deleted.".to_string());
         }
-        record_local_delete_tombstone(
-            &connection,
-            &project_id,
-            "artifact",
-            &artifact.id,
-            json!({
-                "project_id": artifact.project_id,
-                "type": artifact.r#type,
-                "content_sha256": artifact.content_sha256,
-                "size_bytes": artifact.size_bytes,
-            }),
-        )?;
-        connection
-            .execute("DELETE FROM artifacts WHERE id = ?1", params![artifact.id])
-            .map_err(|error| error.to_string())?;
-        Ok(())
+        delete_with_vocal_membership(&connection, &artifact)
     })();
     if let Err(message) = delete_result {
         let _ = connection.execute_batch("ROLLBACK");

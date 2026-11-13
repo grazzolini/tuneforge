@@ -42,6 +42,7 @@ from app.schemas import (
     TabImportResponse,
     TabImportSchema,
     TransposeRequest,
+    VocalSubstemsRequest,
 )
 from app.services.artifacts import delete_project_artifact, drum_substem_file_integrity
 from app.services.chord_backends import FAST_CHORD_BACKEND_ID, ChordDetectionBackend, resolve_chord_backend
@@ -66,6 +67,7 @@ from app.services.tabs import (
     list_project_sections,
 )
 from app.services.transformations import prepare_export_job_payload
+from app.services.vocal_substems import delete_vocal_substem_set, vocal_substem_file_integrity
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -469,13 +471,45 @@ def project_drum_substems_delete(
     return DeleteResponse(deleted=True)
 
 
+@router.post(
+    "/{project_id}/vocal-substems",
+    response_model=JobResponse,
+    responses={code: {"model": ErrorResponse} for code in (404, 409, 422)},
+)
+def project_vocal_substems(
+    project_id: str,
+    payload: VocalSubstemsRequest,
+    session: Session = Depends(get_db),
+    runner=Depends(get_job_runner),
+) -> JobResponse:
+    job = create_project_activity_job(
+        session, runner, project_id=project_id, job_type="vocal_substems", payload=payload,
+    )
+    return JobResponse(job=JobSchema.model_validate(job))
+
+
+@router.delete(
+    "/{project_id}/vocal-substems/{vocals_artifact_id}",
+    response_model=DeleteResponse,
+    responses={code: {"model": ErrorResponse} for code in (404, 409, 422)},
+)
+def project_vocal_substems_delete(
+    project_id: str, vocals_artifact_id: str, session: Session = Depends(get_db),
+) -> DeleteResponse:
+    get_mutable_project(session, project_id)
+    delete_vocal_substem_set(session, project_id=project_id, parent_id=vocals_artifact_id)
+    session.commit()
+    return DeleteResponse(deleted=True)
+
+
 @router.get("/{project_id}/artifacts", response_model=ArtifactsResponse)
 def project_artifacts(project_id: str, session: Session = Depends(get_db)) -> ArtifactsResponse:
     get_project(session, project_id)
     stmt = select(Artifact).where(Artifact.project_id == project_id).order_by(Artifact.created_at.desc())
+    rows = {artifact.id: artifact for artifact in session.scalars(stmt)}
     artifacts = [ArtifactSchema.model_validate(artifact).model_copy(update={
-        "file_integrity": drum_substem_file_integrity(artifact),
-    }) for artifact in session.scalars(stmt)]
+        "file_integrity": drum_substem_file_integrity(artifact) or vocal_substem_file_integrity(artifact, rows),
+    }) for artifact in rows.values()]
     return ArtifactsResponse(artifacts=artifacts)
 
 

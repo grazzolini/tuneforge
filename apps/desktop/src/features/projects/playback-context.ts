@@ -20,6 +20,11 @@ export type ProjectPlaybackSession = {
   drumMode?: "original" | "split";
   drumSourceArtifactId?: string | null;
   onDrumModeRollback?: () => void;
+  vocalMode?: "original" | "split";
+  vocalSourceArtifactId?: string | null;
+  vocalGenerationKey?: string | null;
+  vocalSplitIdentity?: string | null;
+  onVocalModeRollback?: () => void;
   onPlaybackSourceRollback?: () => void;
   playbackArtifactIds: string[];
   artifactPathsById: Record<string, string>;

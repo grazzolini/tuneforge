@@ -208,6 +208,15 @@ test("section runtime inventory retains code and native plotting license distinc
     "pillow", "pyparsing", "python-dateutil"]) assert.ok(REVIEWED_FLATPAK_PYTHON_LICENSES[name], name);
 });
 
+test("the base desktop runtime includes Mega53 inference dependencies without beat-this", () => {
+  const lock = parseUvLock(readFileSync(new URL("../apps/backend/uv.lock", import.meta.url), "utf8"));
+  const packages = resolvePythonRuntimePackages(lock, { extras: [] }).map((item) => item.name);
+  for (const name of ["torch", "einops", "pyyaml", "rotary-embedding-torch"]) {
+    assert.ok(packages.includes(name), name);
+  }
+  assert.ok(!packages.includes("beat-this"));
+});
+
 test("the real Flatpak shipping lock passes strict license inventory", (context) => {
   const lock = parseUvLock(readFileSync(new URL("../apps/backend/uv.lock", import.meta.url), "utf8"));
   const syncArgs = backendSyncArgs(defaultPackageOptions());

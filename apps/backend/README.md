@@ -264,6 +264,14 @@ uv run --python 3.14 uvicorn app.main:app --reload --host 127.0.0.1 --port 8765
 
 The API is served at `http://127.0.0.1:8765/api/v1`. OpenAPI documentation is at `http://127.0.0.1:8765/docs`.
 
+## Vocal refinement
+
+`Refine Vocals` uses the pinned Mega53 lead/backing heads with the associated source mix and its
+existing six-stem Vocals track. The isolated worker uses the existing stem device setting and retries
+an accelerator execution failure once on CPU. Verified model files live under the active data
+root's `cache/models/mega53/v1.0.21`. Setup prewarms them unless `--skip-model-prewarm` is set.
+See [Stem separation](../../docs/STEM_SEPARATION.md#optional-vocal-refinement).
+
 ## Configuration
 
 All configuration is environment-driven (see [`app/config.py`](./app/config.py)):

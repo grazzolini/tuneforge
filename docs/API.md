@@ -170,6 +170,21 @@ Returns available chord backends and capability metadata. Built-in chords are al
 
 Returns supported stem models and availability metadata. Labels are `Default (6 stems model)` for `htdemucs_6s` and `2 stems model` for `htdemucs_ft`.
 
+### Vocal refinement
+
+- `GET /api/v1/vocal-substems/capabilities` reports desktop availability, verified cache state,
+  and download size. This request only checks the local cache.
+- `POST /api/v1/projects/{project_id}/vocal-substems` queues a job for `vocals_artifact_id`.
+  Accepts `output_format` (WAV, FLAC, MP3, or M4A) and explicit `allow_download`.
+  On success, `result_artifact_ids` contains the Lead and Backing tracks.
+- `DELETE /api/v1/projects/{project_id}/vocal-substems/{vocals_artifact_id}` removes the
+  current split and leaves Original Vocals. The normal artifact delete route removes an
+  individual part and records its exclusion.
+
+A six-stem `vocal_stem` records its current `vocal_substems` membership in artifact metadata.
+Child types are `lead_vocal_substem` and `backing_vocal_substem`. They transfer as durable audio
+under the existing sync manifest and transport versions.
+
 ## Sync
 
 The sync API exposes local sync metadata, identity, and trust management for the bundled desktop app.

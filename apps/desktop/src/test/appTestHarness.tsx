@@ -93,6 +93,8 @@ const {
   mockCreateStems,
   mockGetDrumSubstemCapabilities,
   mockCreateDrumSubstems,
+  mockGetVocalSubstemCapabilities,
+  mockCreateVocalSubstems,
   mockAnalyzeProject,
   mockUpdateLyrics,
   mockUpdateProject,
@@ -1817,6 +1819,15 @@ const {
       updated_at: createdAt,
     },
   }));
+  const mockGetVocalSubstemCapabilities = vi.fn(async () => ({
+    available: true, cached: true, download_bytes: 1368924071, unavailable_reason: null,
+  }));
+  const mockCreateVocalSubstems = vi.fn(async (projectId: string) => ({
+    job: {
+      id: `job_${state.nextJobId++}`, project_id: projectId, type: "vocal_substems", status: "pending",
+      progress: 0, source_artifact_id: null, error_message: null, created_at: createdAt, updated_at: createdAt,
+    },
+  }));
   const mockEnsureWebMediaTransport = vi.fn(async () => {});
   const mockScanPairingQrCode = vi.fn(async (): Promise<string> => {
     throw new Error("QR scanner unavailable.");
@@ -2882,6 +2893,8 @@ const {
     mockCreateStems,
     mockGetDrumSubstemCapabilities,
     mockCreateDrumSubstems,
+  mockGetVocalSubstemCapabilities,
+  mockCreateVocalSubstems,
     mockAnalyzeProject,
     mockUpdateLyrics,
     mockUpdateProject,
@@ -2974,6 +2987,8 @@ export {
   mockCreateStems,
   mockGetDrumSubstemCapabilities,
   mockCreateDrumSubstems,
+  mockGetVocalSubstemCapabilities,
+  mockCreateVocalSubstems,
   mockAnalyzeProject,
   mockUpdateLyrics,
   mockUpdateProject,
@@ -3054,6 +3069,9 @@ vi.mock("../lib/api", async (importOriginal) => {
       createStems: mockCreateStems,
       getDrumSubstemCapabilities: mockGetDrumSubstemCapabilities,
       createDrumSubstems: mockCreateDrumSubstems,
+      getVocalSubstemCapabilities: mockGetVocalSubstemCapabilities,
+      createVocalSubstems: mockCreateVocalSubstems,
+      deleteVocalSubstems: vi.fn(async () => ({ deleted: true })),
       analyzeProject: mockAnalyzeProject,
       updateLyrics: mockUpdateLyrics,
       updateProject: mockUpdateProject,
@@ -3497,6 +3515,8 @@ export function resetAppTestHarness() {
     checkpoint_revision: "test", cache_status: "missing", download_size_bytes: 167400043,
   });
   mockCreateDrumSubstems.mockClear();
+  mockGetVocalSubstemCapabilities.mockClear();
+  mockCreateVocalSubstems.mockClear();
   mockAnalyzeProject.mockClear();
   mockUpdateLyrics.mockClear();
   mockUpdateProject.mockClear();

@@ -41,6 +41,7 @@ from app.services.stem_signal_metadata import (
     has_current_stem_signal_metadata,
 )
 from app.services.sync_tombstones import record_artifact_delete_tombstone
+from app.services.vocal_substems import invalidate_vocal_refinement
 from app.utils.ids import new_id
 
 
@@ -471,6 +472,8 @@ def generate_stems(
         ):
             if prior.type == "drums_stem":
                 invalidate_drum_refinement(session, prior)
+            elif prior.type == "vocal_stem":
+                invalidate_vocal_refinement(session, prior)
         for output, stem_metadata in stem_output_metadatas:
             saved_artifacts.append(
                 _upsert_stem_artifact(

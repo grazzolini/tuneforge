@@ -4,6 +4,31 @@ These notes preserve context for later planning. GitHub owns status, priorities,
 scheduling, and release ordering; this is not a second issue tracker. Update or
 remove a note when its context is resolved. Notes do not authorize extra work.
 
+## Mega53 as a full stem model
+
+Evaluate full Mega53 as a possible default model alongside Demucs. Study model- and output-aware
+instrument selection at import, overlapping instruments and parent/child levels, quality and runtime
+on supported devices, and the workflow for choosing and revisiting output sets.
+
+## Listra92 guitar refinement
+
+Evaluate the Listra92 lead/rhythm model for guitar refinement using either six-stem Demucs or
+Mega53 Guitar as the parent. Compare listening quality, parent reconstruction and levels, and
+runtime before deciding whether to expose the split.
+
+## Project navigation integrity checks
+
+Projects with refined drums or vocals reread and hash their parts and parent files
+when listing artifacts; vocal refinement also checks the source mix. Unrefined
+artifact listings avoid this work. Separately, drum model capability queries rehash
+the checkpoint; vocal model verification already caches unchanged files.
+
+Move repeated verification off project navigation. Explore managed DB/FS state and
+reuse of verification for unchanged files, with explicit invalidation and integrity
+checks at processing and sync boundaries. Keep this separate from vocal refinement.
+Related: [startup hydration](https://github.com/grazzolini/tuneforge/issues/636)
+and [manifest precomputation](https://github.com/grazzolini/tuneforge/issues/617).
+
 ## Cross-runtime integration CI
 
 [GitHub issue](https://github.com/grazzolini/tuneforge/issues/601)

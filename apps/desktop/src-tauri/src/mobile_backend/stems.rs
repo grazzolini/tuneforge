@@ -331,7 +331,7 @@ fn stem_snapshot(
 ) -> Result<String, String> {
     let mut statement = connection
         .prepare(&format!(
-            "SELECT {ARTIFACT_COLUMNS} FROM artifacts WHERE project_id = ?1 AND type IN ('drums_stem','bass_stem','other_stem','vocal_stem','guitar_stem','piano_stem','instrumental_stem','kick_drum_substem','snare_drum_substem','cymbals_drum_substem','toms_drum_substem') ORDER BY id"
+            "SELECT {ARTIFACT_COLUMNS} FROM artifacts WHERE project_id = ?1 AND type IN ('drums_stem','bass_stem','other_stem','vocal_stem','guitar_stem','piano_stem','instrumental_stem','kick_drum_substem','snare_drum_substem','cymbals_drum_substem','toms_drum_substem','lead_vocal_substem','backing_vocal_substem') ORDER BY id"
         ))
         .map_err(|error| error.to_string())?;
     let rows = statement
@@ -384,6 +384,9 @@ fn stem_snapshot(
         })
         .map(|artifact| artifact.id.as_str())
         .collect();
+    let vocals: HashSet<&str> = rows.iter().filter(|artifact| {
+        artifact.r#type == "vocal_stem" && parents.contains(artifact.id.as_str())
+    }).map(|artifact| artifact.id.as_str()).collect();
     let selected = rows
         .iter()
         .filter(|artifact| {
@@ -399,6 +402,9 @@ fn stem_snapshot(
                     .get("parent_artifact_id")
                     .and_then(Value::as_str)
                     .is_some_and(|parent| drums.contains(parent)))
+                || (super::storage::vocal_part(&artifact.r#type).is_some()
+                    && artifact.metadata.get("parent_artifact_id").and_then(Value::as_str)
+                        .is_some_and(|parent| vocals.contains(parent)))
         })
         .map(|artifact| {
             (
@@ -555,6 +561,7 @@ fn publish_stems(
             };
             let mut metadata = prior_metadata.as_object().cloned().unwrap_or_default();
             metadata.remove("drum_substems");
+            metadata.remove("vocal_substems");
             let generated_metadata = json!({
                 "mode":"six_stems", "stem_model":MODEL, "stem_model_label":"Default (6 stems model)",
                 "stem_source":source, "source_artifact_id":plan.source.id,
@@ -1509,6 +1516,8 @@ pub(super) mod tests {
             .unwrap()[0]
             .as_str()
             .unwrap();
+        let vocals = initial_rows.as_array().unwrap().iter().find(|row| row[1] == "vocal_stem")
+            .unwrap()[0].as_str().unwrap();
         let insert = |id: &str, kind: &str, metadata: Value| {
             let path = fixture
                 .root
@@ -1545,6 +1554,9 @@ pub(super) mod tests {
             json!({"parent_artifact_id":drums}),
         );
         fixture.connection.execute("UPDATE artifacts SET metadata_json=json_set(metadata_json,'$.drum_substems',1,'$.user_label','Dry drums') WHERE id=?1",params![drums]).unwrap();
+        insert("vocal-child", "lead_vocal_substem", json!({"parent_artifact_id":vocals}));
+        insert("other-vocal-child", "backing_vocal_substem", json!({"parent_artifact_id":"other-source-stem"}));
+        fixture.connection.execute("UPDATE artifacts SET metadata_json=json_set(metadata_json,'$.vocal_substems',1) WHERE id=?1",params![vocals]).unwrap();
         let practice = fixture
             .connection
             .query_row(
@@ -1583,7 +1595,9 @@ pub(super) mod tests {
             .unwrap()
             .collect::<Result<_, _>>()
             .unwrap();
-        assert_eq!(tombstones, vec!["drum-child", "obsolete-model"]);
+        assert_eq!(tombstones, vec!["drum-child", "obsolete-model", "vocal-child"]);
+        assert!(current.as_array().unwrap().iter().find(|row| row[1] == "vocal_stem").unwrap()[4]
+            .as_str().is_some_and(|metadata| !metadata.contains("vocal_substems")));
         let drums_metadata: String = fixture
             .connection
             .query_row(

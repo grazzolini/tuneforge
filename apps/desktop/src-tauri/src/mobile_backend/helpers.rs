@@ -93,6 +93,8 @@ fn is_durable_manifest_audio_type(artifact_type: &str) -> bool {
             | "snare_drum_substem"
             | "cymbals_drum_substem"
             | "toms_drum_substem"
+            | "lead_vocal_substem"
+            | "backing_vocal_substem"
             | "vocals"
             | "instrumental"
             | "drums"

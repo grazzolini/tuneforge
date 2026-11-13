@@ -106,6 +106,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/vocal-substems/capabilities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Vocal Capabilities */
+        get: operations["vocal_capabilities_api_v1_vocal_substems_capabilities_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/import": {
         parameters: {
             query?: never;
@@ -395,6 +412,40 @@ export interface paths {
         post?: never;
         /** Project Drum Substems Delete */
         delete: operations["project_drum_substems_delete_api_v1_projects__project_id__drum_substems__drums_artifact_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/vocal-substems": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Project Vocal Substems */
+        post: operations["project_vocal_substems_api_v1_projects__project_id__vocal_substems_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/vocal-substems/{vocals_artifact_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Project Vocal Substems Delete */
+        delete: operations["project_vocal_substems_delete_api_v1_projects__project_id__vocal_substems__vocals_artifact_id__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -3091,6 +3142,33 @@ export interface components {
             /** Git Ref */
             git_ref: string;
         };
+        /** VocalSubstemCapabilitiesResponse */
+        VocalSubstemCapabilitiesResponse: {
+            /** Available */
+            available: boolean;
+            /** Cached */
+            cached: boolean;
+            /** Download Bytes */
+            download_bytes: number;
+            /** Unavailable Reason */
+            unavailable_reason: string | null;
+        };
+        /** VocalSubstemsRequest */
+        VocalSubstemsRequest: {
+            /** Vocals Artifact Id */
+            vocals_artifact_id: string;
+            /**
+             * Output Format
+             * @default wav
+             * @enum {string}
+             */
+            output_format?: "wav" | "flac" | "mp3" | "m4a";
+            /**
+             * Allow Download
+             * @default false
+             */
+            allow_download?: boolean;
+        };
     };
     responses: never;
     parameters: never;
@@ -3216,6 +3294,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DrumSubstemCapabilitiesResponse"];
+                };
+            };
+        };
+    };
+    vocal_capabilities_api_v1_vocal_substems_capabilities_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VocalSubstemCapabilitiesResponse"];
                 };
             };
         };
@@ -3965,6 +4063,109 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    project_vocal_substems_api_v1_projects__project_id__vocal_substems_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VocalSubstemsRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Content */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    project_vocal_substems_delete_api_v1_projects__project_id__vocal_substems__vocals_artifact_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                vocals_artifact_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeleteResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Content */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };

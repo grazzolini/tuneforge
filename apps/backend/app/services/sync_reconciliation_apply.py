@@ -359,18 +359,24 @@ def _import_artifact_manifest(
             and file_sha256(existing_path) == artifact_manifest.content_sha256
         ):
             validate_staged_durable_audio_artifact(artifact_manifest, existing_path)
-            if action.details.get("metadata_only") and existing_artifact.type == "drums_stem":
+            membership_key = {
+                "drums_stem": "drum_substems", "vocal_stem": "vocal_substems",
+            }.get(existing_artifact.type)
+            if (
+                action.details.get("metadata_only") and membership_key
+                and existing_artifact.type == artifact_manifest.type
+            ):
                 remote_time = _as_utc(artifact_manifest.updated_at)
                 if remote_time > _as_utc(existing_artifact.updated_at):
                     metadata = dict(existing_artifact.metadata_json)
-                    remote_group = artifact_manifest.metadata.get("drum_substems")
+                    remote_group = artifact_manifest.metadata.get(membership_key)
                     if remote_group is None:
-                        metadata.pop("drum_substems", None)
+                        metadata.pop(membership_key, None)
                     else:
-                        metadata["drum_substems"] = deepcopy(remote_group)
+                        metadata[membership_key] = deepcopy(remote_group)
                     existing_artifact.metadata_json = metadata
                     existing_artifact.updated_at = artifact_manifest.updated_at
-                    return _result(action, APPLY_STATUS_APPLIED, "Newer DrumSep membership metadata was imported.")
+                    return _result(action, APPLY_STATUS_APPLIED, "Newer refinement membership metadata was imported.")
             return _result(action, APPLY_STATUS_SATISFIED, "Artifact manifest is already imported locally.")
         if overwrite_artifact and artifact_manifest.type == "analysis_json":
             destination_path = _generated_analysis_overwrite_destination(project_id, existing_artifact)

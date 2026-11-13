@@ -32,7 +32,8 @@ pnpm setup:dev
 This installs workspace dependencies, checks Tauri build prerequisites, syncs the backend Python
 environment with default desktop Advanced Chords and Advanced Beat Analysis dependencies,
 regenerates shared API contracts, and verifies/preloads the default Demucs, Whisper, crema, and
-beat-this `small0` model caches.
+beat-this `small0` model caches and the pinned Mega53 vocal refinement assets. Use
+`pnpm setup:dev -- --skip-model-prewarm` to skip model verification and downloads.
 
 Setup reuses verified pinned music-core source/tool archives from linked Git worktrees and a
 user cache: `$XDG_CACHE_HOME/tuneforge-dev/music-core`, or `~/Library/Caches/tuneforge-dev/music-core`

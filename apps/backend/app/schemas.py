@@ -1146,6 +1146,13 @@ class DrumSubstemCapabilitiesResponse(BaseModel):
     download_size_bytes: int | None
 
 
+class VocalSubstemCapabilitiesResponse(BaseModel):
+    available: bool
+    cached: bool
+    download_bytes: int
+    unavailable_reason: str | None
+
+
 class LyricsGenerateRequest(BaseModel):
     force: bool = False
     language_override: LyricsLanguageOverride | None = None
@@ -1521,6 +1528,12 @@ class DrumSubstemsRequest(BaseModel):
     drums_artifact_id: str = Field(min_length=1)
     output_format: DurableAudioFormat = "wav"
     force: bool = False
+    allow_download: bool = False
+
+
+class VocalSubstemsRequest(BaseModel):
+    vocals_artifact_id: str = Field(min_length=1)
+    output_format: DurableAudioFormat = "wav"
     allow_download: bool = False
 
 

@@ -218,6 +218,7 @@ assert_python_args "default" \
   -m \
   app.cli.prewarm_models \
   --include-sections \
+  --include-vocal-refinement \
   --include-crema \
   --include-beat-this \
   --include-lv-chordia
@@ -226,7 +227,8 @@ run_setup_dev "opt-out" --no-crema --no-beat-this --no-lv-chordia
 assert_python_args "opt-out" \
   -m \
   app.cli.prewarm_models \
-  --include-sections
+  --include-sections \
+  --include-vocal-refinement
 
 run_setup_dev "onnx" --crema-onnx
 grep -Fx -- "advanced-chords" "${setup_uv_args_file}"
@@ -234,6 +236,7 @@ assert_python_args "onnx" \
   -m \
   app.cli.prewarm_models \
   --include-sections \
+  --include-vocal-refinement \
   --include-crema \
   --include-beat-this \
   --include-lv-chordia
@@ -253,6 +256,7 @@ assert_python_args "legacy-lv" \
   -m \
   app.cli.prewarm_models \
   --include-sections \
+  --include-vocal-refinement \
   --include-crema \
   --include-beat-this \
   --include-lv-chordia

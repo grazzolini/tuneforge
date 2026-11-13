@@ -11,7 +11,7 @@ import soundfile as sf
 from sqlalchemy import select
 
 from app.db import SessionLocal
-from app.engines import drum_substems as engine
+from app.engines import stem_audio_encoding as engine
 from app.engines.demucs_worker import drumsep_source_indices
 from app.engines.drum_substems import encode_bounded_drum_parts, signed_subset_bound
 from app.errors import AppError, JobCancelledError
@@ -149,8 +149,8 @@ def _simulate_padded_aac_decode(
 ) -> None:
     decode = engine._decode_to_float
 
-    def padded_decode(encoded: Path, destination: Path, *, should_cancel=None) -> None:
-        decode(encoded, destination, should_cancel=should_cancel)
+    def padded_decode(encoded: Path, destination: Path, **options) -> None:
+        decode(encoded, destination, **options)
         samples, sample_rate = sf.read(destination, dtype="float32", always_2d=True)
         samples = samples[:frames]
         samples = (

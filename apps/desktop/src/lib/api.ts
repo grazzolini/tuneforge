@@ -52,6 +52,8 @@ export type ExportCapabilitiesResponse = components["schemas"]["ExportCapabiliti
 export type ProjectUpdateRequest = components["schemas"]["ProjectUpdateRequest"];
 export type ProjectImportRequest = components["schemas"]["ProjectImportRequest"];
 export type StemRequest = components["schemas"]["StemRequest"];
+export type VocalSubstemsRequest = components["schemas"]["VocalSubstemsRequest"];
+export type VocalSubstemCapabilitiesResponse = components["schemas"]["VocalSubstemCapabilitiesResponse"];
 export type DrumSubstemsRequest = components["schemas"]["DrumSubstemsRequest"];
 export type DrumSubstemCapabilitiesResponse = components["schemas"]["DrumSubstemCapabilitiesResponse"];
 export type StemModelSchema = components["schemas"]["StemModelSchema"];
@@ -2156,6 +2158,7 @@ export type TuneForgeClient = {
   listChordBackends: () => Promise<ChordBackendsResponse>;
   listStemModels: () => Promise<StemModelsResponse>;
   getDrumSubstemCapabilities: () => Promise<DrumSubstemCapabilitiesResponse>;
+  getVocalSubstemCapabilities: () => Promise<VocalSubstemCapabilitiesResponse>;
   createChords: (projectId: string, body: ChordRequest) => Promise<components["schemas"]["JobResponse"]>;
   getChords: (projectId: string) => Promise<ChordResponse>;
   createLyrics: (projectId: string, body: LyricsGenerateRequest) => Promise<components["schemas"]["JobResponse"]>;
@@ -2174,6 +2177,8 @@ export type TuneForgeClient = {
   createStems: (projectId: string, body: StemRequest) => Promise<components["schemas"]["JobResponse"]>;
   createDrumSubstems: (projectId: string, body: DrumSubstemsRequest) => Promise<components["schemas"]["JobResponse"]>;
   deleteDrumSubstems: (projectId: string, parentId: string) => Promise<components["schemas"]["DeleteResponse"]>;
+  createVocalSubstems: (projectId: string, body: VocalSubstemsRequest) => Promise<components["schemas"]["JobResponse"]>;
+  deleteVocalSubstems: (projectId: string, parentId: string) => Promise<components["schemas"]["DeleteResponse"]>;
   createRetune: (projectId: string, body: RetuneRequest) => Promise<components["schemas"]["JobResponse"]>;
   createTranspose: (projectId: string, body: components["schemas"]["TransposeRequest"]) => Promise<components["schemas"]["JobResponse"]>;
   listArtifacts: (projectId: string) => Promise<components["schemas"]["ArtifactsResponse"]>;
@@ -2409,6 +2414,7 @@ function createHttpTuneForgeClient(): TuneForgeClient {
     listChordBackends: () => unwrap(client.GET("/api/v1/chord-backends")),
     listStemModels: () => unwrap(client.GET("/api/v1/stem-models")),
     getDrumSubstemCapabilities: () => unwrap(client.GET("/api/v1/drum-substems/capabilities")),
+    getVocalSubstemCapabilities: () => unwrap(client.GET("/api/v1/vocal-substems/capabilities")),
     createChords: (projectId: string, body: ChordRequest) =>
       unwrap(client.POST("/api/v1/projects/{project_id}/chords", { params: { path: { project_id: projectId } }, body })),
     getChords: (projectId: string) =>
@@ -2442,6 +2448,14 @@ function createHttpTuneForgeClient(): TuneForgeClient {
       unwrap(client.POST("/api/v1/projects/{project_id}/preview", { params: { path: { project_id: projectId } }, body })),
     createStems: (projectId: string, body: StemRequest) =>
       unwrap(client.POST("/api/v1/projects/{project_id}/stems", { params: { path: { project_id: projectId } }, body })),
+    createVocalSubstems: (projectId: string, body: VocalSubstemsRequest) =>
+      unwrap(client.POST("/api/v1/projects/{project_id}/vocal-substems", {
+        params: { path: { project_id: projectId } }, body,
+      })),
+    deleteVocalSubstems: (projectId: string, parentId: string) =>
+      unwrap(client.DELETE("/api/v1/projects/{project_id}/vocal-substems/{vocals_artifact_id}", {
+        params: { path: { project_id: projectId, vocals_artifact_id: parentId } },
+      })),
     createDrumSubstems: (projectId: string, body: DrumSubstemsRequest) =>
       unwrap(client.POST("/api/v1/projects/{project_id}/drum-substems", { params: { path: { project_id: projectId } }, body })),
     deleteDrumSubstems: (projectId: string, parentId: string) =>
@@ -2632,6 +2646,12 @@ function createMobileTuneForgeClient(platform: "android" | "ios"): TuneForgeClie
       requireSupportedMobileChordBackend(body);
       return invokeMobile("mobile_submit_stems", { projectId, payload: body });
     },
+    getVocalSubstemCapabilities: async () => ({
+      available: false, cached: false, download_bytes: 0,
+      unavailable_reason: "Vocal refinement is available on desktop.",
+    }),
+    createVocalSubstems: async () => { throw unsupportedRuntimeError("Vocal refinement"); },
+    deleteVocalSubstems: async () => { throw unsupportedRuntimeError("Vocal refinement"); },
     getDrumSubstemCapabilities: async () => ({
       platform_supported: false, available: false,
       unavailable_reason: "Drum refinement is available on native macOS and Linux only.",
@@ -2777,6 +2797,7 @@ export function withJobLifecycle(client: TuneForgeClient, runtime: () => object 
     createPreview: (...args) => submit(args[0], () => client.createPreview(...args)),
     createStems: (...args) => submit(args[0], () => client.createStems(...args)),
     createDrumSubstems: (...args) => submit(args[0], () => client.createDrumSubstems(...args)),
+    createVocalSubstems: (...args) => submit(args[0], () => client.createVocalSubstems(...args)),
     createRetune: (...args) => submit(args[0], () => client.createRetune(...args)),
     createTranspose: (...args) => submit(args[0], () => client.createTranspose(...args)),
     createExport: (...args) => submit(args[0], () => client.createExport(...args)),
@@ -2813,6 +2834,7 @@ export const api: TuneForgeClient = withJobLifecycle({
   listChordBackends: () => activeClient.listChordBackends(),
   listStemModels: () => activeClient.listStemModels(),
   getDrumSubstemCapabilities: () => activeClient.getDrumSubstemCapabilities(),
+  getVocalSubstemCapabilities: () => activeClient.getVocalSubstemCapabilities(),
   createChords: (projectId: string, body: ChordRequest) => activeClient.createChords(projectId, body),
   getChords: (projectId: string) => activeClient.getChords(projectId),
   createLyrics: (projectId: string, body: LyricsGenerateRequest) => activeClient.createLyrics(projectId, body),
@@ -2827,6 +2849,8 @@ export const api: TuneForgeClient = withJobLifecycle({
   createPreview: (projectId: string, body: PreviewRequest) => activeClient.createPreview(projectId, body),
   createStems: (projectId: string, body: StemRequest) => activeClient.createStems(projectId, body),
   createDrumSubstems: (projectId: string, body: DrumSubstemsRequest) => activeClient.createDrumSubstems(projectId, body),
+  createVocalSubstems: (projectId: string, body: VocalSubstemsRequest) => activeClient.createVocalSubstems(projectId, body),
+  deleteVocalSubstems: (projectId: string, parentId: string) => activeClient.deleteVocalSubstems(projectId, parentId),
   deleteDrumSubstems: (projectId: string, parentId: string) => activeClient.deleteDrumSubstems(projectId, parentId),
   createRetune: (projectId: string, body: RetuneRequest) => activeClient.createRetune(projectId, body),
   createTranspose: (projectId: string, body: components["schemas"]["TransposeRequest"]) => activeClient.createTranspose(projectId, body),

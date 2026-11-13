@@ -12,7 +12,7 @@ export type PendingTransition = {
   awaitSeekBeforePlay: boolean;
   crossfadeStemPlayback: boolean;
   rollbackSession?: ProjectPlaybackSession;
-  restoringDrumMode?: boolean;
+  restoringRefinement?: boolean;
   awaitingLoadKeys: string[];
   awaitingSeekKeys: string[];
   forceSeekKeys: string[];

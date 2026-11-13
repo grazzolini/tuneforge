@@ -135,6 +135,37 @@ listening for production gain, switching, and isolated part quality, remain rele
 Accelerator-device detection and inference evidence is optional when hardware is unavailable;
 report it as unverified.
 
+## Optional vocal refinement
+
+In Studio Processing, select the source track or a saved mix with a six-stem Vocals track
+and choose **Refine Vocals**. Mega53 reads the associated app-managed mix and uses its lead and
+backing estimates to split the existing Vocals track. The other coarse stems are optional.
+The first explicit action can download 1.37 GB from the publisher. Later actions use verified
+files under the active data root at `cache/models/mega53/v1.0.21`. Development setup prewarms
+this cache unless model prewarm is skipped.
+
+The job uses `TUNEFORGE_STEM_DEVICE` and the existing Torch device selection. MPS uses CPU
+spectral transforms and MPS model layers. A failed CUDA or MPS execution retries once in a
+fresh CPU process. Both parts use a shared parent phase. Before encoding, the job applies one
+gain of at most unity to both parts, using the same 0.9 sample bound as drum refinement. It
+decodes the saved format and checks timeline, channels, and the sample bound for each part and
+their sum. If encoding raises the bound above 0.9, the job retries with a lower common gain.
+Before publication, it also checks each decoded part against the scaled input for changes in
+timing or gain. Split playback uses the saved levels.
+
+A generation records the common gain, immutable fingerprints for the mix and parent used at
+inference, and current fingerprints for all stored members. Re-processing formats converts the
+mix, parent and included children as a unit without inference. A later rebuild uses the current
+encoded mix, so prior lossy conversions can affect its input. The two files are stored under
+`stems/<source-storage-key>/htdemucs_6s/vocalset_<generation>/` in the selected format.
+
+Original uses the six-stem Vocals track. Split replaces it with the current Lead and Backing,
+keeping the other stems and their controls. Successful refinement or rebuild selects Original.
+Failure and cancellation preserve the previous generation. Deleting one child keeps the sibling,
+and deleting the last returns to Original. Rebuild restores both children. Playback and the
+export workspace use the same validated membership, including deliberate exclusions. An incomplete
+or stale split falls back to Original.
+
 ## Chord refresh hidden non-vocal mix
 
 - Some chord backends request a source accompaniment stem for augmentation.

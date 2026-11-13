@@ -66,6 +66,7 @@ import {
   stemControlKey,
   type DrumMode,
 } from "../drumStemGroup";
+import { activeVocalStems, describeVocalGroup, isVocalSubstem, resolveVocalStemControls, vocalPlaybackMode } from "../vocalStemGroup";
 import {
   MAX_TARGET_TRANSPOSE,
   MIN_TARGET_TRANSPOSE,
@@ -119,6 +120,7 @@ type DeleteArtifactsRequest = {
   nextSelectedPrimaryArtifactId?: string | null;
   stemArtifactIds?: string[];
   resetDrumModeSourceId?: string;
+  resetVocalSourceId?: string;
 };
 type LyricsLanguageOverride = Exclude<LyricsGenerateRequest["language_override"], undefined>;
 type LyricsLanguageOption = {
@@ -401,8 +403,11 @@ export function useProjectViewModel() {
   const [stemControls, setStemControls] = useState<Record<string, StemControlState>>({});
   const [drumModesBySource, setDrumModesBySource] = useState<Record<string, DrumMode>>({});
   const [drumModeParentKeysBySource, setDrumModeParentKeysBySource] = useState<Record<string, string>>({});
+  const [vocalSplitGenerations, setVocalSplitGenerations] = useState<Record<string, string>>({});
+  const [expandedVocalsBySource, setExpandedVocalsBySource] = useState<Record<string, boolean>>({});
   const [expandedDrumsBySource, setExpandedDrumsBySource] = useState<Record<string, boolean>>({});
   const [stemDeletionError, setStemDeletionError] = useState<string | null>(null);
+  const selectedVocalChild = useRef<{ id: string; parentId: string } | null>(null);
   const pendingStemDeletionResumeRef = useRef<{
     deletedIds: string[];
     timeSeconds: number;
@@ -752,6 +757,38 @@ export function useProjectViewModel() {
   const drumCancelMutation = useMutation({
     mutationFn: (jobId: string) => api.cancelJob(jobId),
   });
+  const vocalCapabilitiesQuery = useQuery({
+    queryKey: ["vocal-substems", "capabilities"],
+    queryFn: api.getVocalSubstemCapabilities,
+    enabled: Boolean(projectId) && !isMobileRuntime,
+    staleTime: 60_000,
+  });
+  const vocalMutation = useMutation({
+    mutationFn: async () => {
+      assertProjectEditable();
+      if (!vocalGroup) throw new Error("Generate six-stem Vocals first.");
+      const { capabilities } = await queryClient.fetchQuery({
+        queryKey: DURABLE_AUDIO_CAPABILITIES_QUERY_KEY,
+        queryFn: api.getExportCapabilities,
+        staleTime: Infinity,
+      });
+      const format = requireDurableAudioActionFormat(capabilities, defaultDurableAudioFormat);
+      return api.createVocalSubstems(projectId, {
+        vocals_artifact_id: vocalGroup.parent.id,
+        output_format: format.outputFormat ?? "wav",
+        allow_download: true,
+      });
+    },
+  });
+  const vocalDeleteMutation = useMutation({
+    mutationFn: (parentId: string) => api.deleteVocalSubstems(projectId, parentId),
+    onSuccess: async () => {
+      if (vocalSource) clearVocalSplit(vocalSource.id);
+      if (isVocalSubstem(selectedArtifact)) setSelectedArtifactId(vocalGroup?.parent.id ?? null);
+      await queryClient.invalidateQueries({ queryKey: ["artifacts", projectId] });
+    },
+    onError: restoreStemDeletionPlayback,
+  });
 
   const deleteMutation = useMutation({
     mutationFn: () => {
@@ -769,11 +806,16 @@ export function useProjectViewModel() {
   const deleteArtifactsMutation = useMutation({
     mutationFn: async (request: DeleteArtifactsRequest) => {
       assertProjectEditable();
-      for (const artifactId of Array.from(new Set(request.artifactIds))) {
+      const ids = new Set(request.artifactIds);
+      for (const artifactId of ids) {
+        const artifact = displayArtifacts.find((candidate) => candidate.id === artifactId);
+        const parentId = artifact?.metadata?.parent_artifact_id;
+        if (isVocalSubstem(artifact) && typeof parentId === "string" && ids.has(parentId)) continue;
         await api.deleteArtifact(projectId, artifactId);
       }
     },
     onSuccess: async (_data, request) => {
+      if (request.resetVocalSourceId) clearVocalSplit(request.resetVocalSourceId);
       const resetDrumModeSourceId = request.resetDrumModeSourceId;
       if (resetDrumModeSourceId) {
         setDrumModesBySource((current) => ({ ...current, [resetDrumModeSourceId]: "original" }));
@@ -836,6 +878,7 @@ export function useProjectViewModel() {
     () => projectJobs.filter((job) => job.type === "drum_substems"),
     [projectJobs],
   );
+  const vocalJobs = useMemo(() => projectJobs.filter((job) => job.type === "vocal_substems"), [projectJobs]);
   const exportJobs = useMemo(
     () => projectJobs.filter((job) => job.type === "export"),
     [projectJobs],
@@ -894,8 +937,9 @@ export function useProjectViewModel() {
     : primaryArtifacts.find((artifact) => artifact.id === selectedPrimaryArtifactId) ??
       selectedStemPrimaryArtifact ??
       defaultPrimaryArtifact;
+  const firstCoarseStem = stemArtifacts.find((artifact) => !isVocalSubstem(artifact));
   const visibleStemSourceArtifactId = sourceArtifactIdForStems(selectedArtifact)
-    ?? sourceArtifactIdForStems(stemArtifacts[0]);
+    ?? sourceArtifactIdForStems(firstCoarseStem ?? null);
   const sourceStemArtifacts = useMemo(
     () =>
       stemArtifacts.filter((artifact) => {
@@ -904,14 +948,25 @@ export function useProjectViewModel() {
           (!selectedPrimaryArtifact && isIOSRuntime
             && (visibleStemSourceArtifactId
               ? sourceArtifactId === visibleStemSourceArtifactId
-              : artifact.id === (selectedArtifact?.id ?? stemArtifacts[0]?.id))) ||
+              : artifact.id === (selectedArtifact?.id ?? firstCoarseStem?.id))) ||
           (typeof sourceArtifactId === "string" &&
             sourceArtifactId === selectedPrimaryArtifact?.id)
         );
       }),
-    [isIOSRuntime, selectedArtifact, selectedPrimaryArtifact, stemArtifacts, visibleStemSourceArtifactId],
+    [isIOSRuntime, selectedArtifact, selectedPrimaryArtifact, stemArtifacts, visibleStemSourceArtifactId, firstCoarseStem?.id],
   );
   const drumGroup = useMemo(() => describeDrumGroup(sourceStemArtifacts), [sourceStemArtifacts]);
+  const vocalSource = selectedPrimaryArtifact ?? (isIOSRuntime
+    ? displayArtifacts.find((artifact) => artifact.id === visibleStemSourceArtifactId) ?? null : null);
+  const vocalGroup = useMemo(() => describeVocalGroup(sourceStemArtifacts, vocalSource), [sourceStemArtifacts, vocalSource]);
+  const vocalMode = vocalPlaybackMode(vocalGroup, vocalSource ? vocalSplitGenerations[vocalSource.id] : undefined);
+  useEffect(() => {
+    if (!vocalSource || !vocalGroup) return;
+    const split = vocalSplitGenerations[vocalSource.id];
+    if (split && (vocalGroup.generationKey !== split || (
+      !vocalGroup.includedChildren.length && !vocalGroup.recoveryNeeded
+    ))) clearVocalSplit(vocalSource.id);
+  }, [vocalSource, vocalGroup, vocalSplitGenerations]);
   const nativeDesktopHost = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window
     && !isMobileRuntime && !isWebAudioBackendForced();
   const nativeAudioCapabilitiesQuery = useQuery({
@@ -937,12 +992,14 @@ export function useProjectViewModel() {
   const drumMode: DrumMode = sourceDrumMode === "split" && nativeDesktopRuntime && drumGroup?.splitAvailable
     ? "split" : "original";
   const visibleStemArtifacts = useMemo(
-    () => activeStemArtifacts(sourceStemArtifacts, drumMode),
-    [sourceStemArtifacts, drumMode],
+    () => activeVocalStems(activeStemArtifacts(sourceStemArtifacts, drumMode), vocalGroup, vocalMode),
+    [sourceStemArtifacts, drumMode, vocalGroup, vocalMode],
   );
   const effectiveStemControls = useMemo(
-    () => resolveActiveStemControls(visibleStemArtifacts, drumGroup, stemControls),
-    [visibleStemArtifacts, drumGroup, stemControls],
+    () => resolveVocalStemControls(
+      vocalGroup, vocalMode, stemControls, resolveActiveStemControls(visibleStemArtifacts, drumGroup, stemControls),
+    ),
+    [visibleStemArtifacts, drumGroup, stemControls, vocalGroup, vocalMode],
   );
   const displayStemControls = useMemo(
     () => Object.fromEntries(sourceStemArtifacts.map((artifact) => [
@@ -972,12 +1029,17 @@ export function useProjectViewModel() {
   const drumJob = selectedPrimaryArtifact
     ? drumJobs.find((job) => job.source_artifact_id === selectedPrimaryArtifact.id) ?? null
     : null;
+  const vocalJob = vocalSource ? vocalJobs.find((job) => job.source_artifact_id === vocalSource.id) ?? null : null;
+  const vanishedVocalChild = !selectedArtifact && selectedArtifactId && selectedVocalChild.current?.id === selectedArtifactId;
   const focusedStemArtifact = selectedArtifact && isStemArtifact(selectedArtifact)
     ? visibleStemArtifacts.find((artifact) => artifact.id === selectedArtifact.id)
+      ?? (selectedArtifact.type === "vocal_stem" && vocalMode === "split" ? vocalGroup?.includedChildren[0] : null)
+      ?? (isVocalSubstem(selectedArtifact) ? vocalGroup?.parent : null)
       ?? (selectedArtifact.type === "drums_stem" ? drumGroup?.includedChildren[0] : drumGroup?.parent)
       ?? visibleStemArtifacts[0] ?? null
-    : visibleStemArtifacts[0] ?? null;
-  const isStemSelected = isStemArtifact(selectedArtifact);
+    : visibleStemArtifacts.find((artifact) => vanishedVocalChild && artifact.id === selectedVocalChild.current?.parentId)
+      ?? visibleStemArtifacts[0] ?? null;
+  const isStemSelected = isStemArtifact(selectedArtifact) || Boolean(vanishedVocalChild && vocalGroup);
   const isStemPlayback = isStemSelected && visibleStemArtifacts.length > 0;
   const selectedStemSourceArtifactId = isStemPlayback
     ? sourceArtifactIdForStems(selectedArtifact) ?? selectedPrimaryArtifact?.id ?? selectedPrimaryArtifactId
@@ -1036,7 +1098,8 @@ export function useProjectViewModel() {
   );
   const isStemRunning = Boolean(stemJob && ["pending", "running"].includes(stemJob.status));
   const isDrumRunning = Boolean(drumJob && ["pending", "running"].includes(drumJob.status));
-  const isAnyStemJobRunning = [...stemJobs, ...drumJobs].some((job) =>
+  const isVocalRunning = Boolean(vocalJob && ["pending", "running"].includes(vocalJob.status));
+  const isAnyStemJobRunning = [...stemJobs, ...drumJobs, ...vocalJobs].some((job) =>
     ["pending", "running"].includes(job.status),
   );
   const isAnyExportJobRunning = exportJobs.some((job) =>
@@ -1144,6 +1207,7 @@ export function useProjectViewModel() {
   const isDeleteStemDisabled =
     projectEditLocked ||
     isDeleteArtifactsPending ||
+    vocalDeleteMutation.isPending ||
     isChordRunning ||
     isAnyStemJobRunning ||
     isAnyExportJobRunning;
@@ -1436,6 +1500,9 @@ export function useProjectViewModel() {
     if (sourceArtifactId) {
       setSelectedPrimaryArtifactId(sourceArtifactId);
     }
+    if (isVocalSubstem(artifact) && typeof artifact.metadata?.parent_artifact_id === "string") {
+      selectedVocalChild.current = { id: artifact.id, parentId: artifact.metadata.parent_artifact_id };
+    }
     setSelectedArtifactId(artifact.id);
   }
 
@@ -1455,6 +1522,36 @@ export function useProjectViewModel() {
     } else if (isStemPlayback && mode === "original" && isDrumSubstem(selectedArtifact)) {
       setSelectedArtifactId(drumGroup.parent.id);
     }
+  }
+
+  function clearVocalSplit(sourceId: string) {
+    setVocalSplitGenerations((current) => {
+      if (!(sourceId in current)) return current;
+      const next = { ...current };
+      delete next[sourceId];
+      return next;
+    });
+  }
+
+  function handleSetVocalMode(mode: DrumMode, activatePlayback = false) {
+    if (!vocalSource || !vocalGroup) return;
+    if (mode === "split") {
+      if (!vocalGroup.splitAvailable || !vocalGroup.generationKey) return;
+      const generation = vocalGroup.generationKey;
+      setVocalSplitGenerations((current) => ({ ...current, [vocalSource.id]: generation }));
+    } else {
+      clearVocalSplit(vocalSource.id);
+    }
+    if (activatePlayback) {
+      void handleSelectStemArtifact(vocalGroup.parent);
+    } else if (mode === "original" && isVocalSubstem(selectedArtifact)) {
+      setSelectedArtifactId(vocalGroup.parent.id);
+    }
+  }
+
+  function handleToggleVocalExpanded() {
+    if (!vocalSource) return;
+    setExpandedVocalsBySource((current) => ({ ...current, [vocalSource.id]: !current[vocalSource.id] }));
   }
 
   function handleToggleDrumExpanded() {
@@ -1847,6 +1944,39 @@ export function useProjectViewModel() {
     drumMutation.mutate(true);
   }
 
+  async function handleRefineVocalsAction() {
+    const capabilities = vocalCapabilitiesQuery.data;
+    if (projectEditLocked || isMobileRuntime || !vocalGroup || !capabilities?.available || isVocalRunning || isStemRunning) return;
+    if (!capabilities.cached) {
+      const size = (capabilities.download_bytes / 1e9).toFixed(2);
+      const approved = await confirm(
+        `Download the ${size} GB Mega53 model from its publisher? TuneForge caches it for offline vocal refinement.`,
+        { title: "Download vocal refinement model", okLabel: "Download and Refine", cancelLabel: "Cancel" },
+      );
+      if (!approved) return;
+    }
+    vocalMutation.mutate();
+  }
+
+  async function handleDeleteVocalSplit() {
+    if (!vocalGroup?.children.length || isDeleteStemDisabled || isMobileRuntime) return;
+    const approved = await confirm(
+      "Delete Lead and Backing from this vocal split?",
+      { title: "Delete refined vocals", kind: "warning", okLabel: "Delete Parts", cancelLabel: "Cancel" },
+    );
+    if (!approved || !await prepareStemDeletionPlayback(vocalGroup.children.map((child) => child.id))) return;
+    vocalDeleteMutation.mutate(vocalGroup.parent.id);
+  }
+
+  function restoreStemDeletionPlayback() {
+    const pending = pendingStemDeletionResumeRef.current;
+    pendingStemDeletionResumeRef.current = null;
+    if (pending) {
+      seekTo(pending.timeSeconds);
+      if (pending.wasPlaying) void playPlayback();
+    }
+  }
+
   async function handleDeleteDrumSplit() {
     if (!drumGroup || projectEditLocked || isDeleteStemDisabled || !drumGroup.children.length) return;
     const approved = await confirm(
@@ -2018,8 +2148,13 @@ export function useProjectViewModel() {
     ) {
       return;
     }
+    const vocalParent = artifact.id === vocalGroup?.parent.id ? vocalGroup : null;
+    const vocalChild = isVocalSubstem(artifact);
     const approved = await confirm(
-      artifact.type === "drums_stem"
+      vocalParent?.children.length
+        ? "Delete Original Vocals and its refined vocal parts?"
+        : vocalChild ? `Delete the ${artifactLabel(artifact)} vocal part?`
+        : artifact.type === "drums_stem"
         ? "Delete Original Drums? This also deletes all refined drum parts."
         : isDrumSubstem(artifact)
           ? `Delete ${artifactLabel(artifact)}? Other refined parts and Original Drums stay available.`
@@ -2037,12 +2172,16 @@ export function useProjectViewModel() {
     const sourceArtifactId = sourceArtifactIdForStems(artifact);
     const remainingStems = visibleStemArtifacts.filter((stem) =>
       stem.id !== artifact.id && !(artifact.type === "drums_stem" && isDrumSubstem(stem)));
-    const nextStem = remainingStems[0] ?? (isDrumSubstem(artifact) ? drumGroup?.parent : null);
-    if (!await prepareStemDeletionPlayback(artifact.type === "drums_stem"
-      ? [artifact.id, ...(drumGroup?.children.map((child) => child.id) ?? [])]
-      : [artifact.id])) return;
+    const nextStem = vocalChild && vocalGroup
+      ? vocalGroup.includedChildren.find((child) => child.id !== artifact.id) ?? vocalGroup.parent
+      : remainingStems.find((stem) => !vocalParent?.children.some((child) => child.id === stem.id))
+        ?? (isDrumSubstem(artifact) ? drumGroup?.parent : null);
+    const dependents = vocalParent?.children ?? (artifact.type === "drums_stem" ? drumGroup?.children : []) ?? [];
+    if (!await prepareStemDeletionPlayback([artifact.id, ...dependents.map((child) => child.id)])) return;
     deleteArtifactsMutation.mutate({
       artifactIds: [artifact.id],
+      resetVocalSourceId: sourceArtifactId && (vocalParent || (vocalChild && vocalGroup?.includedChildren.length === 1))
+        ? sourceArtifactId : undefined,
       resetDrumModeSourceId: sourceArtifactId && (
         artifact.type === "drums_stem" ||
         (isDrumSubstem(artifact) && drumGroup?.includedChildren.length === 1)
@@ -2286,6 +2425,8 @@ export function useProjectViewModel() {
     setDrumModesBySource(storedPlaybackState.drumModesBySource);
     setDrumModeParentKeysBySource(storedPlaybackState.drumModeParentKeysBySource);
     setExpandedDrumsBySource({});
+    setVocalSplitGenerations(storedPlaybackState.vocalSplitGenerations);
+    setExpandedVocalsBySource({});
     setProjectOutputGainState(storedPlaybackState.projectOutputGain);
     setProjectOutputMuted(storedPlaybackState.projectOutputMuted);
     setProjectOutputSaveError(null);
@@ -2379,7 +2520,7 @@ export function useProjectViewModel() {
 
     if (!defaultPrimaryArtifact) {
       setSelectedPrimaryArtifactId(null);
-      setSelectedArtifactId(isIOSRuntime ? stemArtifacts[0]?.id ?? null : null);
+      setSelectedArtifactId(isIOSRuntime ? firstCoarseStem?.id ?? null : null);
       return;
     }
 
@@ -2410,7 +2551,12 @@ export function useProjectViewModel() {
         : derivedPrimaryId && primaryArtifacts.some((artifact) => artifact.id === derivedPrimaryId)
           ? derivedPrimaryId
           : defaultPrimaryArtifact.id;
-    const nextSelectedArtifactId = nextSelectedArtifact?.id ?? nextPrimaryArtifactId;
+    if (isVocalSubstem(nextSelectedArtifact) && typeof nextSelectedArtifact?.metadata?.parent_artifact_id === "string") {
+      selectedVocalChild.current = { id: nextSelectedArtifact.id, parentId: nextSelectedArtifact.metadata.parent_artifact_id };
+    }
+    const vocalFallbackId = vanishedVocalChild && vocalGroup?.parent.id === selectedVocalChild.current?.parentId
+      ? vocalGroup?.parent.id : null;
+    const nextSelectedArtifactId = nextSelectedArtifact?.id ?? vocalFallbackId ?? nextPrimaryArtifactId;
 
     if (selectedPrimaryArtifactId !== nextPrimaryArtifactId) {
       setSelectedPrimaryArtifactId(nextPrimaryArtifactId);
@@ -2429,8 +2575,10 @@ export function useProjectViewModel() {
     selectableArtifacts,
     selectedArtifactId,
     selectedPrimaryArtifactId,
+    vanishedVocalChild,
+    vocalGroup?.parent.id,
     isIOSRuntime,
-    stemArtifacts,
+    firstCoarseStem?.id,
   ]);
 
   useEffect(() => {
@@ -2498,6 +2646,7 @@ export function useProjectViewModel() {
       stemControls,
       drumModesBySource,
       drumModeParentKeysBySource,
+      vocalSplitGenerations,
       projectOutputGain,
       projectOutputMuted,
       dismissedStemJobIds,
@@ -2529,6 +2678,7 @@ export function useProjectViewModel() {
     stemControls,
     drumModesBySource,
     drumModeParentKeysBySource,
+    vocalSplitGenerations,
     projectOutputGain,
     projectOutputMuted,
     tempoTargetBpm,
@@ -2761,9 +2911,23 @@ export function useProjectViewModel() {
       isStemPlayback,
       drumMode,
       drumSourceArtifactId: selectedPrimaryArtifact?.id ?? null,
+      vocalMode,
+      vocalGenerationKey: vocalGroup?.generationKey ?? null,
+      vocalSplitIdentity: vocalGroup?.splitIdentity ?? null,
+      vocalSourceArtifactId: vocalSource?.id ?? null,
       onDrumModeRollback: () => {
         if (!selectedPrimaryArtifact?.id) return;
         setDrumModesBySource((current) => ({ ...current, [selectedPrimaryArtifact.id]: drumMode }));
+        if (selectedArtifact?.id) setSelectedArtifactId(selectedArtifact.id);
+      },
+      onVocalModeRollback: () => {
+        if (!vocalSource) return;
+        if (vocalMode === "split" && vocalGroup?.generationKey) {
+          const generation = vocalGroup.generationKey;
+          setVocalSplitGenerations((current) => ({ ...current, [vocalSource.id]: generation }));
+        } else {
+          clearVocalSplit(vocalSource.id);
+        }
         if (selectedArtifact?.id) setSelectedArtifactId(selectedArtifact.id);
       },
       onPlaybackSourceRollback: () => {
@@ -2780,14 +2944,14 @@ export function useProjectViewModel() {
         isIOSRuntime ? "wav" : artifact.format,
       ])),
       visibleStemArtifactIds: visibleStemArtifacts.map((artifact) => artifact.id),
-      routeLanes: visibleStemArtifacts.map((artifact) => ({
-        laneId: artifact.id,
-        stableKey: stemControlKey(artifact),
-        ...(isDrumSubstem(artifact) && drumGroup ? {
-          parentLaneId: drumGroup.parent.id,
-          parentStableKey: stemControlKey(drumGroup.parent),
-        } : {}),
-      })),
+      routeLanes: visibleStemArtifacts.map((artifact) => {
+        const parent = isVocalSubstem(artifact) ? vocalGroup?.parent : isDrumSubstem(artifact) ? drumGroup?.parent : null;
+        return {
+          laneId: artifact.id,
+          stableKey: stemControlKey(artifact),
+          ...(parent ? { parentLaneId: parent.id, parentStableKey: stemControlKey(parent) } : {}),
+        };
+      }),
       stemControls: effectiveStemControls,
       projectOutputGain,
       projectOutputMuted,
@@ -2809,6 +2973,9 @@ export function useProjectViewModel() {
     isStemPlayback,
     drumMode,
     drumGroup,
+    vocalMode,
+    vocalGroup,
+    vocalSource,
     isIOSRuntime,
     projectId,
     projectQuery.data?.duration_seconds,
@@ -2910,7 +3077,16 @@ export function useProjectViewModel() {
     drumCancelMutation,
     isDrumRunning,
     nativeDesktopRuntime,
-    coarseVisibleStemArtifacts: sourceStemArtifacts.filter((artifact) => !isDrumSubstem(artifact)),
+    vocalCapabilities: vocalCapabilitiesQuery.data ?? null,
+    vocalGroup,
+    vocalMode,
+    vocalSplitGenerations,
+    vocalGroupExpanded: vocalSource ? Boolean(expandedVocalsBySource[vocalSource.id]) : false,
+    vocalJob,
+    vocalMutation,
+    vocalDeleteMutation,
+    isVocalRunning,
+    coarseVisibleStemArtifacts: sourceStemArtifacts.filter((artifact) => !isDrumSubstem(artifact) && !isVocalSubstem(artifact)),
     displayedChords,
     displayedLyrics,
     draftName,
@@ -2936,6 +3112,10 @@ export function useProjectViewModel() {
     handleSelectStemArtifact,
     handleSetDrumMode,
     handleToggleDrumExpanded,
+    handleSetVocalMode,
+    handleToggleVocalExpanded,
+    handleDeleteVocalSplit,
+    handleRefineVocalsAction,
     handleSelectWorkspace,
     handleSelectProjectPanel: setActiveProjectPanel,
     handleSetExportWorkspace: setExportWorkspace,

@@ -5,31 +5,33 @@ download, installation, verification, signature, and publication instructions.
 
 ## [Unreleased]
 
+## [1.9.0] - 2026-11-17
+
 ### Added
 
-- Refine six-stem Vocals into Lead and Backing on desktop. Switch between Original and Split
-  in Studio and Playback, and sync the saved parts to mobile.
+- Separate six stems on supported arm64 Android packages using the CPU. Download and verify the
+  model on first use, then reuse it offline. Cancellation preserves prior stems, and eligible
+  synced stems can supply desktop chord and lyric analysis.
 
-- Store local named section candidates after six-source desktop imports, preserving model-only
-  and beat/chord/lyric-refined ordered time/label maps separately from accepted song sections.
-  Detect sections from Studio Processing after a replacement warning, or across eligible desktop
-  projects from Activity, with grouped skip reasons.
-  Select CUDA/MPS automatically when available, retain an explicit CPU override, and preserve
-  model start/end labels during refinement. Retry failed CUDA/MPS section execution once on CPU
-  in a fresh worker, preserving existing candidates if the retry fails or is cancelled.
+- Refine six-stem Vocals into Lead and Backing on desktop. Switch between Original and Split in
+  Studio and Playback, export the saved parts, or sync them to Android for playback and export.
+
+- Detect and store named song section candidates automatically after six-stem desktop imports.
+  Run detection on demand in Studio Processing or across eligible projects from Activity. Keep
+  separate model and refined maps. Refinement uses beats, chords, and lyrics and preserves model
+  start/end labels. Detection selects CUDA or MPS when available, supports an explicit CPU
+  override, and retries an accelerator failure once on CPU. Failed or cancelled detection
+  preserves existing candidates.
 
 ### Changed
-
-- Enable CPU six-stem separation on supported arm64 Android packages. Download the model on
-  first use, then separate offline. Cancellation preserves prior stems, and eligible synced
-  stems can supply desktop chord and lyric analysis.
 
 - Default local packages to the isolated Test profile; require `--release` for production,
   support Linux repository-only packaging, and report build duration.
 
-- Share canonical chord spelling and instrument semantics across desktop, Android, and Python,
-  with Gingo-ranked guitar positions, nearby keyboard inversions, and truthful Stradella
-  standard, complete, and partial combinations. Preserve raw analysis labels and saved choices.
+- Share chord spelling and instrument voicing rules across desktop and Android. Rank guitar
+  shapes with Gingo, show nearby keyboard inversions, and distinguish standard, complete, and
+  partial Stradella combinations. Preserve raw analysis labels and saved choices. Use a shared
+  renderer for chord and lyrics TXT exports.
 
 - Queue Android analysis, chords, and lyrics through full cleanup, preserve newer saved results,
   and continue processing in the background with a separate CPU-only foreground service.
@@ -44,8 +46,8 @@ download, installation, verification, signature, and publication instructions.
 - Fix CUDA setup for Refine Vocals and retry on CPU if accelerator setup fails.
 - Free failed Whisper model allocations before retrying with a smaller model on CUDA.
 
-- Include familiar seventh guitar grips with an optional natural fifth, default piano and accordion
-  treble to nearby root positions, and retain valid saved voicings beyond generated shortlists.
+- Restore familiar guitar seventh grips such as open C7, default piano and accordion treble to
+  nearby root positions, and retain valid saved voicings beyond generated shortlists.
 
 - Keep bundled desktop startup behind music-core initialization.
 
@@ -342,7 +344,8 @@ download, installation, verification, signature, and publication instructions.
 
 - Development used `0.1.0` metadata; `v1.0.0` was the first tagged release.
 
-[Unreleased]: https://github.com/grazzolini/tuneforge/compare/v1.8.0...main
+[Unreleased]: https://github.com/grazzolini/tuneforge/compare/v1.9.0...main
+[1.9.0]: https://github.com/grazzolini/tuneforge/compare/v1.8.0...v1.9.0
 [1.8.0]: https://github.com/grazzolini/tuneforge/compare/v1.7.0...v1.8.0
 [1.7.0]: https://github.com/grazzolini/tuneforge/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/grazzolini/tuneforge/compare/v1.5.0...v1.6.0

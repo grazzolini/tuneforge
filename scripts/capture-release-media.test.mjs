@@ -589,6 +589,7 @@ test("catalog entries map to the existing manifest version 1 wire format", () =>
     title: video.title,
     kind: "video",
     src: "media/generated/overview.webm",
+    alt: video.alt,
     poster: "media/generated/library.png",
     caption: video.caption,
     label: "video",

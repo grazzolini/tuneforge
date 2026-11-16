@@ -366,6 +366,7 @@ const releaseMediaCaptureCatalog = [
     caption: "The chromatic tuner reading a deterministic 442 Hz synthetic tone.",
     alt: "TuneForge chromatic tuner showing an A at 442 hertz, slightly sharp",
     fixture: "release-showcase-v1",
+    viewport: { width: 1440, height: 1200 },
     route: "/tools",
     prepare: prepareTuner,
     ready: readyTuner,
@@ -378,8 +379,9 @@ const releaseMediaCaptureCatalog = [
     fileName: "chord-dictionary.png",
     title: "Chord dictionary reference screen",
     caption: "A built-in chord reference for quick practice checks.",
-    alt: "TuneForge chord dictionary reference screen",
+    alt: "TuneForge chord dictionary showing eight guitar voicing diagrams for C",
     fixture: "release-showcase-v1",
+    viewport: { width: 1920, height: 1440 },
     route: "/tools?tool=chord-dictionary",
     prepare: noPreparation,
     ready: readyChordDictionary,
@@ -436,7 +438,9 @@ const releaseMediaCaptureCatalog = [
     fileName: "overview.webm",
     title: "Release media capture overview",
     caption: "A short, silent walkthrough of current TuneForge screens.",
+    alt: "TuneForge's practice library opens a walkthrough of Playback, Export, Tools, Activity, and Settings",
     fixture: "release-showcase-v1",
+    viewport: { width: 1920, height: 1440 },
     route: "/",
     posterId: "library",
     recordingItemIds: [
@@ -1327,7 +1331,7 @@ async function installPageStabilizers(
           volumePercent: null,
           muted: null,
           backend: null,
-          error: "System input volume unavailable during release media capture.",
+          error: null,
         };
       }
       if (command === "power_inhibition_set_activity") {
@@ -1729,7 +1733,7 @@ async function settleScreenshotPaint(page) {
 }
 
 async function captureCatalogVideo({ appUrl, browser, catalog, entry, options }) {
-  const context = await createCaptureContext(browser, options, { appUrl, recordVideo: true });
+  const context = await createCaptureContext(browser, options, { appUrl, entry, recordVideo: true });
   let video = null;
   try {
     const page = await context.newPage();
@@ -2438,6 +2442,7 @@ async function readyTuner({ page, timeoutMs }) {
   await page.getByRole("tab", { name: "Chromatic Tuner" }).waitFor({ timeout: timeoutMs });
   await page.locator(".tuner-readout__note", { hasText: /^A$/ }).waitFor({ timeout: timeoutMs });
   await page.getByText(/442\.00 Hz -> target 440\.00 Hz/i).waitFor({ timeout: timeoutMs });
+  await assertFitsCaptureViewport(page, page.getByTestId("wide-arc-tuner-meter"), "Tuner meter");
 }
 
 async function readyChordDictionary({ page, timeoutMs }) {
@@ -2446,6 +2451,16 @@ async function readyChordDictionary({ page, timeoutMs }) {
   await page.getByRole("tab", { name: "Chord Dictionary" }).waitFor({ timeout: timeoutMs });
   await page.getByRole("button", { name: "C voicing 1", exact: true }).first().waitFor({ timeout: timeoutMs });
   await page.getByRole("button", { name: /string \d fret \d/ }).first().waitFor({ timeout: timeoutMs });
+  await assertFitsCaptureViewport(page, page.locator(".chord-shape-grid"), "Chord diagrams");
+}
+
+async function assertFitsCaptureViewport(page, locator, name) {
+  const viewport = page.viewportSize();
+  const bounds = await locator.boundingBox();
+  if (!viewport || !bounds || bounds.x < 0 || bounds.y < 0 ||
+      bounds.x + bounds.width > viewport.width || bounds.y + bounds.height > viewport.height) {
+    throw new Error(`${name} must fit within the release-media viewport.`);
+  }
 }
 
 async function readyJobs({ page, timeoutMs }) {
@@ -2559,7 +2574,7 @@ function validateReleaseMediaCatalog(catalog) {
   const ids = new Set();
   const fileNames = new Set();
   for (const entry of catalog) {
-    for (const field of ["id", "fileName", "title", "caption", "fixture", "route"]) {
+    for (const field of ["id", "fileName", "title", "caption", "alt", "fixture", "route"]) {
       if (typeof entry[field] !== "string" || !entry[field].trim()) {
         throw new Error(`Release-media entry ${entry.id ?? "<unknown>"} requires ${field}.`);
       }
@@ -2576,10 +2591,13 @@ function validateReleaseMediaCatalog(catalog) {
     ids.add(entry.id);
     fileNames.add(entry.fileName);
 
-    if (entry.kind === "screenshot") {
-      if (typeof entry.alt !== "string" || !entry.alt.trim()) {
-        throw new Error(`Screenshot ${entry.id} requires alt text.`);
+    if (entry.viewport !== undefined) {
+      const { width, height } = entry.viewport;
+      if (!Number.isInteger(width) || !Number.isInteger(height) || width < 320 || height < 320) {
+        throw new Error(`Release-media entry ${entry.id} requires a viewport of at least 320x320.`);
       }
+    }
+    if (entry.kind === "screenshot") {
       for (const callback of ["prepare", "ready", "capture"]) {
         if (typeof entry[callback] !== "function") {
           throw new Error(`Screenshot ${entry.id} requires a ${callback} callback.`);
@@ -2587,12 +2605,6 @@ function validateReleaseMediaCatalog(catalog) {
       }
       if (entry.runtime !== undefined && !["desktop", "mobile"].includes(entry.runtime)) {
         throw new Error(`Screenshot ${entry.id} has unsupported runtime ${entry.runtime}.`);
-      }
-      if (entry.viewport !== undefined) {
-        const { width, height } = entry.viewport;
-        if (!Number.isInteger(width) || !Number.isInteger(height) || width < 320 || height < 320) {
-          throw new Error(`Screenshot ${entry.id} requires a viewport of at least 320x320.`);
-        }
       }
     } else if (entry.kind === "video") {
       if (typeof entry.posterId !== "string" || !entry.posterId.trim()) {
@@ -2633,10 +2645,9 @@ function manifestItemForCatalogEntry(entry, catalog = releaseMediaCaptureCatalog
     title: entry.title,
     kind: entry.kind,
     src: `media/generated/${entry.fileName}`,
+    alt: entry.alt,
   };
-  if (entry.kind === "screenshot") {
-    item.alt = entry.alt;
-  } else {
+  if (entry.kind === "video") {
     const poster = catalog.find((candidate) => candidate.id === entry.posterId);
     if (!poster) {
       throw new Error(`${entry.id} references unknown poster ${entry.posterId}.`);
@@ -2824,11 +2835,11 @@ function healthResponse() {
     name: "TuneForge",
     version: "release-media-fixture",
     backend_version: {
-      package_version: "1.8.0",
+      package_version: "1.9.0",
       git_ref: "release-media-fixture",
     },
     frontend_version: {
-      package_version: "1.8.0",
+      package_version: "1.9.0",
       git_ref: "release-media-fixture",
     },
     status: "ok",

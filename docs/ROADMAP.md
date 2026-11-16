@@ -22,43 +22,27 @@ evidence. See [CHANGELOG.md](../CHANGELOG.md) for full release notes.
 | v1.5.0 | 2026-09-08 | Native audio consistency and playback/sync fixes. | [#20](https://github.com/grazzolini/tuneforge/milestone/20) | [#514](https://github.com/grazzolini/tuneforge/issues/514) |
 | v1.6.0 | 2026-09-21 | Android processing, owned audio conversion and experimental iOS workflows. | [#17](https://github.com/grazzolini/tuneforge/milestone/17) | [#395](https://github.com/grazzolini/tuneforge/issues/395) |
 | v1.7.0 | 2026-10-02 | Output routing, volume controls and desktop drum refinement. | [#21](https://github.com/grazzolini/tuneforge/milestone/21) | [#564](https://github.com/grazzolini/tuneforge/issues/564) |
-
-## v1.8.0 — Test Packages and Security
-
-[Milestone](https://github.com/grazzolini/tuneforge/milestone/22) ·
-[Release plan #582](https://github.com/grazzolini/tuneforge/issues/582)
-
-Start with clearly distinguishable, isolated test packages for Android, macOS
-and Flatpak. Testing should coexist safely with installed production TuneForge
-and its saved data.
-
-Validate and remediate GitHub security findings and findings from the forthcoming
-Codex audit. Improve Android packaging from Linux hosts and Web Audio output
-device discovery. Security readiness depends on verified outcomes; sensitive
-details remain private.
-
-Finish with canonical analysis, chord and lyric result revisions
-([#470](https://github.com/grazzolini/tuneforge/issues/470)), after
-[Android packaging #585](https://github.com/grazzolini/tuneforge/issues/585).
-This storage foundation precedes the cross-platform workflow work in 2.0.
+| v1.8.0 | 2026-10-21 | Isolated Test packages, security fixes and canonical sync result revisions. | [#22](https://github.com/grazzolini/tuneforge/milestone/22) | [#582](https://github.com/grazzolini/tuneforge/issues/582) |
 
 ## v1.9.0 — Musical Consistency and Processing
 
 [Milestone](https://github.com/grazzolini/tuneforge/milestone/23) ·
 [Release plan #583](https://github.com/grazzolini/tuneforge/issues/583)
 
-Make musical notation and lyrics/chord documents consistent across runtimes.
-Improve job handling and Android processing responsiveness while preserving
-result quality.
+The v1.9.0 scope includes shared chord spelling, voicings and TXT export
+rendering, lower desktop startup and repeat sync overhead, and Android processing
+queues with foreground service protection. Further work on UI responsiveness
+during Android lyrics processing is deferred
+([#559](https://github.com/grazzolini/tuneforge/issues/559)).
 
-Evaluate future capabilities: sustainable stem and lyrics runtimes, reusable
-music-theory tools, automatic song sections and additional stem families.
-Research establishes decisions; completing it does not promise a shipped
-feature. Android stems, a replacement lyrics engine, automatic sections and
-additional stem families are not committed 1.9 features.
+Supported arm64 Android packages use CPU six-stem separation with verified
+first-use model download and offline reuse. Desktop adds Refine Vocals for
+existing six-stem Vocals. Android can play and export saved Lead and Backing
+parts after sync.
 
-Android stems remain a goal before 2.0. Another 1.x release remains possible
-as evidence and implementation needs become clearer.
+Desktop section detection saves local named candidates. A viewer, editing,
+practice loops from detected sections, and sync for accepted sections remain
+future work. Research on other stem and lyrics engines informs future decisions.
 
 <a id="v200--android-first-20"></a>
 
@@ -70,7 +54,7 @@ as evidence and implementation needs become clearer.
 Make everyday workflows reliable across supported desktop platforms and Android,
 with capabilities and interactions appropriate to each platform.
 
-Build on the result revision foundation scheduled for 1.8. The remaining work covers
+Build on the result revision foundation introduced in 1.8. The remaining work covers
 cross-platform workflows ([#448](https://github.com/grazzolini/tuneforge/issues/448)),
 durable mixes at selected tempos ([#529](https://github.com/grazzolini/tuneforge/issues/529)),
 and playback timing qualified through measurement for supported output combinations

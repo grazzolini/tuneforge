@@ -99,11 +99,23 @@ assert_bindgen() {
   fi
 }
 
+assert_cmake_toolchain_env() {
+  local label="$1"
+  shift
+  diff -u <(printf '%s\n' "$@" | sort) <(
+    grep -E '^(CMAKE_TOOLCHAIN_FILE(_aarch64-linux-android|_aarch64_linux_android)?|TARGET_CMAKE_TOOLCHAIN_FILE)=' \
+      "${fixture}/${label}.out" | sort
+  )
+}
+
+default_cmake_toolchain="CMAKE_TOOLCHAIN_FILE_aarch64_linux_android=${repo_root}/scripts/android-arm64.toolchain.cmake"
+
 sdk_auto="${fixture}/sdk-auto"
 make_ndk "$sdk_auto" 27.0.12077973 27.0.12077973
 make_ndk "$sdk_auto" "$pinned_ndk_revision" "$pinned_ndk_revision"
 run_helper auto "$sdk_auto"
 assert_selected auto "${sdk_auto}/ndk/${pinned_ndk_revision}"
+assert_cmake_toolchain_env auto "$default_cmake_toolchain"
 assert_bindgen auto "--target=aarch64-linux-android26 '--sysroot=${sdk_auto}/ndk/${pinned_ndk_revision}/toolchains/llvm/prebuilt/darwin-x86_64/sysroot'"
 
 make_ndk "$sdk_auto" 30.0.10000000 30.0.10000000
@@ -172,7 +184,9 @@ for host in Darwin/arm64 Darwin/x86_64 Linux/x86_64; do
   label="host-${host//\//-}"
   prebuilt="darwin-x86_64"
   [[ "$host" != Linux/* ]] || prebuilt="linux-x86_64"
-  run_helper "$label" "$sdk_auto" "FIXTURE_HOST_OS=${host%/*}" "FIXTURE_HOST_ARCH=${host#*/}"
+  run_helper "$label" "$sdk_auto" "FIXTURE_HOST_OS=${host%/*}" "FIXTURE_HOST_ARCH=${host#*/}" \
+    "CMAKE_TOOLCHAIN_FILE=${fixture}/ambient toolchain.cmake"
+  assert_cmake_toolchain_env "$label" "$default_cmake_toolchain"
   toolchain="${sdk_auto}/ndk/30.0.10000000/toolchains/llvm/prebuilt/${prebuilt}/bin"
   grep -Fx "CC_aarch64_linux_android=${toolchain}/aarch64-linux-android26-clang" "${fixture}/${label}.out" >/dev/null
   grep -Fx "CXX_aarch64_linux_android=${toolchain}/aarch64-linux-android26-clang++" "${fixture}/${label}.out" >/dev/null
@@ -183,6 +197,18 @@ for host in Darwin/arm64 Darwin/x86_64 Linux/x86_64; do
   assert_bindgen "$label" "--target=aarch64-linux-android26 '--sysroot=${toolchain%/bin}/sysroot'"
   grep -Fx "TUNEFORGE_WHISPER_RS_SYS_SOURCE=${fixture}/whisper-source" "${fixture}/${label}.out" >/dev/null
   [[ -f "${fixture}/${label}.source-prep" ]]
+done
+
+for override in "${fixture}/custom toolchain.cmake" ""; do
+  target_toolchain="TARGET_CMAKE_TOOLCHAIN_FILE=$override"
+  target_specific="CMAKE_TOOLCHAIN_FILE_aarch64_linux_android=$override"
+  target_hyphenated="CMAKE_TOOLCHAIN_FILE_aarch64-linux-android=$override"
+  run_helper cmake-target "$sdk_auto" "$target_toolchain"
+  assert_cmake_toolchain_env cmake-target "$target_toolchain"
+  run_helper cmake-specific "$sdk_auto" "$target_specific"
+  assert_cmake_toolchain_env cmake-specific "$target_specific"
+  run_helper cmake-hyphenated "$sdk_auto" "$target_hyphenated"
+  assert_cmake_toolchain_env cmake-hyphenated "$target_hyphenated" "$default_cmake_toolchain"
 done
 
 defaults="--target=aarch64-linux-android26 '--sysroot=${sdk_auto}/ndk/30.0.10000000/toolchains/llvm/prebuilt/darwin-x86_64/sysroot'"

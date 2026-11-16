@@ -1071,6 +1071,29 @@ pub(super) enum ManifestArtifactMerge {
     KeepLocal,
 }
 
+fn vocal_membership_merge(
+    existing: &ArtifactSchema,
+    incoming: &SyncProjectManifestArtifactSchema,
+) -> Option<Value> {
+    if existing.r#type != "vocal_stem"
+        || incoming.r#type != existing.r#type
+        || existing.content_sha256.as_deref() != Some(&incoming.content_sha256)
+    {
+        return None;
+    }
+    let mut metadata = existing.metadata.as_object().cloned().unwrap_or_default();
+    if let Some(group) = incoming
+        .metadata
+        .get("vocal_substems")
+        .filter(|group| !group.is_null())
+    {
+        metadata.insert("vocal_substems".into(), group.clone());
+    } else {
+        metadata.remove("vocal_substems");
+    }
+    Some(Value::Object(metadata))
+}
+
 pub(super) fn manifest_artifact_merge(
     connection: &Connection,
     artifact: &SyncProjectManifestArtifactSchema,
@@ -1093,7 +1116,10 @@ pub(super) fn manifest_artifact_merge(
         if existing_artifact.size_bytes != artifact.size_bytes {
             return Err("A synced artifact conflicts with an existing local artifact.".to_string());
         }
-        if existing_artifact.r#type == "drums_stem" {
+        if matches!(
+            existing_artifact.r#type.as_str(),
+            "drums_stem" | "vocal_stem"
+        ) {
             let local_updated_at = parse_sync_timestamp_utc(
                 &existing_artifact.updated_at,
                 "local artifact updated_at",
@@ -1105,7 +1131,12 @@ pub(super) fn manifest_artifact_merge(
                     .unwrap_or(&artifact.created_at),
                 "artifact updated_at",
             )?;
-            if remote_updated_at < local_updated_at {
+            if remote_updated_at < local_updated_at
+                || (existing_artifact.r#type == "vocal_stem"
+                    && remote_updated_at == local_updated_at
+                    && existing_artifact.metadata["vocal_substems"]
+                        != artifact.metadata["vocal_substems"])
+            {
                 return Ok((ManifestArtifactMerge::KeepLocal, Some(existing_artifact)));
             }
         }
@@ -1246,12 +1277,16 @@ pub(super) fn project_manifest_mismatch(
             ManifestArtifactMerge::KeepLocal => continue,
             ManifestArtifactMerge::Update => {}
         }
-        let local = super::storage::manifest_artifact_from_artifact(
-            root,
-            existing.expect("update has artifact"),
-        )?;
+        let existing = existing.expect("update has artifact");
+        let merged = vocal_membership_merge(&existing, artifact);
+        let local = super::storage::manifest_artifact_from_artifact(root, existing)?;
         let mut expected = artifact.clone();
-        expected.metadata = sanitize_sync_manifest_value(&expected.metadata);
+        if let Some(metadata) = merged {
+            expected = local.clone();
+            expected.metadata = sanitize_sync_manifest_value(&metadata);
+        } else {
+            expected.metadata = sanitize_sync_manifest_value(&expected.metadata);
+        }
         if expected.updated_at.is_none() {
             expected.updated_at = Some(expected.created_at.clone());
         }
@@ -1619,7 +1654,8 @@ pub(super) fn import_sync_project_manifest(
             }
             let artifact = &prepared.manifest;
             let destination_path = prepared.destination_path.to_string_lossy().into_owned();
-            let metadata = sanitize_sync_manifest_value(&artifact.metadata).to_string();
+            let merged = prepared.existing.as_ref().and_then(|existing| vocal_membership_merge(existing, artifact));
+            let metadata = sanitize_sync_manifest_value(merged.as_ref().unwrap_or(&artifact.metadata)).to_string();
             let artifact_created_at =
                 normalize_sync_timestamp_utc(&artifact.created_at, "artifact created_at")?;
             let remote_artifact_updated_at = normalize_sync_timestamp_utc(

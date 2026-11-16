@@ -27,6 +27,7 @@ from app.engines.lv_chordia import (
 )
 from app.engines.lyrics import invalid_whisper_model_cache_files, preload_whisper_model
 from app.engines.section_weights import preload_section_weights
+from app.services.vocal_substem_model import resolve_mega53, vocal_substem_capabilities
 from app.utils.model_cache import (
     InvalidModelFile,
     format_invalid_model_files,
@@ -50,6 +51,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.include_sections:
             preload_section_weights()
             sys.stdout.write("Section model assets verified and cached.\n")
+        if args.include_vocal_refinement:
+            _verify_or_prewarm_vocal_refinement()
         if args.include_lv_chordia:
             _verify_or_prewarm_lv_chordia()
     except Exception as exc:
@@ -82,6 +85,9 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Verify/prewarm the optional bundled LV Chordia submission model.",
     )
     parser.add_argument("--include-sections", action="store_true", help="Verify/prewarm the section model cache.")
+    parser.add_argument(
+        "--include-vocal-refinement", action="store_true", help="Verify/prewarm the Mega53 model cache.",
+    )
     parser.add_argument("--beat-this-checkpoint", default=BEAT_THIS_CHECKPOINT)
     return parser
 
@@ -156,6 +162,13 @@ def _verify_or_prewarm_crema() -> None:
             f"Crema model assets remain invalid: {format_invalid_model_files(invalid_after_prewarm)}"
         )
     sys.stdout.write("Preloaded Crema model.\n")
+
+
+def _verify_or_prewarm_vocal_refinement() -> None:
+    if not vocal_substem_capabilities()["cached"]:
+        sys.stdout.write("Downloading pinned Mega53 vocal refinement assets.\n")
+    resolve_mega53(allow_download=True)
+    sys.stdout.write("Mega53 vocal refinement assets verified and cached.\n")
 
 
 def _verify_or_prewarm_lv_chordia() -> None:

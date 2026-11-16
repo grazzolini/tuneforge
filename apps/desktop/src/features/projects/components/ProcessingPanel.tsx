@@ -12,6 +12,7 @@ export function ProcessingPanel() {
     canDetectSections,
     handleSectionsAction,
     isSectionsRunning,
+    sectionActionLabel,
     sectionsJob,
     sectionsMutation,
     chordMutation,
@@ -58,6 +59,12 @@ export function ProcessingPanel() {
     isDrumRunning,
     nativeDesktopRuntime,
     handleRefineDrumsAction,
+    handleRefineVocalsAction,
+    vocalCapabilities,
+    vocalGroup,
+    vocalJob,
+    vocalMutation,
+    isVocalRunning,
   } = useProjectViewModelContext();
 
   const analyzeDisabled = projectEditLocked || analyzeMutation.isPending || isAnalysisRunning || !canAnalyze;
@@ -73,11 +80,14 @@ export function ProcessingPanel() {
     projectEditLocked ||
     stemMutation.isPending ||
     isStemRunning ||
+    isVocalRunning ||
     !selectedPrimaryArtifactId ||
     !canGenerateStems;
   const drumsDisabled = projectEditLocked || !nativeDesktopRuntime || !drumGroup
     || !drumCapabilities?.available || drumMutation.isPending || isDrumRunning
     || isStemRunning;
+  const vocalsDisabled = projectEditLocked || !vocalGroup || !vocalCapabilities?.available
+    || vocalMutation.isPending || isVocalRunning || isStemRunning;
   const editLockTitle = projectSyncLockReason ?? undefined;
   const analyzeTitle = mobileAdvancedAnalysisUnavailable
     ? "Advanced Beat Analysis is unavailable on this device. Choose Built-in Beat Analysis in Settings."
@@ -258,7 +268,7 @@ export function ProcessingPanel() {
               title={editLockTitle ?? (!canDetectSections ? "Generate a complete six-stem set for the source track first." : undefined)}
               type="button"
             >
-              {sectionsMutation.isPending || isSectionsRunning ? "Detecting Sections..." : "Detect Sections"}
+              {sectionsMutation.isPending || isSectionsRunning ? "Detecting Sections..." : sectionActionLabel}
             </button>
             {isSectionsRunning && sectionsJob ? (
               <p aria-live="polite" className="subpanel__copy">
@@ -274,7 +284,33 @@ export function ProcessingPanel() {
           </div>
         ) : null}
         {!isMobileRuntime ? (
-          <div className="processing-panel__drum-actions" role="group" aria-label="Drum refinement">
+          <div className="processing-panel__refinement-actions" role="group" aria-label="Vocal refinement">
+            <button className="button button--small" disabled={vocalsDisabled}
+              onClick={() => void handleRefineVocalsAction()}
+              title={editLockTitle ?? (!vocalGroup ? "Generate six-stem Vocals for the selected source or mix first."
+                : vocalCapabilities?.unavailable_reason ?? undefined)}
+              type="button"
+            >
+              {vocalMutation.isPending || isVocalRunning ? "Refining Vocals..."
+                : vocalGroup?.children.length ? "Rebuild Refined Vocals" : "Refine Vocals"}
+            </button>
+            {isVocalRunning && vocalJob ? (
+              <p aria-live="polite" className="subpanel__copy">
+                {vocalJob.stage_label ?? "Refining vocals"} · {Math.round(vocalJob.progress)}% ·{" "}
+                <Link to="/activity">Activity</Link>{" "}
+                <button className="button button--ghost button--small" disabled={drumCancelMutation.isPending}
+                  onClick={() => drumCancelMutation.mutate(vocalJob.id)} type="button">Cancel</button>
+              </p>
+            ) : null}
+            {vocalMutation.isError || vocalJob?.status === "failed" ? (
+              <p className="inline-error" role="alert">
+                {vocalMutation.error?.message ?? vocalJob?.error_message ?? "Vocal refinement failed. Retry when ready."}
+              </p>
+            ) : null}
+          </div>
+        ) : null}
+        {!isMobileRuntime ? (
+          <div className="processing-panel__refinement-actions" role="group" aria-label="Drum refinement">
             <button
               className="button button--small"
               disabled={drumsDisabled}

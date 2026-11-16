@@ -7,6 +7,9 @@ download, installation, verification, signature, and publication instructions.
 
 ### Added
 
+- Refine six-stem Vocals into Lead and Backing on desktop. Switch between Original and Split
+  in Studio and Playback, and sync the saved parts to mobile.
+
 - Store local named section candidates after six-source desktop imports, preserving model-only
   and beat/chord/lyric-refined ordered time/label maps separately from accepted song sections.
   Detect sections from Studio Processing after a replacement warning, or across eligible desktop
@@ -34,6 +37,12 @@ download, installation, verification, signature, and publication instructions.
   keeping navigation usable.
 
 ### Fixed
+
+- Keep the vocal and drum refinement buttons from overlapping in Studio Processing, and show
+  Refresh Sections once a detection result is saved.
+- Refine Vocals now lowers both parts together when needed to prevent clipping in the saved split.
+- Fix CUDA setup for Refine Vocals and retry on CPU if accelerator setup fails.
+- Free failed Whisper model allocations before retrying with a smaller model on CUDA.
 
 - Include familiar seventh guitar grips with an optional natural fifth, default piano and accordion
   treble to nearby root positions, and retain valid saved voicings beyond generated shortlists.

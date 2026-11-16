@@ -33,7 +33,13 @@ from app.models import Artifact, ChordTimeline, LyricsTranscript, Project
 from app.services.analysis import analyze_project
 from app.services.artifacts import find_cached_artifact, register_artifact
 from app.services.paths import project_exports_dir, project_previews_dir
-from app.services.stem_models import DRUM_SUBSTEM_ARTIFACT_TYPES, STEM_ARTIFACT_TYPE_SOURCES, STEM_ARTIFACT_TYPES
+from app.services.stem_models import (
+    DRUM_SUBSTEM_ARTIFACT_TYPES,
+    STEM_ARTIFACT_TYPE_SOURCES,
+    STEM_ARTIFACT_TYPES,
+    VOCAL_SUBSTEM_ARTIFACT_TYPES,
+)
+from app.services.vocal_substems import validated_vocal_members, vocal_substem_file_integrity
 from app.utils.hashing import stable_hash
 
 
@@ -137,7 +143,7 @@ def _safe_filename_base(value: str) -> str:
 def _primary_audio_artifact(artifact: Artifact, artifacts_by_id: dict[str, Artifact]) -> Artifact | None:
     if artifact.type in {"source_audio", "preview_mix"}:
         return artifact
-    if artifact.type not in STEM_ARTIFACT_TYPES | DRUM_SUBSTEM_ARTIFACT_TYPES:
+    if artifact.type not in STEM_ARTIFACT_TYPES | DRUM_SUBSTEM_ARTIFACT_TYPES | VOCAL_SUBSTEM_ARTIFACT_TYPES:
         return None
     source_artifact_id = artifact.metadata_json.get("source_artifact_id")
     return artifacts_by_id.get(source_artifact_id) if isinstance(source_artifact_id, str) else None
@@ -162,10 +168,32 @@ def _audio_set_label(session: Session, artifact: Artifact) -> str:
     )
 
 
+def _validate_export_vocals(selected: list[Artifact], rows: dict[str, Artifact]) -> None:
+    selected_ids = {artifact.id for artifact in selected}
+    for child in selected:
+        if child.type not in VOCAL_SUBSTEM_ARTIFACT_TYPES:
+            continue
+        parent_id = child.metadata_json.get("parent_artifact_id")
+        source_id = child.metadata_json.get("source_artifact_id")
+        parent = rows.get(parent_id) if isinstance(parent_id, str) else None
+        source = rows.get(source_id) if isinstance(source_id, str) else None
+        members = validated_vocal_members(parent, source, rows) if parent is not None and source is not None else None
+        if (
+            not members or child not in members or parent_id in selected_ids
+            or parent is None or vocal_substem_file_integrity(parent, rows) != "verified"
+            or any(vocal_substem_file_integrity(member, rows) != "verified" for member in members)
+        ):
+            raise AppError(
+                "INVALID_REQUEST", "Export requires a current vocal split or Original Vocals.", status_code=422,
+            )
+
+
 def _artifact_export_label(artifact: Artifact) -> str | None:
     source = STEM_ARTIFACT_TYPE_SOURCES.get(artifact.type)
     if source is None and artifact.type in DRUM_SUBSTEM_ARTIFACT_TYPES:
         source = str(artifact.metadata_json.get("drum_part", ""))
+    if artifact.type in VOCAL_SUBSTEM_ARTIFACT_TYPES:
+        source = "Lead" if artifact.type == "lead_vocal_substem" else "Backing"
     return source.replace("_", " ").title() if source else None
 
 
@@ -219,6 +247,7 @@ def prepare_export_job_payload(
         artifact.id: artifact
         for artifact in session.scalars(select(Artifact).where(Artifact.project_id == project.id))
     }
+    _validate_export_vocals(selected, all_project_artifacts)
     primary_artifacts = [_primary_audio_artifact(artifact, all_project_artifacts) for artifact in selected]
     if any(primary is None for primary in primary_artifacts):
         raise AppError("INVALID_REQUEST", "Only source tracks, practice mixes, and their stems can be exported.")
@@ -654,6 +683,12 @@ def export_artifacts(
     if len(artifacts) + len(generated_document_ids) != len(output_names) or invalid_sources:
         raise AppError("ARTIFACT_NOT_FOUND", "Artifact not found.", status_code=status.HTTP_404_NOT_FOUND)
     selected = [artifact for artifact in artifacts if artifact is not None]
+    if any(artifact.type in VOCAL_SUBSTEM_ARTIFACT_TYPES for artifact in selected):
+        _validate_export_vocals(selected, {
+            artifact.id: artifact for artifact in session.scalars(
+                select(Artifact).where(Artifact.project_id == project.id),
+            )
+        })
     target = Path(str(destination["target"])).expanduser().resolve()
     destination_type = str(destination["type"])
     overwrite = bool(destination.get("overwrite", False))

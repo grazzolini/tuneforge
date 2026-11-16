@@ -160,7 +160,7 @@ export class JobLifecycle {
     const families: Record<string, string[]> = {
       analyze: ["analysis", "project"], chords: ["chords"], lyrics: ["lyrics"],
       preview: ["artifacts"], retune: ["artifacts"], transpose: ["artifacts"],
-      stems: ["artifacts"], drum_substems: ["artifacts"], convert_audio: ["artifacts", "project"], export: ["artifacts"],
+      stems: ["artifacts"], drum_substems: ["artifacts"], vocal_substems: ["artifacts"], convert_audio: ["artifacts", "project"], export: ["artifacts"],
     };
     const unknown = !(type in families);
     if (id && includeResults) {
@@ -176,6 +176,7 @@ export class JobLifecycle {
     if (type === "chords" || unknown) queue(["chord-backends"]);
     if (type === "stems" || unknown) queue(["stem-models"]);
     if (["stems", "drum_substems"].includes(type) || unknown) queue(["drum-substems", "capabilities"]);
+    if (type === "vocal_substems" || unknown) queue(["vocal-substems", "capabilities"]);
   }
   private observe(jobs: JobSchema[], allowTerminal = false) {
     for (const job of jobs) {

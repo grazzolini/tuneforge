@@ -67,6 +67,7 @@ export type StoredProjectPlaybackState = {
   chordsFollowEnabled: boolean;
   stemControls: Record<string, StemControlState>;
   drumModesBySource: Record<string, DrumMode>;
+  vocalSplitGenerations: Record<string, string>;
   drumModeParentKeysBySource: Record<string, string>;
   projectOutputGain: number;
   projectOutputMuted: boolean;
@@ -96,6 +97,7 @@ const DEFAULT_STORED_PROJECT_PLAYBACK_STATE: StoredProjectPlaybackState = {
   chordsFollowEnabled: true,
   stemControls: {},
   drumModesBySource: {},
+  vocalSplitGenerations: {},
   drumModeParentKeysBySource: {},
   projectOutputGain: 1,
   projectOutputMuted: false,
@@ -275,6 +277,9 @@ function normalizeStoredProjectPlaybackState(value: unknown): StoredProjectPlayb
         : DEFAULT_STORED_PROJECT_PLAYBACK_STATE.chordsFollowEnabled,
     stemControls,
     drumModesBySource,
+    vocalSplitGenerations: Object.fromEntries(Object.entries(candidate.vocalSplitGenerations ?? {}).filter(
+      (entry): entry is [string, string] => typeof entry[1] === "string",
+    )),
     drumModeParentKeysBySource,
     projectOutputGain: normalizeOutputGain(candidate.projectOutputGain),
     projectOutputMuted: Boolean(candidate.projectOutputMuted),

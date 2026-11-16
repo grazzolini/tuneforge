@@ -2046,6 +2046,176 @@ mod tests {
     }
 
     #[test]
+    fn vocal_parent_same_bytes_merge_and_replay_preserve_local_metadata() {
+        let root = synthetic_root("vocal-membership");
+        let connection = Connection::open_in_memory().unwrap();
+        insert_trusted_peer(&connection, "device_peer_1");
+        let (source_hash, source_size) = staged_wav(&connection, &root, "source", 0.0);
+        let (parent_hash, parent_size) = staged_wav(&connection, &root, "parent", 0.4);
+        let (lead_hash, lead_size) = staged_wav(&connection, &root, "lead", 0.2);
+        let (backing_hash, backing_size) = staged_wav(&connection, &root, "backing", 0.1);
+        let project_id = source_hash_to_project_id(&source_hash).unwrap();
+        let baseline = "2026-01-01T00:00:00Z";
+        let refined = "2026-01-02T00:00:00Z";
+        let removed = "2026-01-03T00:00:00Z";
+        let source = manifest_artifact(
+            &project_id,
+            "source",
+            "source_audio",
+            "source/source.wav",
+            &source_hash,
+            source_size,
+            false,
+            baseline,
+        );
+        let mut parent = manifest_artifact(
+            &project_id,
+            "vocals",
+            "vocal_stem",
+            "stems/vocals.wav",
+            &parent_hash,
+            parent_size,
+            true,
+            baseline,
+        );
+        parent.metadata =
+            json!({"stem_model":"htdemucs_6s", "mode":"six_stems", "source_artifact_id":"source"});
+        let baseline_manifest = SyncProjectManifestSchema {
+            schema_version: SYNC_PROJECT_MANIFEST_SCHEMA_VERSION.to_string(),
+            exported_at: baseline.into(),
+            project: SyncProjectManifestProjectSchema {
+                project_id: project_id.clone(),
+                display_name: "Vocal Split".into(),
+                source_key_override: None,
+                source_sha256: source_hash.clone(),
+                duration_seconds: Some(0.1),
+                sample_rate: Some(8000),
+                channels: Some(1),
+                created_at: baseline.into(),
+                updated_at: baseline.into(),
+            },
+            entity_revisions: Vec::new(),
+            artifacts: vec![source.clone(), parent.clone()],
+            delete_tombstones: Vec::new(),
+        };
+        assert_eq!(
+            apply_manifest(&connection, &root, baseline_manifest.clone())
+                .1
+                .failed_actions,
+            0
+        );
+        connection.execute(
+            "UPDATE artifacts SET metadata_json=json_set(metadata_json,'$.user_label','Keep') WHERE id='vocals'", [],
+        ).unwrap();
+        parent.updated_at = Some(refined.into());
+        parent.metadata["vocal_substems"] = json!({
+            "generation_id":"vocalset", "source_artifact_id":"source", "source_sha256":source_hash,
+            "parent_sha256":parent_hash, "format":"wav", "expected_parts":["lead","backing"], "excluded_parts":[],
+            "child_artifact_ids":{"lead":"lead","backing":"backing"},
+            "child_sha256":{"lead":lead_hash,"backing":backing_hash},
+        });
+        let mut lead = manifest_artifact(
+            &project_id,
+            "lead",
+            "lead_vocal_substem",
+            "stems/lead.wav",
+            &lead_hash,
+            lead_size,
+            true,
+            refined,
+        );
+        let mut backing = manifest_artifact(
+            &project_id,
+            "backing",
+            "backing_vocal_substem",
+            "stems/backing.wav",
+            &backing_hash,
+            backing_size,
+            true,
+            refined,
+        );
+        for (child, part) in [(&mut lead, "lead"), (&mut backing, "backing")] {
+            child.metadata = json!({
+                "generation_id":"vocalset", "vocal_part":part,
+                "parent_artifact_id":"vocals", "source_artifact_id":"source",
+            });
+        }
+        let mut manifest = baseline_manifest.clone();
+        manifest.artifacts = vec![source, parent, lead];
+        assert_eq!(
+            apply_manifest(&connection, &root, manifest.clone())
+                .1
+                .failed_actions,
+            0
+        );
+        let rows = || storage::list_project_artifacts(&connection, &project_id).unwrap();
+        let saved = rows();
+        let child = saved.iter().find(|row| row.id == "lead").unwrap();
+        assert!(storage::validate_vocal_export(&connection, &root, child).is_err());
+        manifest.artifacts.push(backing);
+        assert_eq!(
+            apply_manifest(&connection, &root, manifest.clone())
+                .1
+                .failed_actions,
+            0
+        );
+        let saved = rows();
+        assert_eq!(
+            saved
+                .iter()
+                .find(|row| row.id == "vocals")
+                .unwrap()
+                .metadata["user_label"],
+            "Keep"
+        );
+        let child = saved.iter().find(|row| row.id == "lead").unwrap();
+        assert!(storage::validate_vocal_export(&connection, &root, child).is_ok());
+        assert_eq!(
+            apply_manifest(&connection, &root, manifest.clone())
+                .1
+                .applied_actions,
+            0
+        );
+
+        let stale = manifest.clone();
+        manifest.artifacts[1].updated_at = Some(removed.into());
+        manifest.artifacts[1]
+            .metadata
+            .as_object_mut()
+            .unwrap()
+            .remove("vocal_substems");
+        assert_eq!(
+            apply_manifest(&connection, &root, manifest.clone())
+                .1
+                .failed_actions,
+            0
+        );
+        assert_eq!(
+            apply_manifest(&connection, &root, stale).1.failed_actions,
+            0
+        );
+        let saved = rows();
+        let parent = saved.iter().find(|row| row.id == "vocals").unwrap();
+        assert_eq!(parent.metadata["user_label"], "Keep");
+        assert!(parent.metadata.get("vocal_substems").is_none());
+        let child = saved.iter().find(|row| row.id == "lead").unwrap();
+        assert!(storage::validate_vocal_export(&connection, &root, child).is_err());
+        assert_eq!(
+            apply_manifest(&connection, &root, manifest)
+                .1
+                .applied_actions,
+            0
+        );
+        assert_eq!(
+            apply_manifest(&connection, &root, baseline_manifest)
+                .1
+                .applied_actions,
+            0
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn repeat_sync_merges_existing_project_artifacts_tombstones_and_replays_noop() {
         let root = synthetic_root("repeat");
         let connection = Connection::open_in_memory().unwrap();

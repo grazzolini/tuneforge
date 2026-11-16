@@ -19,6 +19,7 @@ from app.api.routes.jobs import router as jobs_router
 from app.api.routes.projects import router as projects_router
 from app.api.routes.stem_models import router as stem_models_router
 from app.api.routes.sync import router as sync_router
+from app.api.routes.vocal_substems import router as vocal_substems_router
 from app.config import ensure_data_dirs, get_settings
 from app.db import SessionLocal, UnknownDatabaseRevisionError, reconfigure_engine, run_migrations
 from app.errors import AppError
@@ -92,6 +93,7 @@ app.include_router(beat_backends_router, prefix=settings.api_prefix)
 app.include_router(chord_backends_router, prefix=settings.api_prefix)
 app.include_router(stem_models_router, prefix=settings.api_prefix)
 app.include_router(drum_substems_router, prefix=settings.api_prefix)
+app.include_router(vocal_substems_router, prefix=settings.api_prefix)
 app.include_router(projects_router, prefix=settings.api_prefix)
 app.include_router(jobs_router, prefix=settings.api_prefix)
 app.include_router(artifacts_router, prefix=settings.api_prefix)

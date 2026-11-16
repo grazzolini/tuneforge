@@ -2919,46 +2919,45 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       return;
     }
     pendingTransitionCompletionIdRef.current = transitionId;
+    const failPlaybackTransition = (failed: PendingTransition) => {
+      const restoreSession = failed.rollbackSession;
+      if (restoreSession) {
+        clearPendingTransition();
+        nativePlaybackRef.current.blockedSessionSignature = null;
+        sessionRef.current = restoreSession;
+        setSession(restoreSession);
+        if (restoreSession.isStemPlayback) {
+          restoreSession.onDrumModeRollback?.();
+          restoreSession.onVocalModeRollback?.();
+        } else restoreSession.onPlaybackSourceRollback?.();
+        pendingTransitionRef.current = {
+          id: ++transitionCounterRef.current,
+          signature: playbackSignature(restoreSession),
+          shouldPlay: failed.shouldPlay,
+          targetTime: failed.targetTime,
+          awaitSeekBeforePlay: true,
+          crossfadeStemPlayback: false,
+          awaitingLoadKeys: [],
+          awaitingSeekKeys: [],
+          forceSeekKeys: [],
+          restoringRefinement: true,
+        };
+        tryCompletePendingTransition();
+        return;
+      }
+      clearPendingTransition();
+      setIsPlaying(false);
+      markPlaybackError(failed.restoringRefinement
+        ? "Switching and playback restoration both failed. Check your audio output, then press Play to retry."
+        : "Playback could not start. Check your audio output, then press Play to retry.");
+    };
     void (async () => {
       let pendingTransition = pendingTransitionRef.current;
       let targetSession = sessionRef.current;
-      if (!pendingTransition || !targetSession) {
-        return;
-      }
-
-      const failNativeTransition = (failed: PendingTransition) => {
-        const restoreSession = failed.rollbackSession;
-        if (restoreSession) {
-          clearPendingTransition();
-          nativePlaybackRef.current.blockedSessionSignature = null;
-          sessionRef.current = restoreSession;
-          setSession(restoreSession);
-          if (failed.rollbackSession?.isStemPlayback) restoreSession.onDrumModeRollback?.();
-          else restoreSession.onPlaybackSourceRollback?.();
-          pendingTransitionRef.current = {
-            id: ++transitionCounterRef.current,
-            signature: playbackSignature(restoreSession),
-            shouldPlay: failed.shouldPlay,
-            targetTime: failed.targetTime,
-            awaitSeekBeforePlay: true,
-            crossfadeStemPlayback: false,
-            awaitingLoadKeys: [],
-            awaitingSeekKeys: [],
-            forceSeekKeys: [],
-            restoringDrumMode: true,
-          };
-          tryCompletePendingTransition();
-          return;
-        }
-        clearPendingTransition();
-        setIsPlaying(false);
-        markPlaybackError(failed.restoringDrumMode
-          ? "Switching and playback restoration both failed. Check your audio output, then press Play to retry."
-          : "Playback could not start. Check your audio output, then press Play to retry.");
-      };
+      if (!pendingTransition || !targetSession) return;
 
       if (!pendingTransition.shouldPlay && isTauriRuntime() && !isWebAudioBackendForced()
-        && (pendingTransition.rollbackSession || pendingTransition.restoringDrumMode)) {
+        && (pendingTransition.rollbackSession || pendingTransition.restoringRefinement)) {
         let prepared: boolean;
         try {
           prepared = await ensureNativePlaybackSession(targetSession);
@@ -2970,7 +2969,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
         if (!latest || latest.id !== pendingTransition.id ||
           playbackSignature(sessionRef.current) !== pendingTransition.signature) return;
         if (!prepared) {
-          failNativeTransition(latest);
+          failPlaybackTransition(latest);
           return;
         }
         clearPendingTransition();
@@ -3011,7 +3010,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
           return;
         }
         if (isTauriRuntime() && !isWebAudioBackendForced()) {
-          failNativeTransition(latestPendingTransition);
+          failPlaybackTransition(latestPendingTransition);
           return;
         }
         pendingTransition = latestPendingTransition;
@@ -3021,6 +3020,10 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       if (canUseBufferedClock(targetSession)) {
         const targetPlaybackState = await prepareStemPlaybackState(targetSession);
         if (!targetPlaybackState) {
+          if (pendingTransitionRef.current?.id === transitionId &&
+            (pendingTransition.rollbackSession || pendingTransition.restoringRefinement)) {
+            failPlaybackTransition(pendingTransition);
+          }
           return;
         }
 
@@ -3048,9 +3051,8 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
         setPlaybackTimeSeconds(nextTime);
         setPlaybackDurationSeconds(targetPlaybackState.durationSeconds);
 
-        clearPendingTransition();
-
         if (!latestPendingTransition.shouldPlay) {
+          clearPendingTransition();
           stopStemSources(targetPlaybackState, false);
           clearPlaybackControlBackend();
           setIsPlaying(false);
@@ -3060,9 +3062,16 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
         const started = await startStemPlayback(latestSession, nextTime, undefined, {
           fadeIn: latestPendingTransition.crossfadeStemPlayback,
         });
+        if (pendingTransitionRef.current?.id !== transitionId) return;
         if (started) {
+          clearPendingTransition();
           return;
         }
+        if (latestPendingTransition.rollbackSession || latestPendingTransition.restoringRefinement) {
+          failPlaybackTransition(latestPendingTransition);
+          return;
+        }
+        clearPendingTransition();
         if (stemClockBlockedRef.current) {
           markWebPlaybackStartResult(false);
           setIsPlaying(false);
@@ -3175,7 +3184,6 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
         return;
       }
 
-      const transitionId = pendingTransition.id;
       const transitionSignature = pendingTransition.signature;
       clearPendingTransition();
 
@@ -3194,8 +3202,16 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       if (playbackSignature(sessionRef.current) !== transitionSignature) {
         return;
       }
+      if (!started && (pendingTransition.rollbackSession || pendingTransition.restoringRefinement)) {
+        failPlaybackTransition(pendingTransition);
+        return;
+      }
       markWebPlaybackStartResult(started);
-    })().finally(() => {
+    })().catch(() => {
+      const failed = pendingTransitionRef.current;
+      if (!failed || failed.id !== transitionId || playbackSignature(sessionRef.current) !== failed.signature) return;
+      failPlaybackTransition(failed);
+    }).finally(() => {
       if (pendingTransitionCompletionIdRef.current === transitionId) {
         pendingTransitionCompletionIdRef.current = null;
       }
@@ -4128,6 +4144,14 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       const isDrumSwitch = previousSession.isStemPlayback && nextSession.isStemPlayback &&
         previousSession.drumSourceArtifactId === nextSession.drumSourceArtifactId &&
         previousSession.drumMode !== nextSession.drumMode;
+      const isVocalSwitch = previousSession.isStemPlayback && nextSession.isStemPlayback &&
+        previousSession.vocalSourceArtifactId === nextSession.vocalSourceArtifactId &&
+        previousSession.vocalMode !== nextSession.vocalMode;
+      const isRefinementSwitch = isDrumSwitch || isVocalSwitch;
+      const canRestorePriorVocals = previousSession.vocalMode !== "split" ||
+        (nextSession.vocalSplitIdentity && previousSession.vocalSplitIdentity === nextSession.vocalSplitIdentity);
+      const canRestoreRefinement = canRestorePriorVocals && (isDrumSwitch || (isVocalSwitch &&
+        previousSession.vocalGenerationKey === nextSession.vocalGenerationKey));
       if (samePlaybackTarget && carriesNativeSession) {
         clearPendingTransition();
         nativePlaybackRef.current = {
@@ -4250,7 +4274,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
           ? [PRIMARY_MEDIA_KEY]
           : [];
       const forceSeekKeys = primarySwap ? [PRIMARY_MEDIA_KEY] : [];
-      const shouldCrossfadeStemPlayback = shouldPlay && previousUsesBufferedClock && !isDrumSwitch;
+      const shouldCrossfadeStemPlayback = shouldPlay && previousUsesBufferedClock && !isRefinementSwitch;
       if (
         shouldPlay &&
         !shouldCrossfadeStemPlayback &&
@@ -4268,8 +4292,8 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
         crossfadeStemPlayback:
           shouldPlay &&
           nextUsesBufferedClock &&
-          (previousUsesBufferedClock || !samePlaybackTarget) && !isDrumSwitch,
-        rollbackSession: isDrumSwitch || (previousUsesNative && primarySwap)
+          (previousUsesBufferedClock || !samePlaybackTarget) && !isRefinementSwitch,
+        rollbackSession: canRestoreRefinement || (previousUsesNative && primarySwap)
           ? previousSession : undefined,
         awaitingLoadKeys,
         awaitingSeekKeys,

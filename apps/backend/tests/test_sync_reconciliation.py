@@ -515,29 +515,33 @@ def test_artifact_classification_uses_recorded_metadata_and_trusted_provider_cho
     assert _action(plan, ACTION_IMPORT_ARTIFACT_MANIFEST, ITEM_ARTIFACT, "art_duplicate_content") is not None
 
 
-def test_drum_membership_metadata_syncs_when_parent_audio_hash_is_unchanged(
-    db_session: Session, tmp_path: Path,
+@pytest.mark.parametrize(("artifact_type", "membership_key"), [
+    ("drums_stem", "drum_substems"), ("vocal_stem", "vocal_substems"),
+])
+def test_refinement_membership_syncs_when_parent_audio_hash_is_unchanged(
+    db_session: Session, tmp_path: Path, artifact_type: str, membership_key: str,
 ) -> None:
     source_hash, source_size, project_id = _seed_existing_project_with_source(
-        db_session, tmp_path, filename="drum-membership-source.wav",
+        db_session, tmp_path, filename="refinement-membership-source.wav",
     )
-    parent_path = tmp_path / "drum-membership-parent.wav"
+    parent_path = tmp_path / "refinement-membership-parent.wav"
     sf.write(parent_path, np.zeros((256, 2), dtype="float32"), 44100)
     parent_hash = hashlib.sha256(parent_path.read_bytes()).hexdigest()
     parent_size = parent_path.stat().st_size
     first_time = datetime(2026, 1, 1, tzinfo=UTC)
     parent = _add_artifact(
-        db_session, artifact_id="art_drum_membership", project_id=project_id,
+        db_session, artifact_id="art_refinement_membership", project_id=project_id,
         path=parent_path, content_sha256=parent_hash, size_bytes=parent_size,
-        artifact_type="drums_stem", metadata_json={"source_artifact_id": f"art_source_{project_id}"},
+        artifact_type=artifact_type,
+        metadata_json={"source_artifact_id": f"art_source_{project_id}", "user_label": "Keep"},
         updated_at=first_time,
     )
     db_session.commit()
 
-    def reconcile(metadata: dict[str, Any], updated_at: datetime) -> None:
+    def reconcile(metadata: dict[str, Any], updated_at: datetime, *, newer: bool = True) -> None:
         remote_parent = _artifact_manifest(
             project_id, parent.id, parent_hash, parent_size,
-            artifact_type="drums_stem", metadata=metadata, updated_at=updated_at,
+            artifact_type=artifact_type, metadata=metadata, updated_at=updated_at,
         )
         project_manifest = _project_manifest(
             project_id, source_hash, source_size_bytes=source_size,
@@ -553,25 +557,33 @@ def test_drum_membership_metadata_syncs_when_parent_audio_hash_is_unchanged(
         }
         plan = plan_sync_reconciliation(db_session, request)
         action = _action(plan, ACTION_IMPORT_ARTIFACT_MANIFEST, ITEM_ARTIFACT, parent.id)
-        assert action is not None and action.details["metadata_only"] is True
+        if newer:
+            assert action is not None and action.details["metadata_only"] is True
+        else:
+            assert action is None
         result = apply_sync_reconciliation(db_session, request)
         assert result.summary.failed_actions == 0
         db_session.refresh(parent)
 
     refined = {
         "source_artifact_id": f"art_source_{project_id}",
-        "drum_substems": {
-            "generation_id": "drumset_1", "parent_sha256": parent_hash,
+        membership_key: {
+            "generation_id": "partset_1", "parent_sha256": parent_hash,
             "expected_parts": ["kick", "snare", "cymbals", "toms"],
             "excluded_parts": [], "child_artifact_ids": {"kick": "child_kick"},
         },
     }
     reconcile(refined, first_time + timedelta(days=1))
-    assert parent.metadata_json["drum_substems"]["excluded_parts"] == []
-    refined["drum_substems"]["excluded_parts"] = ["kick"]
-    refined["drum_substems"]["child_artifact_ids"] = {}
+    assert parent.metadata_json[membership_key]["excluded_parts"] == []
+    refined[membership_key]["excluded_parts"] = ["kick"]
+    refined[membership_key]["child_artifact_ids"] = {}
     reconcile(refined, first_time + timedelta(days=2))
-    assert parent.metadata_json["drum_substems"]["excluded_parts"] == ["kick"]
+    assert parent.metadata_json[membership_key]["excluded_parts"] == ["kick"]
+    reconcile({}, first_time + timedelta(days=3))
+    assert membership_key not in parent.metadata_json
+    assert parent.metadata_json["user_label"] == "Keep"
+    reconcile(refined, first_time + timedelta(days=2), newer=False)
+    assert membership_key not in parent.metadata_json
 
 def test_generated_analysis_same_hash_noops_even_when_remote_timestamp_is_newer(
     db_session: Session,

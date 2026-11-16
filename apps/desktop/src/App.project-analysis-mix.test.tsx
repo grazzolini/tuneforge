@@ -23,6 +23,7 @@ import {
   mockDeleteProject,
   mockCreateExport,
   mockGetLyrics,
+  mockListSections,
   mockUpdateLyrics,
   mockUpdateProject,
   renderApp,
@@ -197,9 +198,36 @@ describe("Desktop app project analysis mix", () => {
     await screen.findByRole("heading", { name: "Demo Song" });
     await openStudioPanel(user);
     await user.click(screen.getByRole("button", { name: "Detect Sections" }));
-    expect(mockConfirm).toHaveBeenCalledWith(expect.stringContaining("discards their edits"), expect.any(Object));
+    expect(mockConfirm).toHaveBeenCalledWith(
+      expect.stringMatching(/^Detect sections\?.*discards their edits/),
+      expect.objectContaining({ title: "Detect Sections", okLabel: "Detect Sections" }),
+    );
     expect(mockCreateSections).toHaveBeenCalledExactlyOnceWith("proj_123");
     expect(await screen.findByRole("button", { name: "Detecting Sections..." })).toBeDisabled();
+
+    const savedResult = { sections: [], has_detected_sections: true };
+    mockListSections.mockResolvedValueOnce(savedResult);
+    const { job } = await mockCreateSections.mock.results[0].value;
+    setJobs([{ ...job, status: "completed", progress: 100 }]);
+    expect(await screen.findByRole("button", { name: "Refresh Sections" }, { timeout: 5000 })).toBeEnabled();
+  });
+
+  it("offers to refresh saved detection without a successful job in history", async () => {
+    const user = userEvent.setup();
+    setProjectArtifacts("proj_123", sectionArtifacts());
+    const savedResult = { sections: [], has_detected_sections: true };
+    mockListSections.mockResolvedValueOnce(savedResult);
+    setJobs([{ id: "failed_sections", project_id: "proj_123", type: "sections", status: "failed", progress: 32 }]);
+    mockConfirm.mockResolvedValueOnce(false);
+    renderApp(["/projects/proj_123"]);
+    await screen.findByRole("heading", { name: "Demo Song" });
+    await openStudioPanel(user);
+    await user.click(await screen.findByRole("button", { name: "Refresh Sections" }));
+    expect(mockConfirm).toHaveBeenCalledWith(
+      expect.stringMatching(/^Refresh sections\?.*discards their edits/),
+      expect.objectContaining({ title: "Refresh Sections", okLabel: "Refresh Sections" }),
+    );
+    expect(mockCreateSections).not.toHaveBeenCalled();
   });
 
   it("cancels section detection before submission", async () => {

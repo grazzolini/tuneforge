@@ -23,6 +23,8 @@ const STEM_ARTIFACT_LABELS: Record<string, string> = {
   snare_drum_substem: "Snare",
   cymbals_drum_substem: "Cymbals",
   toms_drum_substem: "Toms",
+  lead_vocal_substem: "Lead",
+  backing_vocal_substem: "Backing",
 };
 
 const STEM_ARTIFACT_TYPES = new Set(Object.keys(STEM_ARTIFACT_LABELS));
@@ -551,6 +553,8 @@ function operationForJobType(type: string | null | undefined) {
       return "preview rendering";
     case "stems":
       return "stem separation";
+    case "vocal_substems":
+      return "vocal refinement";
     case "drum_substems":
       return "drum refinement";
     default:

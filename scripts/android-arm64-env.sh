@@ -98,7 +98,12 @@ export CXX_aarch64_linux_android="$cxx"
 export AR_aarch64_linux_android="$ar"
 export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$cc"
 export CARGO_TARGET_AARCH64_LINUX_ANDROID_AR="$ar"
-export CMAKE_TOOLCHAIN_FILE="$SCRIPT_DIR/android-arm64.toolchain.cmake"
+# Keep the Android toolchain scoped to the Cargo target so host builds and
+# nested CMake compiler checks do not inherit it from the environment.
+unset CMAKE_TOOLCHAIN_FILE
+if [[ -z "${CMAKE_TOOLCHAIN_FILE_aarch64_linux_android+x}" && -z "${TARGET_CMAKE_TOOLCHAIN_FILE+x}" ]]; then
+  export CMAKE_TOOLCHAIN_FILE_aarch64_linux_android="$SCRIPT_DIR/android-arm64.toolchain.cmake"
+fi
 export ANDROID_ABI="arm64-v8a"
 export ANDROID_PLATFORM="android-${android_api}"
 export CMAKE_ANDROID_ARCH_ABI="arm64-v8a"

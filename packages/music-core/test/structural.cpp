@@ -6,7 +6,9 @@
 #include <limits>
 #include <set>
 #include <sstream>
+#include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 // Test-only protocol: tab-separated operations in, one JSON result per
@@ -36,17 +38,31 @@ int main() {
           std::cout << '"' << intervals[i] << '"';
         }
         std::cout << "]}\n";
-      } else if (operation == "guitar" || operation == "guitar-slash") {
+      } else if (operation == "guitar" || operation == "guitar-slash" ||
+                 operation == "guitar-policy") {
         int capo = 0, additional_pitch_class = -1;
         input >> capo >> additional_pitch_class;
-        const auto board = gingo::Fretboard::violao(22).capo(capo);
+        auto board = gingo::Fretboard::violao(22).capo(capo);
+#ifdef TUNEFORGE_SEARCH_POLICY
+        if (operation == "guitar-policy") {
+          std::vector<int> tuning(6);
+          for (int &open : tuning)
+            input >> open;
+          board = gingo::Fretboard("guitar", tuning, 22).capo(capo);
+        }
+#endif
         // INT_MAX prevents result truncation from hiding feasible candidates.
 #ifdef TUNEFORGE_SEARCH_POLICY
-        const auto fingerings =
-            operation == "guitar-slash"
-                ? board.fingerings(chord, std::numeric_limits<int>::max(),
-                                   additional_pitch_class)
-                : board.fingerings(chord, std::numeric_limits<int>::max());
+        double penalty = 20;
+        std::vector<int> required;
+        if (operation == "guitar-policy") {
+          input >> penalty;
+          for (int pitch; input >> pitch;)
+            required.push_back(pitch);
+        }
+        const auto fingerings = board.fingerings(
+            chord, std::numeric_limits<int>::max(), additional_pitch_class,
+            required, penalty);
 #else
         const auto fingerings =
             board.fingerings(chord, std::numeric_limits<int>::max());
@@ -117,6 +133,11 @@ int main() {
       } else {
         std::cout << "{\"error\":\"unknown operation\"}\n";
       }
+    } catch (const std::invalid_argument &error) {
+      if (std::string_view(error.what()).rfind("Cannot find fingering for ", 0) == 0)
+        std::cout << "{\"error\":\"no-guitar-candidates\",\"exception\":\"invalid_argument\"}\n";
+      else
+        std::cout << "{\"error\":\"Gingo rejected operation\"}\n";
     } catch (const std::exception &) {
       std::cout << "{\"error\":\"Gingo rejected operation\"}\n";
     }

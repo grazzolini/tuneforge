@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { generateGuitarVoicings, GUITAR_STANDARD_PROFILE } from "./lib/music";
+import { generateGuitarVoicings } from "./lib/music";
 import {
   AccordionCandidateList, changeChordSearch, getDictionaryInstrumentSelector,
   makeDictionaryShapePreferenceContext, writeGlobalChordDictionaryPreferredShape, getStoredChordDictionaryPreferences,
@@ -22,13 +22,14 @@ describe("Desktop chord dictionary canonical voicings", () => {
     expect(screen.getByLabelText("Note inspector")).toHaveTextContent(/String|Fret/);
   });
 
-  it("restores a valid guitar preference beyond the normal shortlist", async () => {
-    const saved = "guitar-1:3-2:1-3:3-4:2-5:1-6:3-capo-0";
-    writeGlobalChordDictionaryPreferredShape(makeDictionaryShapePreferenceContext({ chordLabel: "C7" }), saved);
-    expect(generateGuitarVoicings("C7").some(v => v.id === saved)).toBe(false);
-    const label = generateGuitarVoicings("C7", GUITAR_STANDARD_PROFILE, {}, {}, [saved]).find(v => v.id === saved)!.label;
+  it.each([
+    ["C", "guitar-1:15-2:17-3:17-4:17-5:15-6:-1-capo-0", "C voicing 27"],
+    ["C7", "guitar-1:3-2:1-3:3-4:2-5:1-6:3-capo-0", "C7 voicing 14"],
+  ])("restores a valid guitar preference beyond the normal %s shortlist", async (chordLabel, saved, label) => {
+    writeGlobalChordDictionaryPreferredShape(makeDictionaryShapePreferenceContext({ chordLabel }), saved);
+    expect(generateGuitarVoicings(chordLabel).some(v => v.id === saved)).toBe(false);
     await renderChordDictionary();
-    changeChordSearch("C7");
+    if (chordLabel !== "C") changeChordSearch(chordLabel);
     const choices = within(screen.getByRole("group", { name: "Global guitar shape preference choices" })).getAllByRole("button");
     expect(choices[0]).toHaveAccessibleName(label);
     expect(choices[0]).toHaveAttribute("aria-pressed", "true");

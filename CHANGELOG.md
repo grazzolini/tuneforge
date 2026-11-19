@@ -5,6 +5,10 @@ download, installation, verification, signature, and publication instructions.
 
 ## [Unreleased]
 
+### Changed
+
+- Generate guitar voicings faster when opening the Chord Dictionary, with the same rankings and saved choices.
+
 ## [1.9.0] - 2026-11-17
 
 ### Added

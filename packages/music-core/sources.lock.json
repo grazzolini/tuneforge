@@ -388,8 +388,8 @@
   "patches": [
     {
       "path": "patches/fretboard-search-policy.patch",
-      "sha256": "c005b1bd1c834257d8330a1e100648b3398f6c724ceaf5f7c8bcf82845f24ee6",
-      "purpose": "Expose optional bass and required pitch classes plus configurable non-root bass penalty; retain upstream defaults, DFS and playability pruning, with deterministic policy tie-breaking.",
+      "sha256": "24931f07543edbaca9ce8214e83bc1f7d97f12d521e1bc44d835f07c4c9bad35",
+      "purpose": "Expose optional bass and required pitch classes plus configurable non-root bass penalty; retain upstream defaults, DFS, playability pruning and deterministic policy tie-breaking. Score each policy candidate once per search and track pitch-class coverage with a bit mask.",
       "outputs": [
         {
           "path": "cpp/include/gingo/fretboard.hpp",
@@ -397,7 +397,7 @@
         },
         {
           "path": "cpp/src/fretboard.cpp",
-          "sha256": "f0b6fa000bf359fd426141dd368223aa044582428d75f01edfaf87e9e6bdc854"
+          "sha256": "56c89657d04159a23bfb7a751a4d4f9c8aeb4ee476866aa4bc343871c0b74b96"
         }
       ]
     }

@@ -27,33 +27,105 @@
 -        const Chord& chord, int base_pos, int max_span) const {
 +        const Chord& chord, int base_pos, int max_span,
 +        int additional_pitch_class, const std::vector<int>& required_pitch_classes) const {
-@@ -357 +359,6 @@
+@@ -357 +359,11 @@
      for (const auto& n : chord_notes) target_pcs.insert(n.semitone());
 +    if (additional_pitch_class >= 0)
 +        target_pcs.insert(((additional_pitch_class % 12) + 12) % 12);
 +    const std::set<int> required_pcs = required_pitch_classes.empty()
 +        ? target_pcs
 +        : std::set<int>(required_pitch_classes.begin(), required_pitch_classes.end());
-@@ -409 +416,2 @@
++    unsigned required_mask = 0;
++    for (int required : required_pcs) {
++        if (required < 0 || required >= 12) return {};
++        required_mask |= 1u << required;
++    }
+@@ -401,9 +413,9 @@
+-            std::set<int> covered;
+-            int sounding = 0;
+-            for (int i = 0; i < n_strings; ++i) {
+-                if (current[i].pc >= 0) {
+-                    covered.insert(current[i].pc);
+-                    sounding++;
+-                }
+-            }
 -            if (covered.size() < target_pcs.size()) return;
-+            for (int required : required_pcs)
-+                if (!covered.count(required)) return;
-@@ -623 +631,3 @@
++            unsigned covered = 0;
++            int sounding = 0;
++            for (int i = 0; i < n_strings; ++i) {
++                if (current[i].pc >= 0) {
++                    covered |= 1u << current[i].pc;
++                    sounding++;
++                }
++            }
++            if ((covered & required_mask) != required_mask) return;
+@@ -623 +635,3 @@
 -                                               int max_results) const {
 +                                               int max_results, int additional_pitch_class,
 +                                               const std::vector<int>& required_pitch_classes,
 +                                               double non_root_bass_penalty) const {
-@@ -631 +641 @@
+@@ -631 +645 @@
 -        auto batch = generate_fingerings(chord, p);
 +        auto batch = generate_fingerings(chord, p, 4, additional_pitch_class, required_pitch_classes);
-@@ -641,2 +651,8 @@
+@@ -639,19 +653,43 @@
+-    // Score, deduplicate by midi_notes, and pick top N.
+-    std::sort(all.begin(), all.end(),
 -              [root_pc](const Fingering& a, const Fingering& b) {
 -                  return score_fingering(a, root_pc) < score_fingering(b, root_pc);
-+              [root_pc, &required_pitch_classes, non_root_bass_penalty](const Fingering& a, const Fingering& b) {
-+                  const auto sa = score_fingering(a, root_pc, non_root_bass_penalty);
-+                  const auto sb = score_fingering(b, root_pc, non_root_bass_penalty);
-+                  if (sa != sb || (required_pitch_classes.empty() && non_root_bass_penalty == 20.0))
-+                      return sa < sb;
-+                  return std::lexicographical_compare(
-+                      a.strings.begin(), a.strings.end(), b.strings.begin(), b.strings.end(),
-+                      [](const StringState& x, const StringState& y) { return x.fret < y.fret; });
+-              });
+-
+-    // Deduplicate: same midi_notes set → keep only the best scored.
+-    std::vector<Fingering> unique;
+-    std::set<std::vector<int>> seen;
+-    for (auto& f : all) {
+-        // Build a signature: sorted fret per string.
+-        std::vector<int> sig;
+-        for (const auto& ss : f.strings) sig.push_back(ss.fret);
+-        if (seen.count(sig)) continue;
+-        seen.insert(sig);
+-        unique.push_back(std::move(f));
+-        if (static_cast<int>(unique.size()) >= max_results) break;
+-    }
+-
++    std::vector<Fingering> unique;
++    std::set<std::vector<int>> seen;
++    const auto append_unique = [&](Fingering& f) {
++        std::vector<int> signature;
++        for (const auto& ss : f.strings) signature.push_back(ss.fret);
++        if (seen.count(signature)) return false;
++        seen.insert(signature);
++        unique.push_back(std::move(f));
++        return static_cast<int>(unique.size()) >= max_results;
++    };
++
++    if (required_pitch_classes.empty() && non_root_bass_penalty == 20.0) {
++        // Keep upstream's sort and score-only tie behavior.
++        std::sort(all.begin(), all.end(),
++                  [root_pc](const Fingering& a, const Fingering& b) {
++                      return score_fingering(a, root_pc) < score_fingering(b, root_pc);
++                  });
++        for (auto& f : all)
++            if (append_unique(f)) break;
++    } else {
++        // Score each candidate once. Ordering by index avoids moving the fingerings
++        // during sorting and retains the policy's numeric fret-signature tiebreaker.
++        struct RankedFingering {
++            double score;
++            std::size_t index;
++        };
++        std::vector<RankedFingering> ranked;
++        ranked.reserve(all.size());
++        for (std::size_t i = 0; i < all.size(); ++i)
++            ranked.push_back({score_fingering(all[i], root_pc, non_root_bass_penalty), i});
++        std::sort(ranked.begin(), ranked.end(),
++                  [&all](const RankedFingering& a, const RankedFingering& b) {
++                      if (a.score != b.score) return a.score < b.score;
++                      const auto& a_strings = all[a.index].strings;
++                      const auto& b_strings = all[b.index].strings;
++                      return std::lexicographical_compare(
++                          a_strings.begin(), a_strings.end(), b_strings.begin(), b_strings.end(),
++                          [](const StringState& x, const StringState& y) { return x.fret < y.fret; });
++                  });
++        for (const auto& entry : ranked)
++            if (append_unique(all[entry.index])) break;
++    }
++

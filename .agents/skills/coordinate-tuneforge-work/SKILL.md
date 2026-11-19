@@ -66,6 +66,47 @@ excluding the tracker. If none remain, report refinement or release-handoff
 readiness. If a legacy milestone lacks a tracker, use explicit issue-body order
 and report that it has not adopted the canonical format.
 
+## Agent Role Routing
+
+Use the exact callable names in [`.codex/agents`](../../../.codex/agents).
+
+- `source_lookup` for bounded lookup, extraction, and summarization from explicit
+  sources.
+- `researcher` for broader exploration, comparisons, and bounded research.
+- `technical_investigator` for ambiguous failures or findings, complex probes,
+  and benchmark attribution.
+- `implementer` for approved changes, applicable Product Design briefs,
+  implementation, release metadata, and bounded remediation.
+- `document_drafter` for reports and written artifacts.
+- `interaction_verifier` for bounded browser, computer, or visual flows.
+- `visual_qa` for detailed screenshot, video, and release-media verification.
+- `routine_reviewer` for routine correctness, evidence, or release-safety review.
+- `risk_reviewer` for security, data loss, migrations, concurrency, or complex
+  cross-layer correctness, evidence, or release-safety review.
+- `design_reviewer` for independent design and UX judgment.
+- `tuneforge_contract_guard` for actual API, schema, OpenAPI, generated-type, or
+  caller boundaries.
+- `critical_dispute_reviewer` for a focused, unresolved critical finding after
+  ordinary review.
+
+Use a fresh fork (`fork_turns="none"`) and a self-contained brief covering
+duties, authority limits, independence, and evidence criteria. Include the
+current release checkpoint when applicable. Invoke a registered role by its
+exact name and use its TOML settings without overrides.
+
+Use fallbacks only before work starts.
+
+- If the role is missing from the session, use a fresh built-in `default` fork
+  and explicitly request the role's TOML model and reasoning effort when supported.
+- If either the named role or its `default` fallback cannot use the pinned
+  settings or start the pinned model, the coordinator selects a suitable
+  available model and reasoning effort for a fresh `default` fork.
+
+Carry the original brief into each fallback and report why it was needed and
+the model and effort actually used. Once work starts, recover the original
+assignment and avoid duplicate work.
+Change agent configuration only when explicitly requested.
+
 ## Read-Only Preflight and Plan
 
 Before an approved plan, read applicable `AGENTS.md` files; inspect worktree
@@ -85,12 +126,14 @@ Produce a decision-complete plan containing:
 - selected item, work kind, outcome, non-goals, and acceptance evidence;
 - implementation envelope (modules, interfaces, line/file bounds) or research
   evidence envelope (question, sources, method, report target);
-- normal-versus-stack decision, worker ownership/model/effort, validation lanes,
-  review plan, and explicit stop boundary;
+- normal-versus-stack decision, agent roles, worker ownership, resolved model and
+  reasoning effort, validation lanes, review plan, and explicit stop boundary;
 - assumptions, risks, and the exact authority still needed.
 
-Read [validation-lanes.md](references/validation-lanes.md) before selecting
-lanes or reporting evidence.
+Use [agent role routing](#agent-role-routing) to plan assignments. Read each
+selected role's TOML for the model and reasoning effort to record in the plan.
+Read [validation-lanes.md](references/validation-lanes.md) before selecting lanes
+or reporting evidence.
 
 Before implementation assignments, run `pnpm ci:image:impact --paths <planned paths...>`
 and include affected components, causal chain, and delivery order in the plan.
@@ -115,32 +158,8 @@ Use at most two only when responsibilities and owned files or evidence streams
 are independent; assign clear ownership. Use one implementation worker across
 dependent stack layers.
 
-For this skill, select model and effort explicitly by task:
-
-- GPT-6 Luna (`gpt-6-luna`) Medium for narrow lookup, extraction, and
-  summarization with explicit sources and bounded factual deliverables.
-- GPT-6.1 Sol (`gpt-6.1-sol`) Medium for broader exploration and research.
-- GPT-6.1 Sol High for bounded or complex implementation, including frontend
-  code, ambiguity, cross-layer architecture, sync/concurrency, transactions,
-  migrations, privacy/security/data-loss risk, or ambiguous test failures and
-  findings. Use Sol High for Product Design briefs, visual hierarchy, and
-  interaction design when UI design work warrants them.
-- GPT-6.1 Terra (`gpt-6.1-terra`) Medium for bounded visual inspection,
-  browser/computer verification, and document drafting; High for detailed
-  visual verification and screenshot QA.
-- GPT-6 Astra (`gpt-6-astra`) High for applicable design/UX review and final
-  design-quality judgment.
-- `tuneforge_contract_guard` on GPT-6 Luna High only at an actual contract
-  boundary.
-
-For UI design work, Sol creates, Terra verifies, and Astra reviews. Follow the
-[UI validation lane](references/validation-lanes.md#ui-and-user-facing-behavior)
-for responsibilities and evidence boundaries.
-
-Honor fixed role model/effort settings; do not pass unsupported overrides. If a
-preferred model is unavailable, use an available model under applicable
-`AGENTS.md` routing and report the substitution. Change agent configuration
-only when explicitly requested.
+For UI design work, follow the [UI validation lane](references/validation-lanes.md#ui-and-user-facing-behavior)
+for design, implementation, verification, and independent review responsibilities.
 
 For implementation, treat production source as the scope tripwire, excluding
 tests, generated files, and lockfiles. Stop and re-plan if work reaches an
@@ -177,20 +196,16 @@ Run only applicable validation lanes and report command, result, proof boundary,
 and unverified behavior. Never treat a local validator, emulator, or mock as
 proof of live transport, external-device, or release behavior.
 
-Use one initial correctness review for implementation, one evidence review for
-research, or one release-safety review for release preparation. Evidence review
-must check methodology, reproducibility, unsupported generalization, licensing,
-and evidence-to-conclusion fit. Release-safety review must check the exact platform
-payload/checksum/signature matrix, provenance, checkpoint authority, manual-only
-operations, and fail-closed gates. Add contract and design review only when
-applicable. For correctness, evidence, and release-safety reviews, use GPT-6.1
-Sol High normally; GPT-6 Astra High for security, data-loss, migration,
-concurrency, or complex cross-layer review; and GPT-6 Astra XHigh only for a
-focused unresolved critical review dispute. Applicable design/UX review and
-final design-quality judgment use GPT-6 Astra High, independently of that
-code-review routing. Send actionable findings to the original worker for one
-remediation pass, then perform one focused re-review. Stop on unresolved
-critical findings.
+Select one initial reviewer by risk using [agent role routing](#agent-role-routing).
+Use a correctness review for implementation, an evidence review for research, or
+a release-safety review for release preparation. Evidence review must check
+methodology, reproducibility, unsupported generalization, licensing, and
+evidence-to-conclusion fit. Release-safety review
+must check the exact platform payload/checksum/signature matrix, provenance,
+checkpoint authority, manual-only operations, and fail-closed gates. Add
+contract review and independent design review only when applicable. Send
+actionable findings to the original worker for one remediation pass, then
+perform one focused re-review. Stop on unresolved critical findings.
 
 Finish with the selected scope, work kind, delivery/report target, envelope,
 agents and lanes used, validation/evidence, unverified boundaries, remaining

@@ -527,8 +527,16 @@ export function validateCiImagePolicy(root) {
     const block = workflowJobBlock(mainWorkflow, name);
     check(block.includes("    runs-on: ubuntu-24.04"), name + " must use ubuntu-24.04");
     check(block.includes("shell: bash ${{ github.workspace }}/scripts/ci-image-run.sh script {0}"), name + " must route native run steps through the absolute shared Docker shell");
-    const scheduling = ["e2e", "music-core-wasm"].includes(name) ? "${{ always() }}" : "${{ always() && (needs.ci-image-candidate.result == 'failure' || needs.ci-image-candidate.result == 'cancelled' || needs.ci-scope.result != 'success' || " +
-      (name === "backend" ? "needs.ci-scope.outputs.backend_static == 'true' || needs.ci-scope.outputs.backend_ffmpeg == 'true'" : "needs.ci-scope.outputs.desktop_tauri == 'true'") + ") }}";
+    let scheduling = "${{ always() }}";
+    if (name === "e2e") {
+      scheduling = "${{ always() && (needs.ci-scope.result != 'success' || " +
+        "needs.ci-scope.outputs.codex_only != 'true' || needs.ci-scope.outputs.image_selection != 'promoted' || " +
+        "needs.ci-image-candidate.result != 'skipped' || needs.music-core-wasm.result != 'success' || " +
+        "needs.music-core-wasm.outputs.artifact_id == '') }}";
+    } else if (name !== "music-core-wasm") {
+      scheduling = "${{ always() && (needs.ci-image-candidate.result == 'failure' || needs.ci-image-candidate.result == 'cancelled' || needs.ci-scope.result != 'success' || " +
+        (name === "backend" ? "needs.ci-scope.outputs.backend_static == 'true' || needs.ci-scope.outputs.backend_ffmpeg == 'true'" : "needs.ci-scope.outputs.desktop_tauri == 'true'") + ") }}";
+    }
     check(block.match(/^    if: (.*)$/m)?.[1] === scheduling, name + " must retain fail-closed required-job scheduling");
     const checkout = block.indexOf("uses: actions/checkout@"), require = block.indexOf("run: bash scripts/ci-image-run.sh require"),
       download = block.indexOf("uses: actions/download-artifact@"), load = block.indexOf('run: bash scripts/ci-image-run.sh load "$RUNNER_TEMP/ci-image"'), verify = verifierCallIndexes(block);

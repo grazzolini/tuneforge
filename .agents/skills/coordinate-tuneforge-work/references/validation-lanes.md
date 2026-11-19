@@ -5,36 +5,32 @@ app lifecycle and installed state in every lane.
 
 ## UI and User-Facing Behavior
 
-Use applicable stages when UI design work warrants them:
+Use applicable stages when UI design work warrants them. Select agents using
+[agent role routing](../SKILL.md#agent-role-routing).
 
-1. **Design:** Product Design on GPT-6.1 Sol (`gpt-6.1-sol`) High prepares the
-   pre-implementation brief, visual hierarchy, interaction model, and acceptance
-   criteria. Sol owns design decisions and implementation.
-2. **Verify:** GPT-6.1 Terra (`gpt-6.1-terra`) Medium exercises bounded flows,
-   inspects states, and collects evidence. Use High for detailed visual
-   verification and screenshot QA. Compare the implementation against the
-   approved brief; check screens/states, interactions, truthfulness, and absence
-   of fake or misleading data. Capture screenshots when useful. Report observed
-   deviations and unverified behavior.
-3. **Review:** GPT-6 Astra (`gpt-6-astra`) High independently assesses design
-   quality, UX tradeoffs, evidence sufficiency, and remaining risks. Astra owns
+1. **Design and implement.** The same `implementer` uses Product Design for the
+   pre-implementation brief, including visual hierarchy, interactions, and
+   acceptance criteria, and owns design decisions and implementation.
+2. **Verify.** Use `interaction_verifier` for bounded flows and `visual_qa` for
+   detailed screenshot, video, and release-media checks. Compare screens,
+   states, interactions, and data accuracy against the approved brief. Check
+   for fabricated or misleading displayed data. Capture relevant evidence and
+   report deviations and unverified behavior.
+3. **Review.** The independent `design_reviewer` assesses design quality,
+   UX tradeoffs, evidence sufficiency, and remaining risks, and gives the
    final design-quality judgment.
 
-Terra verification does not approve design quality or establish code correctness.
-Do not use this lane for code, backend contract, or music-theory correctness;
-preserve separate correctness and contract reviews.
-
-Send actionable design findings to the original Sol worker for one remediation
-pass. Terra repeats affected checks; Astra performs one focused design re-review.
-Stop on unresolved critical findings.
+Use separate reviews for code, backend contracts, and music-theory correctness
+as applicable. Send actionable design findings to the original `implementer`
+for one remediation pass. Repeat affected verification checks and have
+`design_reviewer` perform one focused re-review. Stop on unresolved critical
+findings.
 
 ## Contracts
 
-Use `tuneforge_contract_guard` on GPT-6 Luna High only if schemas, API routes,
-OpenAPI, generated types, or their callers could drift. Honor fixed role
-model/effort settings as described in the skill. Validate actual
-producer/consumer compatibility. Do not run this lane for unrelated internal
-refactors.
+Use `tuneforge_contract_guard` when schemas, API routes, OpenAPI, generated
+types, or their callers could drift. Validate actual producer and consumer
+compatibility. Skip this lane for unrelated internal refactors.
 
 ## Android Runtime
 

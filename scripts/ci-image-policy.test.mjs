@@ -356,6 +356,10 @@ test("candidate consumers reject artifact substitution and verification skip-gre
     ["      - name: Verify CI image\n        run:", "      - name: Verify CI image\n        if: false\n        run:"],
     ["      - name: Require selected CI image\n        shell: bash", "      - name: Require selected CI image\n        continue-on-error: true\n        shell: bash"],
     ["    if: ${{ always() }}", "    if: ${{ false && always() }}"],
+    [" || needs.ci-scope.outputs.codex_only != 'true'", ""],
+    [" || needs.ci-scope.outputs.image_selection != 'promoted' || needs.ci-image-candidate.result != 'skipped'", ""],
+    [" || needs.music-core-wasm.result != 'success' || needs.music-core-wasm.outputs.artifact_id", " || needs.music-core-wasm.outputs.artifact_id"],
+    [" || needs.music-core-wasm.outputs.artifact_id == ''", ""],
     ["CI_IMAGE_CANDIDATE_RESULT: ${{ needs.ci-image-candidate.result }}", "CI_IMAGE_CANDIDATE_RESULT: success"],
     ["cache-suffix: ${{ steps.image.outputs.identity }}", "cache-suffix: default"],
   ], /must download only|must not skip|must require selection|must retain fail-closed|caches must include/));

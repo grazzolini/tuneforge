@@ -1,0 +1,935 @@
+{
+  "baseline": {
+    "revision": "c998a6baa9243387914dc4aa7859732898dd7499",
+    "wasmSha256": "4ba458fc2bf688812e9dff9a3679d11980d6c624737bcbb19d73cf92fb7a0ebf"
+  },
+  "upstreamDefaults": [
+    "guitar CM 0 -1",
+    "guitar Dm 0 -1",
+    "guitar Em 0 -1",
+    "guitar FM 0 -1",
+    "guitar GM 0 -1",
+    "guitar Am 0 -1",
+    "guitar Bdim 0 -1",
+    "guitar C7 0 -1",
+    "guitar Bm 0 -1",
+    "guitar C7M 0 -1",
+    "guitar Cdim7 0 -1",
+    "guitar Csus4 0 -1",
+    "guitar C7 2 -1",
+    "guitar EM 7 -1"
+  ],
+  "policyCandidates": [
+    {
+      "input": "guitar-policy CM 0 -1 64 59 55 50 45 40 24 0 4 7",
+      "count": 380,
+      "sha256": "bd880cd5a9012e5bcae6fc139ef4550945cc2534006a5eb91b9f17c508f5a0ef"
+    },
+    {
+      "input": "guitar-policy Dm 0 -1 64 59 55 50 45 40 24 2 5 9",
+      "count": 307,
+      "sha256": "8908b50e37118b303e2269675cfbf3b766ca7887de1cd2c4cf5f3724b84cc4c8"
+    },
+    {
+      "input": "guitar-policy Em 0 -1 64 59 55 50 45 40 24 4 7 11",
+      "count": 604,
+      "sha256": "d2f75cacca50d16f598a2122ff45a9bdd1c3114a9fbd7d6188310091e1f4d1fc"
+    },
+    {
+      "input": "guitar-policy FM 0 -1 64 59 55 50 45 40 24 5 9 0",
+      "count": 212,
+      "sha256": "4d7b006573370e6ce972bdffa428c00e3f2f5c64e9823b0882f29359b45e3cbb"
+    },
+    {
+      "input": "guitar-policy GM 0 -1 64 59 55 50 45 40 24 7 11 2",
+      "count": 536,
+      "sha256": "77f74dcff41e46076ed90b8a248a061b17f27a93bdcce6ac09ef56d74946aa29"
+    },
+    {
+      "input": "guitar-policy Am 0 -1 64 59 55 50 45 40 24 9 0 4",
+      "count": 361,
+      "sha256": "e3132f4f89bcff8f4bb1381a5acf1ac842e8286ddead295d23cc760a5f8ba848"
+    },
+    {
+      "input": "guitar-policy Bdim 0 -1 64 59 55 50 45 40 24 11 2 5",
+      "count": 301,
+      "sha256": "4fc76889bd718a721d8b4227752b96ae2353a8d89f23c2d7f2bd606c8b62e582"
+    },
+    {
+      "input": "guitar-policy C7 0 -1 64 59 55 50 45 40 24 0 4 10",
+      "count": 515,
+      "sha256": "7e90fdbec42ac10c4b9ce2fa0bb18b895246600bb30669fb04e484cb34d23edb"
+    },
+    {
+      "input": "guitar-policy C7M 0 -1 64 59 55 50 45 40 24 0 4 11",
+      "count": 955,
+      "sha256": "a61e3e6f4ca22d2eac887da41e422dc5f17213573e1336d7bb2127571fddc50a"
+    },
+    {
+      "input": "guitar-policy Cm7 0 -1 64 59 55 50 45 40 24 0 3 10",
+      "count": 245,
+      "sha256": "ebcdbf678c78a5b52ea3d3e13c01d2d9f45d2f91ecb1d1eeab170005abb3a028"
+    },
+    {
+      "input": "guitar-policy Csus2 0 -1 64 59 55 50 45 40 24 0 2 7",
+      "count": 310,
+      "sha256": "63b8101ca6e05f67394a8819aeda14c6b22db64187d7bf402e1c13520bd724f2"
+    },
+    {
+      "input": "guitar-policy Csus4 0 -1 64 59 55 50 45 40 24 0 5 7",
+      "count": 220,
+      "sha256": "01304600d3e9836c152c9961471efa13ef9692616e45e572f8dc8f6b825f1af2"
+    },
+    {
+      "input": "guitar-policy Cdim7 0 -1 64 59 55 50 45 40 24 0 3 6 9",
+      "count": 200,
+      "sha256": "f3e78b3ec63012065624f6d61c5cb1bdd15f582344d03804caf56a787e0f2f0c"
+    },
+    {
+      "input": "guitar-policy Caug 0 -1 64 59 55 50 45 40 24 0 4 8",
+      "count": 175,
+      "sha256": "f9d80b66df6101213ac324f82bc981d0982696d9f98de81fc2901e51c54370cb"
+    },
+    {
+      "input": "guitar-policy Cm7(b5) 0 -1 64 59 55 50 45 40 24 0 3 6 10",
+      "count": 116,
+      "sha256": "ef4b3cb5f84f0639176685892a5c9ceb5c0b3d2423cce8937f7e6264263d692c"
+    },
+    {
+      "input": "guitar-policy C7(b5) 0 -1 64 59 55 50 45 40 24 0 4 6 10",
+      "count": 258,
+      "sha256": "3f9807c9ee4315e4f587a6c0ae7577626e434708e5108644ce2f55640beefd31"
+    },
+    {
+      "input": "guitar-policy C7 0 1 64 59 55 50 45 40 24 0 1 4 10",
+      "count": 335,
+      "sha256": "dd0facc583e905a6350d31c21022883f908f688e5e85d561516fbabeb162c96a"
+    },
+    {
+      "input": "guitar-policy C7 0 4 64 59 55 50 45 38 24 0 4 10",
+      "count": 407,
+      "sha256": "6c33f0c671138e54c8e08cf1c05d350368a9c34acd51f957303dda08fe5fdd72"
+    },
+    {
+      "input": "guitar-policy C7 2 7 64 59 55 50 45 38 24 0 4 7 10",
+      "count": 220,
+      "sha256": "8c01006cef4001be63fe2847559c86f47185e95581ba3d728a67ddedf6d3dfe1"
+    },
+    {
+      "input": "guitar-policy C7 2 10 64 59 43 50 45 38 24 0 4 10",
+      "count": 376,
+      "sha256": "d2676523df14f92366338ad0603923b629a9ece8eaae3357264f77a2dc09182f"
+    }
+  ],
+  "requestDefaults": {
+    "dropDWithCapo": {
+      "operation": "guitar",
+      "profile": {
+        "id": "guitar",
+        "label": "Guitar",
+        "tuning": [
+          {
+            "string": 6,
+            "openPitch": {
+              "pitchClass": 2,
+              "octave": 2,
+              "midi": 38,
+              "noteName": "D",
+              "label": "D2"
+            }
+          },
+          {
+            "string": 5,
+            "openPitch": {
+              "pitchClass": 9,
+              "octave": 2,
+              "midi": 45,
+              "noteName": "A",
+              "label": "A2"
+            }
+          },
+          {
+            "string": 4,
+            "openPitch": {
+              "pitchClass": 2,
+              "octave": 3,
+              "midi": 50,
+              "noteName": "D",
+              "label": "D3"
+            }
+          },
+          {
+            "string": 3,
+            "openPitch": {
+              "pitchClass": 7,
+              "octave": 3,
+              "midi": 55,
+              "noteName": "G",
+              "label": "G3"
+            }
+          },
+          {
+            "string": 2,
+            "openPitch": {
+              "pitchClass": 11,
+              "octave": 3,
+              "midi": 59,
+              "noteName": "B",
+              "label": "B3"
+            }
+          },
+          {
+            "string": 1,
+            "openPitch": {
+              "pitchClass": 4,
+              "octave": 4,
+              "midi": 64,
+              "noteName": "E",
+              "label": "E4"
+            }
+          }
+        ],
+        "frets": 22,
+        "canCapo": true,
+        "canRetune": true
+      },
+      "context": {
+        "canCapo": true,
+        "capoFret": 2,
+        "sourceKey": {
+          "pitchClass": 1,
+          "mode": "major"
+        },
+        "transposeSemitones": 0,
+        "useCapoShapes": true
+      },
+      "options": {
+        "mode": "flats"
+      }
+    },
+    "dictionaryGuitar": {
+      "input": {
+        "root": "C",
+        "rootPitchClass": 0,
+        "quality": "major",
+        "bass": null,
+        "bassPitchClass": null,
+        "label": "C",
+        "tones": [
+          {
+            "degree": "1",
+            "interval": 0,
+            "pitchClass": 0,
+            "noteName": "C"
+          },
+          {
+            "degree": "3",
+            "interval": 4,
+            "pitchClass": 4,
+            "noteName": "E"
+          },
+          {
+            "degree": "5",
+            "interval": 7,
+            "pitchClass": 7,
+            "noteName": "G"
+          }
+        ],
+        "notes": [
+          "C",
+          "E",
+          "G"
+        ],
+        "bassNoteName": null
+      },
+      "profile": {
+        "id": "guitar",
+        "label": "Guitar",
+        "tuning": [
+          {
+            "string": 6,
+            "openPitch": {
+              "pitchClass": 4,
+              "octave": 2,
+              "midi": 40,
+              "noteName": "E",
+              "label": "E2"
+            }
+          },
+          {
+            "string": 5,
+            "openPitch": {
+              "pitchClass": 9,
+              "octave": 2,
+              "midi": 45,
+              "noteName": "A",
+              "label": "A2"
+            }
+          },
+          {
+            "string": 4,
+            "openPitch": {
+              "pitchClass": 2,
+              "octave": 3,
+              "midi": 50,
+              "noteName": "D",
+              "label": "D3"
+            }
+          },
+          {
+            "string": 3,
+            "openPitch": {
+              "pitchClass": 7,
+              "octave": 3,
+              "midi": 55,
+              "noteName": "G",
+              "label": "G3"
+            }
+          },
+          {
+            "string": 2,
+            "openPitch": {
+              "pitchClass": 11,
+              "octave": 3,
+              "midi": 59,
+              "noteName": "B",
+              "label": "B3"
+            }
+          },
+          {
+            "string": 1,
+            "openPitch": {
+              "pitchClass": 4,
+              "octave": 4,
+              "midi": 64,
+              "noteName": "E",
+              "label": "E4"
+            }
+          }
+        ],
+        "frets": 22,
+        "canCapo": true,
+        "canRetune": true
+      },
+      "context": {
+        "canCapo": true,
+        "capoFret": 0,
+        "sourceKey": null,
+        "transposeSemitones": 0,
+        "useCapoShapes": false
+      },
+      "options": {}
+    },
+    "dictionaryKeyboard": {
+      "input": {
+        "root": "C",
+        "rootPitchClass": 0,
+        "quality": "major",
+        "bass": null,
+        "bassPitchClass": null,
+        "label": "C",
+        "tones": [
+          {
+            "degree": "1",
+            "interval": 0,
+            "pitchClass": 0,
+            "noteName": "C"
+          },
+          {
+            "degree": "3",
+            "interval": 4,
+            "pitchClass": 4,
+            "noteName": "E"
+          },
+          {
+            "degree": "5",
+            "interval": 7,
+            "pitchClass": 7,
+            "noteName": "G"
+          }
+        ],
+        "notes": [
+          "C",
+          "E",
+          "G"
+        ],
+        "bassNoteName": null
+      },
+      "context": null,
+      "options": {}
+    }
+  },
+  "publicResults": [
+    {
+      "name": "guitar C",
+      "request": {
+        "operation": "guitar",
+        "input": "C"
+      },
+      "count": 8,
+      "sha256": "605f3f90909c4d43514990bcce6026d940056a9abbd67bc223490237586e174b"
+    },
+    {
+      "name": "guitar Dm",
+      "request": {
+        "operation": "guitar",
+        "input": "Dm"
+      },
+      "count": 8,
+      "sha256": "42d1f6bf403173ef7dc93769712b8c462d07abd0629c8047397ba17cf26736e4"
+    },
+    {
+      "name": "guitar Em",
+      "request": {
+        "operation": "guitar",
+        "input": "Em"
+      },
+      "count": 8,
+      "sha256": "529f84c795a1ee9ae46fbb7d3bc1e7f260c7506b6d26c18c929d6fc326ccae4d"
+    },
+    {
+      "name": "guitar F",
+      "request": {
+        "operation": "guitar",
+        "input": "F"
+      },
+      "count": 8,
+      "sha256": "7b7d92e1136d719f70e86f68d69d82f27a757de639c263a4e927f414ff726f74"
+    },
+    {
+      "name": "guitar G",
+      "request": {
+        "operation": "guitar",
+        "input": "G"
+      },
+      "count": 8,
+      "sha256": "6c36fffaecc949489fecdba46be52cf6d7822ff3bb391de62d259d31765dfadc"
+    },
+    {
+      "name": "guitar Am",
+      "request": {
+        "operation": "guitar",
+        "input": "Am"
+      },
+      "count": 8,
+      "sha256": "d7e214e2c7832da75f024bcf31a9cf5cac67f41883899aa42fd7d918717a5cf5"
+    },
+    {
+      "name": "guitar Bdim",
+      "request": {
+        "operation": "guitar",
+        "input": "Bdim"
+      },
+      "count": 8,
+      "sha256": "52c586eb1f9e24c0e3c067c8a79c9387488e1fe1ef1dbd2d0daf7c9f48843ed0"
+    },
+    {
+      "name": "guitar C7",
+      "request": {
+        "operation": "guitar",
+        "input": "C7"
+      },
+      "count": 8,
+      "sha256": "d8c15d0aeeaf65f4842c3dbcef61c840d40967eb83e86e7c931a6ed441cb2959"
+    },
+    {
+      "name": "guitar Dbmaj7",
+      "request": {
+        "operation": "guitar",
+        "input": "Dbmaj7"
+      },
+      "count": 8,
+      "sha256": "5a0d9e4cc7c8adcb969e519264c97a56743a661010e3d5b17d4bb22e7c20be74"
+    },
+    {
+      "name": "guitar C#m7",
+      "request": {
+        "operation": "guitar",
+        "input": "C#m7"
+      },
+      "count": 8,
+      "sha256": "4f991db9da6164deac75987c3ba7e705a58200c8353053d590a61ad91533f036"
+    },
+    {
+      "name": "guitar Dsus2",
+      "request": {
+        "operation": "guitar",
+        "input": "Dsus2"
+      },
+      "count": 8,
+      "sha256": "46fbe1c4dff8ca4a385dc515df8ef9948142afd0464b1aace6c4cacb999c56a4"
+    },
+    {
+      "name": "guitar Dsus4",
+      "request": {
+        "operation": "guitar",
+        "input": "Dsus4"
+      },
+      "count": 8,
+      "sha256": "7f7e10bbe95adeae9e5f77b68e1cfc1d2a6d8a504498983d6f9d04a353be7d54"
+    },
+    {
+      "name": "guitar Bdim7",
+      "request": {
+        "operation": "guitar",
+        "input": "Bdim7"
+      },
+      "count": 8,
+      "sha256": "2ae298cd9881ccac58cf57b48d2ddf1cb67150fc8ff67b0413cdc6fbbc40792c"
+    },
+    {
+      "name": "guitar Caug",
+      "request": {
+        "operation": "guitar",
+        "input": "Caug"
+      },
+      "count": 8,
+      "sha256": "6e9b794dcf900d6090fd9f6f5badf6170849710f279cca1d41a69d89ae99b505"
+    },
+    {
+      "name": "guitar Chdim7",
+      "request": {
+        "operation": "guitar",
+        "input": "Chdim7"
+      },
+      "count": 8,
+      "sha256": "75c0bf4566850fcbe3c0183f41de12e2511be0667f63bf1342a9e1cbed9e2dc3"
+    },
+    {
+      "name": "guitar C7b5",
+      "request": {
+        "operation": "guitar",
+        "input": "C7b5"
+      },
+      "count": 8,
+      "sha256": "fcbe335929175719524baafd063082cbe6594e3d288f684a212cc0cc8550cf5b"
+    },
+    {
+      "name": "drop D capo slash C7/E",
+      "request": {
+        "input": "C7/E"
+      },
+      "count": 8,
+      "sha256": "4514553b049ba7b015fe58a71341d829688a1b6981ae4f3f9f0e66e077357887",
+      "defaults": "dropDWithCapo"
+    },
+    {
+      "name": "drop D capo slash C7/Bb",
+      "request": {
+        "input": "C7/Bb"
+      },
+      "count": 8,
+      "sha256": "7c68cb37f01b47613e00607f87164cd5d4e44b0f024e0c040e8de904d59384e4",
+      "defaults": "dropDWithCapo"
+    },
+    {
+      "name": "drop D capo slash C7/G",
+      "request": {
+        "input": "C7/G"
+      },
+      "count": 8,
+      "sha256": "f291d5fd82a904e273ba6c82f536e4fcca9118da1376a3d35b6ebfec4900d887",
+      "defaults": "dropDWithCapo"
+    },
+    {
+      "name": "drop D capo slash C7/Db",
+      "request": {
+        "input": "C7/Db"
+      },
+      "count": 8,
+      "sha256": "d5f75890ceba828bc04bd0f00c84c4e63f2f10a3d858db45586af7b6ba39d7c7",
+      "defaults": "dropDWithCapo"
+    },
+    {
+      "name": "guitar C absent",
+      "request": {
+        "operation": "guitar",
+        "preferredVoicingIds": []
+      },
+      "count": 8,
+      "sha256": "605f3f90909c4d43514990bcce6026d940056a9abbd67bc223490237586e174b",
+      "defaults": "dictionaryGuitar"
+    },
+    {
+      "name": "guitar C stale",
+      "request": {
+        "operation": "guitar",
+        "preferredVoicingIds": [
+          "stale-generated-voicing-id"
+        ]
+      },
+      "count": 8,
+      "sha256": "605f3f90909c4d43514990bcce6026d940056a9abbd67bc223490237586e174b",
+      "defaults": "dictionaryGuitar"
+    },
+    {
+      "name": "guitar C saved",
+      "request": {
+        "operation": "guitar",
+        "preferredVoicingIds": [
+          "guitar-1:15-2:17-3:17-4:17-5:15-6:-1-capo-0"
+        ]
+      },
+      "count": 9,
+      "sha256": "4ce0714859d93881c6e1ea514f9aaacd6e224a24fb09d64a9b4a14e2a2029033",
+      "retained": {
+        "id": "guitar-1:15-2:17-3:17-4:17-5:15-6:-1-capo-0",
+        "rank": 27,
+        "label": "C voicing 27"
+      },
+      "defaults": "dictionaryGuitar"
+    },
+    {
+      "name": "piano C absent",
+      "request": {
+        "operation": "piano",
+        "preferredVoicingIds": []
+      },
+      "count": 3,
+      "sha256": "5b23503f4dd17f7d6d934af8f206539f9aa5abfb42ad77837a4bf5bafe020fbf",
+      "defaults": "dictionaryKeyboard"
+    },
+    {
+      "name": "piano C stale",
+      "request": {
+        "operation": "piano",
+        "preferredVoicingIds": [
+          "stale-generated-voicing-id"
+        ]
+      },
+      "count": 3,
+      "sha256": "5b23503f4dd17f7d6d934af8f206539f9aa5abfb42ad77837a4bf5bafe020fbf",
+      "defaults": "dictionaryKeyboard"
+    },
+    {
+      "name": "piano C saved",
+      "request": {
+        "operation": "piano",
+        "preferredVoicingIds": [
+          "piano-c-first-inversion-64-67-72"
+        ]
+      },
+      "count": 4,
+      "sha256": "97ebf9fd2bcc55d07647ad21aae68a493bac5edf809031c6a4a9e6ccc2061c42",
+      "retained": {
+        "id": "piano-c-first-inversion-64-67-72",
+        "rank": 4,
+        "label": "C first inversion"
+      },
+      "defaults": "dictionaryKeyboard"
+    },
+    {
+      "name": "accordion C absent",
+      "request": {
+        "operation": "accordion",
+        "preferredVoicingIds": []
+      },
+      "count": 6,
+      "sha256": "957604362d40bd155217c9681ab586b56d59469607870635733b605387d06369",
+      "defaults": "dictionaryKeyboard"
+    },
+    {
+      "name": "accordion C stale",
+      "request": {
+        "operation": "accordion",
+        "preferredVoicingIds": [
+          "stale-generated-voicing-id"
+        ]
+      },
+      "count": 6,
+      "sha256": "957604362d40bd155217c9681ab586b56d59469607870635733b605387d06369",
+      "defaults": "dictionaryKeyboard"
+    },
+    {
+      "name": "accordion C saved",
+      "request": {
+        "operation": "accordion",
+        "preferredVoicingIds": [
+          "accordion-c-rh-second-inversion-octave-3-79-84-88"
+        ]
+      },
+      "count": 7,
+      "sha256": "bdee7ac774cb81970f429ac47efb0cb43b0cc57bdae990572ad9e32e93205b74",
+      "retained": {
+        "id": "accordion-c-rh-second-inversion-octave-3-79-84-88",
+        "rank": 6,
+        "label": "C 3rd octave second inversion"
+      },
+      "defaults": "dictionaryKeyboard"
+    },
+    {
+      "name": "accordion independent hands C7",
+      "request": {
+        "operation": "accordion",
+        "input": "C7",
+        "context": {
+          "activeKey": {
+            "pitchClass": 1,
+            "mode": "major"
+          },
+          "preferredTrebleRegion": {
+            "centerMidi": 53
+          },
+          "currentChordRoot": 7
+        },
+        "options": {
+          "mode": "flats"
+        }
+      },
+      "count": 6,
+      "sha256": "fa99bd662bcc4871c250ad5112df0bf9364f333233facb262a5425fe13a20417"
+    },
+    {
+      "name": "accordion independent hands C7/E",
+      "request": {
+        "operation": "accordion",
+        "input": "C7/E",
+        "context": {
+          "activeKey": {
+            "pitchClass": 1,
+            "mode": "major"
+          },
+          "preferredTrebleRegion": {
+            "centerMidi": 93
+          },
+          "currentChordRoot": 7
+        },
+        "options": {
+          "mode": "flats"
+        }
+      },
+      "count": 6,
+      "sha256": "6844194a2b3a9792cabcf5847891f5c46e469f6d59f0161b7ac9ada42581dd07"
+    },
+    {
+      "name": "accordion independent hands C7/Bb",
+      "request": {
+        "operation": "accordion",
+        "input": "C7/Bb",
+        "context": {
+          "activeKey": {
+            "pitchClass": 1,
+            "mode": "major"
+          },
+          "preferredTrebleRegion": {
+            "centerMidi": 72
+          },
+          "currentChordRoot": 7
+        },
+        "options": {
+          "mode": "flats"
+        }
+      },
+      "count": 6,
+      "sha256": "d6f8ee01053359f3488792a437cc7c8790e878fbd2ad64279ded05b96bbbab05"
+    },
+    {
+      "name": "accordion independent hands Gmaj7",
+      "request": {
+        "operation": "accordion",
+        "input": "Gmaj7",
+        "context": {
+          "activeKey": {
+            "pitchClass": 1,
+            "mode": "major"
+          },
+          "preferredTrebleRegion": {
+            "centerMidi": 72
+          },
+          "currentChordRoot": 7
+        },
+        "options": {
+          "mode": "flats"
+        }
+      },
+      "count": 6,
+      "sha256": "ff641d01b4c8bc940dcd392284c68f0380b2eb566fe023484305e1f258afb86d"
+    },
+    {
+      "name": "accordion independent hands Cdim",
+      "request": {
+        "operation": "accordion",
+        "input": "Cdim",
+        "context": {
+          "activeKey": {
+            "pitchClass": 1,
+            "mode": "major"
+          },
+          "preferredTrebleRegion": {
+            "centerMidi": 72
+          },
+          "currentChordRoot": 7
+        },
+        "options": {
+          "mode": "flats"
+        }
+      },
+      "count": 6,
+      "sha256": "4fc6be14b9ef3e7ec795d462b164eb903ff3cbb3d12aee65af950df2180c86bf"
+    },
+    {
+      "name": "accordion independent hands Bdim7",
+      "request": {
+        "operation": "accordion",
+        "input": "Bdim7",
+        "context": {
+          "activeKey": {
+            "pitchClass": 1,
+            "mode": "major"
+          },
+          "preferredTrebleRegion": {
+            "centerMidi": 72
+          },
+          "currentChordRoot": 7
+        },
+        "options": {
+          "mode": "flats"
+        }
+      },
+      "count": 6,
+      "sha256": "d4fefe443a2257e5e3c49b43a0de3534a41fd358c621f982d8dbabeffaea0bd3"
+    },
+    {
+      "name": "accordion independent hands Caug",
+      "request": {
+        "operation": "accordion",
+        "input": "Caug",
+        "context": {
+          "activeKey": {
+            "pitchClass": 1,
+            "mode": "major"
+          },
+          "preferredTrebleRegion": {
+            "centerMidi": 72
+          },
+          "currentChordRoot": 7
+        },
+        "options": {
+          "mode": "flats"
+        }
+      },
+      "count": 6,
+      "sha256": "d75460f929945be631a2d37da6c6099cd318d433c6e790c002275950316ab500"
+    },
+    {
+      "name": "accordion independent hands Db7",
+      "request": {
+        "operation": "accordion",
+        "input": "Db7",
+        "context": {
+          "activeKey": {
+            "pitchClass": 1,
+            "mode": "major"
+          },
+          "preferredTrebleRegion": {
+            "centerMidi": 72
+          },
+          "currentChordRoot": 7
+        },
+        "options": {
+          "mode": "flats"
+        }
+      },
+      "count": 6,
+      "sha256": "b20b1a27cc5a6dd0568d69621cfb6064b9595e3a48a55640bac604e8aa820e76"
+    },
+    {
+      "name": "piano register C7/E",
+      "request": {
+        "operation": "piano",
+        "input": "C7/E",
+        "context": {
+          "preferredTrebleRegion": {
+            "centerMidi": 21
+          }
+        },
+        "options": {
+          "mode": "flats"
+        }
+      },
+      "count": 1,
+      "sha256": "60b0af7c3bb014dc3e2b2ba61f30119bbc1fac13a10fabdf988fff188e58c490"
+    },
+    {
+      "name": "piano register C7/Bb",
+      "request": {
+        "operation": "piano",
+        "input": "C7/Bb",
+        "context": {
+          "preferredTrebleRegion": {
+            "centerMidi": 108
+          }
+        },
+        "options": {
+          "mode": "flats"
+        }
+      },
+      "count": 1,
+      "sha256": "505122850f7789774bddd322f8ed8a978ce8f451f6c9c34de0f73f7a02f85935"
+    },
+    {
+      "name": "piano register Cb",
+      "request": {
+        "operation": "piano",
+        "input": "Cb",
+        "context": {
+          "preferredTrebleRegion": {
+            "centerMidi": 72
+          }
+        },
+        "options": {
+          "mode": "flats"
+        }
+      },
+      "count": 3,
+      "sha256": "20f9f85dea44801a6515fb349b1b7ab4fd57852909daa910a9ac4e3588320dbf"
+    },
+    {
+      "name": "piano register Bdim7",
+      "request": {
+        "operation": "piano",
+        "input": "Bdim7",
+        "context": {
+          "preferredTrebleRegion": {
+            "centerMidi": 53
+          }
+        },
+        "options": {
+          "mode": "flats"
+        }
+      },
+      "count": 4,
+      "sha256": "74ff4461b7355bbc959a321ff3ad42e874c18d2f7bb3a9e706a046b53603143c"
+    },
+    {
+      "name": "piano register Db",
+      "request": {
+        "operation": "piano",
+        "input": "Db",
+        "context": {
+          "preferredTrebleRegion": {
+            "centerMidi": 60
+          }
+        },
+        "options": {
+          "mode": "flats"
+        }
+      },
+      "count": 3,
+      "sha256": "1d94d159dd070457c5f4c0b24fc92a21dec6aeb8a86b0af475aea72edb54bfd2"
+    },
+    {
+      "name": "guitar two saved C7 grips",
+      "request": {
+        "operation": "guitar",
+        "input": "C7",
+        "preferredVoicingIds": [
+          "guitar-1:3-2:1-3:3-4:2-5:1-6:3-capo-0",
+          "guitar-1:0-2:1-3:3-4:2-5:1-6:3-capo-0"
+        ]
+      },
+      "count": 10,
+      "sha256": "c4127b99ffd55fa9c39d47d3c54f12d849cd89f7976b51f8128e64909c66ba30"
+    }
+  ]
+}

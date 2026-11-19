@@ -1,13 +1,34 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { documentExamples } from "./document-examples.mjs";
 
-// Named musical examples and constraints, never generated from implementation output.
+// Hash the complete value, ignoring object key order between runtime drivers.
+export function voicingDigest(value) {
+  const canonical = JSON.stringify(value, (_key, entry) => {
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return entry;
+    return Object.fromEntries(Object.keys(entry).sort().map(key => [key, entry[key]]));
+  });
+  return createHash("sha256").update(canonical).digest("hex");
+}
+
+// Named musical constraints and full ordered results frozen from the pre-optimization core.
 export function verifyPolicyParity(binary = fileURLToPath(new URL("../build/music_core_policy_contract", import.meta.url))) {
   const cases = [];
   const add = (id, request, check) => cases.push({ id, request, check });
+  const order = JSON.parse(readFileSync(new URL("fixtures/voicing-order-v1.json", import.meta.url), "utf8"));
+  for (const { name, defaults, request, count, sha256, retained } of order.publicResults) {
+    add(`frozen voicing results ${name}`, { ...order.requestDefaults[defaults], ...request }, value => {
+      assert.equal(value.length, count);
+      if (retained) {
+        const { id, rank, label } = value.at(-1);
+        assert.deepEqual({ id, rank, label }, retained);
+      }
+      assert.equal(voicingDigest(value), sha256, `ordered results changed: ${value.map(voicing => voicing.id).join(", ")}`);
+    });
+  }
   for (const [input, expected] of [["CM7", "maj7"], ["C7M", "maj7"], ["Cm7", "m7"], ["C:maj", "major"], ["C:min", "minor"], ["C:min7", "m7"], ["C:maj6", "maj6"], ["C:min6", "min6"], ["C:minmaj7", "minmaj7"]]) {
     for (const operation of ["parseChordLabel", "backendParseChord", "nativeParseChord"])
       add(`${operation} ${input}`, { operation, input }, value => {

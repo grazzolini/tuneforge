@@ -75,7 +75,9 @@ An explicit producer acquires verified sources into ignored `vendor/gingo-src`; 
 is tracked. CMake verifies the prepared tree and applies the owned search-policy patch in its build directory.
 Gingo retains enumeration, finger-count pruning, and deduplication. TuneForge supplies required
 pitch classes, a non-root-bass penalty of 24 (upstream default 20), and a numeric fret-signature
-comparison for score ties. Only the natural fifth of `7`, `maj7`, and `m7` is optional; any explicit
+comparison for score ties. Policy searches compute each candidate's score once and compare the
+stored scores during sorting. Coverage checks represent the twelve pitch classes in a bit mask.
+Only the natural fifth of `7`, `maj7`, and `m7` is optional. Any explicit
 slash bass remains required. Formal chord intervals and allowed sounding pitches stay unchanged.
 This search does not promise exhaustive difficult-shape coverage.
 Generated guitar positions carry stable position identities; an unavailable saved ID falls back
@@ -105,6 +107,27 @@ seventh and diminished-seventh omissions remain standard, while sounding tones, 
 left-hand coverage, right-hand notes, and combined coverage remain separate. Bass-only fallback
 requests treble completion; it never fabricates an unsupported button or declares exhaustive
 impossibility. Left-hand selection does not redefine the right-hand inversion.
+
+### Chord Dictionary benchmarks
+
+Run the Node benchmark against the WASM module and sibling binary from a verified Release build.
+The default run measures 50 warm batches per case and samples cold openings in 15 fresh
+processes for each saved-preference case. It reports initialization, call duration, and peak RSS.
+The timed batches cover the ten voicing calls. The harness prepares the spellings and request
+fixtures before timing begins.
+
+```sh
+node scripts/benchmark-chord-dictionary.mjs --wasm /path/to/music-core.wasm --variant baseline
+node scripts/benchmark-chord-dictionary-webview.mjs --dist /path/to/desktop-dist --variant baseline
+```
+
+The macOS benchmark serves the bundle from `pnpm --filter @tuneforge/desktop build` to an isolated
+WKWebView with an ephemeral data store and synthetic preferences. It measures opening the Dictionary
+tab through confirmed DOM readiness and two animation frames. It reports frame cadence separately
+because WebKit's frame scheduling can dominate the second measurement. `toolsReadyMs` measures
+the interval from WKWebView navigation to Tools readiness. `nativeSetupMs` records runner setup before
+the first navigation request. Compare baseline and candidate runs on the same machine and keep the
+fixture window visible throughout each run.
 
 Python imports the compiled `tuneforge_music_core._native` extension from the standalone
 `tuneforge-music-core` distribution. Rust uses the same C ABI. The frontend loads the

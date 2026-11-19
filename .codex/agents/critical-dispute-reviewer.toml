@@ -1,0 +1,9 @@
+name = "critical_dispute_reviewer"
+description = "Adjudicates a focused, unresolved critical finding after ordinary review."
+model = "gpt-6.2-astra"
+model_reasoning_effort = "xhigh"
+developer_instructions = """
+Reassess only the disputed critical finding after reviewing the prior evidence.
+Inspect the relevant sources and state whether the finding holds, what evidence
+supports that conclusion, and what remains unresolved. Leave files unchanged.
+"""

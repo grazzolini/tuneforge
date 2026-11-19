@@ -15,6 +15,7 @@ jobs:
     outputs:
       backend_static: ${{ steps.scope.outputs.backend_static == 'true' || steps.image.outputs.selection != 'promoted' }}
       backend_ffmpeg: ${{ steps.scope.outputs.backend_ffmpeg == 'true' || steps.image.outputs.selection != 'promoted' }}
+      codex_only: ${{ steps.scope.outputs.codex_only }}
       desktop: ${{ steps.scope.outputs.desktop }}
       desktop_tauri: ${{ steps.scope.outputs.desktop == 'true' || steps.image.outputs.selection != 'promoted' }}
       release_media: ${{ steps.scope.outputs.release_media }}
@@ -39,11 +40,13 @@ jobs:
 
           backend_static=false
           backend_ffmpeg=false
+          codex_only=false
           desktop=false
           release_media=false
           site=false
           full_gate=false
           changed_files="${RUNNER_TEMP}/changed-files.txt"
+          pr_changed_files="${RUNNER_TEMP}/pr-changed-files.txt"
 
           if [[ "${{ github.event_name }}" != "pull_request" ]]; then
             full_gate=true
@@ -55,6 +58,15 @@ jobs:
               echo "Could not compute changed files; running the full gate." >&2
               full_gate=true
               : > "${changed_files}"
+            elif git diff --merge-base --name-only --no-renames -z "${base_sha}" "${head_sha}" > "${pr_changed_files}" &&
+              [[ -s "${pr_changed_files}" ]]; then
+              codex_only=true
+              while IFS= read -r -d '' path; do
+                if [[ "${path}" != .codex/* ]]; then
+                  codex_only=false
+                  break
+                fi
+              done < "${pr_changed_files}"
             fi
           fi
 
@@ -108,7 +120,7 @@ jobs:
                 .github/ci/*|.github/workflows/ci-image.yml|.github/workflows/ci.yml|packaging/soxr/*)
                   full_gate=true
                   ;;
-                .agents/*|.codex/environments/*|docs/*|CHANGELOG.md|README.md|CONTRIBUTING.md|CODE_OF_CONDUCT.md|LICENSE|THIRD_PARTY_NOTICES.md|SECURITY.md|AGENTS.md|.gitignore|packaging/flatpak/*|.github/ISSUE_TEMPLATE/*|.github/PULL_REQUEST_TEMPLATE.md)
+                .agents/*|.codex/*|docs/*|CHANGELOG.md|README.md|CONTRIBUTING.md|CODE_OF_CONDUCT.md|LICENSE|THIRD_PARTY_NOTICES.md|SECURITY.md|AGENTS.md|.gitignore|packaging/flatpak/*|.github/ISSUE_TEMPLATE/*|.github/PULL_REQUEST_TEMPLATE.md)
                   ;;
                 *)
                   full_gate=true
@@ -145,6 +157,7 @@ jobs:
           {
             echo "backend_static=${backend_static}"
             echo "backend_ffmpeg=${backend_ffmpeg}"
+            echo "codex_only=${codex_only}"
             echo "desktop=${desktop}"
             echo "release_media=${release_media}"
             echo "site=${site}"
@@ -155,6 +168,7 @@ jobs:
             echo
             echo "- Backend static checks: ${backend_static}"
             echo "- Backend FFmpeg tests: ${backend_ffmpeg}"
+            echo "- Codex-only pull request: ${codex_only}"
             echo "- Desktop checks: ${desktop}"
             echo "- Site checks: ${site}"
             if [[ -s "${changed_files}" ]]; then
@@ -333,6 +347,8 @@ jobs:
         run: echo "$PR_TITLE" | pnpm exec commitlint --config commitlint.pr-title.config.cjs
 
   script-tests:
+    needs: ci-scope
+    if: ${{ always() && (needs.ci-scope.result != 'success' || needs.ci-scope.outputs.codex_only != 'true') }}
     runs-on: ubuntu-latest
     steps:
       - name: Check out code
@@ -413,7 +429,7 @@ jobs:
 
   e2e:
     needs: [ci-scope, ci-image-candidate, music-core-wasm]
-    if: ${{ always() }}
+    if: ${{ always() && (needs.ci-scope.result != 'success' || needs.ci-scope.outputs.codex_only != 'true' || needs.ci-scope.outputs.image_selection != 'promoted' || needs.ci-image-candidate.result != 'skipped' || needs.music-core-wasm.result != 'success' || needs.music-core-wasm.outputs.artifact_id == '') }}
     runs-on: ubuntu-24.04
     defaults:
       run:

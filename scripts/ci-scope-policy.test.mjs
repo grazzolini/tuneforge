@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 const workflow = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
@@ -102,7 +105,7 @@ test("release-media CI scope captures desktop-affecting changes without widening
   assert.doesNotMatch(siteJob, /capture-release-media\.mjs --run.*--(?:allow-partial|no-video)/);
 });
 
-test("third-party notice changes remain documentation-only CI scope", () => {
+test(".codex changes and third-party notices remain documentation-only CI scope", () => {
   const imageInputs = caseArm(
     String.raw`\.github/ci/\*\|\.github/workflows/ci-image\.yml\|\.github/workflows/ci\.yml\|packaging/soxr/\*\)`,
   );
@@ -110,14 +113,81 @@ test("third-party notice changes remain documentation-only CI scope", () => {
   assert.doesNotMatch(imageInputs, /THIRD_PARTY_NOTICES\.md/);
 
   const documentation = caseArm(
-    String.raw`\.agents/\*\|\.codex/environments/\*\|docs/\*\|CHANGELOG\.md\|README\.md\|CONTRIBUTING\.md\|CODE_OF_CONDUCT\.md\|LICENSE\|THIRD_PARTY_NOTICES\.md\|SECURITY\.md\|AGENTS\.md\|\.gitignore\|packaging/flatpak/\*\|\.github/ISSUE_TEMPLATE/\*\|\.github/PULL_REQUEST_TEMPLATE\.md\)`,
+    String.raw`\.agents/\*\|\.codex/\*\|docs/\*\|CHANGELOG\.md\|README\.md\|CONTRIBUTING\.md\|CODE_OF_CONDUCT\.md\|LICENSE\|THIRD_PARTY_NOTICES\.md\|SECURITY\.md\|AGENTS\.md\|\.gitignore\|packaging/flatpak/\*\|\.github/ISSUE_TEMPLATE/\*\|\.github/PULL_REQUEST_TEMPLATE\.md\)`,
   );
   assert.doesNotMatch(
     documentation,
-    /full_gate=true|backend_static=true|desktop=true|site=true|release_media=true/,
+    /full_gate=true|backend_static=true|backend_ffmpeg=true|desktop=true|site=true|release_media=true/,
   );
 });
 
+
+test("only nonempty .codex pull request diffs exempt script tests", (context) => {
+  const scope = workflow.slice(
+    workflow.indexOf("      - name: Determine CI scope\n"),
+    workflow.indexOf("      - name: Select whole CI image recipe\n"),
+  );
+  const shell = scope.split("        run: |\n")[1].replace(/^ {10}/gm, "");
+  assert.match(workflow, /codex_only: \$\{\{ steps\.scope\.outputs\.codex_only \}\}/);
+  assert.match(workflow, /  script-tests:\n    needs: ci-scope\n    if: \$\{\{ always\(\) && \(needs\.ci-scope\.result != 'success' \|\| needs\.ci-scope\.outputs\.codex_only != 'true'\) \}\}/);
+
+  const directory = mkdtempSync(join(tmpdir(), "tuneforge-ci-scope-"));
+  context.after(() => rmSync(directory, { recursive: true, force: true }));
+  const output = join(directory, "output");
+  const env = {
+    ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("GIT_"))),
+    GIT_AUTHOR_NAME: "CI scope fixture",
+    GIT_AUTHOR_EMAIL: "ci-scope@example.invalid",
+    GIT_COMMITTER_NAME: "CI scope fixture",
+    GIT_COMMITTER_EMAIL: "ci-scope@example.invalid",
+    RUNNER_TEMP: directory,
+    GITHUB_OUTPUT: output,
+    GITHUB_STEP_SUMMARY: "/dev/null",
+  };
+  const git = (args, input) => execFileSync("git", args, { cwd: directory, env, input, encoding: "utf8" }).trim();
+  git(["init", "--quiet"]);
+
+  function commit(files, parent) {
+    git(["read-tree", "--empty"]);
+    for (const [file, contents] of Object.entries(files)) {
+      const blob = git(["hash-object", "-w", "--stdin"], contents);
+      git(["update-index", "--add", "--cacheinfo", "100644," + blob + "," + file]);
+    }
+    return git(["-c", "commit.gpgsign=false", "commit-tree", git(["write-tree"]),
+      ...(parent ? ["-p", parent] : []), "-m", "CI scope fixture"]);
+  }
+
+  function check(label, base, head, codexOnly, { event = "pull_request", desktop } = {}) {
+    const script = shell.replaceAll("${{ github.event_name }}", event)
+      .replaceAll("${{ github.event.pull_request.base.sha }}", base)
+      .replaceAll("${{ github.event.pull_request.head.sha }}", head);
+    rmSync(output, { force: true });
+    execFileSync("bash", ["-c", script], { cwd: directory, env, stdio: "pipe" });
+    const flags = Object.fromEntries(readFileSync(output, "utf8").trim().split("\n").map((line) => line.split("=")));
+    assert.equal(flags.codex_only, String(codexOnly), label);
+    if (desktop !== undefined) assert.equal(flags.desktop, String(desktop), label);
+  }
+
+  const commonFiles = { ".codex/config.toml": "original", "apps/desktop/example.ts": "original desktop" };
+  const codexFiles = { ...commonFiles, ".codex/config.toml": "updated" };
+  const common = commit(commonFiles);
+  const codexHead = commit(codexFiles, common);
+  const main = commit({ ...commonFiles, "apps/desktop/example.ts": "updated desktop" }, common);
+  const mixedHead = commit({ ...codexFiles, "apps/desktop/example.ts": "updated desktop" }, common);
+
+  check("only main changed outside .codex", main, codexHead, true, { desktop: true });
+  check("main and the PR made the same outside edit", main, mixedHead, false, { desktop: false });
+  check("nested path with newline", common, commit({ ...codexFiles, ".codex/agents/role\nsettings.toml": "new" }, common), true);
+  check("other documentation", common, commit({ ...commonFiles, ".agents/roles.toml": "new", "docs/guide.md": "new" }, common), false);
+  check("mixed special scripts", common, commit({ ...codexFiles, "scripts/desktop-e2e.test.mjs": "new" }, common), false);
+  check("rename into .codex", common, commit({ ".codex/config.toml": "original", ".codex/example.ts": "original desktop" }, common), false);
+  check("rename out of .codex", common, commit({ "config.toml": "original", "apps/desktop/example.ts": "original desktop" }, common), false);
+  check("similar prefix", common, commit({ ...commonFiles, ".codex-other/config.toml": "new" }, common), false);
+  check("empty diff", common, common, false);
+  check("missing base revision", "missing", codexHead, false);
+  check("unrelated histories", common, commit(codexFiles), false);
+  check("push", common, codexHead, false, { event: "push" });
+});
 
 test("producer inputs retain real gates and promotion gaps force all image consumer gates", () => {
   assert.match(caseArm(String.raw`scripts/\*\)`), /full_gate=true/);

@@ -96,6 +96,15 @@ manifest digest and Docker config image ID retain their distinct meanings.
   selected-image consumers verify its integrity and notices. CI script-tests check generated
   contracts and metadata. Native ABI, Python 3.14/3.11 wheel and Rust transport checks remain
   local validation in this producer change. Existing applications do not consume it yet.
+- Cross-runtime fixture pilot: a separate layer at `/opt/tuneforge-ci/cross-runtime`
+  contains the checksum-pinned CPython 3.14.7 archive's runtime, a wheel-only test
+  environment, and the native music-core Python binding built from this recipe's
+  current source snapshot. The package subset comes from
+  `apps/backend/uv.lock`; CI checks the projection whenever script tests run.
+  The layer keeps distribution license files, resolved package versions, upstream
+  Python source pins, the verified music-core wheel manifest and notices, and a
+  payload checksum manifest. The environment excludes inference runtimes, model
+  weights, installer caches, and the backend checkout.
 - CI utilities: only tools needed by setup actions and native builds. No
   repository checkout, dependency directory, model, user data, or credential is
   included; SoXR corresponding sources are the documented exception.
@@ -160,6 +169,30 @@ Docker config image ID and platform. Consumers download the exact artifact ID fr
 the same run, verify metadata and bytes, and bind Docker's loaded config ID to that
 metadata. A config image ID is distinct from the registry manifest digest. Missing
 or expired rerun artifacts, selector failures and identity failures fail closed.
+
+The cross-runtime job runs alongside the ordinary backend and Tauri jobs when
+CI selects a candidate. It restores the same image-keyed Cargo cache as
+`desktop_tauri`, which remains the only writer. Both Rust jobs disable uv
+dependency caching. The pilot leaves the promoted digest unchanged. Routine
+scope-based runs require trusted main publication, verified digest promotion,
+and explicit activation in the promotion PR.
+
+For a lock change, regenerate the committed projection with the pinned uv
+0.13.6 and review the changed requirements and wheel hashes:
+
+```sh
+uv export --offline --locked --project apps/backend --no-header --no-annotate \
+  --only-group cross-runtime > .github/ci/cross-runtime-requirements.txt
+```
+
+Compare the shared image with a separately transferred payload on the same
+Linux AMD64 engine using `bash scripts/qualify-ci-cross-runtime.sh`.
+It builds `shared-final` and its payload-free `shared-base`, compares gzip
+archive sizes and local build/load times, and validates and times a separate
+payload archive mounted into `shared-base`. These are Docker-archive and local
+setup measurements. For a promotion decision, measure real candidate artifact
+transfer separately from registry layer bytes and pull, and compare hosted
+job wall times, Cargo cache hit/miss, and restore time.
 
 All three consumers run on the host with the same
 [Docker helper](../../scripts/ci-image-run.sh) as their absolute custom shell.

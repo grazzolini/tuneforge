@@ -8,8 +8,10 @@ on:
       - .github/ci/Dockerfile
       - .github/ci/Dockerfile.dockerignore
       - .github/ci/README.md
+      - .github/ci/cross-runtime-requirements.txt
       - .github/ci/image-inputs.json
       - .github/workflows/ci-image.yml
+      - .python-version
       - packages/music-core/**
       - packaging/soxr/patches/android-unversioned-soname.patch
       - packaging/soxr/sources.lock.json
@@ -90,7 +92,7 @@ jobs:
             exit 1
           fi
 
-          base_images="$(sed -n 's/^FROM \([^ ]*\).*$/\1/p' \
+          base_images="$(sed -n 's/^FROM \(ubuntu:[^ ]*@sha256:[0-9a-f]\{64\}\).*$/\1/p' \
             .github/ci/Dockerfile | LC_ALL=C sort -u)"
           if [[ "$(wc -l <<< "${base_images}")" -ne 1 ]]; then
             echo "CI image stages must use one exact base image reference." >&2
@@ -130,6 +132,7 @@ jobs:
             echo "- SoXR build evidence: \`/opt/tuneforge-ci/soxr/{build-tools.txt,build-inputs.sha256,payload.sha256}\`"
             echo "- Music core WASM, manifest, notices and pins: \`/opt/tuneforge-ci/music-core\`"
             echo "- Music core evidence: \`/opt/tuneforge-ci/music-core/{payload.sha256,build-tools.txt}\`"
+            echo "- Cross-runtime Python payload and evidence: \`/opt/tuneforge-ci/cross-runtime\`"
             echo "- BuildKit SBOM: attached by the successful build"
             echo "- BuildKit provenance: attached with \`mode=max\`"
             echo "- Image inventory: \`/usr/share/tuneforge-ci/packages.txt\`"

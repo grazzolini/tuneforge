@@ -51,6 +51,32 @@ if [[ ! -f "${music_root}/payload.sha256" ]] ||
 fi
 node "${GITHUB_WORKSPACE}/scripts/ci-music-core.mjs" verify "${music_root}"
 
+if [[ "$GITHUB_JOB" = cross_runtime_integration ]]; then
+  runtime=/opt/tuneforge-ci/cross-runtime
+  if [[ ! -f "$runtime/payload.sha256" ]] ||
+    ! (cd "$runtime" && sha256sum --check --strict --status payload.sha256) ||
+    ! cmp -s "$runtime/requirements.txt" "$GITHUB_WORKSPACE/.github/ci/cross-runtime-requirements.txt"; then
+    echo "CI image cross-runtime Python payload is missing, corrupt, or stale." >&2
+    exit 1
+  fi
+  (
+    cd "$GITHUB_WORKSPACE"
+    node --input-type=module - "$runtime" "$music_root" <<'JS'
+import { readFileSync } from "node:fs";
+import { verifyManifestMetadata } from "./packages/music-core/tools/build.mjs";
+const [runtime, music] = process.argv.slice(2);
+const python = JSON.parse(readFileSync(runtime + "/music-core.json"));
+const wasm = JSON.parse(readFileSync(music + "/wasm/manifest.json"));
+verifyManifestMetadata(python, "python");
+if (python.sourceFingerprint !== wasm.sourceFingerprint ||
+    python.pythonVersion !== readFileSync(".python-version", "utf8").trim()) {
+  throw new Error("CI image Python binding source or interpreter does not match the selected checkout");
+}
+JS
+  )
+  printf -- '- Cross-runtime Python: %s (verified dependencies and native binding)\n' "$runtime" >> "$GITHUB_STEP_SUMMARY"
+fi
+
 if [[ "${CC:-}" != /usr/bin/clang-18 || "${CXX:-}" != /usr/bin/clang++-18 ]]; then
   echo "CI image must select CC=/usr/bin/clang-18 and CXX=/usr/bin/clang++-18; got CC=${CC:-unset} CXX=${CXX:-unset}." >&2
   exit 1

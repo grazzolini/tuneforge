@@ -1,6 +1,6 @@
 {
-  "digest": "sha256:7930a1d55d0376a2578659a20d3974b7a5bd34476dcfb73bf999e25202f437e2",
-  "producerFingerprint": "f1240f42a615c8c655615be4443abca73b8128b6fb3b4642b0551b16c8d1e6c5",
-  "sourceRevision": "076f83679fbf3e0ce488560a9144f260216ff4db",
+  "digest": "sha256:2ab6e2efcde2843426ecdd008b462c4882a398edf5f6694e59db7ccdcad64957",
+  "producerFingerprint": "644cb756571c9b78d1c5053745c3deb4172220fec63b654933bd114b2b0a262c",
+  "sourceRevision": "f03e639cb62c831879f225e7ba5bcd70141da64f",
   "platform": "linux/amd64"
 }

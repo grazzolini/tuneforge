@@ -535,6 +535,8 @@ export function validateCiImagePolicy(root) {
     scopeBlock.includes("run: bash scripts/ci-image-run.sh select") && scopeBlock.includes("run: node scripts/ci-image-impact.mjs --check") &&
     ["backend_static", "backend_ffmpeg", "desktop_tauri", "cross_runtime_integration"].every((name) => scopeBlock.split("\n").some((line) => line.includes(name + ": ") && line.includes("steps.image.outputs.selection != 'promoted'"))),
     "Image selection must compare the full checkout recipe and force consumer gates during bootstrap or a promotion gap");
+  check(scopeBlock.includes("\n      cross_runtime_integration: ${{ steps.scope.outputs.cross_runtime_integration != 'false' || steps.image.outputs.selection != 'promoted' }}\n"),
+    "Cross-runtime integration must use its computed scope output and run on missing scope");
   for (const name of ciImageConsumers) {
     const block = workflowJobBlock(mainWorkflow, name);
     check(block.includes("    runs-on: ubuntu-24.04"), name + " must use ubuntu-24.04");
@@ -546,7 +548,8 @@ export function validateCiImagePolicy(root) {
         "needs.ci-image-candidate.result != 'skipped' || needs.music-core-wasm.result != 'success' || " +
         "needs.music-core-wasm.outputs.artifact_id == '') }}";
     } else if (name === "cross_runtime_integration") {
-      scheduling = "${{ always() && (needs.ci-scope.result != 'success' || needs.ci-scope.outputs.image_selection != 'promoted' || needs.ci-image-candidate.result != 'skipped') }}";
+      scheduling = "${{ always() && (needs.ci-scope.result != 'success' || needs.ci-scope.outputs.cross_runtime_integration != 'false' || " +
+        "needs.ci-scope.outputs.image_selection != 'promoted' || needs.ci-image-candidate.result != 'skipped') }}";
     } else if (name !== "music-core-wasm") {
       scheduling = "${{ always() && (needs.ci-image-candidate.result == 'failure' || needs.ci-image-candidate.result == 'cancelled' || needs.ci-scope.result != 'success' || " +
         (name === "backend" ? "needs.ci-scope.outputs.backend_static == 'true' || needs.ci-scope.outputs.backend_ffmpeg == 'true'" : "needs.ci-scope.outputs.desktop_tauri == 'true'") + ") }}";
@@ -591,12 +594,22 @@ export function validateCiImagePolicy(root) {
     crossRuntimeBlock.match(/^      RUST_VERSION: .*$/m)?.[0] === tauriBlock.match(/^      RUST_VERSION: .*$/m)?.[0] &&
     [tauriBlock, crossRuntimeBlock].every((job) => /uses: astral-sh\/setup-uv@[^\n]+\n        with:\n          enable-cache: false\n/.test(job)),
     "Cross-runtime integration restores the exact Tauri Cargo cache without writing; both Rust jobs disable persistent uv caching");
-  const matrix = crossRuntimeBlock.indexOf("run: node scripts/ci-cross-runtime.mjs --python /opt/tuneforge-ci/cross-runtime/venv/bin/python");
-  const acquisition = crossRuntimeBlock.indexOf("run: node scripts/build-music-core.mjs --fetch-sources");
-  check(acquisition > verifierCallIndexes(crossRuntimeBlock)[0] && matrix > acquisition &&
-    crossRuntimeBlock.includes("if: needs.ci-scope.outputs.image_selection != 'candidate'\n        run: exit 1") &&
-    !/\buv (?:sync|pip)\b/.test(crossRuntimeBlock),
-    "The candidate pilot must require the verified image, native sources, and one launcher without backend setup");
+  const integrationSteps = crossRuntimeBlock.split(/^ {6}- /m).map(step => step.trimEnd());
+  const candidateGuard = integrationSteps.indexOf("name: Reject unexpected candidate result for promoted image\n" +
+    "        shell: bash\n        if: needs.ci-scope.outputs.image_selection == 'promoted' && needs.ci-image-candidate.result != 'skipped'\n" +
+    "        run: exit 1");
+  const requireImage = integrationSteps.indexOf("name: Require selected CI image\n" +
+    "        shell: bash\n        run: bash scripts/ci-image-run.sh require");
+  const verifyImage = integrationSteps.indexOf("name: Verify CI image\n        run: bash scripts/verify-ci-image.sh");
+  const acquisition = integrationSteps.indexOf("name: Acquire verified music-core sources\n" +
+    "        run: node scripts/build-music-core.mjs --fetch-sources");
+  const matrix = integrationSteps.indexOf("name: Test Python producers and native reconciliation\n" +
+    "        run: node scripts/ci-cross-runtime.mjs --python /opt/tuneforge-ci/cross-runtime/venv/bin/python");
+  check(candidateGuard > 0 && requireImage > candidateGuard && verifyImage > requireImage &&
+    acquisition > verifyImage && matrix > acquisition &&
+    crossRuntimeBlock.split("run: node scripts/ci-cross-runtime.mjs").length === 2 &&
+    !/^    continue-on-error:|\buv (?:sync|pip)\b/m.test(crossRuntimeBlock),
+    "Cross-runtime integration must reject unexpected candidate results and require the verified image, native sources, and one launcher without backend setup");
   for (const name of ["backend", "e2e", "desktop_tauri", "desktop_frontend", "cross_runtime_integration"]) {
     const block = workflowJobBlock(mainWorkflow, name);
     const install = lockedCmakeInstallStep(name);

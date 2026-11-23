@@ -61,7 +61,7 @@ RUN set -eux; \
       | xargs -0 sha256sum \
       > payload.sha256
 
-FROM ubuntu:24.04@sha256:1e0a86e57d247923571b75e0aaf48a1449cf8c543d51fb3e07a4a7d7bfa79316 AS music-core-builder
+FROM ubuntu:24.04@sha256:1e0a86e57d247923571b75e0aaf48a1449cf8c543d51fb3e07a4a7d7bfa79316 AS music-core-tools
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
@@ -103,15 +103,50 @@ COPY .github/ci/ .github/ci/
 COPY packages/music-core/ packages/music-core/
 COPY packaging/soxr/ packaging/soxr/
 COPY scripts/ scripts/
+COPY .python-version .python-version
 
 RUN node scripts/ci-image-impact.mjs --manifest > /tmp/producer-inputs.sha256
+
+FROM music-core-tools AS music-core-builder
 RUN node scripts/build-music-core.mjs --target wasm --summary \
     && node packages/music-core/test/artifact-metadata.mjs \
     && node packages/music-core/test/wasm-boundary.mjs \
     && node packages/music-core/test/runtime-parity.mjs \
     && node scripts/ci-music-core.mjs stage /opt/tuneforge-ci/music-core
 
-FROM ubuntu:24.04@sha256:1e0a86e57d247923571b75e0aaf48a1449cf8c543d51fb3e07a4a7d7bfa79316
+FROM music-core-tools AS cross-runtime-builder
+
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends clang-18; \
+    rm -rf /var/lib/apt/lists/*; \
+    runtime=/opt/tuneforge-ci/cross-runtime; \
+    deps=.github/ci/cross-runtime-requirements.txt; \
+    test "$MUSIC_PYTHON_VERSION" = "$(cat .python-version)"; \
+    mkdir -p "$runtime"; \
+    cp -a /opt/music-tools/python "$runtime/python"; \
+    rm -rf "$runtime/python/lib/python3.14/ensurepip"; \
+    uv venv --no-cache --python "$runtime/python/bin/python3.14" "$runtime/venv"; \
+    uv pip install --no-cache --python "$runtime/venv/bin/python" \
+      --require-hashes --only-binary :all: -r "$deps"; \
+    CC=/usr/bin/clang-18 CXX=/usr/bin/clang++-18 node scripts/build-music-core.mjs --target python --python 3.14 --summary; \
+    node scripts/build-music-core.mjs --target python --python 3.14 --check > "$runtime/music-core.json"; \
+    wheel="$(node -p "require('$runtime/music-core.json').files[0].path")"; \
+    uv pip install --offline --no-cache --no-index --no-deps --python "$runtime/venv/bin/python" \
+      "packages/music-core/build/artifacts/python/cp314/$wheel"; \
+    uv pip check --offline --no-cache --python "$runtime/venv/bin/python"; \
+    uv pip freeze --offline --no-cache --python "$runtime/venv/bin/python" --exclude tuneforge-music-core > "$runtime/packages.txt"; \
+    if grep -Ei '^(torch|(openai-)?whisper|demucs[^=]*|onnxruntime[^=]*|beat-this|tensorflow[^=]*|nvidia-[^=]*)==' "$runtime/packages.txt"; then exit 1; fi; \
+    "$runtime/venv/bin/python" -IB -c 'import librosa, soundfile; from tuneforge_music_core import _native'; \
+    printf '%s\n' "$MUSIC_PYTHON_VERSION" "$MUSIC_PYTHON_URL" "$MUSIC_PYTHON_SHA256" > "$runtime/python-source.txt"; \
+    { /usr/bin/clang-18 --version; /usr/bin/clang++-18 --version; uv --version; } > "$runtime/build-tools.txt"; \
+    cp "$deps" "$runtime/requirements.txt"; \
+    cp -a packages/music-core/LICENSE "$runtime/music-core-LICENSE"; \
+    cp -a packages/music-core/licenses "$runtime/music-core-notices"; \
+    cd "$runtime"; \
+    find . -type f ! -name payload.sha256 -print0 | LC_ALL=C sort -z | xargs -0 sha256sum > payload.sha256
+
+FROM ubuntu:24.04@sha256:1e0a86e57d247923571b75e0aaf48a1449cf8c543d51fb3e07a4a7d7bfa79316 AS shared-base
 
 ARG FFMPEG_VERSION=7:6.1.1-3ubuntu5
 ARG FFMPEG_DEB_URL=https://archive.ubuntu.com/ubuntu/pool/universe/f/ffmpeg/ffmpeg_6.1.1-3ubuntu5_amd64.deb
@@ -242,3 +277,6 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*
 
 COPY .github/ci/README.md /usr/share/doc/tuneforge-ci/README.md
+
+FROM shared-base AS shared-final
+COPY --from=cross-runtime-builder /opt/tuneforge-ci/cross-runtime /opt/tuneforge-ci/cross-runtime

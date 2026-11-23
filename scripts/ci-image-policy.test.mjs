@@ -356,7 +356,7 @@ test("candidate consumers reject artifact substitution and verification skip-gre
     ["      - name: Verify CI image\n        run:", "      - name: Verify CI image\n        if: false\n        run:"],
     ["      - name: Require selected CI image\n        shell: bash", "      - name: Require selected CI image\n        continue-on-error: true\n        shell: bash"],
     ["    if: ${{ always() }}", "    if: ${{ false && always() }}"],
-    [" || needs.ci-scope.outputs.codex_only != 'true'", ""],
+    [" || (needs.ci-scope.outputs.codex_only != 'true' && needs.ci-scope.outputs.native_only != 'true')", ""],
     [" || needs.ci-scope.outputs.image_selection != 'promoted' || needs.ci-image-candidate.result != 'skipped'", ""],
     [" || needs.music-core-wasm.result != 'success' || needs.music-core-wasm.outputs.artifact_id", " || needs.music-core-wasm.outputs.artifact_id"],
     [" || needs.music-core-wasm.outputs.artifact_id == ''", ""],
@@ -367,6 +367,24 @@ test("candidate consumers reject artifact substitution and verification skip-gre
 test("whole recipe selection cannot lose promotion-gap gates", () =>
   assertMutationsFail(".github/workflows/ci.yml", [["steps.image.outputs.selection != 'promoted'", "false"],
     ["run: bash scripts/ci-image-run.sh select", "run: echo promoted"]], /force consumer gates/));
+
+test("the cross-runtime pilot rejects writable or different caches and missing validation", () => {
+  assertMutationsFail(".github/workflows/ci.yml", [
+    ["uses: actions/cache/restore@", "uses: actions/cache@"],
+    ["key: cargo-v2-", "key: different-"],
+    ["enable-cache: false", "enable-cache: true"],
+    ["--python /opt/tuneforge-ci/cross-runtime/venv/bin/python", "--python apps/backend/.venv/bin/python"],
+    ["if: needs.ci-scope.outputs.image_selection != 'candidate'\n        run: exit 1", "run: true"],
+  ], /must use one image-keyed|restores the exact Tauri Cargo cache|candidate pilot must require/);
+});
+
+test("the cross-runtime producer rejects unverified dependencies and wheel", () => {
+  assertMutationsFail(".github/ci/Dockerfile", [
+    ["--require-hashes --only-binary :all:", "--only-binary :all:"],
+    ["node scripts/build-music-core.mjs --target python --python 3.14 --check", "true"],
+    ["FROM shared-base AS shared-final", "FROM cross-runtime-builder AS shared-final"],
+  ], /same pinned Ubuntu base|shared fixture layer/);
+});
 
 test("promotion cannot trigger publisher and branch dispatch cannot publish", () =>
   assertMutationsFail(".github/workflows/ci-image.yml", [["      - .github/ci/Dockerfile", "      - .github/ci/**"],

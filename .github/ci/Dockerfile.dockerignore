@@ -3,7 +3,9 @@
 !.github/ci/Dockerfile
 !.github/ci/Dockerfile.dockerignore
 !.github/ci/README.md
+!.github/ci/cross-runtime-requirements.txt
 !.github/ci/image-inputs.json
+!.python-version
 !packages/music-core/CMakeLists.txt
 !packages/music-core/LICENSE
 !packages/music-core/bindings/python/native.cpp

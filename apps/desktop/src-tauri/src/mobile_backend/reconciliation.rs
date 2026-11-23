@@ -1219,20 +1219,27 @@ mod tests {
         verify_native: Option<&Path>,
     ) {
         let backend = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../backend");
-        let mut command = std::process::Command::new("uv");
+        let python = std::env::var_os("TUNEFORGE_CROSS_RUNTIME_PYTHON")
+            .filter(|python| Path::new(python).is_absolute())
+            .expect("run this test with node scripts/ci-cross-runtime.mjs");
+        let home = root.join("home");
+        fs::create_dir_all(&home).unwrap();
+        let mut command = std::process::Command::new(python);
         command
             .current_dir(&backend)
+            .env_clear()
+            .env("PATH", std::env::var_os("PATH").unwrap())
+            .env("HOME", home)
+            .env("TMPDIR", root)
+            .env("HF_HUB_OFFLINE", "1")
+            .env("NUMBA_CACHE_DIR", root.join("numba-cache"))
             .args([
-                "run",
-                "--offline",
-                "--no-sync",
-                "--python",
-                "3.14",
-                "python",
+                "-IB",
+                "-c",
+                "import os, runpy, sys; sys.path.insert(0, os.getcwd()); script = sys.argv.pop(1); sys.argv[0] = script; runpy.run_path(script, run_name='__main__')",
                 "tests/result_sync_fixture.py",
             ])
             .arg(root)
-            .env("PYTHONPATH", &backend)
             .env("TUNEFORGE_DATA_DIR", root.join("backend-data"))
             .env(
                 "TUNEFORGE_SYNC_TRANSPORT_DATA_DIR",
@@ -1251,7 +1258,9 @@ mod tests {
         let output = command.output().unwrap();
         assert!(
             output.status.success(),
-            "Synthetic Python fixture failed: {}",
+            "Synthetic Python fixture failed ({count} {variant}, native verify: {}):\n{}\n{}",
+            verify_native.is_some(),
+            String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
     }
@@ -1375,9 +1384,8 @@ mod tests {
         apply_sync_reconciliation_parts(connection, receiver_root, payload, Vec::new()).unwrap()
     }
 
-    // Dedicated CI follow-up: TODO.md#cross-runtime-integration-ci.
     #[test]
-    #[ignore = "Requires the prepared Python backend; dedicated cross-runtime CI is pending."]
+    #[ignore = "Run with node scripts/ci-cross-runtime.mjs."]
     fn python_producers_native_apply_result_matrix_and_bidirectional_replay() {
         for (variant, count) in [
             ("analysis", 1),
@@ -1541,6 +1549,7 @@ mod tests {
                             .unwrap()["estimated_reference_hz"],
                         json!(432.0)
                     );
+                    println!("verified native result return");
                 }
             }
             let manifest_ms = started.elapsed().as_millis();

@@ -1663,6 +1663,18 @@ lv-chordia = [
 ]
 
 [package.dev-dependencies]
+cross-runtime = [
+    { name = "alembic" },
+    { name = "cryptography" },
+    { name = "fastapi" },
+    { name = "huggingface-hub" },
+    { name = "librosa" },
+    { name = "numpy" },
+    { name = "pydantic" },
+    { name = "pyyaml" },
+    { name = "soundfile" },
+    { name = "sqlalchemy" },
+]
 dev = [
     { name = "hatchling" },
     { name = "httpx" },
@@ -1703,6 +1715,18 @@ requires-dist = [
 provides-extras = ["advanced-chords", "advanced-chords-onnx", "advanced-beats", "lv-chordia"]
 
 [package.metadata.requires-dev]
+cross-runtime = [
+    { name = "alembic" },
+    { name = "cryptography" },
+    { name = "fastapi" },
+    { name = "huggingface-hub" },
+    { name = "librosa" },
+    { name = "numpy" },
+    { name = "pydantic" },
+    { name = "pyyaml" },
+    { name = "soundfile" },
+    { name = "sqlalchemy" },
+]
 dev = [
     { name = "hatchling", specifier = ">=1.32.0,<2.0.0" },
     { name = "httpx", specifier = ">=0.28.1,<1.0.0" },

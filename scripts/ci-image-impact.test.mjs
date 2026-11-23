@@ -41,14 +41,14 @@ test("equivalent planned path spelling cannot miss producer impact", () => {
   assert.deepEqual(impacts.map((impact) => impact.path), ["scripts/build-soxr-runtime.mjs",
     "scripts/build-soxr-runtime.mjs", ".github/ci/Dockerfile"]);
   assert.throws(() => imageImpact(["scripts/../scripts/build-soxr-runtime.mjs"], root), /Unsafe planned/);
-  assert.equal(imageImpact([".python-version"], root)[0].classification, "consumer-compatibility");
+  assert.equal(imageImpact([".python-version"], root)[0].classification, "producer");
 });
 
 test("every registered producer byte changes whole recipe identity; promotion does not", (context) => {
   const directory = fixture(context);
   const before = producerIdentity(directory);
   assert.match(before.fingerprint, /^[a-f0-9]{64}$/);
-  for (const input of [".github/ci/Dockerfile", ".github/ci/README.md"]) {
+  for (const input of [".github/ci/Dockerfile", ".github/ci/README.md", ".github/ci/cross-runtime-requirements.txt"]) {
     const original = fs.readFileSync(path.join(directory, input));
     fs.appendFileSync(path.join(directory, input), "\n# changed\n");
     assert.notEqual(producerIdentity(directory).fingerprint, before.fingerprint, input);

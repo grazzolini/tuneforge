@@ -76,6 +76,7 @@ android_package_start=${SECONDS}
   uv run --python 3.14 --no-project python packages/music-core/test/source-acquisition.py
   node --test scripts/package-android.test.mjs
   node --test scripts/build-ffmpeg.test.mjs
+  node --test scripts/ci-cross-runtime.test.mjs
   if [[ "$(uname -s)" == "Linux" ]]; then
     node --test scripts/ci-image-impact.test.mjs scripts/ci-image-run.test.mjs scripts/verify-ci-image.test.mjs
   fi

@@ -80,14 +80,17 @@ chmod +x "$2"
   fs.writeFileSync(compilerEvidence, [cc, cxx].map(compiler =>
     `selected: ${compiler}\nresolved: ${fs.realpathSync(compiler)}\nUbuntu clang version 18.1.3\n`).join(""));
   const fixtureVerifier = path.join(root, "verify-ci-image.sh");
+  const crossRuntime = path.join(root, "cross-runtime");
   fs.writeFileSync(fixtureVerifier, fs.readFileSync(verifier, "utf8")
+    .replaceAll("/opt/tuneforge-ci/cross-runtime", crossRuntime)
     .replaceAll("/usr/bin/clang++-18", cxx).replaceAll("/usr/bin/clang-18", cc));
   const music = payloadFixture(path.join(root, "music-core"), workspace);
   const summary = path.join(root, "summary.md");
   const imageManifest = path.join(root, "producer-inputs.sha256");
   const identity = producerIdentity(workspace);
   fs.writeFileSync(imageManifest, identity.manifest);
-  return { root, workspace, soxr, runtime, bin, summary, imageManifest, music, cc, cxx, compilerEvidence, fixtureVerifier, fingerprint: identity.fingerprint };
+  return { root, workspace, soxr, runtime, bin, summary, imageManifest, music, crossRuntime,
+    cc, cxx, compilerEvidence, fixtureVerifier, fingerprint: identity.fingerprint };
 }
 
 function run(value, overrides = {}) {
@@ -122,6 +125,47 @@ test("CI image verifier accepts matching SoXR payload and checkout inputs", (con
   const result = run(value);
   assert.equal(result.status, 0, result.stderr);
   assert.match(fs.readFileSync(value.summary, "utf8"), /verified payload and build inputs/);
+});
+
+test("cross-runtime pilot verifies Python payload presence, hashes, requirements and binding metadata", (context) => {
+  const value = fixture();
+  context.after(() => fs.rmSync(value.root, { recursive: true, force: true }));
+  const pilot = { GITHUB_JOB: "cross_runtime_integration" };
+  assert.match(run(value, pilot).stderr, /Python payload is missing, corrupt, or stale/);
+
+  const requirements = path.join(value.crossRuntime, "requirements.txt");
+  const manifest = path.join(value.crossRuntime, "music-core.json");
+  const wasm = JSON.parse(fs.readFileSync(path.join(value.music, "wasm/manifest.json"), "utf8"));
+  const arch = process.arch === "x64" ? "x86_64" : "aarch64";
+  const darwin = process.platform === "darwin";
+  const wheelPlatform = darwin ? "macosx_13_0_arm64" : `linux_${arch}`;
+  const binding = {
+    ...wasm, target: "python", platform: `${process.platform}-${process.arch}`, pythonAbi: "cp314",
+    pythonVersion: fs.readFileSync(path.join(value.workspace, ".python-version"), "utf8").trim(),
+    extensionSuffix: darwin ? ".cpython-314-darwin.so" : `.cpython-314-${arch}-linux-gnu.so`,
+    pybind11Version: JSON.parse(fs.readFileSync(path.join(value.workspace, "packages/music-core/toolchains.lock.json"))).tools.pybind11.version,
+    wheelPlatform, files: [{ path: `tuneforge_music_core-${wasm.packageVersion}-cp314-cp314-${wheelPlatform}.whl` }],
+  };
+  function bindChecksum() {
+    fs.writeFileSync(path.join(value.crossRuntime, "payload.sha256"),
+      `${sha256(requirements)}  requirements.txt\n${sha256(manifest)}  music-core.json\n`);
+  }
+  fs.mkdirSync(value.crossRuntime);
+  const projection = path.join(value.workspace, ".github/ci/cross-runtime-requirements.txt");
+  fs.copyFileSync(projection, requirements);
+  fs.writeFileSync(manifest, JSON.stringify(binding));
+  bindChecksum();
+  const accepted = run(value, pilot);
+  assert.equal(accepted.status, 0, accepted.stderr);
+
+  fs.appendFileSync(requirements, "corrupt\n");
+  assert.match(run(value, pilot).stderr, /Python payload is missing, corrupt, or stale/);
+  bindChecksum();
+  assert.match(run(value, pilot).stderr, /Python payload is missing, corrupt, or stale/);
+  fs.copyFileSync(projection, requirements);
+  fs.writeFileSync(manifest, JSON.stringify({ ...binding, sourceFingerprint: "1".repeat(64) }));
+  bindChecksum();
+  assert.match(run(value, pilot).stderr, /Python binding source or interpreter does not match/);
 });
 
 test("CI image verifier ignores repository-wide notice changes", (context) => {

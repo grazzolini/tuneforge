@@ -16,10 +16,12 @@ jobs:
       backend_static: ${{ steps.scope.outputs.backend_static == 'true' || steps.image.outputs.selection != 'promoted' }}
       backend_ffmpeg: ${{ steps.scope.outputs.backend_ffmpeg == 'true' || steps.image.outputs.selection != 'promoted' }}
       codex_only: ${{ steps.scope.outputs.codex_only }}
-      desktop: ${{ steps.scope.outputs.desktop }}
-      desktop_tauri: ${{ steps.scope.outputs.desktop == 'true' || steps.image.outputs.selection != 'promoted' }}
-      release_media: ${{ steps.scope.outputs.release_media }}
-      site: ${{ steps.scope.outputs.site }}
+      desktop: ${{ steps.scope.outputs.desktop == 'true' && (steps.scope.outputs.native_only != 'true' || steps.image.outputs.selection != 'promoted') }}
+      desktop_tauri: ${{ steps.scope.outputs.desktop_tauri == 'true' || steps.scope.outputs.desktop == 'true' || steps.image.outputs.selection != 'promoted' }}
+      cross_runtime_integration: ${{ steps.scope.outputs.cross_runtime_integration == 'true' || steps.image.outputs.selection != 'promoted' }}
+      native_only: ${{ steps.scope.outputs.native_only }}
+      release_media: ${{ steps.scope.outputs.release_media == 'true' && (steps.scope.outputs.native_only != 'true' || steps.image.outputs.selection != 'promoted') }}
+      site: ${{ steps.scope.outputs.site == 'true' && (steps.scope.outputs.native_only != 'true' || steps.image.outputs.selection != 'promoted') }}
       image_selection: ${{ steps.image.outputs.selection }}
       image_fingerprint: ${{ steps.image.outputs.fingerprint }}
     steps:
@@ -42,6 +44,9 @@ jobs:
           backend_ffmpeg=false
           codex_only=false
           desktop=false
+          desktop_tauri=false
+          cross_runtime_integration=false
+          native_only=false
           release_media=false
           site=false
           full_gate=false
@@ -50,28 +55,46 @@ jobs:
 
           if [[ "${{ github.event_name }}" != "pull_request" ]]; then
             full_gate=true
+            cross_runtime_integration=true
             : > "${changed_files}"
           else
             base_sha="${{ github.event.pull_request.base.sha }}"
             head_sha="${{ github.event.pull_request.head.sha }}"
-            if ! git diff --name-only "${base_sha}" "${head_sha}" > "${changed_files}"; then
+            if ! git diff --name-only --no-renames -z "${base_sha}" "${head_sha}" > "${changed_files}" ||
+              ! git diff --merge-base --name-only --no-renames -z "${base_sha}" "${head_sha}" > "${pr_changed_files}"; then
               echo "Could not compute changed files; running the full gate." >&2
               full_gate=true
+              cross_runtime_integration=true
               : > "${changed_files}"
-            elif git diff --merge-base --name-only --no-renames -z "${base_sha}" "${head_sha}" > "${pr_changed_files}" &&
-              [[ -s "${pr_changed_files}" ]]; then
+            elif [[ -s "${pr_changed_files}" ]]; then
               codex_only=true
+              native_only=true
+              # New lane scope follows paths changed by the PR itself. The legacy gates below
+              # still consider endpoint differences for shared and caller-affecting changes.
               while IFS= read -r -d '' path; do
                 if [[ "${path}" != .codex/* ]]; then
                   codex_only=false
-                  break
                 fi
+                if [[ "${path}" = apps/desktop/src-tauri/* ]]; then
+                  desktop_tauri=true
+                  cross_runtime_integration=true
+                else
+                  native_only=false
+                fi
+                case "${path}" in
+                  apps/backend/app/*|apps/backend/alembic/*|apps/backend/alembic.ini|apps/backend/tests/result_sync_fixture.py|apps/backend/tests/fixtures/*|apps/backend/pyproject.toml|apps/backend/uv.lock)
+                    cross_runtime_integration=true
+                    ;;
+                  packages/music-core/*|packaging/soxr/*|.python-version|.github/ci/*|.github/workflows/ci-image.yml|.github/workflows/ci.yml|scripts/ci-*|scripts/verify-ci-image*|scripts/build-music-core*|scripts/build-soxr-runtime*|scripts/deterministic-source-snapshot.mjs|scripts/run-tests.sh|scripts/qualify-ci-cross-runtime.sh)
+                    cross_runtime_integration=true
+                    ;;
+                esac
               done < "${pr_changed_files}"
             fi
           fi
 
           if [[ -s "${changed_files}" ]]; then
-            while IFS= read -r path; do
+            while IFS= read -r -d '' path; do
               case "${path}" in
                 scripts/capture-release-media.mjs|scripts/check-release-version.mjs)
                   site=true
@@ -86,10 +109,6 @@ jobs:
                   site=true
                   release_media=true
                   ;;
-                apps/backend/pyproject.toml|apps/backend/uv.lock)
-                  backend_static=true
-                  backend_ffmpeg=true
-                  ;;
                 apps/backend/README.md)
                   ;;
                 apps/backend/app/api/*|apps/backend/app/schemas.py|apps/backend/app/main.py)
@@ -102,6 +121,9 @@ jobs:
                   backend_ffmpeg=true
                   ;;
                 packages/shared-types/AGENTS.md)
+                  ;;
+                apps/desktop/src-tauri/*)
+                  desktop_tauri=true
                   ;;
                 apps/desktop/*)
                   desktop=true
@@ -120,7 +142,7 @@ jobs:
                 .github/ci/*|.github/workflows/ci-image.yml|.github/workflows/ci.yml|packaging/soxr/*)
                   full_gate=true
                   ;;
-                .agents/*|.codex/*|docs/*|CHANGELOG.md|README.md|CONTRIBUTING.md|CODE_OF_CONDUCT.md|LICENSE|THIRD_PARTY_NOTICES.md|SECURITY.md|AGENTS.md|.gitignore|packaging/flatpak/*|.github/ISSUE_TEMPLATE/*|.github/PULL_REQUEST_TEMPLATE.md)
+                .agents/*|.codex/*|docs/*|CHANGELOG.md|README.md|CONTRIBUTING.md|CODE_OF_CONDUCT.md|LICENSE|THIRD_PARTY_NOTICES.md|SECURITY.md|AGENTS.md|TODO.md|.gitignore|packaging/flatpak/*|.github/ISSUE_TEMPLATE/*|.github/PULL_REQUEST_TEMPLATE.md)
                   ;;
                 *)
                   full_gate=true
@@ -133,6 +155,7 @@ jobs:
             backend_static=true
             backend_ffmpeg=true
             desktop=true
+            desktop_tauri=true
             release_media=true
             site=true
           fi
@@ -152,6 +175,7 @@ jobs:
           print_scope_decision "backend static checks" "${backend_static}"
           print_scope_decision "backend FFmpeg tests" "${backend_ffmpeg}"
           print_scope_decision "desktop checks" "${desktop}"
+          print_scope_decision "cross-runtime integration after activation" "${cross_runtime_integration}"
           print_scope_decision "site checks" "${site}"
 
           {
@@ -159,6 +183,9 @@ jobs:
             echo "backend_ffmpeg=${backend_ffmpeg}"
             echo "codex_only=${codex_only}"
             echo "desktop=${desktop}"
+            echo "desktop_tauri=${desktop_tauri}"
+            echo "cross_runtime_integration=${cross_runtime_integration}"
+            echo "native_only=${native_only}"
             echo "release_media=${release_media}"
             echo "site=${site}"
           } >> "${GITHUB_OUTPUT}"
@@ -169,13 +196,15 @@ jobs:
             echo "- Backend static checks: ${backend_static}"
             echo "- Backend FFmpeg tests: ${backend_ffmpeg}"
             echo "- Codex-only pull request: ${codex_only}"
+            echo "- Native-only pull request: ${native_only}"
             echo "- Desktop checks: ${desktop}"
+            echo "- Cross-runtime integration after activation: ${cross_runtime_integration}"
             echo "- Site checks: ${site}"
             if [[ -s "${changed_files}" ]]; then
               echo
               echo "<details><summary>Changed files</summary>"
               echo
-              sed 's/^/- `/' "${changed_files}" | sed 's/$/`/'
+              while IFS= read -r -d '' path; do printf -- "- \`%q\`\n" "${path}"; done < "${changed_files}"
               echo
               echo "</details>"
             fi
@@ -387,15 +416,28 @@ jobs:
           /tmp/tuneforge-zlib-probe
 
       - name: Test deterministic Node scripts
-        run: node --test scripts/build-info.test.mjs scripts/package-options.test.mjs scripts/flatpak-options.test.mjs scripts/flatpak-pnpm.test.mjs scripts/desktop-e2e.test.mjs scripts/sync-validation.test.mjs scripts/release-license-inventory.test.mjs scripts/capture-release-media.test.mjs scripts/ci-image-policy.test.mjs scripts/ci-music-core.test.mjs scripts/verify-ci-image.test.mjs scripts/ci-scope-policy.test.mjs scripts/ci-image-impact.test.mjs scripts/ci-image-run.test.mjs scripts/validate-android-release-jni.test.mjs scripts/package-dmg.test.mjs scripts/package-profile.test.mjs scripts/dev.test.mjs scripts/android-prepare-generated.test.mjs
+        run: node --test scripts/build-info.test.mjs scripts/package-options.test.mjs scripts/flatpak-options.test.mjs scripts/flatpak-pnpm.test.mjs scripts/desktop-e2e.test.mjs scripts/sync-validation.test.mjs scripts/release-license-inventory.test.mjs scripts/capture-release-media.test.mjs scripts/ci-image-policy.test.mjs scripts/ci-music-core.test.mjs scripts/verify-ci-image.test.mjs scripts/ci-scope-policy.test.mjs scripts/ci-image-impact.test.mjs scripts/ci-image-run.test.mjs scripts/validate-android-release-jni.test.mjs scripts/package-dmg.test.mjs scripts/package-profile.test.mjs scripts/dev.test.mjs scripts/android-prepare-generated.test.mjs scripts/ci-cross-runtime.test.mjs
 
       - name: Check standalone music-core generated contracts and metadata
         run: |
           pnpm --filter @tuneforge/music-core types:check
           node packages/music-core/test/artifact-metadata.mjs
 
-      - name: Set up uv for Android runtime audit fixtures
+      - name: Set up Python for the locked fixture projection
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version-file: .python-version
+
+      - name: Set up uv for fixture projection and Android runtime audits
         uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: "0.13.6"
+
+      - name: Check cross-runtime requirements projection
+        run: |
+          set -euo pipefail
+          uv export --offline --locked --project apps/backend --no-header --no-annotate --only-group cross-runtime |
+            diff -u .github/ci/cross-runtime-requirements.txt -
 
       - name: Test Android packaging helpers
         run: node --test --test-reporter=spec scripts/package-android.test.mjs scripts/prepare-android-demucs-runtime.test.mjs scripts/prepare-android-model-assets.test.mjs
@@ -429,7 +471,7 @@ jobs:
 
   e2e:
     needs: [ci-scope, ci-image-candidate, music-core-wasm]
-    if: ${{ always() && (needs.ci-scope.result != 'success' || needs.ci-scope.outputs.codex_only != 'true' || needs.ci-scope.outputs.image_selection != 'promoted' || needs.ci-image-candidate.result != 'skipped' || needs.music-core-wasm.result != 'success' || needs.music-core-wasm.outputs.artifact_id == '') }}
+    if: ${{ always() && (needs.ci-scope.result != 'success' || (needs.ci-scope.outputs.codex_only != 'true' && needs.ci-scope.outputs.native_only != 'true') || needs.ci-scope.outputs.image_selection != 'promoted' || needs.ci-image-candidate.result != 'skipped' || needs.music-core-wasm.result != 'success' || needs.music-core-wasm.outputs.artifact_id == '') }}
     runs-on: ubuntu-24.04
     defaults:
       run:
@@ -1001,7 +1043,7 @@ jobs:
         if: needs.ci-scope.outputs.desktop_tauri == 'true'
         uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
-          cache-suffix: ${{ steps.image.outputs.identity }}
+          enable-cache: false
 
       - name: Install locked music-core CMake in hosted Python prefix
         if: needs.ci-scope.outputs.desktop_tauri == 'true'
@@ -1057,6 +1099,117 @@ jobs:
         if: needs.ci-scope.outputs.desktop_tauri == 'true'
         working-directory: apps/desktop/src-tauri
         run: cargo test
+
+      - name: Clean selected image
+        if: always() && steps.image.outputs.identity != ''
+        shell: bash
+        run: bash scripts/ci-image-run.sh cleanup
+
+  cross_runtime_integration:
+    needs: [ci-scope, ci-image-candidate]
+    # Pilot only. Activate the computed path scope when the verified image is promoted.
+    if: ${{ always() && (needs.ci-scope.result != 'success' || needs.ci-scope.outputs.image_selection != 'promoted' || needs.ci-image-candidate.result != 'skipped') }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash ${{ github.workspace }}/scripts/ci-image-run.sh script {0}
+    env:
+      CI_SCOPE_RESULT: ${{ needs.ci-scope.result }}
+      CI_IMAGE_SELECTION: ${{ needs.ci-scope.outputs.image_selection }}
+      CI_IMAGE_CANDIDATE_RESULT: ${{ needs.ci-image-candidate.result }}
+      CI_IMAGE_ARTIFACT_ID: ${{ needs.ci-image-candidate.outputs.artifact_id }}
+      CI_USE_UV: "true"
+      RUST_VERSION: "1.98.0"
+    steps:
+      - name: Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Require candidate for integration pilot
+        shell: bash
+        if: needs.ci-scope.outputs.image_selection != 'candidate'
+        run: exit 1
+
+      - name: Require selected CI image
+        shell: bash
+        run: bash scripts/ci-image-run.sh require
+
+      - name: Download exact candidate image
+        if: needs.ci-scope.outputs.image_selection == 'candidate'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.ci-image-candidate.outputs.artifact_id }}
+          path: ${{ runner.temp }}/ci-image
+          digest-mismatch: error
+
+      - name: Load and validate selected CI image
+        id: image
+        shell: bash
+        run: bash scripts/ci-image-run.sh load "$RUNNER_TEMP/ci-image"
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "26"
+          package-manager-cache: false
+
+      - name: Set up Python for music-core source generation
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version-file: .python-version
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          enable-cache: false
+
+      - name: Install locked music-core CMake in hosted Python prefix
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake_wheel="$(node scripts/build-music-core.mjs --download-tool cmake --platform linux-x64)"
+          python -m pip install --no-index --no-deps "$cmake_wheel"
+          cmake --version
+
+      - name: Set up Rust
+        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          cache: false
+          rustflags: ""
+
+      - name: Restore Cargo dependencies and build output
+        id: cargo
+        continue-on-error: true
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            apps/desktop/src-tauri/target
+            !apps/desktop/src-tauri/target/debug/incremental
+          key: cargo-v2-${{ steps.image.outputs.identity }}-${{ runner.os }}-${{ runner.arch }}-rust-${{ env.RUST_VERSION }}-${{ hashFiles('apps/desktop/src-tauri/Cargo.lock', 'apps/desktop/src-tauri/Cargo.toml') }}
+
+      - name: Verify CI image
+        run: bash scripts/verify-ci-image.sh
+
+      - name: Acquire verified music-core sources
+        run: node scripts/build-music-core.mjs --fetch-sources
+
+      - name: Test Python producers and native reconciliation
+        run: node scripts/ci-cross-runtime.mjs --python /opt/tuneforge-ci/cross-runtime/venv/bin/python
+
+      - name: Record Cargo cache outcome
+        if: always()
+        shell: bash
+        env:
+          CACHE_HIT: ${{ steps.cargo.outputs.cache-hit }}
+          CACHE_OUTCOME: ${{ steps.cargo.outcome }}
+        run: printf 'Cargo exact cache hit = %s (restore %s)\n' "${CACHE_HIT:-false}" "$CACHE_OUTCOME" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Clean selected image
         if: always() && steps.image.outputs.identity != ''

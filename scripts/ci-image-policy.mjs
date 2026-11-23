@@ -56,7 +56,7 @@ const playwrightNoblePackages = [
   "libxrandr2",
 ];
 
-const ciImageConsumers = ["backend", "e2e", "desktop_tauri", "music-core-wasm"];
+const ciImageConsumers = ["backend", "e2e", "desktop_tauri", "cross_runtime_integration", "music-core-wasm"];
 function read(root, relativePath) {
   return fs.readFileSync(path.join(root, relativePath), "utf8");
 }
@@ -135,7 +135,7 @@ function verifierCallIndexes(block) {
 }
 
 function lockedCmakeInstallStep(name) {
-  const condition = name === "e2e" ? [] : ["        if: " + (name === "backend"
+  const condition = ["e2e", "cross_runtime_integration"].includes(name) ? [] : ["        if: " + (name === "backend"
     ? "needs.ci-scope.outputs.backend_static == 'true' || needs.ci-scope.outputs.backend_ffmpeg == 'true'"
     : `needs.ci-scope.outputs.${name === "desktop_frontend" ? "desktop" : "desktop_tauri"} == 'true'`)];
   return [
@@ -285,12 +285,17 @@ export function validateCiImagePolicy(root) {
   const baseImages = [...dockerfile.matchAll(
     /^FROM (\S+)(?: AS (\S+))?$/gm,
   )].map((match) => ({ image: match[1], stage: match[2] }));
+  const ubuntu = baseImages[0]?.image;
   check(
-    baseImages.length === 3 &&
-      baseImages[0].stage === "soxr-builder" &&
-      baseImages[1].stage === "music-core-builder" &&
-      baseImages[2].stage === undefined &&
-      baseImages.every(base => base.image === baseImages[0].image) &&
+    /^ubuntu:24\.04@sha256:[a-f0-9]{64}$/.test(ubuntu) &&
+      JSON.stringify(baseImages) === JSON.stringify([
+        { image: ubuntu, stage: "soxr-builder" },
+        { image: ubuntu, stage: "music-core-tools" },
+        { image: "music-core-tools", stage: "music-core-builder" },
+        { image: "music-core-tools", stage: "cross-runtime-builder" },
+        { image: ubuntu, stage: "shared-base" },
+        { image: "shared-base", stage: "shared-final" },
+      ]) &&
       !dockerfile.includes("FROM --platform="),
     "CI image must use the same pinned Ubuntu base without constant FROM platform flags",
   );
@@ -323,11 +328,18 @@ export function validateCiImagePolicy(root) {
       dockerfile.includes('"${MUSIC_' + tool + '_SHA256}" /tmp/' + tool.toLowerCase() + (tool === "NODE" ? '.tar.xz' : tool === "UV" ? '.whl' : '.tar.gz') + ' | sha256sum -c -'),
       "Music-core builder must checksum-pin " + tool + " bootstrap artifacts");
   }
-  const finalStage = dockerfile.slice(dockerfile.lastIndexOf("FROM "));
+  const sharedBaseStart = dockerfile.indexOf(`FROM ${ubuntu} AS shared-base`);
+  const finalStage = dockerfile.slice(sharedBaseStart);
   check(!/COPY --from=music-core-builder (?!\/opt\/tuneforge-ci\/music-core |\/tmp\/producer-inputs.sha256 )/.test(finalStage) &&
     !/apt-get install[^;]*(?:nodejs|python3|emscripten)/.test(finalStage),
     "Music-core build tools and checkout must remain outside final image");
-  const builderStages = dockerfile.slice(0, dockerfile.lastIndexOf("FROM "));
+  const builderStages = dockerfile.slice(0, sharedBaseStart);
+  const fixtureBuilder = builderStages.slice(builderStages.indexOf("FROM music-core-tools AS cross-runtime-builder"));
+  check(fixtureBuilder.includes('--require-hashes --only-binary :all: -r "$deps"') &&
+    fixtureBuilder.includes("node scripts/build-music-core.mjs --target python --python 3.14 --check") &&
+    dockerArg(dockerfile, "MUSIC_PYTHON_VERSION") === read(root, ".python-version").trim() &&
+    finalStage.endsWith("FROM shared-base AS shared-final\nCOPY --from=cross-runtime-builder /opt/tuneforge-ci/cross-runtime /opt/tuneforge-ci/cross-runtime\n"),
+    "The shared fixture layer must contain only the finished pinned CPython, wheel-only dependency payload and verified native binding");
   check(/apt-get install[^;]*\sclang-18\s/.test(finalStage) &&
     finalStage.includes("ENV CC=/usr/bin/clang-18 CXX=/usr/bin/clang++-18") &&
     !/^ENV .*\b(?:CC|CXX)=/m.test(builderStages) &&
@@ -521,7 +533,7 @@ export function validateCiImagePolicy(root) {
   const scopeBlock = workflowJobBlock(mainWorkflow, "ci-scope");
   check(scopeBlock.includes("image_selection: ${{ steps.image.outputs.selection }}") &&
     scopeBlock.includes("run: bash scripts/ci-image-run.sh select") && scopeBlock.includes("run: node scripts/ci-image-impact.mjs --check") &&
-    ["backend_static", "backend_ffmpeg", "desktop_tauri"].every((name) => scopeBlock.split("\n").some((line) => line.includes(name + ": ") && line.includes("steps.image.outputs.selection != 'promoted'"))),
+    ["backend_static", "backend_ffmpeg", "desktop_tauri", "cross_runtime_integration"].every((name) => scopeBlock.split("\n").some((line) => line.includes(name + ": ") && line.includes("steps.image.outputs.selection != 'promoted'"))),
     "Image selection must compare the full checkout recipe and force consumer gates during bootstrap or a promotion gap");
   for (const name of ciImageConsumers) {
     const block = workflowJobBlock(mainWorkflow, name);
@@ -530,9 +542,11 @@ export function validateCiImagePolicy(root) {
     let scheduling = "${{ always() }}";
     if (name === "e2e") {
       scheduling = "${{ always() && (needs.ci-scope.result != 'success' || " +
-        "needs.ci-scope.outputs.codex_only != 'true' || needs.ci-scope.outputs.image_selection != 'promoted' || " +
+        "(needs.ci-scope.outputs.codex_only != 'true' && needs.ci-scope.outputs.native_only != 'true') || needs.ci-scope.outputs.image_selection != 'promoted' || " +
         "needs.ci-image-candidate.result != 'skipped' || needs.music-core-wasm.result != 'success' || " +
         "needs.music-core-wasm.outputs.artifact_id == '') }}";
+    } else if (name === "cross_runtime_integration") {
+      scheduling = "${{ always() && (needs.ci-scope.result != 'success' || needs.ci-scope.outputs.image_selection != 'promoted' || needs.ci-image-candidate.result != 'skipped') }}";
     } else if (name !== "music-core-wasm") {
       scheduling = "${{ always() && (needs.ci-image-candidate.result == 'failure' || needs.ci-image-candidate.result == 'cancelled' || needs.ci-scope.result != 'success' || " +
         (name === "backend" ? "needs.ci-scope.outputs.backend_static == 'true' || needs.ci-scope.outputs.backend_ffmpeg == 'true'" : "needs.ci-scope.outputs.desktop_tauri == 'true'") + ") }}";
@@ -563,13 +577,27 @@ export function validateCiImagePolicy(root) {
   }
   check(JSON.stringify(jobs.filter(({ block }) => verifierCallIndexes(block).length).map(({ name }) => name).sort()) === JSON.stringify([...ciImageConsumers].sort()), "Only CI image consumers may call the shared verifier");
   const e2eBlock = workflowJobBlock(mainWorkflow, "e2e"), tauriBlock = workflowJobBlock(mainWorkflow, "desktop_tauri");
+  const crossRuntimeBlock = workflowJobBlock(mainWorkflow, "cross_runtime_integration");
   check(e2eBlock.includes("pnpm --filter @tuneforge/desktop exec playwright install chromium"), "e2e must install only the lockfile-matched Chromium browser at runtime");
   check(e2eBlock.includes(".github/ci/.selected-image-key") && ["backend", "e2e"].every((name) => workflowJobBlock(mainWorkflow, name).includes("cache-suffix: ${{ steps.image.outputs.identity }}")), "pnpm and uv caches must include selected image and producer identity");
   check(tauriBlock.includes("uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659") &&
     tauriBlock.includes("toolchain: ${{ env.RUST_VERSION }}") && tauriBlock.includes("          cache: false\n") && tauriBlock.includes('rustflags: ""'), "desktop_tauri must bootstrap pinned Rust without action-managed caching or rustflags");
   check((tauriBlock.match(/uses: actions\/cache@/g) ?? []).length === 1 && tauriBlock.includes("key: cargo-v2-${{ steps.image.outputs.identity }}-") &&
     tauriBlock.includes('soxr_root="${TUNEFORGE_SOXR_ROOT:?}"') && !tauriBlock.includes("node scripts/build-soxr.mjs"), "desktop_tauri must use one image-keyed Cargo cache and the prebuilt SoXR payload");
-  for (const name of ["backend", "e2e", "desktop_tauri", "desktop_frontend"]) {
+  const cacheSettings = (job) => job.match(/^          path: \|\n((?: {12}[^\n]+\n)+)          key: (cargo-v2-[^\n]+)$/m)?.[0];
+  check(crossRuntimeBlock.includes("uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9") &&
+    !/uses: actions\/cache(?:@|\/save@)|restore-keys:/.test(crossRuntimeBlock) &&
+    cacheSettings(crossRuntimeBlock) && cacheSettings(crossRuntimeBlock) === cacheSettings(tauriBlock) &&
+    crossRuntimeBlock.match(/^      RUST_VERSION: .*$/m)?.[0] === tauriBlock.match(/^      RUST_VERSION: .*$/m)?.[0] &&
+    [tauriBlock, crossRuntimeBlock].every((job) => /uses: astral-sh\/setup-uv@[^\n]+\n        with:\n          enable-cache: false\n/.test(job)),
+    "Cross-runtime integration restores the exact Tauri Cargo cache without writing; both Rust jobs disable persistent uv caching");
+  const matrix = crossRuntimeBlock.indexOf("run: node scripts/ci-cross-runtime.mjs --python /opt/tuneforge-ci/cross-runtime/venv/bin/python");
+  const acquisition = crossRuntimeBlock.indexOf("run: node scripts/build-music-core.mjs --fetch-sources");
+  check(acquisition > verifierCallIndexes(crossRuntimeBlock)[0] && matrix > acquisition &&
+    crossRuntimeBlock.includes("if: needs.ci-scope.outputs.image_selection != 'candidate'\n        run: exit 1") &&
+    !/\buv (?:sync|pip)\b/.test(crossRuntimeBlock),
+    "The candidate pilot must require the verified image, native sources, and one launcher without backend setup");
+  for (const name of ["backend", "e2e", "desktop_tauri", "desktop_frontend", "cross_runtime_integration"]) {
     const block = workflowJobBlock(mainWorkflow, name);
     const install = lockedCmakeInstallStep(name);
     const remaining = block.replace(install, "");

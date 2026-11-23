@@ -8,7 +8,7 @@
       "source": "repository recipe and documentation; Ubuntu 24.04 digest in Dockerfile",
       "license": "MIT recipe; installed Ubuntu copyright files and packages.txt for transitive packages",
       "probes": ["whole producer manifest", "base-image.txt", "packages.txt"],
-      "consumers": ["backend", "desktop_tauri", "e2e"]
+      "consumers": ["backend", "desktop_tauri", "e2e", "cross_runtime_integration"]
     },
     {
       "name": "SoXR and PFFFT",
@@ -16,7 +16,7 @@
       "source": "source URL, revision, archive checksum, embedded PFFFT revision and patch in sources.lock.json",
       "license": "LGPL-2.1-or-later SoXR; BSD-3-Clause PFFFT; corresponding sources in image",
       "probes": ["build-inputs.sha256", "payload.sha256", "provenance.json", "synthetic C resampling"],
-      "consumers": ["desktop_tauri"],
+      "consumers": ["desktop_tauri", "cross_runtime_integration"],
       "locks": ["packaging/soxr/sources.lock.json"]
     },
     {
@@ -25,7 +25,7 @@
       "source": "official Ubuntu FFmpeg package URL, package checksum and binary checksums in Dockerfile",
       "license": "GPL-2.0-or-later CI-only Ubuntu build; /usr/share/doc/ffmpeg/copyright",
       "probes": ["ffmpeg.sha256", "codec-validation.jsonl", "exact /usr/bin/ffmpeg and /usr/bin/ffprobe paths"],
-      "consumers": ["backend", "e2e"]
+      "consumers": ["backend", "e2e", "cross_runtime_integration"]
     },
     {
       "name": "Playwright system libraries",
@@ -41,7 +41,7 @@
       "source": "APT packages from Dockerfile; compiler identity and resolved versions recorded in image",
       "license": "installed Ubuntu copyright files",
       "probes": ["native compiler identity and C++ regression verification", "cargo check", "cargo test", "setup-tool executable compatibility"],
-      "consumers": ["backend", "desktop_tauri", "e2e"]
+      "consumers": ["backend", "desktop_tauri", "e2e", "cross_runtime_integration"]
     },
     {
       "name": "Music core portable WASM",
@@ -118,7 +118,15 @@
       "source": "Gingo archive/revision/file hashes in sources.lock.json; checksummed Emscripten and Python build dependencies in toolchains.lock.json; Node/uv/Python bootstrap pins in Dockerfile",
       "license": "MIT owned core and Gingo; Unicode-3.0 compatibility data; build tools remain in disposable stage",
       "probes": ["canonical artifact sourceFingerprint/metadata/payload verification", "portable WASM boundary/parity", "native ABI and Python/Rust transport parity", "payload.sha256 and build-tools.txt"],
-      "consumers": ["backend", "desktop_tauri", "e2e"]
+      "consumers": ["backend", "desktop_tauri", "e2e", "cross_runtime_integration"]
+    },
+    {
+      "name": "Cross-runtime fixture Python",
+      "inputs": [".github/ci/Dockerfile", ".github/ci/cross-runtime-requirements.txt", ".python-version"],
+      "source": "CPython build-standalone archive pin in Dockerfile; hash-checked cross-runtime dependency group projection of apps/backend/uv.lock; verified music-core Python wheel built from source in the same producer",
+      "license": "CPython distribution notices, each Python wheel's distribution metadata and licenses, MIT/Unicode/BSD music-core notices; CI-only",
+      "probes": ["payload.sha256", "python-source.txt", "requirements.txt", "packages.txt", "music-core.json", "isolated fixture matrix"],
+      "consumers": ["cross_runtime_integration"]
     }
   ],
   "registeredReads": {
@@ -154,7 +162,7 @@
     "packages/music-core/bindings/wasm/index.mjs": "b5ea9985ff2dfc6b29384ace6a2a9cc1ad39e6758f992553b30978ad0070864d"
   },
   "processInputs": [".github/workflows/ci-image.yml", "scripts/ci-image-policy.mjs"],
-  "compatibilityInputs": [".github/workflows/ci.yml", "scripts/verify-ci-image.sh", "scripts/ci-image-run.sh", ".github/ci/promoted-image.json", ".python-version", "apps/desktop/package.json", "pnpm-lock.yaml", "package.json", "apps/backend/pyproject.toml", "apps/backend/uv.lock"],
+  "compatibilityInputs": [".github/workflows/ci.yml", "scripts/verify-ci-image.sh", "scripts/ci-image-run.sh", "scripts/ci-cross-runtime.mjs", ".github/ci/promoted-image.json", "apps/desktop/package.json", "pnpm-lock.yaml", "package.json", "apps/backend/pyproject.toml", "apps/backend/uv.lock"],
   "sourceTrees": [
     {
       "root": "packages/music-core",

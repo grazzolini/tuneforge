@@ -18,7 +18,7 @@ jobs:
       codex_only: ${{ steps.scope.outputs.codex_only }}
       desktop: ${{ steps.scope.outputs.desktop == 'true' && (steps.scope.outputs.native_only != 'true' || steps.image.outputs.selection != 'promoted') }}
       desktop_tauri: ${{ steps.scope.outputs.desktop_tauri == 'true' || steps.scope.outputs.desktop == 'true' || steps.image.outputs.selection != 'promoted' }}
-      cross_runtime_integration: ${{ steps.scope.outputs.cross_runtime_integration == 'true' || steps.image.outputs.selection != 'promoted' }}
+      cross_runtime_integration: ${{ steps.scope.outputs.cross_runtime_integration != 'false' || steps.image.outputs.selection != 'promoted' }}
       native_only: ${{ steps.scope.outputs.native_only }}
       release_media: ${{ steps.scope.outputs.release_media == 'true' && (steps.scope.outputs.native_only != 'true' || steps.image.outputs.selection != 'promoted') }}
       site: ${{ steps.scope.outputs.site == 'true' && (steps.scope.outputs.native_only != 'true' || steps.image.outputs.selection != 'promoted') }}
@@ -75,7 +75,7 @@ jobs:
                 if [[ "${path}" != .codex/* ]]; then
                   codex_only=false
                 fi
-                if [[ "${path}" = apps/desktop/src-tauri/* ]]; then
+                if [[ "${path}" = apps/desktop/src-tauri/* || "${path}" = .cargo/config.toml ]]; then
                   desktop_tauri=true
                   cross_runtime_integration=true
                 else
@@ -122,7 +122,7 @@ jobs:
                   ;;
                 packages/shared-types/AGENTS.md)
                   ;;
-                apps/desktop/src-tauri/*)
+                apps/desktop/src-tauri/*|.cargo/config.toml)
                   desktop_tauri=true
                   ;;
                 apps/desktop/*)
@@ -175,7 +175,7 @@ jobs:
           print_scope_decision "backend static checks" "${backend_static}"
           print_scope_decision "backend FFmpeg tests" "${backend_ffmpeg}"
           print_scope_decision "desktop checks" "${desktop}"
-          print_scope_decision "cross-runtime integration after activation" "${cross_runtime_integration}"
+          print_scope_decision "cross-runtime integration" "${cross_runtime_integration}"
           print_scope_decision "site checks" "${site}"
 
           {
@@ -198,7 +198,7 @@ jobs:
             echo "- Codex-only pull request: ${codex_only}"
             echo "- Native-only pull request: ${native_only}"
             echo "- Desktop checks: ${desktop}"
-            echo "- Cross-runtime integration after activation: ${cross_runtime_integration}"
+            echo "- Cross-runtime integration: ${cross_runtime_integration}"
             echo "- Site checks: ${site}"
             if [[ -s "${changed_files}" ]]; then
               echo
@@ -1107,8 +1107,7 @@ jobs:
 
   cross_runtime_integration:
     needs: [ci-scope, ci-image-candidate]
-    # Pilot only. Activate the computed path scope when the verified image is promoted.
-    if: ${{ always() && (needs.ci-scope.result != 'success' || needs.ci-scope.outputs.image_selection != 'promoted' || needs.ci-image-candidate.result != 'skipped') }}
+    if: ${{ always() && (needs.ci-scope.result != 'success' || needs.ci-scope.outputs.cross_runtime_integration != 'false' || needs.ci-scope.outputs.image_selection != 'promoted' || needs.ci-image-candidate.result != 'skipped') }}
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -1129,9 +1128,9 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
 
-      - name: Require candidate for integration pilot
+      - name: Reject unexpected candidate result for promoted image
         shell: bash
-        if: needs.ci-scope.outputs.image_selection != 'candidate'
+        if: needs.ci-scope.outputs.image_selection == 'promoted' && needs.ci-image-candidate.result != 'skipped'
         run: exit 1
 
       - name: Require selected CI image

@@ -368,14 +368,40 @@ test("whole recipe selection cannot lose promotion-gap gates", () =>
   assertMutationsFail(".github/workflows/ci.yml", [["steps.image.outputs.selection != 'promoted'", "false"],
     ["run: bash scripts/ci-image-run.sh select", "run: echo promoted"]], /force consumer gates/));
 
-test("the cross-runtime pilot rejects writable or different caches and missing validation", () => {
+test("cross-runtime integration rejects writable or different caches and missing validation", () => {
   assertMutationsFail(".github/workflows/ci.yml", [
     ["uses: actions/cache/restore@", "uses: actions/cache@"],
     ["key: cargo-v2-", "key: different-"],
     ["enable-cache: false", "enable-cache: true"],
     ["--python /opt/tuneforge-ci/cross-runtime/venv/bin/python", "--python apps/backend/.venv/bin/python"],
-    ["if: needs.ci-scope.outputs.image_selection != 'candidate'\n        run: exit 1", "run: true"],
-  ], /must use one image-keyed|restores the exact Tauri Cargo cache|candidate pilot must require/);
+    ["needs.ci-scope.outputs.image_selection == 'promoted' && needs.ci-image-candidate.result != 'skipped'\n        run: exit 1", "false\n        run: exit 1"],
+    ["        run: node scripts/ci-cross-runtime.mjs", "        continue-on-error: true\n        run: node scripts/ci-cross-runtime.mjs"],
+    ["        run: node scripts/ci-cross-runtime.mjs", "        if: false\n        run: node scripts/ci-cross-runtime.mjs"],
+    ["        run: node scripts/ci-cross-runtime.mjs", "        shell: bash\n        run: node scripts/ci-cross-runtime.mjs"],
+    ...[
+      "        run: node scripts/build-music-core.mjs --fetch-sources",
+      "        run: node scripts/ci-cross-runtime.mjs --python /opt/tuneforge-ci/cross-runtime/venv/bin/python",
+    ].flatMap(run => ["if: false", "continue-on-error: true", "shell: bash"].map(key => [run, `${run}\n        ${key}`])),
+    [
+      "        run: exit 1\n\n      - name: Require selected CI image",
+      "        run: exit 1\n        continue-on-error: true\n\n      - name: Require selected CI image",
+    ],
+  ], /must use one image-keyed|restores the exact Tauri Cargo cache|Cross-runtime integration must reject/);
+});
+
+test("cross-runtime scheduling requires relevant promoted changes and retains failure and candidate gates", () => {
+  assertMutationsFail(".github/workflows/ci.yml", [
+    [" || needs.ci-scope.outputs.cross_runtime_integration != 'false'", ""],
+    ["needs.ci-scope.outputs.cross_runtime_integration != 'false'", "true"],
+    ["needs.ci-scope.outputs.cross_runtime_integration != 'false'", "needs.ci-scope.outputs.cross_runtime_integration == 'true'"],
+    [" || needs.ci-image-candidate.result != 'skipped') }}\n    runs-on:", ") }}\n    runs-on:"],
+    [" || needs.ci-scope.outputs.image_selection != 'promoted' || needs.ci-image-candidate.result != 'skipped') }}", " || needs.ci-image-candidate.result != 'skipped') }}"],
+  ], /cross_runtime_integration must retain fail-closed required-job scheduling/);
+  assertMutationsFail(".github/workflows/ci.yml", [
+    ["steps.scope.outputs.cross_runtime_integration", "steps.scope.outputs.cross_runtime"],
+    ["steps.scope.outputs.cross_runtime_integration != 'false'", "steps.scope.outputs.cross_runtime_integration == 'true'"],
+    ["      cross_runtime_integration: ${{ steps.scope.outputs.cross_runtime_integration != 'false' || steps.image.outputs.selection != 'promoted' }}\n", ""],
+  ], /Cross-runtime integration must use its computed scope output/);
 });
 
 test("the cross-runtime producer rejects unverified dependencies and wheel", () => {

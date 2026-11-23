@@ -160,6 +160,23 @@ pnpm contracts:generate
 
 CI will fail if `packages/shared-types/src/generated/openapi.ts` is out of sync.
 
+### Cross-runtime integration matrix
+
+For changes to result sync between Python and Rust, run this from the repository
+root in Bash after [development setup](#setup), with CMake 3.20+ on `PATH`.
+
+```bash
+(
+  set -e
+  export PATH="$PWD/apps/backend/.venv/bin:$PATH"
+  source scripts/configure-tauri-build-env.sh
+  node scripts/build-soxr.mjs --target host-test
+  node scripts/build-music-core.mjs --fetch-sources
+  TUNEFORGE_SOXR_ROOT="$PWD/packaging/soxr/generated/host-test" \
+    node scripts/ci-cross-runtime.mjs
+)
+```
+
 ## Commit Messages
 
 Tuneforge enforces [Conventional Commits](https://www.conventionalcommits.org/) via `commitlint`. The `commit-msg` Husky hook is installed automatically by `pnpm install`, and CI re-checks every commit on a PR plus the PR title (because the PR title becomes the squash commit message on `main`).

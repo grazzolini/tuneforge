@@ -230,6 +230,12 @@ test("PR scope handles release, Codex, and cross-runtime paths, renames, deletio
   check("native deletion", native, commit(commonFiles, native), false, nativeScope);
   check("native-only PR with web drift in main", main, native, false,
     { ...nativeScope, desktop: true, site: true, release_media: true });
+  const cargoConfig = commit({ ...commonFiles, ".cargo/config.toml": "cargo config" }, common);
+  check("root Cargo config edit", common, cargoConfig, false, nativeScope);
+  check("root Cargo config deletion", cargoConfig, commit(commonFiles, cargoConfig), false, nativeScope);
+  check("root Cargo config rename to web", cargoConfig,
+    commit({ ...commonFiles, "apps/desktop/src/cargo-config.toml": "cargo config" }, cargoConfig),
+    false, { desktop: true, desktop_tauri: true, native_only: false, cross_runtime_integration: true, site: true });
   check("rename native into frontend", native, commit({ ...commonFiles, "apps/desktop/src/test.rs": "native" }, native),
     false, { desktop: true, native_only: false, cross_runtime_integration: true, site: true });
   const fixture = { ...commonFiles, "apps/backend/tests/result_sync_fixture.py": "fixture" };
@@ -252,7 +258,12 @@ test("producer inputs retain real gates and promotion gaps force all image consu
   const candidate = workflow.slice(workflow.indexOf("  ci-image-candidate:\n"), workflow.indexOf("\n  commitlint:"));
   assert.match(candidate, /needs: ci-scope/);
   assert.match(candidate, /always\(\).*needs\.ci-scope\.result != 'success'/);
-  const pilot = workflow.slice(workflow.indexOf("  cross_runtime_integration:\n"));
-  assert.match(pilot, /needs\.ci-scope\.outputs\.image_selection != 'promoted'/);
-  assert.match(pilot, /if: needs\.ci-scope\.outputs\.image_selection != 'candidate'\n        run: exit 1/);
+  const integration = workflow.slice(workflow.indexOf("  cross_runtime_integration:\n"));
+  const schedule = integration.match(/^    if: (.*)$/m)?.[1];
+  assert.match(schedule, /needs\.ci-scope\.result != 'success'/);
+  assert.match(schedule, /needs\.ci-scope\.outputs\.cross_runtime_integration != 'false'/);
+  assert.match(schedule, /needs\.ci-scope\.outputs\.image_selection != 'promoted'/);
+  assert.match(schedule, /needs\.ci-image-candidate\.result != 'skipped'/);
+  assert.match(integration, /if: needs\.ci-scope\.outputs\.image_selection == 'promoted' && needs\.ci-image-candidate\.result != 'skipped'\n        run: exit 1/);
+  assert.doesNotMatch(integration, /if: needs\.ci-scope\.outputs\.image_selection != 'candidate'\n        run: exit 1/);
 });
